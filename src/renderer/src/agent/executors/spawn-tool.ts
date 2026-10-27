@@ -4,6 +4,7 @@
 
 import { getHost } from '../host'
 import { ENGINEERING_WORKFLOW, TASK_COMPLETION_SENTINEL_SECTION, readProjectInstructionsBody } from '../system-prompt-builder'
+import { detectVerifyCommands } from '../verify-loop'
 import {
   composeExpertInstructions,
   GENERAL_SUBAGENT_PROMPT,
@@ -22,6 +23,7 @@ import {
   queuedSubAgentCount,
   subAgentBudgetKey,
   tryAcquireSubAgentSlot,
+  type ReleaseSubAgentSlot,
 } from '../engine/subagent-limiter'
 import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
@@ -36,6 +38,42 @@ const SUBAGENT_TEXT_MAX = 10_000
  *  skeleton mandates the section as the report's first, so the head carries
  *  it; the cap only bounds a pathological file. */
 const REPORT_STATUS_HEAD_CHARS = 65_536
+
+// ── explore 预设（2026-10-27 验证闭环批次 #2）────────────────────────────
+// 只读侦察子代理：把「先摸清仓库再动手」的窗口开销外包出去——父会话花几百字
+// 买到整个代码库的结构认知，而不是自己把大文件读进主上下文。工具集白名单是
+// 结构性只读：exec 不在列（写面全在 write/edit/office_edit），MCP 发现在
+// allowedToolsSet 存在时本就跳过（tool-collection 的 doMcpDiscovery 条件），
+// 所以白名单即完整攻击面。recall 是 gated 工具，白名单把它放回（tool-collection
+// 的 allowed?.has 分支）——探索一个代码库时，过去会话与知识库里关于它的记忆
+// 常是最短的路。
+export const EXPLORE_TOOLSET = ['search', 'find', 'read', 'list_dir', 'office_read', 'office_inspect', 'recall']
+
+/** explore 的报告契约。挂在 spawn system prompt 的最末：模型从最后字节决定
+ *  下一步（信封 close-out 的同一判词），最后一个位置读得最认真。 */
+export const EXPLORE_REPORT_CONTRACT = `## Explore Mode
+
+You are a READ-ONLY codebase explorer. Your toolset is restricted to search / find / read / list_dir / office_read / office_inspect / recall — you cannot write, edit or execute, and you must not try. Do the narrow reconnaissance the task asks for and report back; the parent holds every write tool and acts on your map.
+
+Report format (keep it under ~400 words):
+- **Map** — the relevant files as \`path:line\` anchors, one line each: what it is, where the entry points are, what calls what.
+- **Key facts** — signatures, data shapes, constants, config values the parent needs, quoted exactly with their anchors.
+- **Gaps** — what you could not determine, and where the answer would live.
+
+Never paste whole files or long listings — anchors plus short quotes only. Precision of \`path:line\` beats volume.`
+
+/** The ledger key for the re-dispatch gate: whitespace-normalized, lowercased
+ *  task text. Exact-normalized match only — 「near-identical」 stays a
+ *  judgment call for the model — but that is precisely the shape the measured
+ *  incident took (mimo, 2026-09-16: five BYTE-identical re-dispatches). */
+export function spawnTaskSignature(task: string): string {
+  return task.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/** The refusal text for re-running a task this session already completed. */
+export function spawnRedispatchRejection(): string {
+  return '## Sub-Agent Result (rejected)\n\nThis exact task was already delegated and COMPLETED this session — its result is already in hand. A second run cannot improve a result you already hold. Report the existing result to the user in your own words; if it missed the mark, say so and ask the user instead of re-delegating. (Retrying after a FAILED attempt remains legitimate — this gate only blocks re-running a completed task.)'
+}
 
 async function readReportHead(path: string): Promise<string> {
   try {
@@ -81,6 +119,11 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
   // Tool ids can be replayed on retry; each executor invocation gets a new id.
   const attemptId = `${t.id}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
   let attemptStarted = false
+  // The parallel-cap slot once acquired; the inner finally releases it, and
+  // the outer catch re-releases idempotently for throws in the expert-lookup
+  // / prompt-composition stretch the inner try does not cover (makeRelease
+  // no-ops on a second call).
+  let heldSlot: ReleaseSubAgentSlot | null = null
   const execution = (status: PlanNodeExecutionStatus, subConvId?: string): void => {
     if (attemptStarted && planNode && ex.getPlan?.() === dispatchPlan) {
       ex.updatePlanNodeExecution?.(planNode.id, attemptId, status, subConvId)
@@ -101,6 +144,128 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const subAgentId = String(t.input?.subAgentId || '').trim()
     const task = String(t.input?.task || '')
     if (!task.trim()) throw new Error('task is required')
+    // explore 预设：preset 校验与 task 同级——同步拒绝，不进槽位队列（本
+    // 函数所有校验的同一纪律）。未知 preset 名是模型错误，直接报错。
+    const preset = String(t.input?.preset || '').trim()
+    const isExplore = preset === 'explore'
+    if (preset && !isExplore) throw new Error(`Unknown preset "${preset}" — the only supported value is "explore".`)
+
+    // Plan linkage (PLAN-plan-dag): the delegated task names the plan node it
+    // implements, so create_plan numbering, spawn dispatch and advance_plan
+    // settlement all speak the same ids. Validated against the LIVE plan — a
+    // stale/unknown number is a model error, not a silent no-op.
+    const planNodeRaw = t.input?.planNode
+    if (planNodeRaw !== undefined && planNodeRaw !== null && planNodeRaw !== '') {
+      const plan = ex.getPlan?.()
+      if (!plan) throw new Error('planNode was given but no plan is active — call create_plan first, or drop planNode.')
+      // resolveReadyNode is the order gate: pending AND dependencies-completed.
+      // A plain pending check here once let the model dispatch a node whose
+      // upstream was still running — depends_on was advisory, not enforced.
+      planNode = resolveReadyNode(plan, planNodeRaw as string | number)
+      dispatchPlan = plan
+      // Scheduler-ownership gate (conv_20261026154702 A1/B3): a never-started
+      // READY node in a delegated plan belongs to the scheduler — it dispatches
+      // the ready wave itself, and both the create_plan result and the plan
+      // snapshot say so in prose. Prose did not hold (the model spawned the
+      // whole ready wave manually one message after create_plan), so the
+      // contract is enforced here. Everything that must stay manually
+      // dispatchable is exempted exactly: the scheduler's own synthetic calls
+      // (mintCalls stamps autoDispatch), a sub-agent's own plan (the scheduler
+      // never runs there — 子代理内建图维持模型驱动), a direct-mode plan (no
+      // scheduler), and a node with ANY prior attempt (failed/stopped → the
+      // failure envelope itself instructs re-dispatch).
+      if (!planNode.execution
+        && (plan.mode ?? 'delegated') !== 'direct'
+        && t.input?.autoDispatch !== true
+        && !ex.isSpawnedSubAgent?.()) {
+        throw new Error(
+          `Plan node ${planNode.id} is READY — the scheduler dispatches READY nodes automatically. Do not spawn_agent them yourself: wait for delivery and handle failed/stopped nodes. If this node must not run, settle it first (advance_plan action="skip" or "fail").`,
+        )
+      }
+      ex.beginPlanNodeExecution?.(planNode.id, attemptId)
+      attemptStarted = true
+    }
+
+    // explore × planNode 冲突：计划节点派发欠一份报告文件（写面契约），explore
+    // 是只读侦察——两个契约互斥，同步拒绝让模型改用自由派发。
+    if (isExplore && planNode) {
+      throw new Error('preset="explore" cannot be combined with planNode — an explore pass is read-only reconnaissance with no report file to deliver. Dispatch it as a free-form task instead.')
+    }
+
+    // Re-dispatch gate (2026-10-27): a task this session already COMPLETED is
+    // not re-runnable — the result is in hand and a second run is a whole
+    // sub-session of spend for nothing. Free-form spawns only: plan-node
+    // spawns have their own gates above (scheduler ownership, live attempt),
+    // and a FAILED node's re-dispatch is the protocol itself. Fires BEFORE
+    // the slot acquisition, so a refused call never queues behind five long
+    // experts — the same fail-fast position every synchronous validation
+    // here holds.
+    if (!planNode) {
+      const prior = ex.spawnTaskResults?.get(spawnTaskSignature(task))
+      if (prior === 'completed') {
+        const msg = spawnRedispatchRejection()
+        t.exitCode = -1
+        t.status = 'completed'
+        ex.addToolResult(t.id, msg, true)
+        ex.notify()
+        return
+      }
+    }
+
+    // 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 5 个；
+    // 计划文档在 _task/20260916/PLAN-parallel-experts.md）。
+    // The slot is taken HERE — after every SYNCHRONOUS validation (a bad task
+    // or planNode still fails fast without queueing behind five long experts)
+    // but BEFORE THE FIRST AWAIT — and held for the whole dispatch, i.e.
+    // across `waitForCompletion` below. The position is the fix for the
+    // n5-queued-last scramble (2026-10-27): the limiter's FIFO can only order
+    // ARRIVALS, and with the acquire parked behind the expert lookup and the
+    // 项目法 read, six concurrent dispatches arrived in file-completion order —
+    // a 6-node wave at cap 5 queued n5 instead of n6. Everything above is
+    // synchronous, so a batch's calls arrive in mint order and the FIFO queue
+    // IS the dispatch order. See the header of engine/subagent-limiter.ts for
+    // why the slot is held across the wait.
+    // 嵌套派生（本引擎自身就是子代理）走 tryAcquireSubAgentSlot——永不排队
+    // （死锁修复 2026-09-29，用户报告：一个 plan 波次把全会话锁死）：持槽的
+    // dispatch 若还能等槽位，「持槽者等子代理完成、子代理等嵌套槽位」就成环。
+    // 顶层派生（主代理 / 调度器，自身零持槽）维持 FIFO 排队不变。
+    const budgetKey = subAgentBudgetKey(ex.opts)
+    const busy = activeSubAgentCount(budgetKey)
+    const queued = queuedSubAgentCount(budgetKey)
+    const parallelLimit = getSubAgentParallelLimit()
+    const nested = ex.isSpawnedSubAgent?.() ?? false
+    if (!nested && (busy >= parallelLimit || queued > 0)) {
+      t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${parallelLimit} 个），前面还有 ${queued} 个等待空位…`
+      ex.notify()
+    }
+    const release = nested ? tryAcquireSubAgentSlot(budgetKey) : await acquireSubAgentSlot(budgetKey)
+    heldSlot = release
+    if (!release) {
+      t.exitCode = -1
+      t.status = 'completed'
+      if (nested) {
+        // At cap and not allowed to wait: hand the work back — the caller
+        // holds every tool needed to do it itself. execution('failed') is a
+        // no-op unless a planNode attempt started (plan-node spawns are
+        // top-level only; kept for defense in depth).
+        execution('failed')
+        ex.addToolResult(
+          t.id,
+          `并行槽位已满：本会话已有 ${busy} 个子代理在运行（上限 ${parallelLimit} 个），嵌套派生不排队等待。` +
+            '不要继续派生子代理——请直接用你自己的工具完成这项工作，或把无法完成的部分如实报告。',
+          true,
+        )
+      } else {
+        // The session was stopped while this expert waited in line. Starting it
+        // now would run work the user just cancelled.
+        execution('stopped')
+        ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
+      }
+      ex.notify()
+      return
+    }
+    // Slot in hand — the expert is now actually executing.
+    t.status = 'running'; ex.notify()
 
     // Capability comes from the delegated pack: 可用技能 / 可用连接器 narrow the
     // sub-agent's toolset, everything else (tools, run parameters) is inherited
@@ -122,23 +287,6 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         // rethrow it; any other failure (IPC hiccup) degrades to the default.
         if (err instanceof Error && err.message.includes('已关闭')) throw err
       }
-    }
-
-    // Plan linkage (PLAN-plan-dag): the delegated task names the plan node it
-    // implements, so create_plan numbering, spawn dispatch and advance_plan
-    // settlement all speak the same ids. Validated against the LIVE plan — a
-    // stale/unknown number is a model error, not a silent no-op.
-    const planNodeRaw = t.input?.planNode
-    if (planNodeRaw !== undefined && planNodeRaw !== null && planNodeRaw !== '') {
-      const plan = ex.getPlan?.()
-      if (!plan) throw new Error('planNode was given but no plan is active — call create_plan first, or drop planNode.')
-      // resolveReadyNode is the order gate: pending AND dependencies-completed.
-      // A plain pending check here once let the model dispatch a node whose
-      // upstream was still running — depends_on was advisory, not enforced.
-      planNode = resolveReadyNode(plan, planNodeRaw as string | number)
-      dispatchPlan = plan
-      ex.beginPlanNodeExecution?.(planNode.id, attemptId)
-      attemptStarted = true
     }
 
     // Expert config pack: compose the structured sections instead of a bare
@@ -240,6 +388,16 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // go under the workspace's own .pulsemind/ so a project workspace (the
       // user's real directory) does not collect the model's scratch.
       envLines.push(`- Scratch: ${ex.opts.workspaceDir}/.pulsemind/tmp — put throwaway/intermediate files here, never loose in the workspace root`)
+      // Verify 命令进子代理的 env block（2026-10-27 验证闭环）：子代理才是真正
+      // 写代码的那一方，父会话 state block 的 Verify 行到不了这里
+      // （spawnSystemPrompt 分支 → stateBlock null）。探测是 TTL 缓存的
+      // （verify-loop.ts），每工作区每 10 分钟一次 host 读，所有 spawn 共享。
+      try {
+        const verifyCmds = await detectVerifyCommands(ex.opts.workspaceDir)
+        if (verifyCmds.length > 0) {
+          envLines.push(`- Verify: ${verifyCmds.map((c) => `\`${c}\``).join(' · ')} — this workspace's verification commands; run the relevant one after code changes`)
+        }
+      } catch { /* detection is best-effort */ }
     }
     // Project law rides the spawn prompt too (2026-10-07): a sub-agent doing
     // the work must answer to the same standing instructions as the parent,
@@ -263,59 +421,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // (the flag rides the opts spread, so a spawn of a guarded parent inherits
     // both the section here and the engine-side guard itself).
     const sentinelBlock = ex.opts.earlyStopGuard ? `\n\n${TASK_COMPLETION_SENTINEL_SECTION}` : ''
-    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${lawBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}${sentinelBlock}`
+    // explore 契约挂在最末（模型从最后字节决定下一步——信封 close-out 的同一
+    // 判词；sentinel 之后追加不破坏其完成标记的行 solitude）。
+    const exploreBlock = isExplore ? `\n\n${EXPLORE_REPORT_CONTRACT}` : ''
+    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${lawBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}${sentinelBlock}${exploreBlock}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
-
-    // 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 5 个；
-    // 计划文档在 _task/20260916/PLAN-parallel-experts.md）。
-    // The slot is taken AFTER validation (a bad planNode must fail fast, not
-    // after queueing behind five long experts) and held for the whole
-    // dispatch — i.e. across `waitForCompletion` below. See the header of
-    // engine/subagent-limiter.ts for why that is the shape that survives
-    // pause/resume and stop.
-    // 嵌套派生（本引擎自身就是子代理）走 tryAcquireSubAgentSlot——永不排队
-    // （死锁修复 2026-09-29，用户报告：一个 plan 波次把全会话锁死）：持槽的
-    // dispatch 若还能等槽位，「持槽者等子代理完成、子代理等嵌套槽位」就成环。
-    // 顶层派生（主代理 / 调度器，自身零持槽）维持 FIFO 排队不变。
-    const budgetKey = subAgentBudgetKey(ex.opts)
-    const busy = activeSubAgentCount(budgetKey)
-    const queued = queuedSubAgentCount(budgetKey)
-    const parallelLimit = getSubAgentParallelLimit()
-    const nested = ex.isSpawnedSubAgent?.() ?? false
-    if (!nested && (busy >= parallelLimit || queued > 0)) {
-      t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${parallelLimit} 个），前面还有 ${queued} 个等待空位…`
-      ex.notify()
-    }
-    const release = nested ? tryAcquireSubAgentSlot(budgetKey) : await acquireSubAgentSlot(budgetKey)
-    if (!release) {
-      t.exitCode = -1
-      t.status = 'completed'
-      if (nested) {
-        // At cap and not allowed to wait: hand the work back — the caller
-        // holds every tool needed to do it itself. execution('failed') is a
-        // no-op unless a planNode attempt started (plan-node spawns are
-        // top-level only; kept for defense in depth).
-        execution('failed')
-        ex.addToolResult(
-          t.id,
-          `并行槽位已满：本会话已有 ${busy} 个子代理在运行（上限 ${parallelLimit} 个），嵌套派生不排队等待。` +
-            '不要继续派生子代理——请直接用你自己的工具完成这项工作，或把无法完成的部分如实报告。',
-          true,
-        )
-      } else {
-        // The session was stopped while this expert waited in line. Starting it
-        // now would run work the user just cancelled.
-        execution('stopped')
-        ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
-      }
-      ex.notify()
-      return
-    }
-    // Slot in hand — the expert is now actually executing.
-    t.status = 'running'; ex.notify()
 
     try {
       // PLAN-plan-split v2 R6: arm create_sub_plan for splittable nodes —
@@ -342,6 +455,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
         allowedSkills: profile ? profile.skillNames ?? [] : undefined,
         allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
+        // explore 预设的只读工具集白名单；undefined = 不限制（普通派发原样）。
+        // 穿透链：config → spawn-manager 的 subOpts.allowedTools → 引擎的
+        // allowedToolsSet → tool-collection 的白名单过滤（同时关闭 MCP 发现）。
+        allowedTools: isExplore ? EXPLORE_TOOLSET : undefined,
         maxTokens: ex.opts.maxTokens,
         // The session's configurable loop base — the same getLoopIterationLimit()
         // the host engine caps itself with (设置 → 助手设置 maxLoopIterations;
@@ -568,10 +685,24 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
             + (subText ? `\n\n${subText}` : '')
         if (splitNote) t.output += '\n\n（剩余工作已拆分回父计划）'
       }
+      // Ledger the outcome (re-dispatch gate): free-form spawns only — a
+      // plan node's lifecycle lives on the node row, not here. 'aborted' is
+      // recorded but never blocks: a user-stopped spawn did not complete, and
+      // re-running it is a legitimate decision.
+      if (!planNode && ex.spawnTaskResults) {
+        ex.spawnTaskResults.set(
+          spawnTaskSignature(task),
+          result.status === 'completed' ? 'completed' : result.status === 'aborted' ? 'aborted' : 'failed',
+        )
+      }
     } finally {
       release()
     }
   } catch (err) {
+    // A throw before the inner try (expert lookup / prompt composition) is
+    // still holding the slot — hand it back; the spawn stretch is covered by
+    // the inner finally, and makeRelease no-ops the second call.
+    heldSlot?.()
     execution('failed')
     t.exitCode = -1
     t.status = 'completed'

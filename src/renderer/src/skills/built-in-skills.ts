@@ -1,7 +1,9 @@
 import type { SkillDefinition } from './types'
 import { OFFICE_SKILL_PROMPT } from './built-in/office-route'
 import { OFFICE_SKILL_REFERENCES } from './built-in/office-references'
-import { CODING_WORKFLOW_PROMPT, CODING_WORKFLOW_REFERENCES } from './built-in/coding-workflow'
+import { CODING_WORKFLOW_PROMPT } from './built-in/coding-workflow'
+import { CODING_WORKFLOW_REFERENCES } from './built-in/coding-workflow-references'
+import { BROWSER_SKILL_PROMPT } from './built-in/browser'
 
 /**
  * Built-in skills that ship with PulseMind.
@@ -109,42 +111,6 @@ The \`install\` tool registers an MCP server straight from a config object — n
   },
 
   {
-    name: 'web_gui_tester',
-    description:
-      'Black-box GUI testing workflow on top of the browser tool: scenario plans, assertion discipline, console/network checks and structured bug reports. Loaded automatically for web testing / UI verification tasks.',
-    category: 'pulsemind',
-    builtIn: true,
-    triggers: ['测试', 'web测试', '网页测试', 'ui测试', 'gui测试', '黑盒测试', '回归测试', '验收', 'testing', 'qa', 'test scenario'],
-    systemPrompt: `## Active Skill: Web GUI Tester
-
-You test web pages as a BLACK-BOX GUI tester through the \`browser\` tool. You never read the site's source — everything you know comes from snapshots, screenshots and page state. The \`browser\` tool's own manual (its Tool Protocols section, present in every request while the tool is enabled) carries the driving protocol — rebind, snapshot-first, one action per observation — and applies UNCHANGED; this skill adds the testing discipline on top.
-
-### 1. Plan before you click
-Before the first browser call, write a SHORT test plan to the user: scenarios, steps per scenario, expected results. Ask which scenarios matter if the task is vague — do not invent acceptance criteria silently.
-
-### 2. Test in batches, verify by evidence
-For each step: act → verify via a FRESH domSnapshot or an evaluate read of observable state (URL, input values, rendered text, element counts). "It didn't crash" is not a pass. Record actual vs expected for every step.
-
-### 3. Look beyond the happy path
-- Empty/required/invalid inputs, boundary values (0, 999+, unicode, emoji, very long strings)
-- Double submits and rapid repeated clicks
-- Back/forward navigation and refresh between steps
-- Console errors: \`tab.evaluate("JSON.stringify(window.__errors || 'no hook')")\` only when the page exposes one; otherwise judge by broken UI state
-
-### 4. Screenshots with judgment
-Screenshot at visually-critical checkpoints (layout, overlap, empty states) — not after every click. A screenshot is evidence: describe WHAT it shows when you cite it.
-
-### 5. Report format
-End with a structured report:
-- **结论** pass/fail per scenario, one line each
-- **缺陷** for each failure: 复现步骤 (numbered), 预期 vs 实际, evidence (snapshot excerpt or screenshot reference), 严重级别 (阻塞/严重/一般/轻微)
-- **未覆盖** what you could not test and why (login walls, captchas, payment flows)
-
-### 6. Honesty rules
-Never mark a scenario passed because you ran out of budget — say 未覆盖. If a modal/anti-bot wall blocks you, report it as an environment limitation, not a bug. Tell the user "已打开浏览器进行测试" — never mention kernel/sandbox/vm/CDP.`,
-  },
-
-  {
     name: 'office',
     description:
       'Office deliverables (Word / Excel / PPT / PDF): how to choose between generating a new file and byte-faithfully editing an existing one, and the per-format specs each route leads to. Pick it whenever the input or the deliverable is an Office file.',
@@ -177,12 +143,43 @@ Never mark a scenario passed because you ran out of budget — say 未覆盖. If
   {
     name: 'coding-workflow',
     description:
-      'Long-tail coding work organization (PLAN-coding-contract P2): routing for large refactors, code review and migrations, with the per-scenario discipline in reference files. The always-on engineering contract (read before write / verify before claim / no invented API) is NOT here — it ships in the frozen core; this skill adds how to stage work bigger than a few lines.',
+      'Long-tail coding work organization (PLAN-coding-contract P2): routing across six scenarios — large refactor, code review, migration, debugging/root-cause, new feature delivery, performance work — with the per-scenario discipline in reference files. The always-on engineering contract (read before write / verify before claim / no invented API) is NOT here — it ships in the frozen core; this skill adds how to stage work bigger than a few lines.',
     category: 'pulsemind',
     builtIn: true,
-    triggers: ['重构', '重构一下', '大改', '迁移', 'review 代码', '代码评审', 'code review'],
+    triggers: [
+      '重构',
+      '重构一下',
+      '大改',
+      '迁移',
+      'review 代码',
+      '代码评审',
+      'code review',
+      '排查',
+      '调试',
+      'bug',
+      '性能',
+      '新功能',
+    ],
     systemPrompt: CODING_WORKFLOW_PROMPT,
     resources: CODING_WORKFLOW_REFERENCES,
+  },
+
+  {
+    // 2026-10-26 (user ruling, 系统提示词瘦身): the `browser` tool's own manual
+    // moved here out of the tool-instructions.ts trunk, where it rode EVERY
+    // request (~1.4K tokens on plain chats too). The tool stays always-on —
+    // its schema is ~0.7K — and these triggers drive the state-block keyword
+    // hint toward pick_skill. Deliberate inverse of the 2026-09-18 browser_use
+    // retirement: that one moved the skill INTO the trunk to save a sync copy,
+    // this one moves the manual back OUT to save the floor (pick_skill re-reads
+    // SKILL.md from disk on every call, so there is still exactly one copy).
+    name: 'browser',
+    description:
+      'The full calling convention for the browser tool: snapshot ref addressing (incl. frame-prefixed refs), diff snapshots, one action per observation, tab rebinding, favorites, and the real-input playbook for canvas apps. Pick it before the first browser call of a session.',
+    category: 'browser',
+    builtIn: true,
+    triggers: ['浏览器', '网页', '网址', '网站', 'browser'],
+    systemPrompt: BROWSER_SKILL_PROMPT,
   },
 ]
 
@@ -211,7 +208,16 @@ export const RETIRED_BUILT_IN_SKILLS: { name: string; contentHash: string }[] = 
     // Retired 2026-09-18: its protocol moved verbatim into the `browser`
     // tool's own `instructions` manual (tool-instructions.ts), which ships in
     // every request via buildToolProtocols — no trigger/pick_skill round trip,
-    // and no second copy to keep in sync.
+    // and no second copy to keep in sync. (2026-10-26: that manual moved again,
+    // out of the trunk into the new `browser` built-in skill — see
+    // BUILT_IN_SKILLS. This hash stays frozen at the 2026-09-18 text either way.)
     contentHash: 'dd75a33b822ab9e243e68d0b14af5924a904ea43522a180750a177b864e246c6'
+  },
+  {
+    name: 'web_gui_tester',
+    // Retired 2026-10-26 (user decision). Pure testing-discipline overlay on
+    // the `browser` tool's own manual — no protocol moved anywhere; the hash
+    // is simply the final text frozen.
+    contentHash: '829cacbbe84154fdc40f08e7bb79b1801e9b5ca3fd5256b02383bcea9127f895'
   }
 ]

@@ -150,7 +150,9 @@ describe('real-input primitives — service wiring (source scan)', () => {
 
 describe('real-input primitives — manual points at the playbook and the lookup doc', () => {
   it('the browser manual names the lookup doc and the installed skill', () => {
-    const manual = read('src/renderer/src/tools/tool-instructions.ts')
+    // 2026-10-26: the browser manual moved from tool-instructions.ts into the
+    // `browser` built-in skill — the cross-references moved with it, verbatim.
+    const manual = read('src/renderer/src/skills/built-in/browser.ts')
     expect(manual).toContain("agent.documentation.get('real-input')")
     expect(manual).toContain('online-spreadsheet')
     expect(manual).toContain('tab.clipboard')

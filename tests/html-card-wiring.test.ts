@@ -47,6 +47,18 @@ describe('html artifact card wiring', () => {
     expect(SHARED).toContain('injectBeforeBodyClose')
   })
 
+  it('the frame carries the APP CSP — 「no external resources」 is enforced, not taught (2026-10-27)', () => {
+    // The policy constant + its injector live beside buildCardDocument so both
+    // surfaces (chat card, extension panel) inherit the enforcement for free.
+    expect(SHARED).toContain('HTML_CARD_CSP')
+    expect(SHARED).toContain("default-src 'none'")
+    expect(SHARED).toContain('injectCardCsp')
+    // Both build paths consume it: the fragment shell (direct) and the full
+    // document (injectCardCsp after the strip).
+    expect(SHARED).toMatch(/injectCardCsp\(stripCspMeta\(code\)\)/)
+    expect((SHARED.match(/HTML_CARD_CSP/g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
   it('the chrome is hover-only and floats OUTSIDE the card (2026-10-09 ruling)', () => {
     // Hover state is JS-driven with a leave-grace (`.pm-html-card-on`), NOT a
     // CSS :hover gate — :hover flips pointer-events in the same frame hover

@@ -46,10 +46,14 @@ describe('buildCardDocument', () => {
     expect(buildCardDocument(frag)).toContain(frag)
   })
 
-  it('strips a meta CSP off a fragment — it would kill the measure script too', () => {
+  it('strips the model meta CSP and injects the APP policy instead (2026-10-27 hard gate)', () => {
     const frag = '<meta http-equiv="Content-Security-Policy" content=\'script-src "self"\'><p>x</p>'
     const doc = buildCardDocument(frag)
-    expect(doc).not.toContain('Content-Security-Policy')
+    // The model's own policy is gone — but the frame is NOT policy-free: the
+    // app's CSP (inline demos keep working, network is dead) replaces it.
+    expect(doc).not.toContain('script-src "self"')
+    expect(doc).toContain("default-src 'none'")
+    expect(doc).toContain("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'")
     expect(doc).toContain('<p>x</p>')
     expect(doc).toContain('pm-html-card-height')
   })
@@ -58,19 +62,27 @@ describe('buildCardDocument', () => {
     const page = '<!DOCTYPE html><html><head><title>p</title></head><body>hi</body></html>'
     const doc = buildCardDocument(page)
     expect(doc).toContain('pm-html-card-height')
-    // The page's own markup is untouched — the reporter is the only edit, and
-    // it lands inside the body.
-    const head = page.slice(0, page.indexOf('</body>'))
-    const tail = page.slice(page.indexOf('</body>'))
-    expect(doc.startsWith(head)).toBe(true)
-    expect(doc.endsWith(tail)).toBe(true)
+    // The page's own markup is untouched apart from the two app injections,
+    // and both land ahead of the body content: the CSP meta right after the
+    // doctype (never BEFORE it — quirks mode would shift every layout
+    // measurement), the reporter inside the body.
+    expect(doc).toContain('hi')
     expect(doc.indexOf('pm-html-card-height')).toBeLessThan(doc.indexOf('</body>'))
+    const doctypeEnd = doc.indexOf('>') + 1
+    const metaAt = doc.indexOf('Content-Security-Policy')
+    expect(metaAt).toBeGreaterThan(-1)
+    expect(metaAt).toBeGreaterThan(doctypeEnd)
+    expect(metaAt).toBeLessThan(doc.indexOf('<body'))
   })
 
   it('a full document without </body> still gets the reporter (appended)', () => {
     const page = '<html lang="en">x'
     const doc = buildCardDocument(page)
-    expect(doc.startsWith(page)).toBe(true)
+    // The CSP meta is the one edit ahead of the page's own bytes — the parser
+    // hoists it into the implied head — and the reporter still lands.
+    expect(doc.startsWith('<html lang="en">')).toBe(true)
+    expect(doc).toContain('x')
+    expect(doc).toContain("default-src 'none'")
     expect(doc).toContain('pm-html-card-height')
   })
 
@@ -78,9 +90,31 @@ describe('buildCardDocument', () => {
     const page =
       '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'"></head><body>hi</body></html>'
     const doc = buildCardDocument(page)
-    expect(doc).not.toContain('Content-Security-Policy')
+    // The model's restrictive policy is replaced by the app's: the body
+    // markup and the inline measure script survive, `default-src 'self'`
+    // (which would have killed BOTH inline scripts) is gone.
+    expect(doc).not.toContain("'self'")
     expect(doc).toContain('<body>hi<script>')
     expect(doc).toContain('pm-html-card-height')
+  })
+
+  it('the injected policy allows exactly the sanctioned vectors and no network', () => {
+    for (const code of ['<p>f</p>', '<!doctype html><html><body>x</body></html>']) {
+      const doc = buildCardDocument(code)
+      const csp = doc.match(/content="(default-src[^"]*)"/)?.[1] ?? ''
+      expect(csp).toContain("default-src 'none'")
+      expect(csp).toContain("script-src 'unsafe-inline'") // the model's demos + the measure script
+      expect(csp).toContain("style-src 'unsafe-inline'")
+      expect(csp).toContain('img-src data:')
+      // No network-shaped directive is opened: no http(s), no connect-src,
+      // no wildcard source anywhere in the policy.
+      expect(csp).not.toMatch(/\*|https?:|connect-src/)
+    }
+  })
+
+  it('never places the CSP meta ahead of the doctype (quirks-mode trap)', () => {
+    const doc = buildCardDocument('<!doctype html><html><body>x</body></html>')
+    expect(doc.startsWith('<!doctype html>')).toBe(true)
   })
 })
 

@@ -90,8 +90,10 @@ describe('wiring scans (M1 + M3)', () => {
   })
 
   it('the manual carries the favorites red line (never reconstruct a URL)', () => {
-    expect(read('src/renderer/src/tools/tool-instructions.ts')).toContain('favorites.list()')
-    expect(read('src/renderer/src/tools/tool-instructions.ts')).toContain('never reconstruct a URL from memory')
+    // 2026-10-26: the browser manual moved from tool-instructions.ts into the
+    // `browser` built-in skill — the red line moved with it, verbatim.
+    expect(read('src/renderer/src/skills/built-in/browser.ts')).toContain('favorites.list()')
+    expect(read('src/renderer/src/skills/built-in/browser.ts')).toContain('never reconstruct a URL from memory')
   })
 
   it('the pane renders the star, the empty-state favorites section, and the row delete entry', () => {

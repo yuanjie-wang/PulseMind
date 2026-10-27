@@ -2,15 +2,14 @@
 // ToolExecutor 0.4.1) ── dispatched by execOtherTool.
 
 import { getHost } from '../host'
-import { buildCommandFromSkillInput } from '../command-builder'
+import { buildCommandFromSkillInput, detectShellFileWrite, shellFileWriteRejection } from '../command-builder'
 import { beginTerminalSpan } from '../terminal-span'
 import type { ToolUseBlock } from '../../types/agent'
-import type { KnowledgeFile } from '../../../../shared/types/knowledge'
-import { EXPERIENCE_CATEGORIES, type ExperienceDraft, type ExperienceRecord } from '../../../../shared/types/experience-types'
-import { matchExperienceScript } from '../../../../shared/experience/script-usage'
 import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
 import { MAX_LIVE_OUTPUT_CHARS } from '../engine/engine-constants'
 import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
+import { MEMORY_PAGE_INLINE_MAX } from '../../../../shared/memory-pages'
+import { interleaveRecallHits, RECALL_DEFAULT_LIMIT, type RecallHit } from '../../../../shared/recall'
 
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
@@ -104,381 +103,201 @@ export async function execContextCompactTool(ex: ToolExecContext, t: ToolUseBloc
   return true
 }
 
-/** Create-path title default (the first meaningful line, heading markers
- *  stripped) when the model supplies neither a title nor a target to keep. */
-function deriveExperienceTitle(content: string): string {
-  const line = content.split('\n').map((s) => s.trim()).find((s) => s.length > 0) ?? ''
-  const title = line.replace(/^#+\s*/, '').replace(/^[-*>]\s*/, '') || 'Untitled experience'
-  return title.length > 60 ? `${title.slice(0, 57)}…` : title
+
+
+/** tool_result_search — resolve the archived-result placeholders back to the
+ *  full original tool results (the read half of the compaction pipeline). The
+ *  ids come verbatim from the placeholder markers; every tool_result is
+ *  persisted under its tool_result_id (the DB's ref_id), so any id the context
+ *  ever advertised resolves. Found and missed ids are reported SEPARATELY —
+ *  a hallucinated id must come back as a per-id correction, not a whole-call
+ *  error that buries what did resolve (conv_20261026154702: the model invented
+ *  an id, the call fell through to the shell tier, and `echo "Unrecognized
+ *  tool: …"` answered it with Exit Code 0 — this executor is the missing
+ *  half; before it existed the tool was advertised by the system prompt and
+ *  the compaction notices but no executor was ever wired). */
+export async function execToolResultSearchTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+  if (t.name !== 'tool_result_search') return false
+  const raw = Array.isArray(t.input?.ids) ? t.input.ids : []
+  const ids = [...new Set(raw.map((v) => String(v).trim()).filter(Boolean))]
+  if (ids.length === 0) {
+    const msg = 'No ids given — pass the uuid(s) shown inside the ⟨archived: …⟩ placeholders of earlier tool results, copied verbatim.'
+    t.output = msg
+    ex.addToolResult(t.id, msg, true)
+    t.exitCode = 1
+    return true
+  }
+  try {
+    const rows = await getHost().getToolResult(ids)
+    const byId = new Map(rows.map((r) => [r.ref_id, r]))
+    const found = ids.filter((id) => byId.has(id))
+    if (found.length === 0) {
+      const msg = `No archived tool result matches ${ids.map((i) => `"${i}"`).join(', ')}. The id must be copied VERBATIM from an ⟨archived: <uuid>⟩ placeholder (or a tool_result_id= pointer) in the conversation — it cannot be guessed or reconstructed.`
+      t.output = msg
+      ex.addToolResult(t.id, msg, true)
+      t.exitCode = 1
+      return true
+    }
+    const sections = found.map((id) => {
+      const r = byId.get(id)!
+      return `${r.is_error ? '[archived error result' : '[archived tool result'} · ${id}]\n${r.content}`
+    })
+    const missed = ids.filter((id) => !byId.has(id))
+    const missNote = missed.length > 0
+      ? `\n\n(${missed.length} of ${ids.length} ids matched nothing: ${missed.join(', ')} — copy ids verbatim from the ⟨archived: …⟩ placeholders.)`
+      : ''
+    const text = sections.join('\n\n---\n\n') + missNote
+    t.output = text.slice(0, UI_PREVIEW_MAX)
+    ex.addToolResult(t.id, text, false)
+    t.exitCode = 0
+  } catch (err) {
+    const msg = `tool_result_search failed: ${err instanceof Error ? err.message : String(err)}`
+    t.output = msg
+    ex.addToolResult(t.id, msg, true)
+    t.exitCode = 1
+  }
+  return true
 }
 
-/** Only a clean, bounded keyword list counts as explicit triggers — anything
- *  else falls through to the automatic extraction path after the save. */
-function experienceTriggers(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const list = value.map((v) => String(v).trim()).filter((v) => v.length > 0 && v.length <= 40).slice(0, 12)
-  return list.length > 0 ? list : undefined
+/** recall（PLAN-recall-unification，2026-10-25）：memory / conversation /
+ *  knowledge 三库联邦检索。用户裁定：数据源类型对模型无意义——无 sources/type
+ *  参数，query 进、相关信息出；源只出现在结果信封的标签里（后续动作说明书：
+ *  knowledge→md 绝对路径（read 直读，E8）、长记忆页→page 指针、conversation→会话 id）。 */
+export async function execRecallTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    if (t.name !== 'recall') return false
+    const query = String(t.input.query || '').trim()
+    const limit = Number(t.input.limit) || RECALL_DEFAULT_LIMIT
+    if (!query) {
+      ex.addToolResult(t.id, 'Empty query — pass keywords (2-4 char terms work, Chinese supported).', true)
+      t.exitCode = 1; return true
+    }
+    const km = ex.opts.knowledgeManager
+    const scopeBaseId = ex.opts.knowledgeBaseScope?.id ?? undefined
+
+    const [memoryPages, conversations, rawMatches, wikiMatches] = await Promise.all([
+      // 经验与 recall 彻底隔离（PLAN-capability-followups E6/E7）：列表召回排除 experience
+      getHost().searchMemoryPages({ query, limit: limit * 2 }).then((rs) => rs.filter((r) => r.type !== 'experience')).catch(() => []),
+      getHost().searchConversationsByKeyword(query).catch(() => []),
+      km ? km.searchContent(query, scopeBaseId).catch(() => []) : Promise.resolve([]),
+      km ? km.searchWiki(query, scopeBaseId).catch(() => []) : Promise.resolve([]),
+    ])
+
+    const hits: RecallHit[] = []
+    for (const r of memoryPages) {
+      hits.push({
+        source: 'memory',
+        title: r.title,
+        body: r.body.length > MEMORY_PAGE_INLINE_MAX
+          ? `${r.summary ?? r.body.slice(0, 400)}… (page: ${r.id}, ${r.body.length} chars)`
+          : r.body,
+        meta: { pageId: r.id, type: r.type, updatedAt: r.updatedAt.slice(0, 10), aliases: r.aliases.join(', ') },
+      })
+    }
+    for (const r of conversations) {
+      hits.push({
+        source: 'conversation',
+        title: r.title,
+        body: r.summary || '(no summary)',
+        meta: { conversationId: r.id, updatedAt: (r.updatedAt || '').slice(0, 10) },
+      })
+    }
+    for (const r of wikiMatches) {
+      hits.push({
+        source: 'knowledge',
+        title: r.title,
+        body: r.content,
+        meta: { path: r.wikiPath, kind: 'wiki' },
+      })
+    }
+    for (const r of rawMatches.slice(0, limit)) {
+      hits.push({
+        source: 'knowledge',
+        title: r.title,
+        body: (r.excerpts[0] ?? '').slice(0, 300),
+        meta: { path: r.filePath, kind: 'raw' },
+      })
+    }
+
+    const top = interleaveRecallHits(hits, limit)
+    if (top.length === 0) {
+      const note = `No results for "${query}" across memory, conversations, or the knowledge base.`
+      t.output = note; ex.addToolResult(t.id, note, false); t.exitCode = 0; return true
+    }
+    const sections = top.map((h, i) => {
+      // 零信息命中降级（review_20261025：title=body 头部切片的迁移形态印三遍同句）——
+      // 正文去除标题后为空/近重复时只印单行（title 即全部信息）。
+      const normalizedTitle = h.title.replace(/\s+/g, '')
+      const normalizedBody = h.body.replace(/\s+/g, '')
+      const isTitleEcho = normalizedBody === normalizedTitle || (normalizedTitle.length >= 12 && normalizedBody.startsWith(normalizedTitle))
+      if (isTitleEcho && h.source !== 'knowledge') {
+        const ptr = h.meta.pageId ? ` (page: ${h.meta.pageId})` : ''
+        return `[${i + 1}] [${h.source}] ${h.title} (${h.meta.type ?? 'page'}${ptr})`
+      }
+      const singleLine = `[${i + 1}] [${h.source}] ${h.title}`
+      void singleLine
+      const alias = h.meta.aliases ? `\n    别名: ${h.meta.aliases}` : ''
+      const head = `[${i + 1}] [${h.source}] ${h.title}`
+      const path = h.source === 'knowledge' ? `\n    path: ${h.meta.path}` : ''
+      return `${head}${alias}${path}\n    ${h.body.replace(/\n/g, '\n    ')}`
+    })
+    const out = sections.join('\n')
+    t.output = out.slice(0, MEMORY_PREVIEW_MAX)
+    ex.addToolResult(t.id, t.output, false)
+    t.exitCode = 0
+    return true
 }
 
 export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
-    if (t.name === 'memory_search') {
-      const mm = ex.opts.memoryManager
-      if (mm) {
-        const q = String(t.input.query || ''); const cat = String(t.input.category || '') as any; const lim = Number(t.input.limit) || 5
-        const results = await mm.searchMemories({ query: q, category: cat, limit: lim })
-        const formatted = results.length > 0 ? results.map((r, i) => `[${i + 1}] ${r.content} (${r.type}, ${r.category}, ${new Date(r.createdAt).toLocaleDateString()})`).join('\n') : 'No matching memories found.'
-        t.output = formatted.slice(0, MEMORY_PREVIEW_MAX); ex.addToolResult(t.id, formatted, false); t.exitCode = 0
-      } else { t.output = 'Memory manager not available'; ex.addToolResult(t.id, 'Memory manager not available', true); t.exitCode = 1 }
-    return true
-    }
     if (t.name === 'memory_save') {
-      const mm = ex.opts.memoryManager; const content = String(t.input.content || '')
-      if (!content.trim()) { ex.addToolResult(t.id, 'Nothing to save — content was empty.', true); t.exitCode = 1 }
-      else if (content.length > MEMORY_ENTRY_MAX_CHARS) {
-        // 结构性兜底与另两条写路径对齐（full_20261011 M7-P1-2/X7）：常驻区只
-        // 渲染 ≤100 字的条目，超限条目入库即「存了但永远看不见」——曾静默
-        // 收下还回传 Saved。拒绝并说明，让模型拆成一句结论重试。
-        t.output = `Too long: ${content.length} chars (max ${MEMORY_ENTRY_MAX_CHARS})`
-        ex.addToolResult(t.id, `NOT saved — ${content.length} characters exceeds the ${MEMORY_ENTRY_MAX_CHARS}-character limit for a single memory. Distill it into one concluding sentence and retry; long material belongs in an experience record or a project file.`, true)
-        t.exitCode = 1
+      const title = String(t.input.title || '').trim()
+      const content = String(t.input.content || '')
+      const type = ['fact', 'decision', 'preference', 'experience'].includes(String(t.input.type)) ? String(t.input.type) : 'fact'
+      const aliases = Array.isArray(t.input.aliases) ? t.input.aliases.filter((a: unknown) => typeof a === 'string') : []
+      if (!title || !content.trim()) {
+        ex.addToolResult(t.id, 'NOT saved — title and content are both required.', true)
+        t.exitCode = 1; return true
       }
-      else {
-        const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
-        const entry = await mm!.saveMemory({ content, type, category: cat })
-        // No prompt-cache bookkeeping here: the resident memory context rides
-        // the global TTL snapshot (≤3h), so a saved memory surfaces in the
-        // prompt at the next snapshot rebuild — memory_search sees it immediately.
-        // The save also passes the DB hash gate; entry === null means duplicate.
-        t.output = entry ? content.slice(0,200) : 'Already in memory'; ex.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
-        t.exitCode = 0
+      if ((type === 'preference' || type === 'fact') && content.length > MEMORY_ENTRY_MAX_CHARS) {
+        ex.addToolResult(t.id, `NOT saved — ${type} pages are ONE sentence of at most ${MEMORY_ENTRY_MAX_CHARS} characters. Distill the conclusion, or use type "decision"/"experience" for long content.`, true)
+        t.exitCode = 1; return true
       }
-    return true
-    }
-  return false
-}
-
-export async function execConversationTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
-    if (t.name === 'conversation_search') {
-      const query = String(t.input.query || '').trim()
-      const convId2 = String(t.input.id || '').trim()
-      const dateFilter: Record<string, string> = {}
-      if (t.input.createdAfter) dateFilter.createdAfter = String(t.input.createdAfter)
-      if (t.input.createdBefore) dateFilter.createdBefore = String(t.input.createdBefore)
-      if (t.input.updatedAfter) dateFilter.updatedAfter = String(t.input.updatedAfter)
-      if (t.input.updatedBefore) dateFilter.updatedBefore = String(t.input.updatedBefore)
-      if (query && !convId2) {
-        const results = await getHost().searchConversationsByKeyword(query)
-        if (results.length === 0) {
-          ex.addToolResult(t.id, `No conversations found matching "${query}".`, false)
-        } else {
-          const parts = results.map(r =>
-            `- **${r.title}** (ID: \`${r.id}\`)\n  Summary: ${r.summary || '(no summary)'}\n  Keywords: ${r.keywords || '(none)'}\n  Updated: ${r.updatedAt}`
-          )
-          ex.addToolResult(t.id, `## Conversations matching "${query}"\n\nFound ${results.length} conversation(s):\n\n` + parts.join('\n\n'), false)
-        }
-        t.exitCode = 0
-      } else if (convId2) {
-        const conv = await getHost().getConversation(convId2)
-        if (conv) { const parts = [`**Title:** ${conv.title}`]; if (conv.summary) parts.push(`**Summary:** ${conv.summary}`); parts.push(`**ID:** ${conv.id}`); ex.addToolResult(t.id, parts.join('\n'), false) }
-        else { ex.addToolResult(t.id, `Conversation "${convId2}" not found.`, false) }
-        t.exitCode = 0
-      } else {
-        ex.addToolResult(t.id, 'Error: provide either "query" (keyword search) or "id" (direct lookup).', true); t.exitCode = 1
+      // title 命中既有页 → update（content 即完整修订稿）；未命中 → create。
+      const create = { action: 'create' as const, title, type: type as never, content, aliases, links: [] as string[] }
+      let results = await getHost().applyMemoryPageOps([create])
+      if (!results[0].ok && /撞名/.test(results[0].error ?? '')) {
+        results = await getHost().applyMemoryPageOps([{ action: 'update', target: title, content, aliases, links: [] }])
       }
-    return true
-    }
-    if (t.name === 'tool_result_search') {
-      const ids = t.input.ids as string[] | undefined
-      if (!ids || ids.length === 0) {
-        ex.addToolResult(t.id, 'Error: at least one tool_result_id is required.', true); t.exitCode = 1
-      } else {
-        try {
-          const results = await getHost().getToolResult(ids)
-          if (results.length === 0) {
-            ex.addToolResult(t.id, `No tool results found for IDs: ${ids.join(', ')}`, false)
-          } else {
-            const parts = results.map(r =>
-              `[ref_id: ${r.ref_id}]\nConversation: ${r.conversation_id}\nTool use: ${r.tool_use_id}\n\n${r.content}`
-            )
-            ex.addToolResult(t.id, parts.join('\n\n---\n\n'), false)
-          }
-          t.exitCode = 0
-        } catch (e) {
-          ex.addToolResult(t.id, `Error looking up tool results: ${e}`, true); t.exitCode = 1
-        }
-      }
-    return true
-    }
-  return false
-}
-
-export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
-    if (t.name === 'knowledge_search') {
-      const km = ex.opts.knowledgeManager
-      if (!km) {
-        t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
-      } else {
-        // G5: an @知识库 mention scopes this turn's searches to one base
-        // (undefined = the whole base). Every search shape below funnels it.
-        const scopeBaseId = ex.opts.knowledgeBaseScope?.id ?? undefined
-        const query = String(t.input.query || '').toLowerCase()
-        const mode = String(t.input.mode || 'title')
-        const sourceType = String(t.input.sourceType || '')
-        const status = String(t.input.status || '')
-        const doContentSearch = (mode === 'content' || mode === 'both') && !!query
-
-        const contentMatchIds = new Set<string>()
-        const contentExcerpts = new Map<string, string[]>()
-        if (doContentSearch) {
-          const matches = await km.searchContent(query, scopeBaseId)
-          for (const m of matches) {
-            contentMatchIds.add(m.id)
-            contentExcerpts.set(m.id, m.excerpts)
-          }
-        }
-
-        // Push filtering to SQL instead of pulling all files into memory
-        let filtered: KnowledgeFile[] = []
-        const buildOpts = (search?: string) => {
-          const opts: Record<string, any> = { pageSize: 200 }
-          if (search) opts.search = search
-          if (sourceType) opts.sourceType = sourceType
-          if (status) opts.status = status
-          if (scopeBaseId !== undefined) opts.baseId = scopeBaseId
-          return opts
-        }
-
-        if (mode === 'wiki') {
-          // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
-          const matches = query ? await km.searchWiki(query, scopeBaseId) : []
-          if (matches.length === 0) {
-            t.output = 'No matching wiki pages found.'; ex.addToolResult(t.id, 'No matching wiki pages found.', false)
-          } else {
-            const lines = matches.map(m => {
-              const typeLabel: Record<string, string> = { sources: '原始资料', entities: '实体', concepts: '概念', syntheses: '综合' }
-              return [
-                `- **${m.title}** (${typeLabel[m.type] || m.type})`,
-                `  路径: \`${m.wikiPath}\``,
-                `  片段: ${m.content}`,
-                `  \`knowledge_read\` 参数: path="${m.wikiPath}", type="wiki"`
-              ].join('\n')
-            })
-            const stats = `找到 ${matches.length} 个 wiki 页面 (mode=wiki):\n` + lines.join('\n')
-            t.output = stats.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, stats, false)
-          }
-          t.exitCode = 0
-        } else if (mode === 'content') {
-          // Content-only: SQL filters sourceType/status, JS narrows by FTS5
-          const result = await km.listFilesAdvanced(buildOpts())
-          filtered = result.items.filter(f => contentMatchIds.has(f.id))
-        } else if (mode === 'both') {
-          // Both: SQL filters by title/path + sourceType/status, merge FTS5 matches
-          const result = await km.listFilesAdvanced(buildOpts(query))
-          filtered = result.items
-          if (contentMatchIds.size > 0) {
-            const titleMatchIds = new Set(filtered.map(f => f.id))
-            const extraIds = [...contentMatchIds].filter(id => !titleMatchIds.has(id))
-            if (extraIds.length > 0) {
-              const extra = await km.listFilesAdvanced(buildOpts())
-              for (const f of extra.items) {
-                if (extraIds.includes(f.id)) filtered.push(f)
-              }
-            }
-          }
-        } else {
-          // Title mode (default) — SQL handles title/path LIKE + sourceType/status
-          const result = await km.listFilesAdvanced(buildOpts(query))
-          filtered = result.items
-          // Fallback: no title match → try content search (for CJK queries)
-          if (filtered.length === 0 && query) {
-            const fallbackMatches = await km.searchContent(query, scopeBaseId)
-            if (fallbackMatches.length > 0) {
-              const fallbackIds = new Set(fallbackMatches.map(m => m.id))
-              const fallback = await km.listFilesAdvanced(buildOpts())
-              filtered = fallback.items.filter(f => fallbackIds.has(f.id))
-              for (const m of fallbackMatches) {
-                contentExcerpts.set(m.id, m.excerpts)
-              }
-            }
-          }
-        }
-
-        if (filtered.length === 0) {
-          t.output = 'No matching knowledge files found.'; ex.addToolResult(t.id, 'No matching knowledge files found.', false)
-        } else {
-          const lines = filtered.map(f => {
-            let readSuggestion: string
-            if (f.status === 'compiled' && f.wikiOutputs && f.wikiOutputs.length > 0) {
-              const wikiCmds = f.wikiOutputs.map(wp => `\`knowledge_read\` 参数: path="${wp}", type="wiki"`).join('\n  ')
-              readSuggestion = `${wikiCmds}\n  \`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
-            } else {
-              readSuggestion = `\`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
-            }
-            // H2: non-default bases must name themselves — the read resolves
-            // through bases/<id>/, and without the base parameter a hit from
-            // another base reads the default one and fails.
-            if (f.baseId && f.baseId !== 'default') {
-              readSuggestion += `, base="${f.baseId}"`
-            }
-            const line = `- **${f.title || f.filePath}** (${f.sourceType === 'url' ? '链接' : f.sourceType === 'file' ? '文件' : f.sourceType}, ${f.status === 'compiled' ? '已编译' : '原始'})\n  ${readSuggestion}`
-            const ex = contentExcerpts.get(f.id)
-            if (ex && ex.length > 0) {
-              return line + '\n  ' + ex.map(e => `...${e}...`).join('\n  ')
-            }
-            return line
-          })
-          const stats = `找到 ${filtered.length} 个知识文件:\n` + lines.join('\n')
-          t.output = stats.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, stats, false)
-        }
-        t.exitCode = 0
-      }
-    return true
-    }
-    if (t.name === 'knowledge_read') {
-      const km = ex.opts.knowledgeManager
-      const filePath = String(t.input.path || '')
-      // K6: the DOC said default raw while the code defaulted wiki — docs and
-      // implementation now agree (default wiki), and a miss in the named
-      // directory falls back to the other one, with the result noting where
-      // the content actually came from.
-      const readType = String(t.input.type || 'wiki')
-      // H2: an explicit `base` wins; otherwise the turn's @知识库 scope; the
-      // default base is the last resort. All three ride every read below.
-      const readBaseId = (typeof t.input.base === 'string' && t.input.base.trim() !== '')
-        ? t.input.base.trim()
-        : (ex.opts.knowledgeBaseScope?.id ?? undefined)
-      const offset = Math.max(1, Math.floor(Number(t.input.offset) || 1))
-      const lineCount = Math.max(0, Math.floor(Number(t.input.lines) || 0))
-      if (!filePath) {
-        t.output = 'Error: path is required.'; ex.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
-      } else if (!km) {
-        t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
-      } else {
-        try {
-          let content: string | null = null
-          let actualType = readType
-          if (readType === 'raw') {
-            content = await km.readRawContent(filePath, readBaseId).catch(() => null)
-            if (content === null) {
-              const result = await km.readWiki(filePath, readBaseId)
-              content = result.content
-              if (content !== null) actualType = 'wiki'
-            }
-          } else {
-            const result = await km.readWiki(filePath, readBaseId)
-            content = result.content
-            if (content === null) {
-              content = await km.readRawContent(filePath, readBaseId).catch(() => null)
-              if (content !== null) actualType = 'raw'
-            }
-          }
-          if (content) {
-            // Paging happens INSIDE the knowledge dirs — the content no longer
-            // has to ride the 4000-token truncation + tmp offload path.
-            const allLines = content.split('\n')
-            const start = offset - 1
-            const page = lineCount > 0 ? allLines.slice(start, start + lineCount) : allLines.slice(start)
-            const header = `[type=${actualType}${actualType !== readType ? `, fallback from ${readType}` : ''}]`
-            const footer = start + page.length < allLines.length
-              ? `\n\n[... ${allLines.length - start - page.length} more lines — read again with offset=${start + page.length + 1}]`
-              : ''
-            const paged = header + '\n' + page.join('\n') + footer
-            t.output = paged.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, paged, false)
-          } else {
-            t.output = `File "${filePath}" not found in knowledge base.`; ex.addToolResult(t.id, `File "${filePath}" not found in knowledge base.`, false)
-          }
-          t.exitCode = 0
-        } catch {
-          t.output = `Error reading "${filePath}" from knowledge base.`; ex.addToolResult(t.id, `Error reading "${filePath}" from knowledge base.`, true)
-          t.exitCode = 1
-        }
-      }
-    return true
-    }
-  return false
-}
-
-/** PLAN-experience-outcome M1: usage/outcome tail appended to an experience
- *  envelope (experience_read + pick_skill). The system prompt's Name Index
- *  must stay byte-stable (cache contract), so stats ride the TOOL RESULT —
- *  the model decides its next move off the last bytes of a tool result. */
-export async function experienceStatsLine(em: { list(): Promise<ExperienceRecord[]> } | undefined, name: string): Promise<string> {
-  if (!em) return ''
-  try {
-    const rec = (await em.list())?.find((e) => e.name === name)
-    if (!rec) return ''
-    const parts = [`使用 ${rec.useCount} 次`]
-    if (rec.outcome) parts.push(`脚本 成 ${rec.outcome.ok} / 败 ${rec.outcome.fail}`)
-    if (rec.lastUsedAt) parts.push(`最近 ${rec.lastUsedAt.slice(0, 10)}`)
-    return `\n\n---\n${parts.join(' · ')}`
-  } catch {
-    return ''
-  }
-}
-
-export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
-    // experience_save — the pool's ONE sanctioned writer. The records live under
-    // ~/.pulsemind, a path-jail deny root, so neither file ops nor the shell can
-    // reach them (read goes through the shell and works; write/edit do not);
-    // ExperienceManager.save is the door, and it carries the store's own gates
-    // (script paths, 8KB, `node --check`, the 20-record LRU).
-    if (t.name === 'experience_save') {
-      const em = ex.opts.experienceManager
-      const fail = (msg: string): void => { t.output = msg; t.exitCode = 1; ex.addToolResult(t.id, msg, true) }
-      if (!em) { fail('Experience manager not available.'); return true }
-      const content = String(t.input.content || '').trim()
-      if (!content) { fail('Error: content is required.'); return true }
-      try {
-        const targetName = String(t.input.targetName || '').trim()
-        const all = await em.list()
-        const existing = targetName ? all.find((r) => r.name === targetName) : undefined
-        // The store would fall back to creating a look-alike — for a tool the
-        // honest answer is a refusal that names the real candidates, or a
-        // revision silently forks a near-duplicate into a 20-slot pool.
-        if (targetName && !existing) {
-          fail(`经验 "${targetName}" 不存在，已拒绝保存（不会另建一份近似记录）。可用 name：${all.map((r) => r.name).join(', ') || '（池为空）'}`)
-          return true
-        }
-        const askedCategory = String(t.input.category || '')
-        const draft: ExperienceDraft = {
-          // A revision keeps its own title/category when the model omits them;
-          // the body is replaced either way (the store's contract).
-          title: String(t.input.title || '').trim() || existing?.title || deriveExperienceTitle(content),
-          description: String(t.input.description || '').trim() || content.replace(/\s+/g, ' ').slice(0, 120),
-          content,
-          category: (EXPERIENCE_CATEGORIES as readonly string[]).includes(askedCategory)
-            ? askedCategory
-            : existing?.category || 'general',
-          sourceConversationId: ex.opts.conversationId ?? existing?.sourceConversationId,
-          targetName: targetName || undefined,
-          triggers: experienceTriggers(t.input.triggers),
-        }
-        const { record, evicted, rejectedFiles } = await em.save(draft)
-        const lines = [
-          `${targetName ? '已修订' : '已保存'}经验「${record.title}」（name: \`${record.name}\`）`,
-          `- 类别：${record.category}`,
-          record.triggers?.length
-            ? `- 触发词：${record.triggers.join('、')}`
-            : '- 触发词：稍后自动提取（在此之前按 name 仍可读到）',
-        ]
-        if (evicted) lines.push(`- 池已满 20 条，最久未用的经验「${evicted.title}」（\`${evicted.name}\`）被挤出`)
-        if (rejectedFiles?.length) lines.push(`- 被拒的脚本文件：${rejectedFiles.join('、')}（经验正文已照常保存）`)
-        const report = lines.join('\n')
-        t.output = report
-        t.exitCode = 0
-        ex.addToolResult(t.id, report, false)
-        // Trigger keywords are the one part a model shouldn't have to spell
-        // out. Same fire-and-forget contract as the afterSession hosts, force
-        // on a revision (its old keywords may no longer describe the body).
-        if (!draft.triggers?.length && ex.opts.apiKey) {
-          em.ensureTriggers(record.name, {
-            adapter: ex.opts.adapter, apiKey: ex.opts.apiKey, baseURL: ex.opts.baseURL, model: ex.opts.model, modelMaxTokens: ex.opts.maxTokens,
-          }, Boolean(targetName)).catch((e: unknown) => console.warn('[experience_save] trigger extraction failed:', e))
-        }
-      } catch (err) {
-        fail(`保存经验失败：${err instanceof Error ? err.message : String(err)}`)
-      }
+      const r = results[0]
+      t.output = r.ok ? `Saved memory page: "${title}" (${type})` : `NOT saved: ${r.error}`
+      ex.addToolResult(t.id, t.output, !r.ok)
+      t.exitCode = r.ok ? 0 : 1
       return true
+    }
+  return false
+}
+
+
+/** Skill-command exec path（从 v1 execExperienceTool 的 else 半边忠实恢复——
+ *  2026-10-25 M2b 拆除经验工具时被尾部切割误伤，exec 工具的 background 分支与
+ *  输出缓冲帽都在这里）。经验池脚本记账随池退役（use_count 由检索 touch 记）。 */
+export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    // File-write gate (2026-10-27, the exec manual's rule #1 as code): the
+    // model-authored `command` never reaches a shell when it writes files via
+    // redirection/heredoc/tee — write/edit own file creation. Runs BEFORE the
+    // background branch too, so `background: true` buys no bypass. The auto
+    // path lands here (execOtherTool → this fallback); approveTool's shell
+    // default carries the SAME gate for released calls.
+    if (typeof t.input?.command === 'string' && t.input.command.trim()) {
+      const trip = detectShellFileWrite(t.input.command)
+      if (trip) {
+        const msg = shellFileWriteRejection(trip)
+        t.exitCode = 1
+        t.status = 'completed'
+        t.output = msg
+        ex.addToolResult(t.id, msg, true)
+        ex.notify()
+        return true
+      }
     }
     // Background-process channels (PLAN-coding-contract P0-3 #14/#15). Both
     // key off the session's pid registry main-side; an unknown pid answers
@@ -508,103 +327,69 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
       ex.notify()
       return true
     }
-    if (t.name === 'experience_read') {
-      const name = String(t.input.name || '')
-      if (!name) {
-        t.output = 'Error: name is required.'; ex.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
-      } else {
-        try {
-          const content = await getHost().readExperienceRecord(name)
-          if (content) {
-            // Touching records that the experience was actually used — feeds the LRU eviction
-            getHost().touchExperienceRecord(name).catch(() => {})
-            const tail = await experienceStatsLine(ex.opts.experienceManager, name)
-            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content + tail, false)
-          } else {
-            t.output = `Experience "${name}" not found.`; ex.addToolResult(t.id, `Experience "${name}" not found.`, false)
-          }
-          t.exitCode = 0
-        } catch {
-          t.output = `Error reading experience "${name}".`; ex.addToolResult(t.id, `Error reading experience "${name}".`, true)
-          t.exitCode = 1
-        }
+    // 兜底执行器（原 execExperienceTool 的 else 半边）：各专属执行器都没认领的
+    // 裸技能命令在这里按 buildCommandFromSkillInput 组装执行。
+    const platform = ex.opts.platformInfo?.platform || ''
+    const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, ex.opts.platformInfo?.ripgrepPath)
+    const cwd = String(t.input?.cwd || '')
+    t.output = ''; ex.notify()
+    // Background mode (PLAN-coding-contract P0-3 #11): settle NOW with the
+    // pid — no span, no exit subscription, and deliberately no onProcessStart,
+    // so the engine's foreground-process scalar never sees this process.
+    if (t.input?.background === true) {
+      try {
+        const { pid } = await getHost().executeBackground(command, cwd || undefined)
+        t.exitCode = 0
+        t.status = 'completed'
+        t.backgroundPid = pid
+        const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. Read its output with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends); stop it with exec_kill(pid=${pid}).`
+        t.output = note
+        ex.addToolResult(t.id, note, false)
+      } catch (err) {
+        t.exitCode = -1
+        t.status = 'completed'
+        const msg = `Error: ${err instanceof Error ? err.message : 'Failed to start background process'}`
+        t.output = msg
+        ex.addToolResult(t.id, msg, true)
       }
-    } else {
-      const platform = ex.opts.platformInfo?.platform || ''
-      const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, ex.opts.platformInfo?.ripgrepPath)
-      const cwd = String(t.input?.cwd || '')
-      t.output = ''; ex.notify()
-      // Background mode (PLAN-coding-contract P0-3 #11): settle NOW with the
-      // pid — no span, no exit subscription, and deliberately no
-      // onProcessStart, so the engine's foreground-process scalar (and its five
-      // kill-on-cleanup sites) never sees this process. Output rides the
-      // pid-keyed log; the model polls exec_logs / reaps with exec_kill.
-      if (t.input?.background === true) {
-        try {
-          const { pid } = await getHost().executeBackground(command, cwd || undefined)
-          t.exitCode = 0
-          t.status = 'completed'
-          t.backgroundPid = pid
-          // Background scripts book USAGE only — no exit code exists at this
-          // settlement point, so no verdict is guessed (PLAN-experience-outcome).
-          const bgExp = matchExperienceScript(command)
-          if (bgExp) getHost().touchExperienceRecord(bgExp).catch(() => {})
-          const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. Read its output with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends); stop it with exec_kill(pid=${pid}).`
-          t.output = note
-          ex.addToolResult(t.id, note, false)
-        } catch (err) {
-          t.exitCode = -1
-          t.status = 'completed'
-          const msg = `Error: ${err instanceof Error ? err.message : 'Failed to start background process'}`
-          t.output = msg
-          ex.addToolResult(t.id, msg, true)
-        }
-        ex.notify()
-        return true
-      }
-      await new Promise<void>((resolve) => {
-        let stdoutBuf = ''
-        let stderrBuf = ''
-        let settled = false
-        // Live-output cap (MAX_LIVE_OUTPUT_CHARS): same shape as the shell
-        // path in execution-flow — a long-running process must not grow these
-        // buffers (and t.output) without bound; head-kept so the frozen head
-        // also freezes the wire diff signature past the cap.
-        const capBuf = (buf: string): string => (buf.length > MAX_LIVE_OUTPUT_CHARS ? buf.slice(0, MAX_LIVE_OUTPUT_CHARS) : buf)
-        // The terminal bus broadcasts by channel — concurrent engines' process
-        // events land here too (PLAN-parallel-experts T7): the span filters by
-        // processId and parks the window before executeCommand returns a pid.
-        const span = beginTerminalSpan(getHost(), {
-          onOutput: d => {
-            if (d.type === 'stderr') stderrBuf = capBuf(stderrBuf + d.data)
-            else stdoutBuf = capBuf(stdoutBuf + d.data)
-            t.output = stdoutBuf + stderrBuf
-            ex.notify()
-          },
-          onExit: d => finish(d.code, d.code !== 0),
-          onError: d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) },
-        })
-        span.start()
-        const finish = (exitCode: number | null, isError: boolean) => {
-          if (settled) return; settled = true
-          span.stop()
-          t.exitCode = exitCode
-          // PLAN-experience-outcome M1: a command invoking a companion script
-          // books usage + its real exit verdict on the record (fire-and-forget;
-          // the verdict is the process's own, never a self-assessment).
-          const runExp = matchExperienceScript(command)
-          if (runExp) getHost().touchExperienceRecord(runExp, exitCode === 0 ? 'ok' : 'fail').catch(() => {})
-          const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
-          t.output = formatted
-          ex.addToolResult(t.id, formatted, isError)
-          resolve()
-        }
-        getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
-          .then(pid => { ex.onProcessStart?.(pid); span.claim(pid) })
-          .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
-      })
-    return true
+      ex.notify()
+      return true
     }
-
-  return false
+    await new Promise<void>((resolve) => {
+      let stdoutBuf = ''
+      let stderrBuf = ''
+      let settled = false
+      // Live-output cap (MAX_LIVE_OUTPUT_CHARS): same shape as the shell
+      // path in execution-flow — head-kept so the frozen head also freezes
+      // the wire diff signature past the cap.
+      const capBuf = (buf: string): string => (buf.length > MAX_LIVE_OUTPUT_CHARS ? buf.slice(0, MAX_LIVE_OUTPUT_CHARS) : buf)
+      // The terminal bus broadcasts by channel — concurrent engines' process
+      // events land here too (PLAN-parallel-experts T7): the span filters by
+      // processId and parks the window before executeCommand returns a pid.
+      const span = beginTerminalSpan(getHost(), {
+        onOutput: d => {
+          if (d.type === 'stderr') stderrBuf = capBuf(stderrBuf + d.data)
+          else stdoutBuf = capBuf(stdoutBuf + d.data)
+          t.output = stdoutBuf + stderrBuf
+          ex.notify()
+        },
+        onExit: d => finish(d.code, d.code !== 0),
+        onError: d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) },
+      })
+      span.start()
+      const finish = (exitCode: number | null, isError: boolean) => {
+        if (settled) return; settled = true
+        span.stop()
+        t.exitCode = exitCode
+        const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
+        t.output = formatted
+        ex.addToolResult(t.id, formatted, isError)
+        ex.noteVerifyExec?.(command)
+        resolve()
+      }
+      getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
+        .then(pid => { ex.onProcessStart?.(pid); span.claim(pid) })
+        .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
+    })
+    return true
 }

@@ -22,7 +22,10 @@ function makeHarness(over: { opts?: Record<string, unknown> } = {}) {
   const results: Array<{ id: string, content: string, isError: boolean, maxTokens?: number, image?: string }> = []
   const host = {
     execCommandSync: vi.fn(async () => ({ code: 0, output: 'out' })),
-    getFileStat: vi.fn(async () => ({ size: 500 })),
+    // Full stat shape (mtime + isDirectory included): the read-before-write
+    // gate compares this signature against the ledger, and its isDirectory
+    // guard decides whether an overwrite write is gated at all.
+    getFileStat: vi.fn(async () => ({ size: 500, mtime: '2026-10-27T00:00:00.000Z', isDirectory: false })),
     convertFileToMarkdown: vi.fn(async () => null),
     writeFile: vi.fn(async () => ({ success: true })),
     patchFile: vi.fn(async () => ({ success: true, replacements: 1 })),
@@ -61,9 +64,17 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+/** Seed the read-before-write ledger for one resolved path so a write/edit
+ *  case exercises its own branch mechanics without driving a real read first
+ *  (signature must match the harness getFileStat above). */
+function prime(executor: ToolExecutor, path: string): void {
+  executor.readFilePaths.set(path, { mtime: '2026-10-27T00:00:00.000Z', size: 500 })
+}
+
 describe('execWorkspaceTool — write / edit', () => {
   it('write 成功：utf8 字节数 + append 分支 + 相对路径按 workspaceDir 解析', async () => {
     const { executor, host, results } = makeHarness({ opts: { workspaceDir: '/ws' } })
+    prime(executor, '/ws/a.txt')
     await executor.execWorkspaceTool(t('t1', 'write', { file_path: 'a.txt', content: '中文' }))
     expect(host.writeFile).toHaveBeenCalledWith({ filePath: '/ws/a.txt', content: '中文', append: false })
     expect(results[0]).toMatchObject({ isError: false })
@@ -77,10 +88,12 @@ describe('execWorkspaceTool — write / edit', () => {
 
   it('write：绝对路径原样、Windows 分隔符分支、缺 file_path 拒绝、写盘失败信封', async () => {
     let h = makeHarness({ opts: { workspaceDir: '/ws' } })
+    prime(h.executor, '/abs/a.txt')
     await h.executor.execWorkspaceTool(t('t1', 'write', { file_path: '/abs/a.txt', content: 'x' }))
     expect(h.host.writeFile).toHaveBeenLastCalledWith(expect.objectContaining({ filePath: '/abs/a.txt' }),)
 
     h = makeHarness({ opts: { workspaceDir: 'C:\\ws' } })
+    prime(h.executor, 'C:\\ws\\a.txt')
     await h.executor.execWorkspaceTool(t('t2', 'write', { file_path: 'a.txt', content: 'x' }))
     expect(h.host.writeFile).toHaveBeenLastCalledWith(expect.objectContaining({ filePath: 'C:\\ws\\a.txt' }),)
 
@@ -89,6 +102,7 @@ describe('execWorkspaceTool — write / edit', () => {
     expect(h.results[0]).toMatchObject({ isError: true, content: 'Error: file_path is required' })
 
     h = makeHarness()
+    prime(h.executor, '/a')
     ;(h.host.writeFile as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: false, error: 'disk full' })
     await h.executor.execWorkspaceTool(t('t4', 'write', { file_path: '/a', content: 'x' }))
     expect(h.results[0]).toMatchObject({ isError: true, content: 'Error: disk full' })
@@ -96,6 +110,7 @@ describe('execWorkspaceTool — write / edit', () => {
 
   it('edit：diff 走 patchFile，old_str 走 editFile，缺参拒绝', async () => {
     let h = makeHarness()
+    prime(h.executor, '/a')
     await h.executor.execWorkspaceTool(t('t1', 'edit', { file_path: '/a', diff: '--- x' }))
     expect(h.host.patchFile).toHaveBeenCalledWith({ filePath: '/a', diff: '--- x' })
     expect(h.results[0].content).toContain('Applied 1 hunk(s)')
@@ -105,6 +120,7 @@ describe('execWorkspaceTool — write / edit', () => {
     expect(h.results[1]).toMatchObject({ isError: true, content: 'Error: no match' })
 
     h = makeHarness()
+    prime(h.executor, '/a')
     await h.executor.execWorkspaceTool(t('t3', 'edit', { file_path: '/a', old_str: 'a', new_str: 'b', multi: true }))
     expect(h.host.editFile).toHaveBeenCalledWith({ filePath: '/a', oldStr: 'a', newStr: 'b', multi: true })
     expect(h.results[0].content).toContain('Replaced 2 occurrence(s)')
@@ -392,21 +408,21 @@ describe('execPickSkill 矩阵', () => {
     expect(h.results[0].content).not.toContain('**Location:**')
   })
 
-  it('白名单外拒绝；未命中走经验库；都不在则明确报错', async () => {
+  it('白名单外拒绝；经验兜底已退役（经验=记忆页走 memory_search）；未命中明确报错', async () => {
     let h = makeHarness({ opts: { allowedSkills: ['other'], skillManager: { getSkill: () => ({ definition: skillDef }), getEnabledSkills: () => [] } } })
     await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'office' }))
     expect(h.results[0]).toMatchObject({ isError: true })
-    expect(h.results[0].content).toContain('not in this session\'s allowed skills')
+    expect(h.results[0].content).toContain("not in this session's allowed skills")
 
+    // 旧经验兜底分支被整段拆除：经验名不再可经 pick_skill 读到（回归守卫）
     h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] }, experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', dir: '/exp/exp1', description: 'd' }]), touch: vi.fn(async () => {}) } } })
     await h.executor.execPickSkill(t('t2', 'pick_skill', { name: 'exp1' }))
-    expect(h.results[0].content).toContain('## Selected Experience: exp1')
-    expect(h.results[0].content).toContain('EXP BODY')
-    expect(h.results[0].content).toContain('**Location:** /exp/exp1/SKILL.md')
+    expect(h.results[0]).toMatchObject({ isError: true, content: 'Skill "exp1" not found.' })
+    expect(h.results[0].content).not.toContain('EXP BODY')
 
     h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] } } })
     await h.executor.execPickSkill(t('t3', 'pick_skill', { name: 'ghost' }))
-    expect(h.results[0]).toMatchObject({ isError: true, content: 'Skill or experience "ghost" not found.' })
+    expect(h.results[0]).toMatchObject({ isError: true, content: 'Skill "ghost" not found.' })
   })
 
   it('intent 路径：缺参报错、空库短路、选择失败/越权/落空/命中四态', async () => {
@@ -416,24 +432,25 @@ describe('execPickSkill 矩阵', () => {
 
     h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] } } })
     await h.executor.execPickSkill(t('t2', 'pick_skill', { intent: 'edit docx' }))
-    expect(h.results[0].content).toBe('No skills or experiences enabled.')
+    // 空候选池文案覆盖双源（PLAN-experience-sop B1：技能 + 经验页）
+    expect(h.results[0].content).toBe('No skills or experiences available.')
 
     h = makeHarness({ opts: { skillManager: { getSkill: () => ({ definition: skillDef }), getEnabledSkills: () => [{ definition: skillDef }] } } })
     ;((h.executor as unknown as { skillSelectionAgent: { execute: ReturnType<typeof vi.fn> } }).skillSelectionAgent.execute).mockResolvedValueOnce('')
     await h.executor.execPickSkill(t('t3', 'pick_skill', { intent: 'x' }))
     expect(h.results[0].content).toBe('No matching skill found.')
 
-    // 越权选择必须穿过空库短路：经验库不过 allowedSkills 过滤，列表因此非空，
-    // 选择代理回报一个白名单外的技能名才到达 L711 的越权分支
+    // 受限会话的技能候选被白名单过滤后为空；经验段为空（host 无经验页）时
+    // 短路先于选择代理发生，越权分支退化为防御位。文案覆盖双源
+    // （PLAN-experience-sop B1：候选表 = 白名单内技能 + 活经验页）。
     h = makeHarness({ opts: {
       allowedSkills: ['other'],
       skillManager: { getSkill: () => ({ definition: skillDef }), getEnabledSkills: () => [{ definition: skillDef }] },
-      experienceManager: { read: vi.fn(async () => 'E'), list: vi.fn(async () => [{ name: 'exp1', description: 'd' }]), touch: vi.fn(async () => {}) },
     } })
     ;((h.executor as unknown as { skillSelectionAgent: { execute: ReturnType<typeof vi.fn> } }).skillSelectionAgent.execute).mockResolvedValueOnce('office')
     await h.executor.execPickSkill(t('t4', 'pick_skill', { intent: 'x' }))
-    expect(h.results[0].isError).toBe(true)
-    expect(h.results[0].content).toContain('outside this session\'s allowed skills')
+    expect(h.results[0].content).toBe('No skills or experiences available.')
+    expect(h.results[0].isError).toBe(false)
 
     h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [{ definition: skillDef }] } } })
     ;((h.executor as unknown as { skillSelectionAgent: { execute: ReturnType<typeof vi.fn> } }).skillSelectionAgent.execute).mockResolvedValueOnce('nowhere')
@@ -609,16 +626,16 @@ describe('execBrowser — 多截图信封（#7）', () => {
   })
 })
 
-describe('execPickSkill — 白名单只拦技能不拦经验（#9）', () => {
-  it('受限会话按名读经验放行（旧形状先按白名单拒绝任何名字）', async () => {
+describe('execPickSkill — 白名单只拦技能（#9 的经验半边已随池退役）', () => {
+  it('受限会话按名读经验：兜底已拆除，明确 not found（PLAN-memory-wiki M2b 回归守卫）', async () => {
     const h = makeHarness({ opts: {
       allowedSkills: ['other'],
       skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] },
       experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', dir: '/exp/exp1' }]), touch: vi.fn(async () => {}) },
     } })
     await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'exp1' }))
-    expect(h.results[0].isError).toBe(false)
-    expect(h.results[0].content).toContain('## Selected Experience: exp1')
+    expect(h.results[0].isError).toBe(true)
+    expect(h.results[0].content).toBe('Skill "exp1" not found.')
   })
 
   it('受限会话按名读白名单外技能仍拒（裁定不变）', async () => {
@@ -630,18 +647,5 @@ describe('execPickSkill — 白名单只拦技能不拦经验（#9）', () => {
     await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'office' }))
     expect(h.results[0].isError).toBe(true)
     expect(h.results[0].content).toContain("not in this session's allowed skills")
-  })
-
-  it('intent 路径选中经验：受限会话放行（同一裁定）', async () => {
-    const skillDef = { name: 'office', description: 'desc', category: 'cat', systemPrompt: 'SP' }
-    const h = makeHarness({ opts: {
-      allowedSkills: ['office'],
-      skillManager: { getSkill: (name: string) => (name === 'office' ? { definition: skillDef } : undefined), getEnabledSkills: () => [{ definition: skillDef }] },
-      experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', description: 'd' }]), touch: vi.fn(async () => {}) },
-    } })
-    ;((h.executor as unknown as { skillSelectionAgent: { execute: ReturnType<typeof vi.fn> } }).skillSelectionAgent.execute).mockResolvedValueOnce('exp1')
-    await h.executor.execPickSkill(t('t1', 'pick_skill', { intent: 'x' }))
-    expect(h.results[0].isError).toBe(false)
-    expect(h.results[0].content).toContain('## Selected Experience: exp1')
   })
 })

@@ -81,6 +81,41 @@ export const HTML_ARTIFACT_FULL_DOCUMENT = /<!doctype html|<html[\s>]/i
  *  which is exactly how parity drift starts — consume the constant. */
 export const HTML_ARTIFACT_SANDBOX = 'allow-scripts allow-popups allow-forms allow-modals'
 
+/**
+ * The artifact card's own CSP — the code-level half of the system prompt's
+ * 「no external network resources」 rule (2026-10-27): the prompt taught the
+ * model to keep fragments self-contained, and nothing enforced it, so a
+ * fragment referencing a CDN silently loaded (or silently broke for an
+ * offline user, or silently exfiltrated via fetch). The card document now
+ * carries its own policy: inline script/style survive (the model's demos and
+ * the measure script are both inline — a stricter policy would kill every
+ * card), `data:` covers the one sanctioned embedding vector, and EVERYTHING
+ * network-shaped falls to `default-src 'none'`. Form/link navigations are
+ * deliberately outside the policy: they are user-visible frame navigations,
+ * not silent resource loads, and `form-action 'none'` would also break the
+ * legitimate self-submitting demo.
+ */
+export const HTML_CARD_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data:; font-src data:"
+
+/**
+ * Inject the card CSP meta into a full document. Chromium's parser hoists a
+ * meta that appears before head content into the head, so the insertion
+ * point only has to dodge two traps: NEVER before `<!doctype>` (content
+ * ahead of the doctype flips the document to quirks mode and shifts every
+ * measurement the card's layout relies on), and the meta must ride ahead of
+ * any body content (a body-placed CSP meta is ignored). Covers the three
+ * real shapes: doctype-first, bare `<html>`-first, and headless leftovers.
+ */
+export function injectCardCsp(html: string): string {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${HTML_CARD_CSP}">`
+  const doctype = html.match(/^\s*<!doctype[^>]*>/i)
+  if (doctype) return html.slice(0, doctype[0].length) + meta + html.slice(doctype[0].length)
+  const htmlOpen = html.match(/^\s*<html[^>]*>/i)
+  if (htmlOpen) return html.slice(0, htmlOpen[0].length) + meta + html.slice(htmlOpen[0].length)
+  return meta + html
+}
+
 /** The script a FRAGMENT gets wrapped with: reports the document's scrollHeight
  *  to the card (message type is namespaced and source-checked card-side, so a
  *  hostile fragment can only move the card it lives in). Shared verbatim by the
@@ -95,11 +130,13 @@ export const HTML_CARD_MEASURE_SCRIPT = `<script>(function(){var s=function(){tr
  *  the meta CSP stripped first — local-file and srcdoc frames alike take their
  *  only CSP from the document itself, and a strict one would kill the model's
  *  own inline scripts AND the measure script (height back to the default,
- *  clipped). */
+ *  clipped) — then receive the APP's CSP (HTML_CARD_CSP): stripping replaces
+ *  the model's policy, it does not leave the frame policy-free. */
 export function buildCardDocument(code: string): string {
-  if (HTML_ARTIFACT_FULL_DOCUMENT.test(code)) return injectBeforeBodyClose(stripCspMeta(code), HTML_CARD_MEASURE_SCRIPT)
+  if (HTML_ARTIFACT_FULL_DOCUMENT.test(code)) return injectBeforeBodyClose(injectCardCsp(stripCspMeta(code)), HTML_CARD_MEASURE_SCRIPT)
   return [
     '<!doctype html><html><head><meta charset="utf-8">',
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_CARD_CSP}">`,
     '<style>html,body{margin:0;padding:0}</style></head><body>',
     stripCspMeta(code),
     HTML_CARD_MEASURE_SCRIPT,

@@ -32,7 +32,8 @@ afterEach(() => setHost(null as unknown as PulseHost))
 describe('write reports real UTF-8 bytes', () => {
   it('counts bytes, not code units — astral chars weigh 4 bytes in 2 units', async () => {
     const seen: Seen[] = []
-    setHost({ writeFile: async () => ({ success: true }) } as unknown as PulseHost)
+    // getFileStat null = the read-before-write gate sees a brand-new file
+    setHost({ writeFile: async () => ({ success: true }), getFileStat: async () => null } as unknown as PulseHost)
     // 128 CJK chars (3 bytes each = 384) + 1 astral char (2 code units, 4
     // bytes): String.length says 130, the file gets 388 bytes.
     const content = '中文'.repeat(64) + '𝄞'
@@ -44,13 +45,13 @@ describe('write reports real UTF-8 bytes', () => {
 
   it('keeps the (appended) marker and the error passthrough on the same caliber', async () => {
     const seen: Seen[] = []
-    setHost({ writeFile: async () => ({ success: true }) } as unknown as PulseHost)
+    setHost({ writeFile: async () => ({ success: true }), getFileStat: async () => null } as unknown as PulseHost)
     const t = { id: 'w2', name: 'write', input: { file_path: '/tmp/x.md', content: '日志', append: true } } as unknown as ToolUseBlock
     await makeExecutor(seen).execWorkspaceTool(t)
     expect(seen[0].content).toBe('Written 6 bytes to /tmp/x.md (appended)')
 
     const bad: Seen[] = []
-    setHost({ writeFile: async () => ({ success: false, error: 'Path is protected' }) } as unknown as PulseHost)
+    setHost({ writeFile: async () => ({ success: false, error: 'Path is protected' }), getFileStat: async () => null } as unknown as PulseHost)
     const t2 = { id: 'w3', name: 'write', input: { file_path: '/tmp/y.md', content: '日志' } } as unknown as ToolUseBlock
     await makeExecutor(bad).execWorkspaceTool(t2)
     expect(bad[0].content).toBe('Error: Path is protected')

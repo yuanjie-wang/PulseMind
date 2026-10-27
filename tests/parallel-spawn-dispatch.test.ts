@@ -86,7 +86,9 @@ const makeSpawnTool = (id: string, task: string, planNode?: string): ToolUseBloc
     type: 'tool_use',
     id,
     name: 'spawn_agent',
-    input: planNode ? { subAgentId: '', task, planNode } : { subAgentId: '', task },
+    // autoDispatch: planNode dispatches post-scheduler are the scheduler's own,
+    // the call shape its ownership gate exempts.
+    input: planNode ? { subAgentId: '', task, planNode, autoDispatch: true } : { subAgentId: '', task },
     status: 'pending',
   }) as ToolUseBlock
 
@@ -327,6 +329,48 @@ describe('parallel expert cap at dispatch (five per session)', () => {
     expect(new Set(toolResultIds(engine))).toEqual(new Set(batch.map(t => t.id)))
     // 全部收工后槽位归零：下一次派发不会排在上一次的队尾。
     expect(activeSubAgentCount('conv_cap_batch')).toBe(0)
+  })
+
+  /** 2026-10-27 n5-queued-last 竞态的钉子：槽位必须在第一个 await 之前同步取走。
+   *  限流器的 FIFO 只能保证「到达序」，修前 acquire 排在专家查找与项目法读之后，
+   *  六个并发派发的到达序 = 文件读的完成序（线程池，乱序）。这里 readFile 按派发
+   *  逆序放行——正是那场打乱；修后槽位在同步段内按 mint 序落位，读序无关。 */
+  it('a 6-node wave at cap 5 queues the LAST dispatched node even when pre-slot reads resolve out of order', async () => {
+    const resolvers: Array<(v: string) => void> = []
+    setHost({
+      ...makeMockHost(),
+      readFile: () => new Promise<string>((resolve) => { resolvers.push(resolve) }),
+    } as unknown as PulseHost)
+    const engine = makeEngine('conv_cap_scramble')
+    engine.opts.workspaceDir = '/ws/scramble' // 让 readProjectInstructionsBody 进入派发路径
+    const state = stubTimedSpawns(engine, 60)
+    const batch = [1, 2, 3, 4, 5, 6].map(n => makeSpawnTool(`tu_${n}`, `task ${n}`))
+
+    const dispatch = engine.handleToolUseResponse(batch)
+    // 检查点放在任何 readFile 放行之前：修后此刻六个的槽位已同步落位——
+    // 前五个 'running'、第六个 'queued'（带排队文案）；修前全体还停在
+    // 项目法读上、无一持槽，这条恰好红。
+    await new Promise(r => setTimeout(r, 5))
+    expect(batch.slice(0, 5).map(t => t.status)).toEqual(['running', 'running', 'running', 'running', 'running'])
+    expect(batch[5].status).toBe('queued')
+    expect(String(batch[5].output)).toContain('排队中')
+    // 逆序放行项目法读（读序自此不再决定任何事），然后持续放行直到 dispatch
+    // 落定：2026-10-27 验证闭环后，每个派发在项目法读之外还各有最多 5 个
+    // Verify 清单探测（spawn env block 的 verify-loop.ts 检测），且放行与
+    // 再排队交错——原来的「等满 6 个再定点放一次」会漏掉后继排队，挂死。
+    let settled = false
+    dispatch.then(() => { settled = true }, () => { settled = true })
+    for (const resolve of [...resolvers].reverse()) resolve('project law')
+    while (!settled) {
+      for (const resolve of resolvers.splice(0)) resolve('project law')
+      await new Promise(r => setTimeout(r, 5))
+    }
+    await dispatch
+
+    expect(state.peak).toBe(MAX_PARALLEL_SUBAGENTS)
+    expect(batch.every(t => t.exitCode === 0)).toBe(true)
+    expect(state.started).toHaveLength(6)
+    expect(activeSubAgentCount('conv_cap_scramble')).toBe(0)
   })
 
   it('ranks two sessions independently — a busy one does not starve the other', async () => {

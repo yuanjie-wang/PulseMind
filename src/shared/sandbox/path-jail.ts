@@ -15,6 +15,9 @@
 //            into secrets or PulseMind's own data)
 //   write  — additionally jailed to workspaceDir
 //   extraWritableRoots — roots OUTSIDE the workspace that are writable anyway
+//   extraReadableRoots — roots OUTSIDE the workspace that are READABLE anyway
+//     (bypass deny, do NOT join the write jail): knowledge/ 是导入产物、agent 只读
+//     （PLAN-capability-followups E8；write 仍走 workspace+extraWritable 白名单被拒）。
 //            (2026-09-27: ~/.pulsemind/skills — the agent's sanctioned edit
 //            surface for skill files; everything else under ~/.pulsemind —
 //            settings, db, memory, logs, mcp, experiences — stays denied).
@@ -61,6 +64,7 @@ export interface GuardPathInput {
    *  both the lexical and the realpath spelling must sit inside, so a symlink
    *  that leads out does not count. */
   extraWritableRoots?: WritableRoot[]
+  extraReadableRoots?: WritableRoot[]
 }
 
 /** A writable root outside the session workspace. `dir` is the lexical
@@ -164,8 +168,11 @@ export function guardPath(input: GuardPathInput): PathDecision {
     return lexical && real !== false
   }
   const inExtra = (input.extraWritableRoots ?? []).some(inExtraRoot)
+  // Read-exempt roots share the two-coordinate membership (lexical AND realpath)
+  // but only lift the DENY — they never join the write jail below.
+  const inReadable = (input.extraReadableRoots ?? []).some(inExtraRoot)
 
-  if (!inWorkspace && !inExtra && hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
+  if (!inWorkspace && !inExtra && !inReadable && hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
     return { ok: false, resolved, reason: `Path is protected: ${resolved}` }
   }
 

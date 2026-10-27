@@ -55,6 +55,10 @@ describe('ENGINEERING_WORKFLOW constant', () => {
     // The anti-performance line is the point of #2 — without it a model that
     // cannot run anything vaguely implies it did.
     expect(ENGINEERING_WORKFLOW).toContain('never imply a check happened')
+    // #1 is a hard gate, not advice (2026-10-27): the executor's
+    // readFilePaths ledger rejects unread edits and stale overwrites.
+    expect(ENGINEERING_WORKFLOW).toContain('Enforced: `edit` on any file, and `write` replacing an existing file, are rejected')
+    expect(ENGINEERING_WORKFLOW).toContain('re-rejected if the file changed on disk after that read')
   })
 
   it('is pure static text — no interpolation, no clock in the literal', () => {
@@ -148,6 +152,9 @@ describe('not a tool protocol', () => {
     expect(out).toContain('# Tool Protocols')
     // the edit manual carries its own one-line echo of contract #1 (P0-1 #3)
     expect(toolInstructions.edit).toContain('must come from a `read` of THIS file in THIS session')
+    // and both manuals name the enforcement (2026-10-27 read-before-write gate)
+    expect(toolInstructions.edit).toContain('Enforced: an edit to a path `read` (or `write`) has not touched this session is rejected')
+    expect(toolInstructions.write).toContain('Replacing an EXISTING file requires a prior `read` of it this session')
   })
 })
 

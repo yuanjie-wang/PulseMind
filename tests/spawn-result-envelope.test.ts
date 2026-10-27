@@ -42,7 +42,10 @@ function makeContext(result: { status: string; messages: unknown[]; error?: stri
 }
 
 const tool = (input: Record<string, unknown>): ToolUseBlock =>
-  ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input, status: 'pending' }) as ToolUseBlock
+  // autoDispatch: the planNode scenarios here simulate the SCHEDULER's own
+  // dispatch settling (that is whose delivery the settle-line envelope serves),
+  // which is the call shape the scheduler-ownership gate exempts.
+  ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input: input.planNode !== undefined ? { ...input, autoDispatch: true } : input, status: 'pending' }) as ToolUseBlock
 
 describe('spawn result envelope: the last line tells the model what to do next', () => {
   it('completed result ends with report-donot-redeliver, after the summary', async () => {

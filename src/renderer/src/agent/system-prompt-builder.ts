@@ -1,10 +1,13 @@
 import { getHost } from './host'
+import { resolveToolFilePath } from './agent-utils'
 import type { AgentMessage, TextBlock, Plan } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import { getCachedSkillPrefs } from './mcp-cache'
 import type { GitStatusInfo } from '../../../shared/types/git'
 import { formatPlanForPrompt } from '../../../shared/plan/graph'
 import { formatSummonForPrompt, type SummonState } from '../../../shared/expert-context'
+import { isLivePage } from '../../../shared/memory-pages'
+import { detectVerifyCommands } from './verify-loop'
 
 export interface BuildSystemPromptParams {
   opts: AgentEngineOptions
@@ -156,29 +159,19 @@ async function buildCorePrompt(opts: AgentEngineOptions, toolProtocols?: string)
 
   if (platformInfo?.platform === 'win32') parts.push(WINDOWS_SHELL_NOTES)
 
-  // ── Wiki knowledge context: presence hint only (no index injection) ──
-  // The model is told the knowledge base exists so it knows to look it up via
-  // knowledge_search / knowledge_read. Experts search the same global base.
-  parts.push(`## Knowledge Base
+  // ── Local knowledge & memory: JIT 检索协议节（PLAN-memory-wiki M4，2026-10-25）──
+  // 零数据、零时钟、零 per-conversation 值——取代 v1 的 Knowledge Base 提示节 +
+  // Experience Index + Memory Context（Extracted/Recent）三处动态注入。记忆/
+  // 经验/知识库/技能全文的唯一曝光面是检索工具；核心因此永久字节稳定，任何
+  // 记忆落库都不再击穿在飞会话的前缀缓存（取代 2026-09-26 双钟 TTL 裁定）。
+  parts.push(LOCAL_KNOWLEDGE_MEMORY_SECTION)
 
-You have a local knowledge base (compiled wiki) of project documents and past compiled knowledge. It is NOT shown here — look things up on demand with the knowledge_search and knowledge_read tools when relevant.`)
-
-  // ── Experience index: name-only second channel (progressive disclosure) ──
-  if (opts.experienceManager) {
-    const expIndex = await opts.experienceManager.buildNameIndex()
-    if (expIndex) parts.push(expIndex)
-  }
-
-  // ── Memory context (2026-09-26: moved out of the state block) ──
-  // Extracted Memories + the recent-conversations table are GLOBAL data, so
-  // with the manager's double 3h TTL they are byte-identical across
-  // conversations and reusable by DeepSeek's cross-request prefix cache. The
-  // per-conversation Workspace section stays in the state block for the same
-  // reason in reverse: a per-conversation value in this shared prefix would
-  // cold-start every new conversation.
+  // ── Manual memories（MEMORY.md）：唯一残余的动态节 ──
+  // 用户手写 = 永远在场（≈ CLAUDE.md 的地位，2026-10-25 裁定）；字节仅在用户
+  // 编辑时变化（mtime 缓存），对缓存契约天然成立。
   if (opts.memoryManager) {
-    const memoryContext = await opts.memoryManager.getStableMemoryContext(opts.conversationId)
-    if (memoryContext) parts.push(memoryContext)
+    const manual = await opts.memoryManager.getManualMemoryContext()
+    if (manual) parts.push(manual)
   }
 
   // ── Managed-tool appendix (renderer-provided; empty for the built-in manager) ──
@@ -292,6 +285,17 @@ async function buildStateBlock(params: {
   const workspace = buildWorkspaceSection(opts.workspaceDir)
   if (workspace) sections.push(workspace)
 
+  // Verify commands (2026-10-27 验证闭环): the workspace's own verification
+  // commands, detected from its root manifests. Silent outside a project — a
+  // scratch workspace has no manifests, so office sessions ship zero new
+  // bytes. Sits with the low-volatility sections (detectVerifyCommands is
+  // TTL-cached per workspace — load-bearing, this block rebuilds on EVERY
+  // tool-loop iteration), and its own bytes are stable across turns.
+  if (opts.workspaceDir) {
+    const verify = await buildVerifySection(opts.workspaceDir)
+    if (verify) sections.push(verify)
+  }
+
   const planSection = formatPlanForPrompt(plan)
   if (planSection) sections.push(planSection)
 
@@ -371,6 +375,20 @@ function buildWorkspaceSection(workspaceDir?: string): string | null {
   return `## Workspace\n- Workspace: ${workspaceDir}\n- Scratch: ${workspaceDir}/.pulsemind/tmp — put throwaway/intermediate files here, never loose in the workspace root`
 }
 
+/** The `## Verify` state-block section: the detected commands, one line, plus
+ *  the one sentence ENGINEERING_WORKFLOW #2 assumes the model can look up.
+ *  Returns null when detection finds nothing — the whole section stays out
+ *  (an office session must not learn that verify machinery exists). */
+async function buildVerifySection(workspaceDir: string): Promise<string | null> {
+  const cmds = await detectVerifyCommands(workspaceDir)
+  if (cmds.length === 0) return null
+  return [
+    '## Verify',
+    `- Commands: ${cmds.map((c) => `\`${c}\``).join(' · ')}`,
+    '- This workspace\'s own verification commands, detected from its manifests. After code changes, run the relevant one before claiming done; do not invent others.',
+  ].join('\n')
+}
+
 function buildProjectSection(name?: string, overview?: string): string | null {
   if (!name && !overview) return null
   const lines = ['## Project']
@@ -397,6 +415,27 @@ export const MAX_PROJECT_AGENTS_CHARS = 8_000
  */
 export function projectAgentsPath(workspaceDir: string): string {
   return `${workspaceDir}/.pulsemind/AGENTS.md`
+}
+
+/**
+ * Whether a model-supplied file_path names the project instructions file —
+ * the write surface the state block teaches the model to treat as
+ * user-owned law (「never delete or reword existing lines — append, or
+ * propose the change first」). The approval-side half of that teaching
+ * (2026-10-27): a write/edit to this path is HELD for approval at EVERY
+ * level including 'auto' — 「propose the change first」 translated into the
+ * ladder; a spawned sub-agent (nobody to approve) gets a flat rejection at
+ * dispatch instead. Resolution rides resolveToolFilePath (the executor's own
+ * spelling) and the comparison normalizes separators, so `\.pulsemind\…`
+ * matches on Windows too. A `~`-spelled path never matches (the read gate's
+ * same deliberate gap).
+ */
+export function isProjectInstructionsPath(filePath: string, workspaceDir?: string): boolean {
+  if (!workspaceDir) return false
+  const raw = filePath.trim()
+  if (!raw) return false
+  const norm = (p: string): string => p.replace(/\\/g, '/')
+  return norm(resolveToolFilePath(raw, workspaceDir)) === norm(projectAgentsPath(workspaceDir))
 }
 
 /**
@@ -619,10 +658,12 @@ async function buildTurnHints(params: {
   const userText = latestUserText(messages)
   if (!userText) return null
 
+  // 经验 hint v2 回归（PLAN-capability-followups E6，对齐 skill 触发）：aliases
+  // 关键词命中 + hint 内联全文；与 recall 彻底隔离（读取不经检索）。
   const blocks: string[] = []
   const skills = matchSkills(userText, opts)
   if (skills) blocks.push(skills)
-  const experiences = await matchExperiences(userText, opts.experienceManager)
+  const experiences = await matchExperiences(userText, opts.memoryManager)
   if (experiences) blocks.push(experiences)
   return blocks.length > 0 ? blocks.join('\n\n') : null
 }
@@ -647,21 +688,48 @@ function matchSkills(userText: string, opts: AgentEngineOptions): string | null 
     '</skills>]'
 }
 
-/** Skill-style trigger matching for experiences (name-only, read on demand via pick_skill). */
+
+/** 经验 hint v2（PLAN-capability-followups E6）：experience 记忆页的 aliases
+ *  关键词命中（matchSkills 同款 substring），命中页 hint 内联全文（title + summary
+ *  (E3)/正文首段 + body）——与 recall 彻底隔离（E7 收窄：列表召回排除 experience）。
+ *  索引 60s TTL（ExperienceManager 先例）。 */
+const EXP_HINT_CACHE_TTL_MS = 60_000
+let expHintCache: { at: number; pages: Array<{ title: string; summary: string | null; body: string; aliases: string[] }> } | null = null
+
+const EXP_HINT_INLINE_CAP = 2000
+const EXP_HINT_MAX = 3
+
 async function matchExperiences(
   userText: string,
-  experienceManager?: AgentEngineOptions['experienceManager'],
+  memoryManager?: AgentEngineOptions['memoryManager'],
 ): Promise<string | null> {
-  if (!experienceManager) return null
-  try {
-    const matched = await experienceManager.matchByTriggers(userText)
-    if (matched.length === 0) return null
-    return '[Possible experiences: <experiences>' +
-      matched.map((e) => `<experience><name>${e.name}</name><description>${e.description}</description></experience>`).join('') +
-      '</experiences>]'
-  } catch {
-    return null
+  if (!memoryManager) return null
+  const now = Date.now()
+  if (!expHintCache || now - expHintCache.at >= EXP_HINT_CACHE_TTL_MS) {
+    try {
+      const all = await getHost().listMemoryPages('experience')
+      expHintCache = {
+        at: now,
+        // 停用的经验不进提示（matchSkills 只看 getEnabledSkills 的同款语义）；只有显式 false 才算停用；
+        // 退役页同排除（园丁判它过时）
+        pages: all.filter((p) => isLivePage(p) && p.enabled !== false).map((p) => ({ title: p.title, summary: p.summary, body: p.body, aliases: p.aliases })),
+      }
+    } catch {
+      return null
+    }
   }
+  if (expHintCache.pages.length === 0) return null
+  const lowered = userText.toLowerCase()
+  const matched = expHintCache.pages.filter((p) => p.aliases.some((a) => a && lowered.includes(a.toLowerCase())))
+  if (matched.length === 0) return null
+  const items = matched.slice(0, EXP_HINT_MAX).map((p) => {
+    const head = p.summary ? p.summary : p.body.slice(0, 120)
+    const body = p.body.length <= EXP_HINT_INLINE_CAP
+      ? p.body
+      : `${p.body.slice(0, 800)}…（正文被截断，技能中心查看全文）`
+    return `<experience><title>${p.title}</title><summary>${head}</summary><body>${body}</body></experience>`
+  })
+  return '[Possible experiences: <experiences>' + items.join('') + '</experiences>]'
 }
 
 /**
@@ -727,12 +795,23 @@ async function buildGitContext(cwd: string): Promise<string | null> {
  * must answer to the same rules; their prompts are per-session, so there the
  * append costs no shared cache bytes.
  */
+/** JIT 检索协议节（PLAN-memory-wiki M4，2026-10-25）——零数据、字节恒定。
+ *  红线：本节不得携带任何运行时数据/时钟/会话值（buildCorePrompt 纪律）。 */
+const LOCAL_KNOWLEDGE_MEMORY_SECTION = `## Local Knowledge & Memory
+
+Everything local is reachable through ONE retrieval tool, and NONE of it is injected into your context:
+
+- **recall** — one federated search across the memory wiki (the user's preferences, decisions, facts), past conversation records, and the knowledge base (compiled wiki + raw documents). [knowledge] hits carry the absolute md path — open the full document with **read**.
+- **pick_skill** — installed skill full texts AND experiences: playbooks distilled from this user's past conversations. recall does NOT return experiences; pick_skill (by intent, or by an experience's title/alias) is the only way to pull one deliberately. A \`[Possible experiences: …]\` hint in the turn context means some were already matched for you.
+
+On every task-bearing turn (not small talk), recall BEFORE acting: standing preferences, past decisions, related past work and compiled docs all surface in one query; for a reusable playbook, pick_skill by intent. One cheap retrieval beats redoing a solved problem or violating a standing preference. If recall returns nothing, retry once with different keywords before concluding the store has nothing.`
+
 export const ENGINEERING_WORKFLOW = `\
 ## Engineering Workflow
 
 These hold on every code change, in every turn.
 
-1. Read before you write. Only a \`read\` of the file in this session counts as having read it — a path seen only in \`list_dir\`, in \`search\` output, or in an earlier turn does not. \`edit\`'s \`old_str\` must be copied from bytes you just read, never reconstructed from memory.
+1. Read before you write. Only a \`read\` of the file in this session counts as having read it — a path seen only in \`list_dir\`, in \`search\` output, or in an earlier turn does not. \`edit\`'s \`old_str\` must be copied from bytes you just read, never reconstructed from memory. Enforced: \`edit\` on any file, and \`write\` replacing an existing file, are rejected until a \`read\` or your own \`write\` has touched that path this session, and re-rejected if the file changed on disk after that read — when rejected, read the file and retry.
 2. Verify before you claim done. An edit succeeding is not the change working. After editing, run the command this workspace already uses for building, testing or linting (check \`package.json\` scripts, \`Makefile\`, \`pyproject.toml\`, \`Cargo.toml\`). If none exists, say so — never invent one. Paste failures verbatim, fix, and re-run. If you could not run anything, state exactly what is unverified; never imply a check happened.
 3. Never invent an API. Do not call a function, import a module, pass a flag, or cite a config key that you have not seen in this workspace or in a tool result during this session. Confirm it first (\`search\` the dependency's source or types, \`webfetch\` the docs) or ask. A plausible-looking guess is still a guess — never present one as fact.
 4. Match the code around you. Follow the existing naming, error handling and comment style. Do not reformat, reorder or rename lines you were not asked to touch, and do not silently expand scope.`
@@ -756,7 +835,9 @@ Volatile per-turn context — the current date and time, the workspace, git stat
 const TOOL_CALL_FORMAT = `\
 ## Tool Call Format
 
-Only call tools via the API's structured JSON tool-call mechanism. Never emit XML tags like \`<invoke name="...">\` — such text is treated as prose and will NOT execute. Follow the tool definitions provided with this request.`
+Only call tools via the API's structured JSON tool-call mechanism. Never emit XML tags like \`<invoke name="...">\` — such text is treated as prose and will NOT execute. Follow the tool definitions provided with this request.
+
+When a message carries tool calls, its prose states INTENT and facts already in your context — never pre-write what a tool will return. Tool output exists only in tool results and in the latest \`<session-state>\` block; narrate what a tool returned only after its result has arrived, quoting that result.`
 
 /**
  * Early-stop guard companion (2026-10-08, per-model opt-in): taught ONLY to
@@ -786,13 +867,13 @@ const COMPRESSED_TOOL_RESULTS = `\
 
 Very old tool execution results may be compressed to save context space. You may encounter these two markers inside tool result content:
 
-- \`[tool_result_id: <uuid>]\` — the original tool result content was removed to fit the context window. The result DID happen, but its full text is gone. Use the \`tool_result_search\` tool with the uuid to retrieve the original content if you need it.
+- \`⟨archived: <uuid>⟩\` — the original tool result content was removed to fit the context window. The result DID happen, but its full text is gone. Use the \`tool_result_search\` tool with the uuid (copied VERBATIM from the marker) to retrieve the original content if you need it. This marker is an ARCHIVE notice, not a failure.
 - \`[tool_result_error] ...\` — the tool call FAILED (timeout, truncated parameters, nonzero exit code, etc.). The tool did NOT complete its task. Do not claim the task was done; treat the remaining text as the error message and respond accordingly.`
 
 const CONTEXT_MANAGEMENT_NOTICE = `\
 ## Context Management
 
-When the conversation grows long, older context is compacted automatically: a summary, verbatim key user messages, and an archived-reads reminder are injected into subsequent requests, and archived tool results stay retrievable in full via \`tool_result_search\` by their \`tool_result_id\`. Compaction needs nothing from you — continue the current task as if the break never happened; do not wrap up early, re-explore files the reminder already names, or change how you work because the context is long. When you judge a phase boundary reached in a long session and want window space freed immediately, you may call the \`context_compact\` tool yourself — attaching a handover note (notes) markedly improves what the summary preserves for the work ahead; calls with plenty of window left are refused.`
+When the conversation grows long, older context is compacted automatically: a summary, verbatim key user messages, and an archived-reads reminder are injected into subsequent requests, and archived tool results stay retrievable in full via \`tool_result_search\` by their \`tool_result_id\`. Compaction needs nothing from you — continue the current task as if the break never happened; do not wrap up early, re-explore files the reminder already names, or change how you work because the context is long. At a phase boundary you may free room immediately with the \`context_compact\` tool (a handover note markedly improves what the summary preserves).`
 
 const RENDER_REFERENCE = `\
 ## Render Reference
@@ -802,4 +883,4 @@ The chat UI supports enhanced rendering for standard Markdown links and images: 
 const HTML_VISUAL_AIDS = `\
 ## Visual HTML Aids
 
-When a visual would explain better than prose — a multi-dimension comparison, a timeline or process flow, a data chart, an infographic, a small interactive demo — you may render it directly in the chat: emit a self-contained static HTML fragment in a \`\`\`html fenced block, and the chat UI renders it as a sandboxed preview card. Hard requirements: all CSS and JS inline in the fragment; no external network resources (no CDN scripts, fonts, or stylesheets); design for a WHITE background; keep the fragment under ~30KB. The card enhances the answer, never replaces it — keep the surrounding prose. When the user asks to visualize or compare something in the conversation, prefer the card over writing an HTML file; write an HTML file only when the user asks for a file deliverable.`
+When a visual would explain better than prose — a multi-dimension comparison, a timeline or process flow, a data chart, an infographic, a small interactive demo — you may render it directly in the chat: emit a self-contained static HTML fragment in a \`\`\`html fenced block, and the chat UI renders it as a sandboxed preview card. Hard requirements: all CSS and JS inline in the fragment; no external network resources — no CDN scripts, fonts, or stylesheets (enforced: the preview sandbox blocks every network load, so a CDN reference breaks the card); design for a WHITE background; keep the fragment under ~30KB. The card enhances the answer, never replaces it — keep the surrounding prose. When the user asks to visualize or compare something in the conversation, prefer the card over writing an HTML file; write an HTML file only when the user asks for a file deliverable.`

@@ -127,6 +127,20 @@ export function shEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
 }
 
+/**
+ * Resolve a model-supplied file_path the way ToolExecutor.resolveWorkspacePath
+ * does — the ONE spelling the read-before-write ledger is keyed by. Extracted
+ * so the approval-side consumers (the protected-path gate) compare paths in
+ * the same coordinate system the executor writes with; `~` passes through
+ * unexpanded (the main process's expandTilde is the authority).
+ */
+export function resolveToolFilePath(filePath: string, workspaceDir?: string): string {
+  if (!workspaceDir) return filePath
+  if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath) || filePath.startsWith('~')) return filePath
+  const sep = workspaceDir.includes('\\') ? '\\' : '/'
+  return workspaceDir + sep + filePath
+}
+
 /** POSIX '…' quoting: inside single quotes NOTHING is special except ' itself,
  *  closed as `'\''`. shEscape targets "…" contexts and does not escape ' — used
  *  inside '…' it let one raw ' close the quoting and inject (review_20261005
@@ -203,6 +217,11 @@ export interface SpawnSubAgentConfig {
    *  expert pack, i.e. a general sub-agent) = no restriction. */
   allowedSkills?: string[]
   allowedMcpServers?: string[]
+  /** explore 预设（2026-10-27）的只读工具集白名单：spawn-tool 按预设置入，
+   *  spawn-manager 穿透到 subOpts.allowedTools → 引擎的 allowedToolsSet →
+   *  tool-collection 的白名单过滤（并同时关闭该子引擎的 MCP 发现）。
+   *  undefined = 不限制（普通派发原样继承父会话工具集）。 */
+  allowedTools?: string[]
   /** PLAN-plan-split v2 R6: set ONLY for spawns of splittable plan nodes.
    *  Arms create_sub_plan in the sub-engine's toolset and carries the
    *  parent-plan bridge constants; `createdIds` is filled by spawn-manager's

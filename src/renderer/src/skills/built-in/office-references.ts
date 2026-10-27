@@ -117,7 +117,7 @@ footer: page
 ## 四、编辑要点（office_edit·docx）
 
 - **先 \`office_inspect\`**：拿段落索引 + 样式 + 文本长度与文本预算，索引是后续 op 的定位依据；\`replace_text\` 的 find 要精确原文时用 \`office_read\` 分页读（它的文本才是匹配空间，\`read\` 的 markdown 是重排过的，抄进来会错位）。
-- **索引随批次变化**：同一批里前面的 \`insert_paragraph\` / \`delete_paragraph\` 会改变后面段落的编号。按你对最终形态的意图排列顺序。
+- **索引随批次变化**：同一批里前面的 \`insert_paragraph\` / \`delete_paragraph\` 会改变后面段落的编号。按你对最终形态的意图排列顺序，或拆成多次调用、中间重读；拿不准当前位置就用 \`delete_paragraph\` 的 \`find\` 文本锚（按段落文本命中、\`expected_count\` 守卫，对索引漂移免疫）。
 - **\`replace_text\` 默认要求恰好命中 1 处**，命中数不符整批拒绝。多处的用 \`expected_count\` 或 \`paragraph\` 收窄——不要靠"反正会改第一处"。
 - **表格能改文字，也能加行删行**：\`insert_table_row\`（\`after_row\` 后插，可带每格文字，克隆锚点行的边框列宽）/ \`delete_table_row\`。护栏会拒绝竖向合并（vMerge）、嵌套表和删最后一行——撞上就如实说明并给替代。**加列 / 删列做不到**：Word 表没有任何单格写算子，\`insert_table_row\` 也不接受超出既有列数的 cells——加列唯一出路是重出一张表（改 markdown 重新 \`export_document\`）。
 - **页眉页脚、页码、目录、域不在范围内**——工具手册已列明，遇到就如实拒绝。**图片可以插**：\`insert_image\` 给工作区路径（png/jpg/jpeg/gif，宽上限 600px 等比缩），http(s) / data: 地址嵌不了。

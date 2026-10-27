@@ -33,7 +33,7 @@ const userMsg = (text: string) => ({
 })
 
 const memoryStub = (context: string) =>
-  ({ getStableMemoryContext: async () => context }) as unknown as AgentEngineOptions['memoryManager']
+  ({ getManualMemoryContext: async () => context }) as unknown as AgentEngineOptions['memoryManager']
 
 const experienceStub = (matched: { name: string; description: string }[]) =>
   ({
@@ -124,7 +124,7 @@ describe('invariant core', () => {
     return buildSystemPrompt({ opts: opts(), messages: [userMsg('hi')], plan: null }).then(({ systemPrompt }) => {
       expect(systemPrompt).toContain('## Tool Call Format')
       expect(systemPrompt).toContain('## Compressed Tool Results')
-      expect(systemPrompt).toContain('## Knowledge Base')
+      expect(systemPrompt).toContain('## Local Knowledge & Memory')
       expect(systemPrompt).toContain('<session-state>')
     })
   })
@@ -183,13 +183,14 @@ describe('session state block', () => {
     expect(block.slice(clockAt)).toMatch(/^## Current Date[\s\S]*<\/session-state>$/)
   })
 
-  it('carries the per-turn capability hints without touching the user message', async () => {
+  it('carries the per-turn capability hints without touching the user message; 经验 hint 已退役（M4）', async () => {
     const hint = () => opts({ experienceManager: experienceStub([{ name: 'perf-tuning', description: 'tuning notes' }]) })
     const msgs = [userMsg('tune the perf of this')]
     const { stateBlock, systemPrompt } = await buildSystemPrompt({ opts: hint(), messages: msgs, plan: null })
 
-    expect(stateBlock).toContain('<experience><name>perf-tuning</name>')
-    expect(stateBlock).toContain('Possible experiences')
+    // 经验=记忆页：trigger hint 不再注入（经验检索走 memory_search 的静态协议节）
+    expect(stateBlock).not.toContain('<experience>')
+    expect(stateBlock).not.toContain('Possible experiences')
     expect(systemPrompt).not.toContain('perf-tuning')
     // The hint used to be appended to the last user message in the API copy, which
     // mutated history and vanished once a tool result added a text-less user
@@ -235,7 +236,7 @@ describe('knowledge count line (K9, state block only)', () => {
 
     const block = stateBlock as string
     expect(block).toContain('知识库：3 个源（2 已编译），wiki 13 页')
-    expect(block).toContain('## Knowledge Base')
+    expect(block).toContain('## Knowledge Base')  // state block 的统计节（标题未随 core 协议节更名）
     // Cache reuse inside a tool loop runs up to the first differing byte, so the
     // always-changing clock must stay AFTER the (rarely-moving) knowledge line.
     expect(block.indexOf('## Knowledge Base')).toBeLessThan(block.indexOf('## Current Date'))
@@ -251,7 +252,7 @@ describe('knowledge count line (K9, state block only)', () => {
     expect(systemPrompt).not.toContain('知识库：')
     // The core DOES carry the static hint (a different '## Knowledge Base'
     // heading, present since before K9) — only the count line is forbidden.
-    expect(systemPrompt).toContain('## Knowledge Base')
+    expect(systemPrompt).toContain('## Local Knowledge & Memory')
     expect(stateBlock).toContain('知识库：')
   })
 
@@ -263,7 +264,7 @@ describe('knowledge count line (K9, state block only)', () => {
     })
 
     expect(stateBlock).not.toContain('知识库：')
-    expect(stateBlock).not.toContain('## Knowledge Base')
+    expect(stateBlock).not.toContain('## Local Knowledge & Memory')  // core 协议节名不得泄漏进 state block
   })
 })
 

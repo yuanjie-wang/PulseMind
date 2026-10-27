@@ -9,13 +9,14 @@ import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
 import { generateMsgId } from '../agent-utils'
 import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent'
-import { buildCommandFromSkillInput } from '../command-builder'
+import { buildCommandFromSkillInput, detectShellFileWrite, shellFileWriteRejection } from '../command-builder'
 import { installTypeOf } from '../executors/install-tool'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
 import { TOOL_PARAM_LIMITS, MAX_LIVE_OUTPUT_CHARS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
+import { isProjectInstructionsPath } from '../system-prompt-builder'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { commandAllowlistKey, commandMatchesAllowlist } from '../../../../shared/sandbox/command-allowlist'
 import type { EngineCore } from './engine-core'
@@ -33,7 +34,7 @@ import { beginTerminalSpan } from '../terminal-span'
  *  third copy in approveTool once missed context_compact: exactly the
  *  copy-drift accident the dispatch-side comment warns about, so the list
  *  lives once, here. */
-const MEMORY_GROUP_TOOL_NAMES = ['memory_search', 'memory_save', 'conversation_search', 'tool_result_search', 'context_compact']
+const MEMORY_GROUP_TOOL_NAMES = ['recall', 'memory_save', 'tool_result_search', 'context_compact']
 
 /** Swap one tool_use block for a restamped replacement inside the message that
  *  owns it (the stream's just-appended assistant message). Engine-side the
@@ -176,6 +177,22 @@ export class ExecutionFlow {
     }
 
     // Shell execution (default)
+    // File-write gate (2026-10-27): the auto path gates inside
+    // execSkillCommand; this is the released-call path, and the SAME raw
+    // input gets the SAME scan — approval releases execution, it does not
+    // launder a command the gate would have refused.
+    if (typeof targetBlock.input?.command === 'string' && targetBlock.input.command.trim()) {
+      const trip = detectShellFileWrite(targetBlock.input.command)
+      if (trip) {
+        const msg = shellFileWriteRejection(trip)
+        targetBlock.exitCode = 1
+        targetBlock.status = 'completed'
+        targetBlock.output = msg
+        this.engine.addToolResult(toolUseId, msg, true)
+        this.engine.notify()
+        return
+      }
+    }
     const platform = this.engine.opts.platformInfo?.platform || ''
     const command = buildCommandFromSkillInput(targetBlock.name, targetBlock.input || {}, platform, this.engine.opts.platformInfo?.ripgrepPath)
     const cwd = String(targetBlock.input.cwd || '')
@@ -217,6 +234,13 @@ export class ExecutionFlow {
       onExit: d => {
         targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.engine.executingToolUseId = null; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
+        // Verify-streak reset for the RELEASED path (2026-10-27 验证闭环): an
+        // approved verification run clears the source-edit streak exactly like
+        // the auto path's execSkillCommand does — the model verified, it just
+        // needed the user's blessing. resolvedCommand is what actually ran
+        // (the beforeTool hook may have rewritten it). Optional call: the
+        // concrete ToolExecutor always has it, but test fakes may not.
+        this.engine.toolExecutor.noteVerifyExec?.(resolvedCommand)
       },
       onError: d => {
         if (terminalErrorReceived) return; terminalErrorReceived = true
@@ -431,6 +455,37 @@ export class ExecutionFlow {
     return commandMatchesAllowlist(command, allowlist)
   }
 
+  /**
+   * The write-tier partition, shared by the marking stage (handleToolUseResponse)
+   * and the dispatch stage — the ladder and the executor must never disagree
+   * about which writes run without asking. Three buckets:
+   *  - `auto`    — runs now (tier not held AND not protected);
+   *  - `held`    — waits on the approval ladder (tier held, OR the protected
+   *    path below);
+   *  - `denied`  — a spawned sub-agent's protected-path write: nobody can
+   *    approve it (heldTiers holds nothing unattended and a hold nobody can
+   *    release is worse than an auto-run), so the call settles as a flat
+   *    rejection instead.
+   * Protected = the project instructions file (.pulsemind/AGENTS.md): the
+   * state block teaches 「propose the change first」 — that proposal IS an
+   * approval hold, now at every level including 'auto' (2026-10-27).
+   */
+  private partitionWrites(tools: ToolUseBlock[]): { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } {
+    const out: { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } = { auto: [], held: [], denied: [] }
+    const wd = this.engine.opts.workspaceDir
+    const tierHeld = this.heldTiers().has('write')
+    for (const t of tools) {
+      if (wd && isProjectInstructionsPath(String(t.input?.file_path || ''), wd)) {
+        if (this.engine.isSpawnedSubAgent) out.denied.push(t)
+        else out.held.push(t)
+        continue
+      }
+      if (tierHeld) out.held.push(t)
+      else out.auto.push(t)
+    }
+    return out
+  }
+
   /** Categorize and execute tool_use blocks. Shared by normal path and oversized-param skip path. */
   private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
     const readOnlyTools = tools.filter(t => READ_TIER_TOOLS.has(t.name))
@@ -442,7 +497,7 @@ export class ExecutionFlow {
     // never acted on twice from a single batch.
     const pageReadTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) === 'read')
     const pageWriteTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) !== 'read')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'todo_write' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     // install(type=mcp) 是 exec 档决定（audit 2026-10-10 #1）：注册完立即
     // mcpStartServer 拉起 stdio command——信任组曾让它对审批梯子隐身，一条
     // 注入指令就能在 outside-ask 下绕过 exec 审批拿到进程启动。skill 分支
@@ -457,7 +512,7 @@ export class ExecutionFlow {
     // release routing reads the same list).
     const isMemoryTool = (name: string): boolean => MEMORY_GROUP_TOOL_NAMES.includes(name)
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
-    const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
+    const isKnowledgeTool = (_name: string): boolean => false  // knowledge_read 已退役（E8）：知识读取走 read 绝对路径（read 组）
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
     const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
     const experienceTools = tools.filter(t => isExperienceTool(t.name))
@@ -496,7 +551,21 @@ export class ExecutionFlow {
         : null
       if (readOnlyTools.length > 0) await this.engine.toolExecutor.execReadOnlyTools(readOnlyTools)
       if (pageReadTools.length > 0) await this.engine.toolExecutor.execPageReadTools(pageReadTools)
-      if (!held.has('write') && writeEditTools.length > 0) for (const t of writeEditTools) await this.engine.toolExecutor.execWorkspaceTool(t)
+      // Same partition the marking stage used: protected-path writes never
+      // auto-run (they wait on the ladder), and a spawned sub-agent's are
+      // settled as flat rejections — its ladder can never release them.
+      // (Dedicated wording: subAgentDeniedTool's text is about the plan
+      // boundary, not the instructions file.)
+      const writes = this.partitionWrites(writeEditTools)
+      if (writes.denied.length > 0) {
+        for (const t of writes.denied) {
+          t.exitCode = -1
+          t.status = 'completed'
+          this.engine.addToolResult(t.id, '子代理无权修改项目指令文件（.pulsemind/AGENTS.md）——它是用户所有的工作区约定，修订须由用户提出。请完成你自己的节点工作；如认为约定需要修订，在你的报告里向父代理建议。', true)
+        }
+        this.engine.notify()
+      }
+      if (writes.auto.length > 0) for (const t of writes.auto) await this.engine.toolExecutor.execWorkspaceTool(t)
       // A page write clears the ladder only when its own tier allows it
       // (page_execute_js is 'exec' and stays held at 'outside-ask').
       for (const t of pageWriteTools) {
@@ -530,6 +599,13 @@ export class ExecutionFlow {
         else if (t.name === 'advance_plan') {
           if (this.engine.opts.spawnedToolset) this.subAgentDeniedTool(t)
           else await this.engine.planManager.execAdvancePlan(t)
+        }
+        else if (t.name === 'todo_write') {
+          // 2026-10-26 (user: 允许子代理用todo_write): no spawnedToolset guard —
+          // a sub-agent keeps its OWN direct list in its own PlanManager (the
+          // parent's plan is never visible to it). create_plan / advance_plan
+          // keep their guards below: the graph boundary still holds.
+          await this.engine.planManager.execTodoWrite(t)
         }
         else if (t.name === 'create_sub_plan') await this.engine.toolExecutor.execCreateSubPlan(t)
       }
@@ -602,7 +678,7 @@ export class ExecutionFlow {
     // (`page_execute_js` = 'exec', the rest = 'write').
     const pageTools = toolUses.filter(t => isPageTool(t.name))
     const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'todo_write' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     // install(type=mcp) 挂 exec 档（audit 2026-10-10 #1，同 dispatch 侧注释）：
     // 注册完立即拉起 stdio 进程，信任组曾让它在 outside-ask 下绕过 exec 审批。
     const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && installTypeOf(t) === 'mcp'
@@ -610,7 +686,7 @@ export class ExecutionFlow {
     const systemTools = toolUses.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
     const isMemoryTool = (name: string): boolean => MEMORY_GROUP_TOOL_NAMES.includes(name)
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
-    const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
+    const isKnowledgeTool = (_name: string): boolean => false  // knowledge_read 已退役（E8）：知识读取走 read 绝对路径（read 组）
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
     const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
     const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
@@ -651,8 +727,9 @@ export class ExecutionFlow {
         swapToolUseBlock(this.engine.messages, t, stamped)
       }
     }
+    const writes = this.partitionWrites(writeEditTools)
     const heldTools = [
-      ...(held.has('write') ? writeEditTools : []),
+      ...writes.held,
       ...(held.has('exec') ? [...otherHeld, ...mcpApprovalTools, ...installMcpTools] : []),
       ...pageHeldTools,
     ]

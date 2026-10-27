@@ -84,7 +84,17 @@ describe('the sub-agent tool boundary (v2 R2)', () => {
     for (const denied of SUB_AGENT_DENY_TOOLS) expect(main).toContain(denied)
   })
 
+  it('todo_write is NOT denied — a sub-agent keeps its own direct list (2026-10-26)', async () => {
+    // Reversal of the 2026-10-25 join (user: 允许子代理用todo_write): the list
+    // lives in the sub-engine's own PlanManager, invisible to the parent plan.
+    const sub = await names({ spawnedToolset: true })
+    expect(sub).toContain('todo_write')
+  })
+
   it('the deny list is exactly the ruled three', () => {
+    // todo_write joined 2026-10-25 (it writes the direct-mode plan), then left
+    // 2026-10-26 (user: 允许子代理用todo_write) — the GRAPH boundary holds;
+    // a sub-agent's todo list is its own PlanManager's private state.
     expect(SUB_AGENT_DENY_TOOLS).toEqual(['create_plan', 'advance_plan', 'spawn_agent'])
   })
 })

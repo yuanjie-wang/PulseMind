@@ -21,7 +21,7 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 
 用户诉求落在哪一格，决定走哪条路线：
 
-- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`office_edit\`。字节保真，未触及的部件逐字节不变。
+- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`office_edit\`。docx / pptx 字节保真（未触及的部件逐字节不变）；xlsx 保格式保值但整簿重写（exceljs）。
 - **从零做一个**（"给我一份""整理成 Excel"）→ **生成路线**：\`export_document\`（Word / Excel / PDF 用 content 或 sourcePath）。**从零做一个 PPT 一律走设计路线**（下一格）。
 - **从零做一个 PPT**（无论有没有明说设计要求）→ **设计路线**：**先对齐风格、落定 tokens.css，再写 HTML**——①给用户 1–3 个风格方向（主色/辅色/明暗/字体/气质，用具体 hex 与场景理由；用户说不清就用方向对比帮他说清，给了明确品牌色就复述确认），②确认后 \`write\` tokens.css 落定主题——**tokens 即锁**，之后改风格只改它；不要跳过对齐自作主张套默认主题。③写 deck.html（受限 HTML profile，每页一个 960×540 的 .slide），④\`export_document\`（format pptx + \`htmlPath\`）。用户明确只要纯文字大纲页时才退 markdown content（兜底）。**profile 与流程全文见 \`references/pptx.md\` 设计路线节**。
 - **用户给了模板要套**（公司 PPT 模板、合同模板）→ **模板继承**：先 \`office_inspect\` 看结构，再用编辑工具逐形状 / 逐段填入内容。**不要**用 \`export_document\` 重建——那会丢掉模板的母版与样式，而模板的价值全在那里。

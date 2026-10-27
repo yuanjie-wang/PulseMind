@@ -111,19 +111,11 @@ const tools = BUILT_IN_TOOLS.map((t) => ({
 }))
 console.log(`model: ${profile.model}  tools: ${tools.length} (${JSON.stringify(tools).length} chars)\n`)
 
-const MEMORY = (extra) => `# Memory Context
-## Manual Memories
-用户偏好简洁的技术回答，不要客套。
-## Extracted Memories
-- 项目 PulseMind 使用 esbuild + Vite 双构建
-- 主进程通过 require() 解析依赖，不做打包${extra}
-## Recent Conversations
-<guide>If needed, you can use the ID to trigger conversation_search to retrieve the conversation records.</guide>
-<data>
-|id|keywords|
-conv_1777|缓存优化讨论|
-</data>`
-const MEMORY_EXTRA = '\n- 工具定义参与 DeepSeek 前缀缓存，必须保持稳定'
+// v2（PLAN-memory-wiki M4，2026-10-25）：prefix 里只剩手动记忆（MEMORY.md 直读），
+// 提取产物（记忆页/经验/近期会话）全部转 JIT 检索——MEMORY_EXTRA 的变化模拟
+// 「提取落库」，v2 下它必须对 prefix 零影响（跨变体 core 逐字节相同）。
+const MEMORY = (extra) => `用户偏好简洁的技术回答，不要客套。${extra}`
+const MEMORY_EXTRA = '\n新的提取产物：工具定义参与 DeepSeek 前缀缓存'
 
 const opts = (nonce, mem, workspace) => ({
   apiKey: null,
@@ -135,10 +127,9 @@ const opts = (nonce, mem, workspace) => ({
   yourName: 'Pulse',
   locale: 'zh',
   workspaceDir: workspace,
-  // 2026-09-26: the memory context rides the FROZEN CORE behind the two-clock
-  // TTL, delivered through getStableMemoryContext (the old buildMemoryContext
-  // stub silently produced a core with no memory section at all).
-  memoryManager: { getStableMemoryContext: async () => mem },
+  // M4：唯一残余动态节是手动记忆，经 getManualMemoryContext 直读交付
+  // （v1 的 getStableMemoryContext 双钟 TTL 已随动态注入退役）。
+  memoryManager: { getManualMemoryContext: async () => mem },
 })
 
 const U1 = '帮我看看现在上下文的格式，我想做下优化'
@@ -162,7 +153,10 @@ const post = (text) => (text ? [msg('a1', 'assistant', text)] : [])
 async function call(label, system, messages) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + profile.apiKey },
+    // 网关 2026-10 起要求 x-opencode-session（profile 自定义头携带）——探针必须
+    // 合并 profile.headers，否则 400 MissingSessionID（应用侧同规则在
+    // api-proxy.applyProfileHeaders）。
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + profile.apiKey, ...(profile.headers ?? {}) },
     body: JSON.stringify({
       model: profile.model,
       max_tokens: 24,

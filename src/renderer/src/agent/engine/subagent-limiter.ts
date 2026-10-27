@@ -13,7 +13,11 @@
 // "本会话最多 5 个专家同时在跑" holds for the whole tree rather than per level.
 //
 // Where the slot lives (this is the part that has to be right): a dispatch
-// acquires immediately before `spawnSubAgent` and releases when the expert's
+// acquires synchronously at dispatch entry — BEFORE any await, so a
+// concurrent batch arrives in dispatch order and this FIFO IS the dispatch
+// order (2026-10-27: an acquire parked behind the prompt-composition reads
+// let six concurrent spawns arrive in file-completion order, and a 6-node
+// wave at cap 5 queued n5, not n6) — and releases when the expert's
 // completion settles, which means the slot is held across
 // `await handle.waitForCompletion()`. Two consequences that were the whole
 // reason for choosing this shape:

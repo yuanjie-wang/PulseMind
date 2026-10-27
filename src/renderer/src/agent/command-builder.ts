@@ -19,8 +19,79 @@ export function withDefaultSearchDir(
   return workspaceDir ? { ...input, search_dir: workspaceDir + sep + raw } : input
 }
 
-export function buildCommandFromSkillInput(toolName: string, input: Record<string, unknown>, platform: string, ripgrepPath?: string | null): string {
-  const isWin = platform === 'win32' || (
+/**
+ * The code-level half of the exec manual's first rule (2026-10-27): 「never
+ * create or modify files with shell redirection or heredoc」 used to live
+ * only in prose, so the ONE bypass of write/edit's preview, workspace
+ * isolation and version snapshot was a suggestion. Now the model-authored
+ * `command` is scanned BEFORE it reaches a shell — at the two dispatch sites
+ * (execSkillCommand's fallback for auto-run calls, approveTool's shell
+ * default for released calls) — and a trip rejects the call with recovery
+ * text instead of executing. Same fail-closed shape as find's extra_args
+ * gate: the detector may only ever say no, never rewrite.
+ *
+ * Quote-aware (a `>` inside `'…'`/`"…'` is data — `git log --format"%h > %s"`,
+ * `echo "a > b"`), and it skips bash's `[[ ]]` / `(( ))` contexts where `>`/
+ * `<` are COMPARISON operators, not redirects. Exempt targets keep the
+ * legitimate silencing idioms working: `2>&1`/`>&2` fd duplication and
+ * `> /dev/null` / `> NUL` / `> $null`. `tee` and the PowerShell file-writing
+ * cmdlets are redirection by another name and trip as well. Returns a short
+ * TRIP NAME for the rejection message (static, no user bytes — the call site
+ * interpolates it into a fixed sentence), or null when the command is clean.
+ */
+export function detectShellFileWrite(command: string): string | null {
+  let inSingle = false
+  let inDouble = false
+  // Depth of bash [[ ]] / (( )) — comparison/arithmetic contexts where > and
+  // < are operators. () tracking doubles for $( ) subshells: a redirect inside
+  // one is fail-closed noise at worst.
+  let groupDepth = 0
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    if (inSingle) { if (c === "'") inSingle = false; continue }
+    if (inDouble) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') inDouble = false
+      continue
+    }
+    if (c === "'") { inSingle = true; continue }
+    if (c === '"') { inDouble = true; continue }
+    if (c === '\\' && i + 1 < command.length) { i++; continue }
+    if ((c === '[' && command[i + 1] === '[') || (c === '(' && command[i + 1] === '(')) { groupDepth++; i++; continue }
+    if ((c === ']' && command[i + 1] === ']') || (c === ')' && command[i + 1] === ')')) { if (groupDepth > 0) groupDepth--; i++; continue }
+    if (groupDepth > 0) continue
+    if (c === '<' && command[i + 1] === '<') return 'a heredoc (<<)'
+    if (c === '&') {
+      if (command[i + 1] === '>') return '&> (both-streams redirect)'
+      continue
+    }
+    if (c === '>') {
+      const isAppend = command[i + 1] === '>'
+      let j = isAppend ? i + 2 : i + 1
+      while (j < command.length && /\s/.test(command[j])) j++
+      // fd duplication (2>&1, >&2) names no file — the legitimate idiom
+      if (command[j] === '&' && /\d/.test(command[j + 1] ?? '')) { i = j; continue }
+      const target = command.slice(j).match(/^[^\s|;&)]+/)?.[0] ?? ''
+      // the null devices keep silencing idioms working
+      if (/^(\/dev\/null|nul|\$null|null)$/i.test(target)) { i = j; continue }
+      return isAppend ? '>> (append redirect)' : '> (redirect)'
+    }
+  }
+  // Word-level family: redirection by another name. `tee` after a pipe, and
+  // the PowerShell cmdlets — the Windows notes teach that shell, so its
+  // writers are gated symmetrically. Word-boundary guarded so `annotate`/`Set-ContentX` never trip.
+  if (/(^|[\s|;(])tee(\s|$)/.test(command)) return 'tee'
+  if (/(^|[\s|;(])(out-file|set-content|add-content)\b/i.test(command)) return 'Out-File / Set-Content / Add-Content'
+  return null
+}
+
+/** The rejection text shared by both dispatch sites. The trip name is static
+ *  detector output (never user bytes), so the sentence needs no escaping. */
+export function shellFileWriteRejection(trip: string): string {
+  return `Error: command rejected — it writes files through shell ${trip}. Files are created and modified only with the write/edit tools (preview, workspace isolation, version snapshots); exec runs against files that already exist. To keep a command's output, read it from this tool result instead of redirecting it to a file.`
+}
+
+export function buildCommandFromSkillInput(toolName: string, input: Record<string, unknown>, platform: string, ripgrepPath?: string | null): string {  const isWin = platform === 'win32' || (
     !platform && typeof navigator !== 'undefined' && /Windows|Win64/i.test(navigator.userAgent)
   )
   switch (toolName) {

@@ -9,13 +9,12 @@
 // longer truncate.
 
 import { getHost } from './host'
-import { join } from 'node:path'
 import { execGitTool } from './engine/git-tools'
 import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import type { Plan } from '../../../shared/types/plan'
-import { writeFileChunked } from './agent-utils'
+import { writeFileChunked, resolveToolFilePath } from './agent-utils'
 import { buildCommandFromSkillInput, withDefaultSearchDir } from './command-builder'
 import { shSingleQuote, shEscape, psEscape } from './agent-utils'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
@@ -27,27 +26,16 @@ import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
 import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspect-format'
 import { formatOfficeReadResult } from './office-read-format'
 import { formatOfficeSearchResult } from './office-search-format'
+import { detectVerifyCommands, isSourceFilePath, isVerifyExecCommand, officeSpotCheckHint, summarizeTestOutput, verifyStreakHint, VERIFY_STREAK_THRESHOLD } from './verify-loop'
 
-/** 经验信封的位置段（PLAN-experience-scripts 1.4）：pick_skill 之前只回
- *  SKILL.md 原文，模型拿到正文也到不了盘上的脚本。与 formatSelectedSkill
- *  的 **Location:** 行同构；`dir` 来自 main 的 list() 计算，取不到记录时
- *  退化为无位置段（现状行为，正文的相对调用命令仍在）。 */
-async function experienceLocationBlock(em: { list(): Promise<Array<{ name: string; dir?: string }>> } | undefined, name: string): Promise<string> {
-  if (!em) return ''
-  try {
-    const rec = (await em.list())?.find((e) => e.name === name)
-    if (!rec?.dir) return ''
-    return `\n\n**Location:** ${join(rec.dir, 'SKILL.md')}\n**Directory:** ${rec.dir}   ← companion scripts live here; read them with read, run them with the terminal (node ${join(rec.dir, 'scripts', '<name>.mjs')} …)`
-  } catch {
-    return ''
-  }
-}
 
-import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool, execContextCompactTool, experienceStatsLine } from './executors/domain-tools'
+import { execRecallTool, execMemoryTool, execContextCompactTool, execToolResultSearchTool, execSkillCommand } from './executors/domain-tools'
 import { MAX_READ_RESULT_TOKENS } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
 import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
+import { serializeScriptFences } from '../../../shared/experience/script-fence'
+import { isLivePage, type MemoryPageRecord } from '../../../shared/memory-pages'
 
 export type SpawnSubAgentFn = (config: SpawnSubAgentConfig) => SubAgentHandle
 export { UI_PREVIEW_MAX } from './executors/context'
@@ -60,8 +48,20 @@ export { UI_PREVIEW_MAX } from './executors/context'
 // where they serve a non-context purpose: UI previews (see
 // executors/context.ts) and the read tool's paging (an intrinsic part of how
 // the model reads large files).
-const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
-const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
+const READ_DEFAULT_LINE_LIMIT = 500        // read: default lines per page (2026-10-28: 200 → 500 — fewer round-trips on the files models actually face; the token-level net is MAX_READ_RESULT_TOKENS)
+const READ_MAX_LINE_LIMIT = 1000           // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
+
+/** read 的行号前缀（2026-10-28，cat -n 同款）：绝对行号 + tab 前缀给模型一个
+ *  跨回合共享的坐标系——「改 350 行附近」成为合法表达，重读定位也少一次
+ *  offset 试错。前缀是坐标不是内容：手册教模型 edit 的 old_str/new_str 与
+ *  write 的 content 一律不带前缀（read/edit 两本手册各有一句回声）。 */
+export function numberReadLines(content: string, startLine: number): string {
+  if (!content) return content
+  return content.split('\n').map((line, i) => `${String(startLine + i).padStart(6)}\t${line}`).join('\n')
+}
+/** write's soft size gate (2026-10-27): the manual's ≤5KB advice, echoed in
+ *  the result past this mark — a hint, never a rejection. */
+const WRITE_SOFT_LIMIT_BYTES = 5 * 1024
 
 /** office_edit's write ops per format — the validator runs BEFORE the host
  *  call (the services back up + snapshot before applying, so a batch that
@@ -91,6 +91,83 @@ function utf8ByteLength(s: string): number {
 function formatSelectedSkill(name: string, definition: SkillDefinition, skillsDir?: string): string {
   const location = skillsDir ? `\n**Location:** ${skillsDir}/${name}/SKILL.md` : ''
   return `## Selected Skill: ${name}\n\n**Description:** ${definition.description}\n**Category:** ${definition.category}${location}\n\n### Instructions\n${definition.systemPrompt || '(no instructions)'}`
+}
+
+// ── pick_skill 的经验段（PLAN-experience-sop B，2026-10-26）──
+// 一阶段经验产出即可被拉取（裁定二）：候选表在已启用技能之外追加活经验页，
+// 选中返回页正文信封。拉取面扩源、不搬家——经验页继续住在 memory_pages，
+// 不落盘、不进注册表，草稿语义原样保留。开关态（2026-10-27，经验卡与技能卡同款
+// 开关）镜像技能的语义：候选表只列启用页（getEnabledSkills 同款），显式按名拉取
+// 仍能解析停用页（getSkill 同款）。
+
+/** 活经验候选的索引 TTL（matchExperiences 同款先例）。 */
+const EXP_CANDIDATE_TTL_MS = 60_000
+const EXP_CANDIDATE_MAX = 30
+let expCandidateCache: { at: number; pages: MemoryPageRecord[] } | null = null
+
+/** tests/probes 的复位钩子：60s TTL 缓存在同进程的用例间会串味。 */
+export function resetExperienceCandidateCache(): void {
+  expCandidateCache = null
+}
+
+/** 活页全集（含停用）——按名解析的查找面。 */
+async function liveExperiencePages(): Promise<MemoryPageRecord[]> {
+  const now = Date.now()
+  if (!expCandidateCache || now - expCandidateCache.at >= EXP_CANDIDATE_TTL_MS) {
+    try {
+      const all = await getHost().listMemoryPages('experience')
+      expCandidateCache = { at: now, pages: all.filter(isLivePage).slice(0, EXP_CANDIDATE_MAX) }
+    } catch {
+      return expCandidateCache?.pages ?? []
+    }
+  }
+  return expCandidateCache.pages
+}
+
+/** 候选表只列启用页（技能侧的 getEnabledSkills 对应物）。只有显式 false 才算停用——
+ *  字段缺席（旧主进程的记录）读作启用，与存储层「显式 0 才停用」同口径。 */
+async function enabledExperiencePages(): Promise<MemoryPageRecord[]> {
+  return (await liveExperiencePages()).filter((p) => p.enabled !== false)
+}
+
+function experienceCandidateLine(p: MemoryPageRecord): string {
+  const head = p.summary ?? p.body.replace(/\s+/g, ' ').slice(0, 120)
+  return `- [experience] ${p.title}: ${head}`
+}
+
+/** 解析序即判词（B2）：title 精确优先，其次 alias——同名时已安装技能在调用侧
+ *  先赢，这里只接技能注册表未命中的名字。 */
+async function resolveExperiencePage(name: string): Promise<MemoryPageRecord | null> {
+  const pages = await liveExperiencePages()
+  const want = name.trim().toLowerCase()
+  if (!want) return null
+  return pages.find((p) => p.title.toLowerCase() === want)
+    ?? pages.find((p) => p.aliases.some((a) => a.toLowerCase() === want))
+    ?? null
+}
+
+/** 经验信封（B3）：**无 `**Location:**` 行**——无磁盘文件，freshSkillDefinition
+ *  的「信封与 Location 广告文件同文」纪律不适用；DB 现读即构造性新鲜。正文 =
+ *  页 body 全文；files_json 的脚本反向序列化回 `### File:` 围栏；尾行是数据指针。 */
+function formatSelectedExperience(p: MemoryPageRecord): string {
+  const scripts = p.files && p.files.length > 0 ? `${serializeScriptFences(p.files)}\n\n` : ''
+  const summary = p.summary ? `**Summary:** ${p.summary}\n` : ''
+  const source = p.sourceConversationId ?? 'unknown'
+  return `## Experience: ${p.title}\n\n${summary}${scripts}${p.body}\n\n(source: ${source}, extracted ${p.updatedAt.slice(0, 10)}, maturity: ${p.maturity})`
+}
+
+/** B5 使用侧记账：pick 是有意图的拉取，才是干净的 touch 点（hint 触达刻意
+ *  不记——逐回合 substring 命中太噪；recall 的记账在 searchMemoryPages 尾部）。 */
+async function touchExperiencePage(id: string): Promise<void> {
+  try { await getHost().touchMemoryPage(id) } catch { /* 记账失败不影响取用 */ }
+}
+
+/** 技能侧的同款记账（2026-10-27，技能卡「使用 N 次」）：选中已注册技能时 +1。
+ *  不 await——信封先回给模型，计数失败只记日志。 */
+function touchSkillUse(name: string): void {
+  void (async () => {
+    try { await getHost().recordSkillUse(name) } catch { /* 记账失败不影响取用 */ }
+  })()
 }
 
 export class ToolExecutor implements ToolExecContext {
@@ -175,6 +252,41 @@ export class ToolExecutor implements ToolExecContext {
    *  set; createSubPlan gates on both. */
   parentPlanMerge?: ToolExecContext['createSubPlan']
 
+  /** Read-before-write ledger (2026-10-27, user ruling): paths whose bytes the
+   *  model has seen THIS session, keyed by resolveWorkspacePath's spelling —
+   *  read/write/edit all resolve through the same function, so the string
+   *  match is exact (`~` passes through unexpanded on both sides, so a read
+   *  of `~/x` does not license an edit spelled as the absolute path; the
+   *  rejection message teaches the recovery). The value is the getFileStat
+   *  mtime+size signature at read/write time, so the ledger answers not just
+   *  "was it read" but "is that read still current" — an external writer
+   *  (user's editor, git, a build step) stales the entry and the gate demands
+   *  a re-read. Gated: `edit`/`patch` (both forms) and overwriting `write`;
+   *  append and new-file writes stay free. One ToolExecutor per engine (and
+   *  each sub-agent constructs its own), so the ledger is naturally
+   *  per-session and a parent's reads never license a sub-agent's edit.
+   *  @internal not `private` on purpose — tests seed it directly to exercise
+   *  the gated branches without driving a real read first (the same
+   *  reach-in shape spawn-manager uses for parentPlanMerge). */
+  readFilePaths = new Map<string, { mtime: string; size: number }>()
+
+  // ── Verify-loop soft gate state (2026-10-27, agent/verify-loop.ts) ──
+  // Per-session like readFilePaths (one executor per engine): consecutive
+  // source-file edits arm the streak, a verify-shaped exec resets it, and the
+  // hint fires ONCE per session — a repeat nudge is noise, and noise teaches
+  // the model to ignore the channel. The office branch counts successful
+  // office_edit batches separately (its verification is reading back, and the
+  // first batch already ended in a read).
+  private sourceEditsSinceVerify = 0
+  private verifyHintFired = false
+  private officeEditBatches = 0
+  private officeCheckHintFired = false
+
+  /** spawn_agent's free-form dispatch ledger (see ToolExecContext.spawnTaskResults).
+   *  @internal not `private` on purpose — tests seed it to exercise the
+   *  re-dispatch gate without driving a real spawn first. */
+  spawnTaskResults = new Map<string, 'completed' | 'failed' | 'aborted'>()
+
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
   }
@@ -201,13 +313,75 @@ export class ToolExecutor implements ToolExecContext {
 
   /** Resolve relative file_path against workspaceDir when set. `~` passes
    *  through untouched: the main process's expandTilde is the authority, and
-   *  joining it here would spell a literal `<workspace>/~/...` directory. */
+   *  joining it here would spell a literal `<workspace>/~/...` directory.
+   *  Delegates to the shared pure helper so the protected-path gate (the
+   *  approval side) matches paths in exactly this coordinate system. */
   private resolveWorkspacePath(filePath: string): string {
-    const wd = this.opts.workspaceDir
-    if (!wd) return filePath
-    if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath) || filePath.startsWith('~')) return filePath
-    const sep = wd.includes('\\') ? '\\' : '/'
-    return wd + sep + filePath
+    return resolveToolFilePath(filePath, this.opts.workspaceDir)
+  }
+
+  /** The stale half of the read-before-write gate: the ledger entry must
+   *  still match disk. Mirrors main-side STALE_FILE_ERROR's wording
+   *  (file-ops.ts) so both surfaces teach the same recovery — this gate owns
+   *  the window BETWEEN the model's read and its edit/write, while
+   *  statSignature owns the read-modify-write window inside one svc op. */
+  private assertUnchangedOnDisk(
+    cur: { mtime: string; size: number } | null,
+    rec: { mtime: string; size: number },
+  ): void {
+    if (!cur || cur.mtime !== rec.mtime || cur.size !== rec.size) {
+      throw new Error('file changed on disk since it was read — re-read and retry')
+    }
+  }
+
+  /** Post-success ledger refresh: the op's own mtime bump must not
+   *  stale-reject the NEXT edit/write on the same file. Stat failure keeps
+   *  the old entry — the gate re-checks it on the next use anyway. */
+  private async refreshReadSignature(fp: string): Promise<void> {
+    try {
+      const s = await getHost().getFileStat(fp)
+      if (s) this.readFilePaths.set(fp, { mtime: s.mtime, size: s.size })
+    } catch { /* the old entry stands */ }
+  }
+
+  /** The verify streak's write-side half: a successful source-file edit/write
+   *  bumps the counter and, on crossing the threshold in a workspace that
+   *  DETECTS verify commands, appends the once-per-session hint. Deliberately
+   *  a note, never a rejection (the 2026-10-27 soft-gate shape): a legit
+   *  multi-file change must not be blocked, the hint only makes the un-run
+   *  verification visible at the moment the model decides what to do next.
+   *  No manifests → the gate disarms itself (counter reset, no hint) — an
+   *  office session never sees this machinery. Non-source paths (notes,
+   *  deliverables, the .pulsemind scratch namespace) never count. */
+  private async noteSourceEdit(fp: string, text: string): Promise<string> {
+    if (!isSourceFilePath(fp)) return text
+    this.sourceEditsSinceVerify++
+    if (this.sourceEditsSinceVerify < VERIFY_STREAK_THRESHOLD || this.verifyHintFired) return text
+    this.sourceEditsSinceVerify = 0
+    const cmds = this.opts.workspaceDir ? await detectVerifyCommands(this.opts.workspaceDir) : []
+    if (cmds.length === 0) return text
+    this.verifyHintFired = true
+    return `${text}\n${verifyStreakHint(cmds)}`
+  }
+
+  /** The streak's exec-side reset, called from BOTH exec dispatch points
+   *  (execSkillCommand's auto path and approveTool's released-shell path) so
+   *  a verification the model DID run — auto or approved — clears the count.
+   *  Matching lives in isVerifyExecCommand; a failed test run resets too —
+   *  the failure itself is the model learning the change doesn't work. */
+  noteVerifyExec(command: string): void {
+    if (isVerifyExecCommand(command)) this.sourceEditsSinceVerify = 0
+  }
+
+  /** The office branch: after the session's SECOND successful office_edit
+   *  batch (the first already ended in the read that licensed it), append the
+   *  read-back hint once. One batch is too early to teach; a third is too
+   *  late — the second is where the edit→verify loop should form. */
+  private noteOfficeEdit(text: string): string {
+    this.officeEditBatches++
+    if (this.officeEditBatches < 2 || this.officeCheckHintFired) return text
+    this.officeCheckHintFired = true
+    return `${text}\n${officeSpotCheckHint()}`
   }
 
   /** Format exec tool result with exit code and stdout/stderr separation. No truncation — the global guardrail in addToolResult caps it. */
@@ -223,6 +397,14 @@ export class ToolExecutor implements ToolExecContext {
     const header = `Exit Code: ${exitCode ?? 'signal'}  |  Total: ${totalLen.toLocaleString()} chars  |  Stderr: ${stderrLines} lines`
     const parts: string[] = [header, '', '--- stdout ---', stdout || '(empty)']
     if (stderr) parts.push('', '--- stderr ---', stderr)
+    // Test-output summary (2026-10-27 验证闭环): a confident runner-format
+    // match earns ONE head line carrying the failure count and the first
+    // failing anchor — the part of a 200-line test log a weak model needs to
+    // start fixing. Purely additive (summarizeTestOutput returns null unless
+    // it recognizes the format), so every other command's output is
+    // byte-identical to before.
+    const testSummary = summarizeTestOutput(stdout)
+    if (testSummary) parts.splice(1, 0, testSummary.line)
     return parts.join('\n')
   }
 
@@ -254,6 +436,7 @@ export class ToolExecutor implements ToolExecContext {
       `  Path: ${filePath}`,
       `  Size: ${sizeStr}${totalLines ? ` (${totalLines} lines)` : ''}`,
       `  Range: lines ${offset}-${offset + readLen - 1}`,
+      `  Numbering: each content line is prefixed with its absolute line number ("N\\t", cat -n style) — a coordinate for referencing (e.g. "edit around line 350"), NOT part of the file. Strip the prefixes when passing text to edit old_str/new_str or write.`,
     ]
     if (extraNote) lines.push(`  Note: ${extraNote}`)
     lines.push('--- End File Metadata ---', '', content)
@@ -337,8 +520,14 @@ export class ToolExecutor implements ToolExecContext {
             if (result !== null) {
               const lines = result.content.split('\n')
               totalLines = lines.length
-              content = lines.slice(offset - 1, offset - 1 + limit).join('\n')
+              content = numberReadLines(lines.slice(offset - 1, offset - 1 + limit).join('\n'), offset)
               t.status = 'completed'; t.exitCode = 0; t.output = content
+              // Convertible formats record too — deliberately. They can never
+              // be edited by text write/edit (main-side officeBinaryReject),
+              // but WITHOUT an entry the gate would loop the model on "read it
+              // first" ↔ read(convert) ↔ edit: with one, the call sails past
+              // this gate to the service's accurate 「用 office_edit」 message.
+              this.readFilePaths.set(filePath, { mtime: stat?.mtime ?? '', size: stat?.size ?? 0 })
               const note = result.cachePath
                 ? `Content converted from original file to markdown. Full conversion saved at: ${result.cachePath}${result.hit ? ' (cached)' : ''}`
                 : 'Content converted from original file to markdown.'
@@ -370,6 +559,12 @@ export class ToolExecutor implements ToolExecContext {
 
           if (!isError) {
             totalLines = await this.getLineCount(filePath)
+            // The ledger's main entry point: text bytes the model has just
+            // seen (the stat was taken at this branch's head).
+            this.readFilePaths.set(filePath, { mtime: stat?.mtime ?? '', size: stat?.size ?? 0 })
+            // Line numbers ride AFTER the ledger entry and only on success —
+            // they are presentation over the same bytes the model just read.
+            content = numberReadLines(content, offset)
           }
 
           t.status = 'completed'; t.exitCode = result.code; t.output = content
@@ -435,12 +630,37 @@ export class ToolExecutor implements ToolExecContext {
         let fp = String(t.input.file_path || ''); const content = String(t.input.content || ''); const append = t.input.append === true
         if (!fp) throw new Error('file_path is required')
         fp = this.resolveWorkspacePath(fp)
+        // Read-before-write gate (ENGINEERING_WORKFLOW #1): replacing bytes
+        // the model has not seen — or saw but that have since changed on disk
+        // — is the silent-loss case. append never destroys existing bytes and
+        // a missing stat means a new file, so neither is gated.
+        if (!append) {
+          const existing = await getHost().getFileStat(fp)
+          if (existing && !existing.isDirectory) {
+            const rec = this.readFilePaths.get(fp)
+            if (!rec) {
+              throw new Error(`${fp} already exists and has not been read in this session — read it before replacing it (or use a new file name / append: true)`)
+            }
+            this.assertUnchangedOnDisk(existing, rec)
+          }
+        }
         const bytes = utf8ByteLength(content)
         const done = `Written ${bytes} bytes to ${fp}${append ? ' (appended)' : ''}`
         t.output = `Writing ${bytes} bytes to ${fp}...`; this.notify()
         const result = await writeFileChunked(fp, content, append)
-        t.output = result.success ? done : `Error: ${result.error || 'Write failed'}`
-        this.addToolResult(t.id, result.success ? done : `Error: ${result.error || 'Write failed'}`, !result.success)
+        if (result.success) await this.refreshReadSignature(fp)
+        // Soft gate (2026-10-27): the manual's ≤5KB-per-call advice, echoed in
+        // the result when a call blows past it. Deliberately NOT a rejection —
+        // a legit large generated file must not be blocked, the note only
+        // keeps the discipline visible (split writes are easier to review
+        // and cheaper to retry).
+        const sizeNote = bytes > WRITE_SOFT_LIMIT_BYTES
+          ? `\n(Note: ${Math.round(bytes / 1024)} KB in one call — keep content under 5KB per write; several consecutive writes are easier to review and cheaper to retry than one giant call.)`
+          : ''
+        let resultText = result.success ? done + sizeNote : `Error: ${result.error || 'Write failed'}`
+        if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
+        t.output = result.success ? done : resultText
+        this.addToolResult(t.id, resultText, !result.success)
         t.exitCode = result.success ? 0 : 1
       } else if (t.name === 'office_edit') {
         let fp = String(t.input.file_path || '')
@@ -522,7 +742,7 @@ export class ToolExecutor implements ToolExecContext {
             const truncated = lines.length > 80 ? `... (${lines.length - 80} 行省略)\n${lines.slice(-80).join('\n')}` : result.diff
             parts.push(`变更预览:\n${truncated}`)
           }
-          const toolText = parts.join('\n')
+          const toolText = this.noteOfficeEdit(parts.join('\n'))
           t.output = summary
           this.addToolResult(t.id, toolText, false)
           t.exitCode = 0
@@ -654,19 +874,35 @@ export class ToolExecutor implements ToolExecContext {
         let fp = String(t.input.file_path || '')
         if (!fp) throw new Error('file_path is required')
         fp = this.resolveWorkspacePath(fp)
+        // Read-before-write gate (ENGINEERING_WORKFLOW #1), ahead of BOTH
+        // forms (diff and old_str): a path the model never read this session
+        // cannot be edited from imagination, and a path whose bytes changed
+        // after the read must be re-read — old_str could still match while
+        // the surrounding intent has moved under it.
+        const rec = this.readFilePaths.get(fp)
+        if (!rec) {
+          throw new Error(`edit requires a prior read of ${fp} in this session — call read on it first, then retry (a path seen in search/list_dir output does not count)`)
+        }
+        this.assertUnchangedOnDisk(await getHost().getFileStat(fp), rec)
 
         const diff = String(t.input.diff || '')
         if (diff) {
           const result = await getHost().patchFile({ filePath: fp, diff })
-          t.output = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`
-          this.addToolResult(t.id, result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`, !result.success)
+          if (result.success) await this.refreshReadSignature(fp)
+          let resultText = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`
+          if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
+          t.output = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : resultText
+          this.addToolResult(t.id, resultText, !result.success)
           t.exitCode = result.success ? 0 : 1
         } else {
           const oldStr = String(t.input.old_str || ''); const newStr = String(t.input.new_str || ''); const multi = t.input.multi === true
           if (!oldStr) throw new Error('old_str is required (or use diff parameter)')
           const result = await getHost().editFile({ filePath: fp, oldStr, newStr, multi })
-          t.output = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`
-          this.addToolResult(t.id, result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`, !result.success)
+          if (result.success) await this.refreshReadSignature(fp)
+          let resultText = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`
+          if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
+          t.output = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : resultText
+          this.addToolResult(t.id, resultText, !result.success)
           t.exitCode = result.success ? 0 : 1
         }
       }
@@ -743,43 +979,41 @@ export class ToolExecutor implements ToolExecContext {
         }
         if (skill) {
           const def = await this.freshSkillDefinition(skillName, skill.definition)
+          touchSkillUse(skill.definition.name)
           this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir), false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
-        // Fall back to the experience library (skill-style progressive disclosure).
-        // 只接受 list() 里的名字（full_20261011 M2-P1-1）：白名单门只拦已注册
-        // 技能，解析不到技能的名字曾直达 em.read —— `../skills/<白名单外技能>`
-        // 借经验兜底穿门读任意目录下的 SKILL.md。候选表同源、list() 有缓存。
-        const em = this.opts.experienceManager
-        if (em) {
-          const knownExperiences = new Set((await em.list()).map((e) => e.name))
-          const raw = knownExperiences.has(skillName) ? await em.read(skillName) : null
-          if (raw) {
-            em.touch(skillName).catch(() => {})
-            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${await experienceLocationBlock(em, skillName)}${await experienceStatsLine(em, skillName)}`, false)
-            t.exitCode = 0; t.status = 'completed'; this.notify(); return
-          }
+        // 技能注册表未命中 → 经验页（PLAN-experience-sop B2）。解析序即判词：
+        // 同名时上面的已安装技能先赢，这里只接经验名/别名。
+        const page = await resolveExperiencePage(skillName)
+        if (page) {
+          await touchExperiencePage(page.id)
+          this.addToolResult(t.id, formatSelectedExperience(page), false)
+          t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
-        this.addToolResult(t.id, `Skill or experience "${skillName}" not found.`, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
+        this.addToolResult(t.id, `Skill "${skillName}" not found.`, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
       }
       const intent = String(t.input?.intent || '')
       if (!intent) throw new Error('Either "name" or "intent" must be provided')
       t.output = `Selecting best skill for: ${intent.slice(0, 80)}...`; this.notify()
       const enabledSkills2 = sm!.getEnabledSkills().filter(s => !allowedSkillSet || allowedSkillSet.has(s.definition.name))
-      const experiences2 = this.opts.experienceManager ? await this.opts.experienceManager.list() : []
-      if (enabledSkills2.length === 0 && experiences2.length === 0) { this.addToolResult(t.id, 'No skills or experiences enabled.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
-      const skillsList = enabledSkills2.map(s => `- ${s.definition.name}: ${s.definition.description} (${s.definition.category})`).join('\n')
-      const expList = experiences2.map(e => `- ${e.name}: ${e.description} (experience)`).join('\n')
-      const combinedList = [skillsList, expList].filter(Boolean).join('\n')
+      const expPages = await enabledExperiencePages()
+      if (enabledSkills2.length === 0 && expPages.length === 0) { this.addToolResult(t.id, 'No skills or experiences available.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
+      // 候选表 = 已启用技能 + [experience] 活经验页（PLAN-experience-sop B1）；
+      // 经验曝光的另一半走 state block hint（E6，推式）——这里是拉式，两道并行。
+      const combinedList = [
+        ...enabledSkills2.map(s => `- ${s.definition.name}: ${s.definition.description} (${s.definition.category})`),
+        ...expPages.map(experienceCandidateLine),
+      ].join('\n')
       const selectedName = await this.skillSelectionAgent.execute(
         { intent, skillsList: combinedList },
         { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model, modelMaxTokens: this.opts.maxTokens }, maxOutputTokens: 200 }
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()
-      // 与名字分支同一裁定（audit 2026-10-10 #9）：白名单只拦技能。候选表里的
-      // 经验没有过滤（progressive disclosure），选中经验必须放行，否则受限
-      // 专家看到的候选永远选不中。
+      // 与名字分支同一裁定（audit 2026-10-10 #9）：白名单只拦已注册技能。候选表
+      // 里的经验不在白名单语义内（progressive disclosure，只读知识无需授权），
+      // 选中经验必须放行，否则受限专家看到的候选永远选不中。
       const selectedSkill = sm!.getSkill(cleanName)
       if (selectedSkill && allowedSkillSet && !allowedSkillSet.has(cleanName)) {
         this.addToolResult(t.id, `"${cleanName}" selected but it is outside this session's allowed skills. Pick from: ${[...allowedSkillSet].join(', ')}.`, true)
@@ -787,19 +1021,16 @@ export class ToolExecutor implements ToolExecContext {
       }
       if (selectedSkill) {
         const def = await this.freshSkillDefinition(cleanName, selectedSkill.definition)
+        touchSkillUse(cleanName)
         this.addToolResult(t.id, formatSelectedSkill(cleanName, def, this.opts.skillsDir), false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
-      const em2 = this.opts.experienceManager
-      // 同名字分支：cleanName 来自模型（选择代理的输出），只有真的出现在
-      // 候选表（list()）里才放行读盘。
-      if (em2 && experiences2.some((e) => e.name === cleanName)) {
-        const raw2 = await em2.read(cleanName)
-        if (raw2) {
-          em2.touch(cleanName).catch(() => {})
-          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${await experienceLocationBlock(em2, cleanName)}${await experienceStatsLine(em2, cleanName)}`, false)
-          t.exitCode = 0; t.status = 'completed'; this.notify(); return
-        }
+      // 选中名不是注册技能 → 经验页（候选表里 [experience] 行的 title/alias）。
+      const pickedExp = await resolveExperiencePage(cleanName)
+      if (pickedExp) {
+        await touchExperiencePage(pickedExp.id)
+        this.addToolResult(t.id, formatSelectedExperience(pickedExp), false)
+        t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
       this.addToolResult(t.id, `"${cleanName}" selected but not available.`, true); t.exitCode = 1
     } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'pick_skill failed'}`, true); t.exitCode = -1 }
@@ -904,11 +1135,11 @@ export class ToolExecutor implements ToolExecContext {
   async execOtherTool(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
+      if (await execRecallTool(this, t)) return
       if (await execMemoryTool(this, t)) return
       if (await execContextCompactTool(this, t)) return
-      if (await execConversationTool(this, t)) return
-      if (await execKnowledgeTool(this, t)) return
-      if (await execExperienceTool(this, t)) return
+      if (await execToolResultSearchTool(this, t)) return
+      if (await execSkillCommand(this, t)) return
       this.addToolResult(t.id, `Unknown tool: ${t.name}`, true)
     } catch (err) {
       this.addToolResult(t.id, `Tool failed: ${err instanceof Error ? err.message : String(err)}`, true)

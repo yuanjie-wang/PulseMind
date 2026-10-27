@@ -56,7 +56,11 @@ export class SpawnManager {
       // engine enforces them exactly like a @-summoned expert. Passed through
       // as-is: an empty array means "none allowed", undefined means "no
       // restriction" (a general sub-agent with no expert pack).
-      allowedTools: undefined,
+      // undefined = no restriction (a general sub-agent with no expert pack);
+      // the explore 预设 (spawn-tool.ts) passes its read-only whitelist here —
+      // subOpts.allowedTools → the engine's allowedToolsSet → tool-collection's
+      // whitelist filter, which also turns that sub-engine's MCP discovery off.
+      allowedTools: config.allowedTools,
       allowedMcpServers: config.allowedMcpServers,
       allowedSkills: config.allowedSkills,
       systemPromptOverride: undefined,

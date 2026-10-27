@@ -108,3 +108,40 @@ describe('export_document manual reaches the model without entering the shared t
 })
 
 const allEnabled = new Set(['export_document', 'office_edit'])
+
+// 2026-10-26 (user ruling, 系统提示词瘦身): the browser tool's 5.4K manual —
+// the single largest non-office protocol — left the trunk for the `browser`
+// built-in skill (skills/built-in/browser.ts), loaded on demand via
+// pick_skill. This supersedes the half-applied 2026-10-25 "gate the tool"
+// sketch: the tool stays ALWAYS-ON (its schema is ~0.7K), its instructions are
+// a slim pointer, and the full protocol text lives on the skill side. Pin both
+// halves so neither half of the move can silently regress.
+describe('browser manual lives in the built-in skill, not the shared trunk', () => {
+  const browserDef = BUILT_IN_TOOLS.find((t) => t.name === 'browser')!
+
+  it('the tool stays always-on with a slim instructions pointer (no triggers)', () => {
+    // availability 未设即 'always' —— 门控是那版被推翻的 A 方案，钉住别复活。
+    expect(browserDef.availability).not.toBe('gated')
+    // 工具侧 triggers 只喂门控扫描，常驻工具上就是死配置。
+    expect(browserDef.triggers).toBeUndefined()
+    const manual = (browserDef.instructions || '').trim()
+    expect(manual.startsWith('## browser')).toBe(true)
+    expect(manual.length).toBeLessThan(600)
+    expect(manual).toContain("pick_skill(name='browser')")
+  })
+
+  it('the full manual text is out of the trunk and present in the skill body', async () => {
+    const { BUILT_IN_SKILLS } = await import('../src/renderer/src/skills/built-in-skills')
+    const protocols = buildToolProtocols(BUILT_IN_TOOLS)
+    const skill = BUILT_IN_SKILLS.find((s) => s.name === 'browser')!
+
+    // 手册特征串：trunk 里绝不出现，技能正文里必须在。
+    for (const distinctive of ['FRAME-PREFIXED', '### Calling convention', 'Sandbox & kernel notes']) {
+      expect(protocols).not.toContain(distinctive)
+      expect(skill.systemPrompt).toContain(distinctive)
+    }
+    // 触发词播种进 state block 的 matchSkills（沿 A 方案拟定的关键词集）。
+    expect(skill.triggers).toEqual(['浏览器', '网页', '网址', '网站', 'browser'])
+    expect(skill.builtIn).toBe(true)
+  })
+})

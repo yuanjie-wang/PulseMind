@@ -13,7 +13,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'read',
     description:
-      'Read a file from the local filesystem. Returns content with a --- File Metadata --- header (path, size, line range). Use offset/limit for large files instead of reading the whole thing. Auto-converts PDF/DOCX/XLSX and other document formats to markdown.',
+      'Read a file from the local filesystem. Returns content with a --- File Metadata --- header (path, size, line range); every content line carries its absolute line-number prefix ("N\\t", cat -n style) — a coordinate for referencing, never part of the file. Use offset/limit for large files instead of reading the whole thing. Auto-converts PDF/DOCX/XLSX and other document formats to markdown.',
     category: 'file',
     triggers: ['read', 'open', 'cat', 'view'],
     input_schema: {
@@ -29,7 +29,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         },
         limit: {
           type: 'integer',
-          description: 'Max lines to read (default 200, hard cap 500).',
+          description: 'Max lines to read (default 500, hard cap 1000).',
         },
         binary: {
           type: 'boolean',
@@ -377,30 +377,22 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
   },
 
-  // ── memory_search ──────────────────────────────────────────────────
-  // Always in the toolset (user 2026-10-10，取回通道修复): the resident memory
-  // section renders only short entries (≤100 chars, newest 20), so the model
-  // needs this tool on hand at all times to reach the archive — a gated tool
-  // it cannot see is useless as the slimmed section's retrieval channel.
-  // `triggers` STAY: the keyword door reads every gated tool's triggers to
-  // activate its whole category, and these carry the main Chinese door
-  // (记忆/记得/回忆) for memory_save / conversation_search / tool_result_search.
+  // ── recall（PLAN-recall-unification，2026-10-25）──
+  // 联邦检索一元化：memory_search / conversation_search / knowledge_search 三合
+  // 一（用户裁定：数据源类型对模型无意义，能提供相关信息就行）。无 sources/type
+  // 参数；源只出现在结果信封的标签里（后续动作说明书）。always —— 采纳率是本
+  // 工具的存在理由，不做激活门。
   {
-    name: 'memory_search',
-    description: 'Search long-term memories (facts, decisions, user preferences) by keyword. The memory section in your context is a condensed index of short entries only — older or longer memories are NOT shown there; retrieve them with this tool.',
+    name: 'recall',
+    description: 'Search EVERYTHING local in one call — memory pages (user preferences, decisions, facts, experiences), past conversation records, and the knowledge base (compiled wiki + raw documents). Nothing is injected into your context; this is the only view. On a task-bearing turn, recall BEFORE acting.',
     category: 'memory',
-    triggers: ['memory', 'recall', 'remember', 'search memory', 'past context', '记忆', '记得', '回忆', '上次', '之前'],
+    triggers: ['memory', 'recall', 'remember', 'search', 'past context', 'knowledge', 'wiki', 'history', '记忆', '记得', '回忆', '上次', '之前', '知识', '文档', '历史', '找过'],
     input_schema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'The search query to find relevant memories.',
-        },
-        category: {
-          type: 'string',
-          description: 'Filter by category (optional).',
-          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
+          description: 'Keyword query across all stores (Chinese supported, 2-4 char terms work).',
         },
         limit: {
           type: 'integer',
@@ -409,7 +401,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       },
       required: ['query'],
     },
-    instructions: toolInstructions.memory_search,
+    instructions: toolInstructions.recall,
     builtIn: true,
     availability: 'always',
   },
@@ -419,65 +411,47 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // 读写是常驻区的配套通道，不该等激活。triggers 留着——关键词门读每个
   // gated 工具的触发词来激活整个类目，这里仍是 tool_result_search 的中文门。
   {
+    // v2（PLAN-memory-wiki）：写面 = 记忆页。title 命中既有页 → update（content
+    // 必须是完整修订稿）；未命中 → create。吸收了 experience_save 的职能。
     name: 'memory_save',
-    description: 'Save an important fact, decision, or preference to long-term memory.',
+    description: 'Save or update a memory page. If `title` matches an existing page it is UPDATED (content = the full revised body); otherwise a new page is created. Types: fact / decision / preference (one short sentence, ≤100 chars) or experience (long playbook).',
     category: 'memory',
     triggers: ['remember', 'save', 'important', 'note this', '重要', '记一下'],
     input_schema: {
       type: 'object',
       properties: {
+        title: {
+          type: 'string',
+          description: 'The page title — a unique topic name. Reusing an existing title updates that page.',
+        },
         content: {
           type: 'string',
-          description: 'The fact, decision, or preference to remember — ONE sentence, at most 100 characters (longer entries never show in the resident memory section).',
+          description: 'Page body. For fact/preference: ONE sentence, at most 100 characters. For decision/experience: full structured content.',
         },
         type: {
           type: 'string',
-          description: 'The type of memory.',
-          enum: ['fact', 'decision', 'preference'],
+          description: 'The page type.',
+          enum: ['fact', 'decision', 'preference', 'experience'],
         },
-        category: {
-          type: 'string',
-          description: 'The category of memory.',
-          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
+        aliases: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Likely search terms for this page (optional).',
         },
       },
-      required: ['content'],
+      required: ['title', 'content'],
     },
     instructions: toolInstructions.memory_save,
     builtIn: true,
     availability: 'always',
   },
 
-  // ── conversation_search ────────────────────────────────
-  // Always in the toolset（user 2026-10-10，与 memory_search 同裁定）。
-  {
-    name: 'conversation_search',
-    description: 'Search past conversations by keyword or ID.',
-    category: 'memory',
-    triggers: ['conversation', 'summary', 'past conversation', 'session history'],
-    input_schema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'string',
-          description: 'Look up a specific conversation by ID (e.g. "conv_20260430152243").',
-        },
-        query: {
-          type: 'string',
-          description: 'Keyword to search in titles, summaries, and keywords (max 20 results).',
-        },
-      },
-      required: [],
-    },
-    instructions: toolInstructions.conversation_search,
-    builtIn: true,
-    availability: 'always',
-  },
-
   // ── tool_result_search ────────────────────────────────────────────────
   // 上下文类目（user 2026-10-10，随 context_compact 同迁）：压缩结果的取回
-  // 是上下文治理的取回半边，不是记忆。它仍 gated——按 id 取回是跟着压缩
-  // 事件走的被动动作，模型看到占位符才知道要查，常驻价值低。
+  // 是上下文治理的取回半边。availability 是 'always' 而非 gated——占位符
+  // 出现在对话中段时模型必须能立即取回，不能等用户文本关键词激活
+  // （2026-10-26 修正本注释：旧文说「仍 gated」与代码相悖；该工具当天还被
+  // 发现从未接过执行器，模型调用落到 shell 兜底路径以 exit 0 假成功收场）。
   {
     name: 'tool_result_search',
     description: 'Look up the original content of compressed tool results by tool_result_id.',
@@ -496,7 +470,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.tool_result_search,
     builtIn: true,
-    // Always available: compacted tool_results surface as [tool_result_id: xxx]
+    // Always available: compacted tool_results surface as ⟨archived: xxx⟩
     // placeholders mid-conversation, and the model must be able to resolve them
     // without relying on user-text keyword triggers.
     availability: 'always',
@@ -506,7 +480,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'context_compact',
     description:
-      'Manually compact the conversation context at a phase boundary you judge right (exploration finished, topic switch, before a large new stage): older context is archived into a summary injected into later requests, freeing window space. Attach a handover note (notes) to carry your progress and next steps verbatim. Rejected when the context is below ~55% of the window, when already used this turn, or while a request is streaming.',
+      'Manually compact the conversation context at a phase boundary you judge right (exploration finished, topic switch, before a large new stage): older context is archived into a summary injected into later requests, freeing window space. Attach a handover note (notes) to carry your progress and next steps verbatim. Refused when plenty of window remains (the refusal reports the actual headroom), when already used this turn, or while a request is streaming.',
     // 上下文类目（user 2026-10-10：压缩是上下文管理，不是记忆）。原 'memory'
     // 是计划书 D1 的「取回半边归队」推理——tool_result_search 早已在 memory，
     // 驱逐半边跟进即可省一个类目；该推理混淆了知识面（记忆：跨会话的用户
@@ -549,7 +523,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── pick_skill ──────────────────────────────────────────────────────
   {
     name: 'pick_skill',
-    description: 'Select and activate the most relevant skill or past experience by intent or name.',
+    description: 'Select and activate the most relevant skill — an installed skill or an experience learned from past conversations — by intent or name.',
     category: 'system',
     triggers: ['skill', 'pick skill', 'select skill', 'activate skill'],
     input_schema: {
@@ -557,12 +531,12 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         intent: {
           type: 'string',
-          description: 'A clear description of what the user wants to accomplish, used to select the most relevant skill. Ignored if "name" is provided.',
+          description: 'A clear description of what the user wants to accomplish, used to select the most relevant skill or experience. Ignored if "name" is provided.',
         },
         name: {
           type: 'string',
           description:
-            'The exact name of a skill to activate directly. When provided, the skill is looked up by name instead of using LLM-based intent matching.',
+            'The exact name of a skill, or the exact title (or an alias) of an experience, to activate directly. When provided, the entry is looked up by name instead of using LLM-based intent matching.',
         },
       },
       oneOf: [{ required: ['intent'] }, { required: ['name'] }],
@@ -599,27 +573,6 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.pick_tool,
     builtIn: true,
-  },
-
-  // ── knowledge_search ───────────────────────────────────────────────
-  {
-    name: 'knowledge_search',
-    description: 'Search the local knowledge base for imported files and wiki pages.',
-    category: 'knowledge',
-    triggers: ['knowledge', 'wiki', 'knowledge base', 'search knowledge', 'lookup knowledge', '知识', '知识库', '文档'],
-    input_schema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Search term to filter knowledge files by title and/or content (depends on mode).',
-        },
-      },
-      required: [],
-    },
-    instructions: toolInstructions.knowledge_search,
-    builtIn: true,
-    availability: 'gated',
   },
 
   // ── office_edit (PLAN-office-editing, merged 2026-10-04) ───────────
@@ -778,116 +731,6 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated',
   },
 
-  // ── knowledge_read ─────────────────────────────────────────────────
-  {
-    name: 'knowledge_read',
-    description: 'Read a knowledge base file or wiki page.',
-    category: 'knowledge',
-    triggers: ['read knowledge', 'view knowledge', 'open wiki', 'read wiki'],
-    input_schema: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The file path or wiki page name to read (e.g. "index.md" for wiki index, or a raw file path from knowledge_search results).',
-        },
-        type: {
-          type: 'string',
-          description: 'Which directory to read from. Defaults to wiki (compiled). If the path is not found there, the other directory is tried and the result notes the actual source.',
-          enum: ['wiki', 'raw'],
-        },
-        base: {
-          type: 'string',
-          description: 'Knowledge base id owning the file (from knowledge_search results). Required for non-default bases — the same relative path exists per base. Defaults to this turn\'s @-mentioned base, else the default base.',
-        },
-        offset: {
-          type: 'number',
-          description: '1-based line number to start reading from (with lines, for paging through long files).',
-        },
-        lines: {
-          type: 'number',
-          description: 'How many lines to return per page (default: all).',
-        },
-      },
-      required: ['path'],
-    },
-    instructions: toolInstructions.knowledge_read,
-    builtIn: true,
-    availability: 'gated',
-  },
-
-  // ── experience_read ────────────────────────────────────────────────
-  {
-    name: 'experience_read',
-    description: 'Read the full content of a past workflow experience (SKILL.md) when it is relevant to the current task.',
-    category: 'experience',
-    triggers: ['experience', 'lesson', 'past experience', '之前经验', '历史经验'],
-    input_schema: {
-      type: 'object',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'The name of the experience to read (from the Experience Index).',
-        },
-      },
-      required: ['name'],
-    },
-    instructions: toolInstructions.experience_read,
-    builtIn: true,
-    availability: 'gated',
-  },
-
-  // ── experience_save ────────────────────────────────────────────────
-  // The write half of the experience pool, opened on demand (the review agent's
-  // afterSession extraction stays the automatic path; this is the "user asks for
-  // it now" path). Reaches the store through ExperienceManager.save — the ONLY
-  // writer: the pool lives under ~/.pulsemind, which is a path-jail deny root,
-  // so file/shell writes are blocked by design and this tool is not a way
-  // around that, it IS the sanctioned door.
-  {
-    name: 'experience_save',
-    description: 'Save or revise a workflow experience (a reusable lesson from this conversation) so future conversations can pick it up.',
-    category: 'experience',
-    triggers: ['save experience', 'repeatable', '沉淀经验', '保存经验', '记录经验', '优化经验', '复盘', '经验'],
-    input_schema: {
-      type: 'object',
-      properties: {
-        content: {
-          type: 'string',
-          description:
-            'The full experience in Markdown (Background / Process / Problems / Optimization). With targetName this REPLACES the whole body.',
-        },
-        targetName: {
-          type: 'string',
-          description:
-            "The `name` of an existing experience to revise (iterate). Omit to create a new one — the title's slug becomes its name.",
-        },
-        title: {
-          type: 'string',
-          description: 'Short title. Defaults to the existing title when revising, otherwise the first line of content.',
-        },
-        description: {
-          type: 'string',
-          description: 'One-line summary for the index. Defaults to the first 120 characters of content.',
-        },
-        category: {
-          type: 'string',
-          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
-          description: 'Bucket for the experience (defaults to the existing one, else general).',
-        },
-        triggers: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            '3-6 keywords that surface this experience in later conversations. Omit to have them extracted automatically after the save.',
-        },
-      },
-      required: ['content'],
-    },
-    instructions: toolInstructions.experience_save,
-    builtIn: true,
-    availability: 'gated',
-  },
 
   // ── spawn_agent ────────────────────────────────────────────────────
   {
@@ -913,6 +756,12 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           description:
             'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — only a READY node (pending, all dependencies completed) and never one with a live attempt is accepted. The node settles automatically when the sub-agent delivers; you are consulted only if it fails.',
         },
+        preset: {
+          type: 'string',
+          enum: ['explore'],
+          description:
+            "Optional. 'explore' runs this delegation as READ-ONLY reconnaissance: the sub-agent's toolset is restricted to search/find/read/list_dir/office_read/recall and it reports a path:line map (entry points, key facts, gaps) instead of editing anything. Use it to map an unfamiliar area cheaply before planning or coding. Cannot be combined with planNode.",
+        },
       },
       required: ['task'],
     },
@@ -924,7 +773,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'create_plan',
     description:
-      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. Once created, the scheduler runs the plan: READY nodes dispatch automatically, each delivery settles automatically. You are consulted at exactly two points — a node FAILED (decide: re-dispatch to retry, or advance_plan action="fail"/"skip"), and the plan completing (write the final answer for the user).',
+      'Create an execution DAG for complex multi-step tasks that will be DELEGATED (to experts or parallel sub-agents via spawn_agent): independent nodes run in PARALLEL, nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. Once created, the scheduler runs the plan: READY nodes dispatch automatically, each delivery settles automatically. You are consulted at exactly two points — a node FAILED (decide: re-dispatch to retry, or advance_plan action="fail"/"skip"), and the plan completing (write the final answer for the user). For tracking work you execute YOURSELF (no delegation, no parallel sub-agents), use todo_write instead.',
     category: 'system',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
@@ -996,6 +845,59 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['action'],
     },
     instructions: toolInstructions.advance_plan,
+    builtIn: true,
+  },
+
+  // ── todo_write（direct-mode plan = todo list）──────────────────────
+  // The self-execution channel: the plan system's direct mode carries a flat
+  // mutable list the main agent works through itself. Deliberately a SEPARATE
+  // tool from create_plan (never a mode param): weak models route by tool
+  // NAME, and the two contracts must not blur — create_plan always delegates,
+  // todo_write never spawns anything.
+  {
+    name: 'todo_write',
+    description:
+      'Maintain a progress checklist for multi-step work you execute YOURSELF (no experts, no sub-agents — delegate via create_plan instead). Send the FULL list every time; keep exactly ONE step in_progress; mark steps waiting on something outside your control as blocked; update immediately after each step settles. Optional for trivial tasks (1-2 steps).',
+    category: 'system',
+    triggers: ['todo', '清单', '待办', 'progress', 'checklist', '步骤', '任务列表'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        objective: {
+          type: 'string',
+          description: 'What the list as a whole aims to achieve; required on the first call.',
+        },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+                description: 'The entry\'s number ("n2" — every snapshot row shows it). REQUIRED to update an existing entry: reword it in place, change its status, or revive a retired one. Omit to append a NEW entry.',
+              },
+              description: {
+                type: 'string',
+                description: 'One actionable step. When the item carries an id, this wording replaces the entry\'s old one.',
+              },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in_progress', 'completed', 'blocked'],
+                description: '"in_progress" — the one step you are on now; "completed" — finished; "blocked" — waiting on something outside your control; omit for not started.',
+              },
+              note: {
+                type: 'string',
+                description: 'One-line context: what a blocked step waits on, a key result, a pointer.',
+              },
+            },
+            required: ['description'],
+          },
+          description: 'The complete list, in the order you want it tracked.',
+        },
+      },
+      required: ['items'],
+    },
+    instructions: toolInstructions.todo_write,
     builtIn: true,
   },
 
@@ -1148,16 +1050,22 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
 
   // ── browser (Browser Use A-M1) ─────────────────────────────────────
   // One tool for the whole browser capability: `code` runs against the
-  // host-side facade (agent.browsers). The full calling convention lives in
-  // the returned documentation() and in this tool's own `instructions` manual
-  // (tool-instructions.ts, shipped in every request via buildToolProtocols) —
-  // the model bootstraps by reading them, never by guessing member names.
-  // Always in the tool list — no `triggers` and no `availability` (the
-  // settings toggle is what turns it off).
+  // host-side facade (agent.browsers). The model bootstraps by reading the
+  // returned documentation() and this tool's slim `instructions` pointer,
+  // never by guessing member names.
+  // MANUAL AS SKILL (2026-10-26, user: 系统提示词瘦身 — supersedes the
+  // half-applied 2026-10-25 "gate it" sketch): the 5.4K manual was the single
+  // largest non-office protocol and rode EVERY conversation via
+  // buildToolProtocols. It now lives in the `browser` BUILT_IN_SKILL
+  // (skills/built-in/browser.ts), loaded on demand via pick_skill; the slim
+  // instructions pointer and the tool description both route there. The tool
+  // itself stays always-on — the schema is ~0.7K, and hiding it behind a gate
+  // would add a pick_tool round trip before the first browser call for no
+  // meaningful floor saving. The settings toggle still removes it outright.
   {
     name: 'browser',
     description:
-      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
+      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts. Full manual: pick_skill(name=\'browser\') — load it before the first browser call of a session.',
     category: 'browser',
     input_schema: {
       type: 'object',
@@ -1384,4 +1292,7 @@ export const SUB_PLAN_BUILT_IN_TOOLS: ToolDefinition[] = [
 // defense in depth. The one legitimate growth channel left is
 // create_sub_plan — which writes the PARENT plan through a narrow bridge,
 // where the structure is visible, scheduled and bounded.
+// todo_write left the list 2026-10-26 (user: 允许子代理用todo_write)：子代理
+// 可以维护自己的直接清单（execTodoWrite 只动引擎自己的 PlanManager，父子
+// 各一份互不可见），建图/结算/派生的边界不变。
 export const SUB_AGENT_DENY_TOOLS = ['create_plan', 'advance_plan', 'spawn_agent']

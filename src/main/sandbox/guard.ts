@@ -99,6 +99,8 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
   // experiences) stays denied. Both spellings resolve like the workspace's, so
   // a symlinked ancestor or a link escaping the tree still fails the judgment.
   const skillsRoot = join(homedir(), '.pulsemind', 'skills')
+  const knowledgeRoot = join(homedir(), '.pulsemind', 'knowledge')
+  const knowledgeReal = await resolveRealTarget(knowledgeRoot).then((r) => (r.status === 'resolved' ? r.path : null)).catch(() => null)
   const skillsResolved = await resolveRealTarget(skillsRoot)
   const skillsReal = skillsResolved.status === 'resolved' ? skillsResolved.path : null
   const truncRoot = join(homedir(), '.pulsemind', 'tmp', 'trunc')
@@ -119,6 +121,13 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
       { dir: skillsRoot, real: skillsReal },
       { dir: truncRoot, real: truncReal },
       { dir: readCacheRoot, real: readCacheReal },
+    ],
+    // knowledge/ read-exempt (E8): the agent reads imported docs/wiki pages via
+    // `read` on absolute paths from recall results; writes stay denied (import
+    // products, not agent-writable). Session side only — baseline callers (no
+    // session: knowledge import UI) already pass via buildBaselineDenyRoots.
+    extraReadableRoots: [
+      { dir: knowledgeRoot, real: knowledgeReal },
     ],
   })
 

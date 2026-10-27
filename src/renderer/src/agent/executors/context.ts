@@ -115,6 +115,23 @@ export interface ToolExecContext {
   /** The one-shot agent behind install's fire-and-forget keyword backfill.
    *  Optional: absent (tests) skips the extraction entirely. */
   skillKeywordAgent?: SkillKeywordAgent
+  /** Free-form spawn ledger (2026-10-27): normalized task signature → the
+   *  LAST dispatch's outcome, per session (one executor per engine, so the
+   *  ledger is naturally per-session the way readFilePaths is). The
+   *  re-dispatch gate reads it to refuse re-running a task this session
+   *  already COMPLETED — the mimo incident (five identical re-dispatches of
+   *  a finished translation) is what all three layers of prose could not
+   *  prevent. Optional so old test fakes construct; the gate skips when
+   *  absent. Plan-node spawns never enter the ledger: their retries ARE the
+   *  protocol (the failure envelope instructs re-dispatch), and the
+   *  scheduler's own gates own that path. */
+  spawnTaskResults?: Map<string, 'completed' | 'failed' | 'aborted'>
+  /** Verify-streak exec-side reset (2026-10-27 验证闭环): a completed exec
+   *  whose command looks like verification (test/lint/build — isVerifyExecCommand)
+   *  clears the source-edit streak, at BOTH dispatch points — execSkillCommand's
+   *  auto path and approveTool's released-shell path. A failed test run resets
+   *  too: the failure itself is the lesson. Optional so old test fakes construct. */
+  noteVerifyExec?(command: string): void
   /** Format exec tool result with exit code and stdout/stderr separation. */
   formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
 }

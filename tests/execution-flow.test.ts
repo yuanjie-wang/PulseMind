@@ -194,11 +194,11 @@ describe('ExecutionFlow approveTool 路由表', () => {
   })
 
   it('memory / office / write / mcp / spawn / page / ask_user 各归各位', async () => {
-    // memory → execOtherTool
+    // memory（recall）→ execOtherTool
     let ctx = makeCore()
-    ctx.raw.messages.push(msg([toolUse('t1', 'memory_search', { query: 'x' })]))
+    ctx.raw.messages.push(msg([toolUse('t1', 'recall', { query: 'x' })]))
     await ctx.flow.approveTool('t1')
-    expect(ctx.calls.executor).toEqual([['execOtherTool', 'memory_search']])
+    expect(ctx.calls.executor).toEqual([['execOtherTool', 'recall']])
 
     // office_inspect 与 office_read → execWorkspaceTool（OR 两侧都过）
     for (const name of ['office_inspect', 'office_read']) {
@@ -441,9 +441,9 @@ describe('ExecutionFlow dispatch 扇出（auto 模式）', () => {
       toolUse('t_web', 'webfetch', { url: 'https://x' }),
       toolUse('t_browser', 'browser'),
       toolUse('t_subplan', 'create_sub_plan'),
-      toolUse('t_mem', 'memory_search'),
+      toolUse('t_mem', 'recall'),
       toolUse('t_compact', 'context_compact'),
-      toolUse('t_know', 'knowledge_search'),
+      
       toolUse('t_exp', 'experience_read'),
       toolUse('t_logs', 'exec_logs'),
       toolUse('t_other', 'custom_thing'),
@@ -465,7 +465,7 @@ describe('ExecutionFlow dispatch 扇出（auto 模式）', () => {
     expect(got('execWebFetch')).toEqual(['webfetch'])
     expect(got('execBrowser')).toEqual(['browser'])
     expect(got('execCreateSubPlan')).toEqual(['create_sub_plan'])
-    expect(got('execOtherTool')).toEqual(['memory_search', 'context_compact', 'knowledge_search', 'experience_read', 'exec_logs', 'custom_thing'])
+    expect(got('execOtherTool')).toEqual(['recall', 'context_compact', 'experience_read', 'exec_logs', 'custom_thing'])
     expect(got('execSpawnAgent').sort()).toEqual(['spawn_agent', 'spawn_agent'])
     expect(raw.planManager.execAdvancePlan).toHaveBeenCalled()
     // spawn 失败被兜住：块标 completed + 错误结果，其余专家不受牵连

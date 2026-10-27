@@ -81,7 +81,7 @@ describe('the gate: gated built-ins are hidden until activated', () => {
   it('no activation → no gated tools in the toolset', async () => {
     const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
     expect(names).toContain('read')
-    for (const gated of ['git_status', 'office_edit', 'experience_save']) {
+    for (const gated of ['git_status', 'office_edit']) {
       expect(names).not.toContain(gated)
     }
   })
@@ -154,8 +154,8 @@ describe('source shape', () => {
   })
 })
 
-describe('memory_read/write 三通道是 ALWAYS base 工具（user 2026-10-10：常驻区瘦身后它们是记忆的读写面）', () => {
-  const ALWAYS_MEMORY_TOOLS = ['memory_search', 'memory_save', 'conversation_search']
+describe('recall 读 + memory_save 写是 ALWAYS base 工具（PLAN-recall-unification：检索一元化后读写仍随主干）', () => {
+  const ALWAYS_MEMORY_TOOLS = ['recall', 'memory_save']
 
   it('defined always + memory；triggers 必须保留——关键词门靠它们当 memory 类目的中文门', () => {
     for (const name of ALWAYS_MEMORY_TOOLS) {
@@ -165,17 +165,22 @@ describe('memory_read/write 三通道是 ALWAYS base 工具（user 2026-10-10：
       expect(def?.category, name).toBe('memory')
       expect(def?.triggers?.length ?? 0, name).toBeGreaterThan(0)
     }
-    expect(BUILT_IN_TOOLS.find((t) => t.name === 'memory_search')?.triggers).toContain('记忆')
+    expect(BUILT_IN_TOOLS.find((t) => t.name === 'recall')?.triggers).toContain('记忆')
+    // 三旧检索工具确已退役（回归守卫）
+    for (const retired of ['memory_search', 'conversation_search', 'knowledge_search']) {
+      expect(BUILT_IN_TOOLS.find((t) => t.name === retired), retired).toBeUndefined()
+    }
   })
 
-  it('ships in the dormant base toolset and their manuals ride Tool Protocols（索引+取回的教学随主干走）', async () => {
+  it('ships in the dormant base toolset and their manuals ride Tool Protocols（检索+写入的教学随主干走）', async () => {
     const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
     for (const name of ALWAYS_MEMORY_TOOLS) expect(names, name).toContain(name)
     const protocols = buildToolProtocols(await collectEnabledTools(deps(), fullToolManager()))
-    expect(protocols).toContain('## memory_search')
-    expect(protocols).toContain('condensed INDEX')
+    expect(protocols).toContain('## recall')
+    // 「only view」教学迁去了 schema description（2026-10-25 瘦身，schema 同请求
+    // 在场）；手册侧钉 query 实操教学仍在主干。
+    expect(protocols).toContain('2-4 char terms work')
     expect(protocols).toContain('## memory_save')
-    expect(protocols).toContain('## conversation_search')
   })
 
   it('the manual is byte-stable across activation states (it sits in the shared trunk)', async () => {
