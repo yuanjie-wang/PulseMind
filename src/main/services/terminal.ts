@@ -8,12 +8,21 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, createWriteStream, openSync, readSync, statSync, closeSync, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
+import type { Readable } from 'node:stream'
 import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
-import { currentSessionSandbox, notifySessionBackgroundExit } from '../sandbox/session-context'
+import { currentSessionSandbox, notifySessionBackgroundExit, type SessionSandboxContext } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
 import { DATA_DIR } from '../storage/index'
 import { createStreamDecoder } from './stream-decoder'
+import {
+  isSessionShellKey,
+  parseControlLine,
+  persistentCommandScript,
+  persistentRestartNotice,
+  persistentShellKey,
+  usesPersistentShell,
+} from './persistent-shell-protocol'
 
 interface ProcessEntry {
   process: ChildProcess
@@ -36,6 +45,18 @@ const backgroundByPid = new Map<number, ProcessEntry>()
 
 const OUTPUT_LIMIT = 1024 * 1024 // 1MB max output per process
 const DEFAULT_TIMEOUT = 60_000 // 60s idle
+
+/** The idle-timeout death notice, shared by both foreground paths
+ *  (PLAN-tool-issues #10, 2026-10-28). The child is killed after producing
+ *  nothing for the whole window; the old one-liner left the model to guess
+ *  whether that meant "hung" or merely "quiet", and a long silent job (big
+ *  grep, sleep-and-poll) got retried into the same wall. The notice names the
+ *  rule and the escape hatch. The wall-clock cap keeps its own distinct line so
+ *  the two deaths stay tellable apart. Probes match on `with no output`. */
+export function idleTimeoutNotice(timeoutMs: number): string {
+  const s = timeoutMs / 1000
+  return `\n[Command timed out after ${s}s with no output — idle timeout: nothing reached stdout/stderr for ${s}s, so the process was killed; it may have been working quietly. For long-running or quiet jobs use background: true]`
+}
 
 /**
  * Absolute cap on a FOREGROUND command's total lifetime (PLAN-coding-contract
@@ -127,19 +148,376 @@ export interface TerminalEmitSink {
   error(processId: string, message: string): void
 }
 
-/** Spawn a streaming command. Returns the processId; output arrives via `emit`.
- *  Async only to gate the spawn on the launch hooks (both callers — the IPC
- *  handler and the main-process agent host — already await). */
-export async function svcExecuteCommand(
+// ── Persistent shell per engine (review P0-1, 2026-10-28) ────────────────────
+//
+// Agent `exec` (foreground, non-Windows) runs inside ONE long-lived shell per
+// engine — keyed by session + the engine's conversationId, so a parent and its
+// parallel sub-agents each hold their own — instead of a fresh `bash -c` per
+// command. cd / export / source / nvm use carry over between commands. The
+// wire format lives in persistent-shell-protocol.ts; the runtime contracts:
+//
+//  - The shell is spawned detached (its own process group) with FOUR stdio
+//    pipes; fd 3 is the control channel the completion sentinel rides. stdout
+//    and stderr stream raw, exactly as the per-command spawn did.
+//  - fd 3 and the output pipes are read independently, so the sentinel can be
+//    observed BEFORE the last stdout bytes of the same command — completion
+//    waits for a short quiet window on the output streams (what the command
+//    wrote is already in the kernel buffer and drains in a few ticks; nothing
+//    new starts until the next command is written). A grandchild left behind
+//    with `&` keeps writing after that and is dropped (or misattributed to the
+//    next command) — background: true is the sanctioned shape, as before.
+//  - One command in flight per shell (promise-chain lock). The per-command
+//    processId facade is unchanged, so the terminal bus, the span filter and
+//    the kill button work untouched.
+//  - idle / wall-clock / 1MB cap keep their exact notices (probes match on
+//    them); the kill is a PROCESS GROUP kill — the shell dies with the command
+//    — and the next command rebuilds the shell at the last-known cwd (the
+//    sentinel reports $PWD on every completion). Exported env is lost on a
+//    rebuild; the restart notice says so. `exit` typed by the model is the
+//    same path.
+//  - Windows and the renderer IPC terminal keep the per-command spawn below
+//    (usesPersistentShell). PM_PERSISTENT_SHELL=0 is the runtime kill switch.
+
+const PERSISTENT_SHELL_BIN = existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh'
+/** Quiet window the output streams must hold after the sentinel before a
+ *  command is declared complete, and the cap that keeps a chatty orphan from
+ *  stalling the next command forever. */
+const COMPLETION_DRAIN_MS = 4
+const COMPLETION_DRAIN_MAX_MS = 200
+
+interface InFlightCommand {
+  processId: string
+  emit: TerminalEmitSink
+  stdoutLen: number
+  bytesSeen: number
+  idleTimer: NodeJS.Timeout | null
+  wallTimer: NodeJS.Timeout | null
+  drainTimer: NodeJS.Timeout | null
+  resetIdle: () => void
+  release: () => void
+  killing: boolean
+  finalized: boolean
+  pendingNotice: string | null
+  pendingSignal: 'SIGTERM' | 'SIGKILL' | null
+}
+
+interface PersistentShell {
+  key: string
+  sessionId: string
+  child: ChildProcess
+  outDecoder: ReturnType<typeof createStreamDecoder>
+  errDecoder: ReturnType<typeof createStreamDecoder>
+  ctlDecoder: ReturnType<typeof createStreamDecoder>
+  ctlBuf: string
+  inFlight: InFlightCommand | null
+  dead: boolean
+}
+
+const persistentShells = new Map<string, PersistentShell>()
+const persistentLocks = new Map<string, Promise<void>>()
+/** Last $PWD each shell reported — outlives the shell so a rebuild resumes
+ *  there, and is what a cwd-less `background: true` inherits. */
+const persistentCwd = new Map<string, string>()
+const inFlightByProcessId = new Map<string, PersistentShell>()
+
+function clearCommandTimers(f: InFlightCommand): void {
+  if (f.idleTimer) { clearTimeout(f.idleTimer); f.idleTimer = null }
+  if (f.wallTimer) { clearTimeout(f.wallTimer); f.wallTimer = null }
+  if (f.drainTimer) { clearTimeout(f.drainTimer); f.drainTimer = null }
+}
+
+function killShellGroup(shell: PersistentShell, force: boolean): void {
+  const sig = force ? 'SIGKILL' : 'SIGTERM'
+  const pid = shell.child.pid
+  if (!pid) return
+  // Negative pid = the whole process group (the shell is its leader thanks to
+  // detached: true), so the foreground command and its children go with it.
+  try { process.kill(-pid, sig) } catch { try { shell.child.kill(sig) } catch { /* already gone */ } }
+}
+
+/** Kill the command in flight (and, unavoidably, its shell). The exit handler
+ *  owns the report: it flushes the tails, emits `notice`, then exit(null, sig). */
+function killInFlight(shell: PersistentShell, notice: string | null, force: boolean): void {
+  const f = shell.inFlight
+  if (!f || f.killing || f.finalized) return
+  f.killing = true
+  f.pendingNotice = notice
+  f.pendingSignal = force ? 'SIGKILL' : 'SIGTERM'
+  clearCommandTimers(f)
+  killShellGroup(shell, force)
+  if (!force) setTimeout(() => { if (!shell.dead) killShellGroup(shell, true) }, 3000)
+}
+
+function flushShellTails(shell: PersistentShell, f: InFlightCommand): void {
+  const outTail = shell.outDecoder.flush()
+  if (outTail) f.emit.output(f.processId, 'stdout', outTail)
+  const errTail = shell.errDecoder.flush()
+  if (errTail) f.emit.output(f.processId, 'stderr', errTail)
+}
+
+function detachInFlight(shell: PersistentShell, f: InFlightCommand): void {
+  clearCommandTimers(f)
+  f.finalized = true
+  shell.inFlight = null
+  inFlightByProcessId.delete(f.processId)
+}
+
+function onShellOutput(shell: PersistentShell, type: 'stdout' | 'stderr', text: string): void {
+  const f = shell.inFlight
+  if (!f || !text || f.killing || f.finalized) return
+  f.bytesSeen += text.length
+  f.resetIdle()
+  if (type === 'stdout') {
+    const before = f.stdoutLen
+    f.stdoutLen += text.length
+    if (f.stdoutLen > OUTPUT_LIMIT) {
+      // Same cap + kill + notice as the per-command path; the head that fits
+      // still goes out so the kept prefix is in the result.
+      const room = OUTPUT_LIMIT - before
+      if (room > 0) f.emit.output(f.processId, 'stdout', text.slice(0, room))
+      killInFlight(shell, '\n[Output limit exceeded: 1MB — the process was stopped; output past the cap was discarded, the kept head is in this result]', false)
+      return
+    }
+  }
+  f.emit.output(f.processId, type, text)
+}
+
+function completeCommand(shell: PersistentShell, f: InFlightCommand, code: number): void {
+  detachInFlight(shell, f)
+  flushShellTails(shell, f)
+  f.emit.exit(f.processId, code, null)
+  f.release()
+}
+
+function scheduleCompletion(shell: PersistentShell, f: InFlightCommand, code: number): void {
+  // The command is done — only the drain remains, so the idle clock is moot.
+  if (f.idleTimer) { clearTimeout(f.idleTimer); f.idleTimer = null }
+  const deadline = Date.now() + COMPLETION_DRAIN_MAX_MS
+  let seen = f.bytesSeen
+  const tick = (): void => {
+    f.drainTimer = null
+    if (f.finalized || f.killing) return
+    if (f.bytesSeen !== seen && Date.now() < deadline) {
+      seen = f.bytesSeen
+      f.drainTimer = setTimeout(tick, COMPLETION_DRAIN_MS)
+      return
+    }
+    completeCommand(shell, f, code)
+  }
+  f.drainTimer = setTimeout(tick, COMPLETION_DRAIN_MS)
+}
+
+function onControlData(shell: PersistentShell, chunk: Buffer): void {
+  shell.ctlBuf += shell.ctlDecoder.push(chunk)
+  let nl: number
+  while ((nl = shell.ctlBuf.indexOf('\n')) >= 0) {
+    const line = shell.ctlBuf.slice(0, nl)
+    shell.ctlBuf = shell.ctlBuf.slice(nl + 1)
+    const parsed = parseControlLine(line)
+    const f = shell.inFlight
+    if (!parsed || !f || f.killing || f.finalized || parsed.id !== f.processId) continue
+    persistentCwd.set(shell.key, parsed.cwd)
+    scheduleCompletion(shell, f, parsed.code)
+  }
+}
+
+function onShellExit(shell: PersistentShell, code: number | null, signal: NodeJS.Signals | null): void {
+  shell.dead = true
+  if (persistentShells.get(shell.key) === shell) persistentShells.delete(shell.key)
+  const f = shell.inFlight
+  if (!f || f.finalized) return
+  detachInFlight(shell, f)
+  flushShellTails(shell, f)
+  if (f.pendingNotice) f.emit.output(f.processId, 'stderr', f.pendingNotice)
+  f.emit.output(f.processId, 'stderr', persistentRestartNotice(f.killing ? undefined : code))
+  if (f.killing) f.emit.exit(f.processId, null, f.pendingSignal)
+  else f.emit.exit(f.processId, code, signal)
+  f.release()
+}
+
+function onShellError(shell: PersistentShell, err: Error): void {
+  shell.dead = true
+  if (persistentShells.get(shell.key) === shell) persistentShells.delete(shell.key)
+  const f = shell.inFlight
+  if (!f || f.finalized) return
+  detachInFlight(shell, f)
+  // Mirror the per-command 'error' path: error + exit so the executor settles.
+  f.emit.error(f.processId, `Failed to spawn process: ${err.message}`)
+  f.emit.exit(f.processId, null, 'SIGTERM')
+  f.release()
+}
+
+function acquireShell(ctx: SessionSandboxContext, key: string): PersistentShell {
+  const existing = persistentShells.get(key)
+  if (existing && !existing.dead) return existing
+  const remembered = persistentCwd.get(key)
+  const startCwd = remembered && existsSync(remembered) ? remembered : (ctx.workspaceDir || getHomeDir())
+  ensureWorkspaceCwd(startCwd)
+  const env: NodeJS.ProcessEnv = { ...process.env, ...getHookEnv() }
+  // A user BASH_ENV is the one file a non-interactive bash still sources —
+  // not into the agent's shell.
+  delete env.BASH_ENV
+  const child = spawn(PERSISTENT_SHELL_BIN, [], {
+    cwd: startCwd,
+    stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    env,
+    detached: true,
+  })
+  const shell: PersistentShell = {
+    key,
+    sessionId: ctx.sessionId,
+    child,
+    outDecoder: createStreamDecoder(),
+    errDecoder: createStreamDecoder(),
+    ctlDecoder: createStreamDecoder(),
+    ctlBuf: '',
+    inFlight: null,
+    dead: false,
+  }
+  child.stdin?.on('error', () => { /* EPIPE after death — the exit handler owns the report */ })
+  child.stdout?.on('data', (chunk: Buffer) => onShellOutput(shell, 'stdout', shell.outDecoder.push(chunk)))
+  child.stderr?.on('data', (chunk: Buffer) => onShellOutput(shell, 'stderr', shell.errDecoder.push(chunk)))
+  const ctl = child.stdio[3] as Readable | null | undefined
+  ctl?.on('data', (chunk: Buffer) => onControlData(shell, chunk))
+  child.on('exit', (code, signal) => onShellExit(shell, code, signal))
+  child.on('error', (err) => onShellError(shell, err))
+  persistentShells.set(key, shell)
+  return shell
+}
+
+function beginCommand(
+  shell: PersistentShell,
+  processId: string,
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number | undefined,
+  emit: TerminalEmitSink,
+  release: () => void,
+): void {
+  const effectiveTimeout = (timeoutMs != null && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT
+  const f: InFlightCommand = {
+    processId, emit, stdoutLen: 0, bytesSeen: 0,
+    idleTimer: null, wallTimer: null, drainTimer: null,
+    resetIdle: () => {}, release,
+    killing: false, finalized: false, pendingNotice: null, pendingSignal: null,
+  }
+  f.resetIdle = () => {
+    if (f.finalized || f.killing) return
+    if (f.idleTimer) clearTimeout(f.idleTimer)
+    f.idleTimer = setTimeout(() => killInFlight(shell, idleTimeoutNotice(effectiveTimeout), false), effectiveTimeout)
+  }
+  shell.inFlight = f
+  inFlightByProcessId.set(processId, shell)
+  f.resetIdle()
+  f.wallTimer = setTimeout(
+    () => killInFlight(shell, `\n[Command exceeded the ${WALL_CLOCK_MAX_MS / 1000}s wall-clock limit (total duration)]`, true),
+    WALL_CLOCK_MAX_MS,
+  )
+  try {
+    shell.child.stdin?.write(persistentCommandScript(command, processId, cwd))
+  } catch {
+    /* a dead shell reports through its exit/error handler */
+  }
+}
+
+async function execInPersistentShell(
+  ctx: SessionSandboxContext,
+  key: string,
   command: string,
   cwd: string | undefined,
   timeoutMs: number | undefined,
   emit: TerminalEmitSink,
 ): Promise<string> {
+  const processId = randomUUID()
+  auditStore.record({ scope: 'project', actor: ctx.sessionId, action: 'exec', target: command.slice(0, 160), decision: 'allowed' })
+  // Serialize per shell: wait for the previous command's completion, and hand
+  // the next caller OUR completion. The processId goes back as soon as the
+  // command is on the wire — events flow through `emit` afterwards, exactly
+  // like the per-command spawn.
+  const prev = persistentLocks.get(key) ?? Promise.resolve()
+  let released = false
+  let release: () => void = () => {}
+  const done = new Promise<void>((resolve) => {
+    release = () => { if (released) return; released = true; resolve() }
+  })
+  persistentLocks.set(key, done)
+  await prev
+  if (!command.trim()) {
+    // `{ }` is a syntax error; an empty command has nothing to run. Async so
+    // the caller claims the pid before the exit lands (the span parks early
+    // events anyway — this just keeps the order the spawn path had).
+    setImmediate(() => { emit.exit(processId, 0, null); release() })
+    return processId
+  }
+  try {
+    const shell = acquireShell(ctx, key)
+    if (cwd) ensureWorkspaceCwd(cwd)
+    beginCommand(shell, processId, command, cwd, timeoutMs, emit, release)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    setImmediate(() => {
+      emit.error(processId, `Failed to spawn process: ${message}`)
+      emit.exit(processId, null, 'SIGTERM')
+      release()
+    })
+  }
+  return processId
+}
+
+/** Session teardown: kill every shell this session owns (its own and its
+ *  sub-agents'), forget their cwd memory and locks. A command in flight is
+ *  force-killed and reports through the exit handler like any other kill. */
+export function svcReapSessionShells(sessionId: string): void {
+  for (const [key, shell] of [...persistentShells]) {
+    if (!isSessionShellKey(key, sessionId)) continue
+    persistentShells.delete(key)
+    if (shell.inFlight) {
+      killInFlight(shell, null, true)
+    } else {
+      killShellGroup(shell, false)
+      setTimeout(() => { if (!shell.dead) killShellGroup(shell, true) }, 3000)
+    }
+  }
+  for (const key of [...persistentCwd.keys()]) if (isSessionShellKey(key, sessionId)) persistentCwd.delete(key)
+  for (const key of [...persistentLocks.keys()]) if (isSessionShellKey(key, sessionId)) persistentLocks.delete(key)
+}
+
+/** The last directory the engine's shell reported, if it has run anything. */
+function persistentShellCwd(ctx: SessionSandboxContext | null, shellKey: string | undefined): string | undefined {
+  if (!ctx) return undefined
+  const remembered = persistentCwd.get(persistentShellKey(ctx.sessionId, shellKey))
+  return remembered && existsSync(remembered) ? remembered : undefined
+}
+
+// Detached shells are not reaped by the OS when main exits (that is what
+// detached means) — they would read EOF on stdin and leave on their own, but a
+// foreground command would run to completion first. Sweep them on the way out.
+process.once('exit', () => {
+  for (const shell of persistentShells.values()) killShellGroup(shell, true)
+})
+
+/** Spawn a streaming command. Returns the processId; output arrives via `emit`.
+ *  Async only to gate the spawn on the launch hooks (both callers — the IPC
+ *  handler and the main-process agent host — already await).
+ *
+ *  Agent sessions off Windows run inside the engine's persistent shell above;
+ *  `shellKey` (the engine's conversationId) tells sub-agents apart. Everything
+ *  else — Windows, the renderer IPC terminal — takes the per-command spawn. */
+export async function svcExecuteCommand(
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number | undefined,
+  emit: TerminalEmitSink,
+  shellKey?: string,
+): Promise<string> {
   // Launch hooks may still be running when the first command arrives (they no
   // longer block window creation) — their env (hookEnv + login-shell PATH)
   // must be in place before the first subprocess spawns.
   await ensureLaunchHooks()
+  const sessionCtx = currentSessionSandbox()
+  if (sessionCtx && usesPersistentShell(process.platform, true)) {
+    return execInPersistentShell(sessionCtx, persistentShellKey(sessionCtx.sessionId, shellKey), command, cwd, timeoutMs, emit)
+  }
   const processId = randomUUID()
 
   // Use powershell.exe on Windows (has Unix aliases: ls, cat, pwd, cp, mv, rm);
@@ -207,7 +585,7 @@ export async function svcExecuteCommand(
         }
         const errTail = errDecoder.flush()
         if (errTail) emit.output(processId, 'stderr', errTail)
-        emit.output(processId, 'stderr', `\n[Command timed out after ${effectiveTimeout / 1000}s with no output]`)
+        emit.output(processId, 'stderr', idleTimeoutNotice(effectiveTimeout))
         emit.exit(processId, null, 'SIGTERM')
         processes.delete(processId)
       }
@@ -301,8 +679,15 @@ export async function svcExecuteCommand(
   return processId
 }
 
-/** Kill a running process by id (escalates to force-kill after 3s). */
+/** Kill a running process by id (escalates to force-kill after 3s). A
+ *  persistent-shell command is killed with its shell (group kill); the shell's
+ *  exit handler reports it and the next command rebuilds. */
 export function svcKillCommand(processId: string): void {
+  const shell = inFlightByProcessId.get(processId)
+  if (shell) {
+    killInFlight(shell, null, false)
+    return
+  }
   const entry = processes.get(processId)
   if (!entry || entry.process.killed) return
 
@@ -366,7 +751,7 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
       idleTimer = setTimeout(() => {
         killProcess({ process: child } as ProcessEntry)
         flushDecoders()
-        output += `\n[Command timed out after ${effectiveTimeout / 1000}s with no output]`
+        output += idleTimeoutNotice(effectiveTimeout)
         resolve({ output, code: null })
       }, effectiveTimeout)
     }
@@ -418,8 +803,11 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
 //    governs in-memory strings only, and a dev server inside a TTL window can
 //    write far more than that.
 //  - On exit the log tail gains `[exited code=N]`: the tool result already
-//    settled, so no tool_status event will ever fire — exec_logs doubles as the
-//    death-discovery channel (no exit push in v1).
+//    settled, so no tool_status event will ever fire. Since 2026-10-28 the exit
+//    moment ALSO pushes a wake-up notice to the owning session's engine
+//    (notifySessionBackgroundExit → session-manager → engine queue → the next
+//    request's state block) — the model no longer has to remember to poll;
+//    exec_logs stays the full-output discovery channel.
 
 /** Append-only background log handle: content stops at the cap (with a marker
  *  line), while the exit line below still lands — it is the death signal. */
@@ -463,16 +851,27 @@ function openProcLog(pid: number): ProcLog {
  *  UP — no timers, no idle/wall-clock kills (P0-3 #13): longevity is the point.
  *  The pid registers in the session's backgroundPids (exec_logs/exec_kill only
  *  answer for those) and is deliberately NOT reported to the engine's
- *  executingProcessId, whose five kill-on-cleanup sites must never reap it. */
-export async function svcExecuteBackground(command: string, cwd?: string): Promise<{ pid: number; processId: string }> {
+ *  executingProcessId, whose five kill-on-cleanup sites must never reap it.
+ *
+ *  A cwd-less call starts where the engine's persistent shell currently is
+ *  (`shellKey` = the engine's conversationId): the model's earlier `cd` moved
+ *  the foreground, and a dev server launched right after must not land back in
+ *  the workspace root. Falls through to the workspace when no shell has run. */
+export async function svcExecuteBackground(command: string, cwd?: string, shellKey?: string): Promise<{ pid: number; processId: string }> {
   await ensureLaunchHooks()
   const isWin = process.platform === 'win32'
+  // Shell selection (PLAN-tool-issues Z1-r, 2026-10-28): this path runs
+  // TOOL-written commands only (main-host executeBackground; the user's
+  // terminal never gets here), so it uses the same agent-side binary as the
+  // persistent shell. $SHELL here was the last zsh exposure — a background
+  // `grep --include=*.ts` died on zsh's nomatch after the same command passed
+  // in the foreground (~96 historical failures, 46 on 10-10 alone).
   const [shell, shellArgs] = isWin
     ? ['powershell.exe', ['-NoProfile', '-Command', `${WIN_PS_UTF8_PREFIX}${command}`]]
-    : [process.env.SHELL || '/bin/bash', ['-c', command]]
+    : [PERSISTENT_SHELL_BIN, ['-c', command]]
 
   const sandboxCtx = currentSessionSandbox()
-  const effectiveCwd = cwd || sandboxCtx?.workspaceDir || getHomeDir()
+  const effectiveCwd = cwd || persistentShellCwd(sandboxCtx, shellKey) || sandboxCtx?.workspaceDir || getHomeDir()
   ensureWorkspaceCwd(effectiveCwd)
   if (sandboxCtx) {
     auditStore.record({ scope: 'project', actor: sandboxCtx.sessionId, action: 'exec', target: `[background] ${command.slice(0, 150)}`, decision: 'allowed' })

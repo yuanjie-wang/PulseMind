@@ -130,11 +130,12 @@ describe('terminal.ts wiring', () => {
   const TERMINAL = join(REPO, 'src', 'main', 'services', 'terminal.ts')
   const src = readFileSync(TERMINAL, 'utf-8')
 
-  it('decodes every pipe stream through createStreamDecoder (6 sites)', () => {
+  it('decodes every pipe stream through createStreamDecoder (9 sites)', () => {
     expect(src).toContain("from './stream-decoder'")
     // svcExecuteCommand, svcExecSync and svcExecuteBackground each decode
-    // stdout+stderr (PLAN-coding-contract P0-3 added the background pair).
-    expect((src.match(/createStreamDecoder\(\)/g) ?? []).length).toBe(6)
+    // stdout+stderr (PLAN-coding-contract P0-3 added the background pair); the
+    // persistent shell (review P0-1) adds stdout+stderr+the fd-3 control pipe.
+    expect((src.match(/createStreamDecoder\(\)/g) ?? []).length).toBe(9)
     // No raw per-chunk decode left anywhere in the service.
     expect(src).not.toMatch(/\.toString\(['"]utf-?8['"]\)/)
   })
