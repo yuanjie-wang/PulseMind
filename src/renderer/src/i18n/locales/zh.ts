@@ -475,6 +475,8 @@ const zh = {
     sweepNow: '立即提取',
     sweepDone: '提取完成：处理了 {{count}} 个会话',
     sweepFailed: '提取失败',
+    lastSweep: '上次提取：{{time}}',
+    lastSweepNever: '尚未提取',
   },
   memoryPages: {
     browseTitle: '已提取的记忆',

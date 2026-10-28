@@ -480,6 +480,8 @@ const en: TranslationDict = {
     sweepNow: 'Extract now',
     sweepDone: 'Extraction finished: {{count}} conversation(s) processed',
     sweepFailed: 'Extraction failed',
+    lastSweep: 'Last extraction: {{time}}',
+    lastSweepNever: 'Never extracted',
   },
   memoryPages: {
     browseTitle: 'Extracted memories',

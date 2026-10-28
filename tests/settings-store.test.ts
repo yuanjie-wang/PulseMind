@@ -333,3 +333,16 @@ describe('SettingsStore — concurrent writers (PLAN-parallel-experts T10)', () 
     expect(readRaw().myName).toBe('after-failure')
   })
 })
+
+/** 上次记忆提取时刻（2026-10-28：设置面板展示「上次提取」）。运行态字段与
+ *  last-used 同病同治：get() 是逐字段重建，漏了归一化就是写进去读不出来。 */
+describe('memoryLastSweepAt', () => {
+  it('round-trips through update() and normalizes on get()', async () => {
+    const store = await freshStore()
+    await store.update((s) => ({ ...s, memoryLastSweepAt: '2026-10-28T08:30:00.000Z' }))
+    expect((await store.get()).memoryLastSweepAt).toBe('2026-10-28T08:30:00.000Z')
+    // 非字符串视为缺失（类型不合法就读成 undefined，不是把脏值透传给 UI）
+    writeRaw({ ...RAW_BASE, memoryLastSweepAt: 42 })
+    expect((await (await freshStore()).get()).memoryLastSweepAt).toBeUndefined()
+  })
+})

@@ -19,8 +19,13 @@
 export interface StreamThrottle {
   /** Feed the live text at time `now`; returns the (possibly stale) text that
    *  should be rendered now. Idempotent: feeding the shown text again is a
-   *  no-op, so React StrictMode's double render cannot advance the clock. */
-  feed(text: string, now: number): string
+   *  no-op, so React StrictMode's double render cannot advance the clock.
+   *  `force` bypasses the interval gate for THIS feed — the tool-call flush:
+   *  an execution segment mounting below the sentence must not outrun the
+   *  sentence's frozen tail (2026-10-28 report), so the boundary tick advances
+   *  the snapshot whatever the clock says. A forced advance re-arms the clock,
+   *  so the normal cadence resumes from the flush. */
+  feed(text: string, now: number, force?: boolean): string
   /** Drop the frozen snapshot (unmount / a new stream beginning). */
   reset(): void
 }
@@ -29,9 +34,9 @@ export function createTextThrottle(minIntervalMs: number): StreamThrottle {
   let shown = ''
   let lastAt = -Infinity
   return {
-    feed(text: string, now: number): string {
+    feed(text: string, now: number, force = false): string {
       if (text === shown) return shown
-      if (now - lastAt >= minIntervalMs) {
+      if (force || now - lastAt >= minIntervalMs) {
         shown = text
         lastAt = now
       }

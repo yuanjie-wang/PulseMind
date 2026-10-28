@@ -185,6 +185,9 @@ export interface AppSettings {
   memoryExtractIntervalHours?: number
   /** 记忆 wiki 化一次性迁移完成时刻（ISO）；存在即不再跑（PLAN-memory-wiki M5）。 */
   memoryPagesMigratedAt?: string
+  /** 上次记忆提取清扫完成时刻（ISO）。主进程每轮 sweep 跑完落笔（定时与手动
+   *  同源）；渲染端整存时由 SETTINGS_SET 保留——运行态字段，渲染端快照必旧。 */
+  memoryLastSweepAt?: string
   /** 页面编译 watermark（PLAN-memory-wiki M6）。lastCursorAt（2026-10-27 分区
    *  整理）：选页游标（ISO）——下轮从 createdAt 晚于它的页起转，是位置不是成绩。 */
   memoryCompileWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string; lastCursorAt?: string }

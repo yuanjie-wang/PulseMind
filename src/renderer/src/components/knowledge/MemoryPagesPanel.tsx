@@ -1,7 +1,9 @@
 // ── Memory pages browser（PLAN-capability-followups E5/E1，2026-10-25）──
 // 记忆页（偏好/决策/事实）与经验页的共享浏览件：类型过滤 + FTS 搜索 + 详情
 // Modal（正文/别名/links/取代谱系/脚本只读）。两个宿主：
-//   - MemorySettings（E5：记忆浏览面，type 过滤非 experience）——无头卡，正文即卡；
+//   - MemorySettings（E5：记忆浏览面，不含经验——类型筛选只给记忆三型，「全部」与
+//     搜索两路也排除 experience，见 load；2026-10-28 用户裁定「记忆中不用出现经验」）
+//     ——无头卡，正文即卡；
 //   - CapabilityCenter 经验分区（E1：type 锁定 experience）——**技能卡同壳**
 //     （CapabilityCard，2026-10-26 用户裁定「经验卡片的样式应该和普通技能一致」）：
 //     同头部/圆角/动作区/栅格，点卡进三栏浏览器。
@@ -147,9 +149,16 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
     setLoading(true)
     try {
       const type = (fixedType ?? (typeFilter === 'all' ? undefined : typeFilter)) as MemoryPageType | undefined
-      const next = submitted
-        ? await window.electronAPI.searchMemoryPages({ query: submitted, type, limit: 200 })
-        : await window.electronAPI.listMemoryPages(type)
+      // 记忆筐不含经验（2026-10-28 用户裁定「记忆中不用出现经验」——经验已独立为
+      // 特殊技能，归技能中心经验分区）：无 fixedType 的宿主在「全部」与搜索两条路
+      // 上都排除 experience，与 recall 的消费面排除同款纪律；类型筛选档位已无经验，
+      // 漏的只有 type=undefined 这条 store 全类型返回的路。
+      const memoryOnly = (rs: MemoryPageRecord[]) => (fixedType ? rs : rs.filter((r) => r.type !== 'experience'))
+      const next = memoryOnly(
+        submitted
+          ? await window.electronAPI.searchMemoryPages({ query: submitted, type, limit: 200 })
+          : await window.electronAPI.listMemoryPages(type)
+      )
       setPages(next)
       if (!submitted) onCountRef.current?.(next.length)
     } finally {
@@ -261,7 +270,10 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
         />
       </div>
 
-      {loading ? (
+      {/* 换新不塌高（用户报告：切类型标签页面跳回顶部）：已有数据时保留旧列表，
+          半透明过渡到新结果——整卡换成 40px 的 Spin 会让设置面板的内容高度骤减，
+          滚动容器被 clamp 上移且一去不回。Spin 只留给尚无数据的首次加载。 */}
+      {loading && pages.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
       ) : pages.length === 0 ? (
         skillCardStyle
@@ -271,7 +283,7 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
         // 技能中心经验分区：与 SkillCard 同壳同栅格——头部 icon+title+徽标（SOP/旧版本
         // 站在 内置 徽标的位置），动作区在头部（固化·删除，删除在后且 danger），
         // 正文位放技能式 description（summary），点卡进三栏浏览器。
-        <div style={CAPABILITY_GRID}>
+        <div style={{ ...CAPABILITY_GRID, opacity: loading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {pages.map((p) => (
             <CapabilityCard
               key={p.id}
@@ -318,7 +330,7 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
           ))}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12, opacity: loading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {pages.map((p) => (
             <div
               key={p.id}

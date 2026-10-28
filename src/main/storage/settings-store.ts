@@ -662,6 +662,9 @@ export class SettingsStore {
               ? parsed.memoryExtractIntervalHours
               : 6,
           memoryPagesMigratedAt: typeof parsed.memoryPagesMigratedAt === 'string' ? parsed.memoryPagesMigratedAt : undefined,
+          // 上次记忆提取完成时刻（运行态，主进程 sweep 落笔）：get() 是逐字段
+          // 重建，漏了这里就是写进去读不出来 + 下次整存被抹掉（同 last-used）。
+          memoryLastSweepAt: typeof parsed.memoryLastSweepAt === 'string' ? parsed.memoryLastSweepAt : undefined,
           memoryCompileWatermark: readMergeWatermark(parsed.memoryCompileWatermark),
           // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
           // get() 是逐字段重建，漏掉这里就是写进去读不出来 + 下次整存被抹掉。

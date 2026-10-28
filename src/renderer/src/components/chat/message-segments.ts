@@ -11,7 +11,12 @@ import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent
 export type Segment =
   | { type: 'single'; msg: AgentMessage }
   | { type: 'execution'; msgs: AgentMessage[] }
-  | { type: 'streaming'; blocks: ContentBlock[] }
+  | { type: 'streaming'; blocks: ContentBlock[]; /** The round's tool call has
+      * begun streaming: the flush signal StreamingText feeds its parse
+      * throttle, so the sentence a tool card follows is complete in the same
+      * render the card mounts (2026-10-28 report — the 150ms throttle
+      * otherwise let the card outrun the frozen tail by up to one interval). */
+      toolsStarted?: boolean }
 
 /** Split segments rename their message copy (`__text` / `__exec` / `__ask`, the
  *  `groupMessages` breakpoint ids below); the mirror still holds the UNSUFFIXED
@@ -260,9 +265,12 @@ export function buildSegments(input: BuildSegmentsInput): Segment[] {
         })
       }
     }
-    // Text streams as a streaming segment
+    // Text streams as a streaming segment. toolsStarted rides the round's
+    // tool_use presence — streamingBlocks derives from currentAssistantBlocks,
+    // so once the block exists it is in every tick until commit (the flag
+    // never flips back within a round).
     if (textBlocks.length > 0) {
-      segs.push({ type: 'streaming', blocks: textBlocks })
+      segs.push({ type: 'streaming', blocks: textBlocks, toolsStarted: toolBlocks.length > 0 })
     }
     // Tool_use blocks: accumulate across renders and merge into a single synthetic message.
     if (toolBlocks.length > 0) {

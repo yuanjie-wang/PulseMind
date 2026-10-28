@@ -1,8 +1,11 @@
 /**
- * The one-line description of a tool call. It is the tool block's collapsed
- * header and each row of the approval area (`ApprovalArea`), so what a user approves
- * is word-for-word what the header said — the same string from one place, not two
- * that drift.
+ * The one-line description of a tool call, in two halves: the human label
+ * (`toolDisplayName`) and the detail (`toolDetailSummary`). The tool block's
+ * collapsed header and each row of the approval area (`ApprovalArea`) paint the
+ * label in bold and the detail beside it, so what a user approves is word-for-word
+ * what the header said — the same two strings from one place, not two that drift.
+ * `toolBlockSummary` joins the halves (`label · detail`) for surfaces with no
+ * bold label slot of their own — the execution segment's collapsed narration.
  *
  * PLAN-tool-ux T1 (裁定 D1=C): the label is human ("运行命令"), the OBJECT stays
  * verbatim (paths, commands, queries — never translated or paraphrased, the
@@ -115,20 +118,27 @@ export function subAgentSessionTitle(block: ToolUseBlock, fallback = '子代理�
   return expert || task || fallback
 }
 
+/** The half after the label: the object when the family has one, else the
+ *  unknown family's (MCP / user tools, spawn_agent, git_status, …) historical
+ *  `k=v` of the first input entry, description excluded — it is the model's
+ *  own intent, shown on the expanded card, not the object. Empty when the call
+ *  carries nothing to show. This is what a header that already paints the
+ *  label in bold renders beside it — `toolBlockSummary` there repeated the
+ *  label (「运行命令  运行命令 · npm test」, user 2026-10-28). */
+export function toolDetailSummary(block: ToolUseBlock): string {
+  const object = toolObjectSummary(block)
+  if (object) return object
+  const input = block.input
+  if (!input) return ''
+  const entries = Object.entries(input).filter(([k]) => k !== 'description')
+  if (entries.length === 0) return ''
+  const [k, v] = entries[0]
+  const val = typeof v === 'string' ? (v.length > 40 ? v.slice(0, 37) + '...' : v) : JSON.stringify(v).slice(0, 40)
+  return `${k}=${val}`
+}
+
 export function toolBlockSummary(block: ToolUseBlock, t?: ToolTranslator): string {
   const label = toolDisplayName(block.name, t)
-  const object = toolObjectSummary(block)
-  if (!object) {
-    // Unknown family (MCP / user tools, spawn_agent, git_status, …): the
-    // historical `k=v` of the first input entry, description excluded — it is
-    // the model's own intent, shown on the expanded card, not the object.
-    const input = block.input
-    if (!input) return label
-    const entries = Object.entries(input).filter(([k]) => k !== 'description')
-    if (entries.length === 0) return label
-    const [k, v] = entries[0]
-    const val = typeof v === 'string' ? (v.length > 40 ? v.slice(0, 37) + '...' : v) : JSON.stringify(v).slice(0, 40)
-    return `${label} · ${k}=${val}`
-  }
-  return `${label} · ${object}`
+  const detail = toolDetailSummary(block)
+  return detail ? `${label} · ${detail}` : label
 }

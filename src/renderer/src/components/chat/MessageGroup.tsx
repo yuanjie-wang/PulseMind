@@ -26,7 +26,7 @@ import { notify } from '../../utils/notify'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard, { AskUserBatchCard } from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
-import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
+import { toolDetailSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
 import { ThinkingBlockView, ThinkingRedactedRow } from './ThinkingBlockView'
@@ -128,7 +128,9 @@ function CollapsibleToolBlock({
   awaitingApproval?: boolean
 }): React.ReactElement {
   const { t } = useTranslation()
-  const summary = toolBlockSummary(block, t)
+  // The detail half only — the bold span beside it already names the verb, and
+  // `toolBlockSummary` would print it a second time (「运行命令  运行命令 · …」).
+  const summary = toolDetailSummary(block)
   // A call the ladder is holding: `pending` *and* the engine parked on it. The
   // parked half matters — a tool still being generated is 'pending' too, and it
   // has nothing to approve yet.
@@ -214,9 +216,9 @@ function CollapsibleToolBlock({
         >
           {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'var(--pm-text-muted)'}} /> : block.status === 'running' ? <LoadingOutlined spin /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <HourglassOutlined />}
         </span>
-        {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the summary */}
+        {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the detail half */}
         <span style={{ fontWeight: 600, color: 'var(--pm-text-strong)', flexShrink: 0, fontSize: 12 }}>{toolDisplayName(block.name, t)}</span>
-        {/* Summary */}
+        {/* Detail (object / k=v) — no label, the bold span carries it */}
         {summary && (
           <span style={{
             color: 'var(--pm-text-muted)',

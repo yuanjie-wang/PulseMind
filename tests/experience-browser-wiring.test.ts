@@ -164,3 +164,35 @@ describe('pick_skill 说明面提及经验', () => {
     expect(src).not.toContain('past decisions, playbooks, related past work')
   })
 })
+
+/** 记忆筐不含经验（2026-10-28 用户裁定「记忆中不用出现经验了，经验已独立为特殊skill」）。
+ *  设置面板记忆浏览（无 fixedType 宿主）此前只把经验挡在类型筛选选项外，「全部」档
+ *  传 undefined 让 store 全类型返回、搜索同路，经验卡混进记忆列表。断一处，经验卡
+ *  就重新混回「已提取的记忆」。 */
+describe('记忆浏览排除经验', () => {
+  it('MemoryPagesBrowser：无 fixedType 宿主在列表与搜索两路都过滤 experience', () => {
+    const src = read('src/renderer/src/components/knowledge/MemoryPagesPanel.tsx')
+    expect(src).toContain("rs.filter((r) => r.type !== 'experience')")
+    // 过滤键在宿主形态上：fixedType 宿主（技能中心经验分区）原样呈现
+    expect(src).toContain('fixedType ? rs :')
+  })
+  it('类型筛选档位仍无经验选项（Segmented 只给记忆三型）', () => {
+    const src = read('src/renderer/src/components/knowledge/MemoryPagesPanel.tsx')
+    const seg = src.slice(src.indexOf('options={['), src.indexOf('Input.Search'))
+    expect(seg).toContain("value: 'preference'")
+    expect(seg).toContain("value: 'fact'")
+    expect(seg).not.toContain("value: 'experience'")
+  })
+})
+
+/** 换新不塌高（2026-10-28 用户报告「切换记忆类型标签时，页面会重新滚动到顶部」）：
+ *  整卡换成 40px 的 Spin 会让设置面板内容高度骤减、滚动容器被 clamp 上移且不恢复，
+ *  列表回来时滚动已丢。断一处，切标签就重新闪 Spin + 跳顶。 */
+describe('记忆浏览换新不塌高', () => {
+  it('Spin 只留给尚无数据的首次加载；已有数据时旧列表半透明换新', () => {
+    const src = read('src/renderer/src/components/knowledge/MemoryPagesPanel.tsx')
+    expect(src).toContain('loading && pages.length === 0')
+    // 两个列表分支（技能壳栅格 / 记忆无头卡栅格）都要有换新提示
+    expect(src.match(/opacity: loading \? 0\.5 : 1/g)?.length).toBe(2)
+  })
+})

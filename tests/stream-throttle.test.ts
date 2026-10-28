@@ -54,3 +54,31 @@ describe('stream text throttle (M1-T3)', () => {
     expect(t.feed('new stream', 10)).toBe('new stream')
   })
 })
+
+// The tool-call flush (2026-10-28 report): an execution segment mounting below
+// the sentence must not outrun the sentence's frozen tail, so the boundary
+// feed carries force and the gate opens whatever the clock says.
+describe('stream text throttle force flush', () => {
+  it('force advances past the interval gate immediately', () => {
+    const t = createTextThrottle(150)
+    t.feed('hello,', 0)
+    expect(t.feed('hello, world', 100, true)).toBe('hello, world') // 100 < 150 — force wins
+  })
+
+  it('a forced advance re-arms the clock: the normal cadence resumes from the flush', () => {
+    const t = createTextThrottle(150)
+    t.feed('a', 0)
+    t.feed('ab', 10, true)
+    expect(t.feed('abc', 100)).toBe('ab') // 100 - 10 < 150 — frozen again
+    expect(t.feed('abcd', 160)).toBe('abcd')
+  })
+
+  it('force stays idempotent for the shown text (tool-args phase feeds change nothing)', () => {
+    const t = createTextThrottle(150)
+    t.feed('complete sentence', 0)
+    expect(t.feed('complete sentence', 10, true)).toBe('complete sentence')
+    // the no-op did not advance the clock either
+    expect(t.feed('complete sentence!', 100)).toBe('complete sentence')
+    expect(t.feed('complete sentence!', 150)).toBe('complete sentence!')
+  })
+})

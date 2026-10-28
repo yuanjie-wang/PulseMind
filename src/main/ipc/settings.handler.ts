@@ -28,6 +28,9 @@ export function registerSettingsHandlers(): void {
       const current = await settingsStore.get()
       settings.lastUsedApprovalMode = current.lastUsedApprovalMode
       settings.lastUsedProfileId = current.lastUsedProfileId
+      // 运行态时间戳（上次记忆提取）：主进程每轮 sweep 落笔，渲染端快照必旧
+      // ——同 last-used 的保底透传，整存不得悄悄回滚它。
+      settings.memoryLastSweepAt = current.memoryLastSweepAt
       if (settings.activeProfileId && settings.activeProfileId !== current.activeProfileId) {
         settings.lastUsedProfileId = settings.activeProfileId
       }

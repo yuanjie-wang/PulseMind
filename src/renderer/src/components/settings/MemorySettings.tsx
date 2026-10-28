@@ -7,6 +7,7 @@ import { Drawer, Typography, Button, Input, InputNumber, Space } from 'antd'
 import { BookOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify, notifyFailure } from '../../utils/notify'
+import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { useSettings } from '../../hooks/SettingsContext'
 import { MemoryManager } from '../../memory/MemoryManager'
 import FeatureSwitch, { SettingCard } from './FeatureSwitch'
@@ -24,10 +25,15 @@ interface MemorySettingsProps {
 function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettingsProps): React.ReactElement {
   const [mdContent, setMdContent] = useState('')
   const [sweeping, setSweeping] = useState(false)
+  // 上次自动记忆提取时刻：不读 useSettings 的启动快照——定时清扫由主进程随时
+  // 落笔，快照必旧；面板打开时和手动提取后各自 getSettings 取新鲜值。
+  const [lastSweepAt, setLastSweepAt] = useState<string | undefined>(undefined)
+  const [now, setNow] = useState(() => Date.now())
   const { t } = useTranslation()
   const { settings, saveSettings } = useSettings()
   const memoryOn = settings.memoryEnabled ?? true
   const intervalHours = settings.memoryExtractIntervalHours ?? 6
+  const lastSweepText = describeRelativeTimeText(lastSweepAt, now, t)
 
   const loadMd = useCallback(async () => {
     try {
@@ -42,6 +48,23 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
     if (open) loadMd()
   }, [open, loadMd])
 
+  // 相对文案的时钟（sidebar/welcome 同款 60s 粒度）——面板开着不动，文案也要走。
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
+
+  const loadLastSweep = useCallback(async () => {
+    try {
+      const fresh = await window.electronAPI.getSettings()
+      setLastSweepAt(fresh.memoryLastSweepAt)
+    } catch { /* 读不出就不显示——辅助信息不值得报错弹窗 */ }
+  }, [])
+
+  useEffect(() => {
+    if (open) void loadLastSweep()
+  }, [open, loadLastSweep])
+
   const handleSaveMd = async () => {
     await memoryManager.saveMemoryMd(mdContent)
     notify.success(t('memoryDrawer.manualMemoriesSaved'))
@@ -53,6 +76,8 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       const res = await window.electronAPI.runMemorySweepNow()
       if (res.error) notify.error(res.error)
       else notify.success(t('memoryDrawer.sweepDone', { count: res.extracted }))
+      // 主进程刚落笔了新的 memoryLastSweepAt——取新鲜值刷新展示行
+      await loadLastSweep()
     } catch (err) {
       notifyFailure('memory.sweep', err, t('memoryDrawer.sweepFailed'))
     } finally {
@@ -102,6 +127,12 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
         </Space>
         <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
           {t('memoryDrawer.extractIntervalHelp')}
+        </Text>
+        {/* 上次提取时刻（settings.memoryLastSweepAt，主进程 sweep 落笔）：相对文案
+            与 sidebar/welcome 同一套 describeRelativeTimeText；早退不算跑，无记录
+            =「尚未提取」。 */}
+        <Text type="secondary" style={{ display: 'block', marginTop: 2, fontSize: 12 }}>
+          {lastSweepText ? t('memoryDrawer.lastSweep', { time: lastSweepText }) : t('memoryDrawer.lastSweepNever')}
         </Text>
       </FeatureSwitch>
 

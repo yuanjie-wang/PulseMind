@@ -18,7 +18,7 @@ import { Button, Space } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import type { ToolUseBlock } from '../../types/agent'
 import { useTranslation } from '../../i18n/useTranslation'
-import { toolBlockSummary, toolDisplayName } from './tool-summary'
+import { toolDetailSummary, toolDisplayName } from './tool-summary'
 import { APPROVAL_IN_ANIM } from './motion'
 
 // The amber of the held tool headers (CollapsibleToolBlock's needsAction tint and
@@ -92,9 +92,9 @@ export function ApprovalArea({
           <div key={block.id} style={{ ...rowStyle, marginTop: i === 0 ? 0 : 6 }}>
             {identity && <span style={nameStyle}>{toolDisplayName(block.name, t)}</span>}
             {identity && (
-              // The full description on hover: the summary is one line, truncated.
+              // The full description on hover: the detail is one line, truncated.
               <span style={summaryStyle} title={String(block.input?.description ?? '')}>
-                {toolBlockSummary(block, t)}
+                {toolDetailSummary(block)}
               </span>
             )}
             <Space size="small" style={{ marginLeft: 'auto', flexShrink: 0 }}>

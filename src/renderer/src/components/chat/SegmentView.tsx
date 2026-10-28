@@ -68,11 +68,15 @@ export interface SegmentViewProps {
  *  streaming/settled boundary is the anti-reflow design and is untouched; only
  *  the snapshot's freshness is quantized, and the settled message always
  *  carries the complete text. */
-function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactElement {
+function StreamingText({ blocks, toolsStarted }: { blocks: ContentBlock[]; toolsStarted?: boolean }): React.ReactElement {
   const mdClass = useMarkdownThemeClass()
   // Per-block throttles (streaming usually carries one text block; a Map keeps
   // several stable). feed() is O(1) and idempotent for the shown text, so
   // running it here every tick is nothing — what it gates is the parse below.
+  // toolsStarted force-advances the snapshot: the tick that mounts the tool
+  // card below this segment must render the sentence COMPLETE, not one
+  // interval behind (2026-10-28 report). During the tool-args phase the text
+  // no longer changes, so the forced feed is an idempotent no-op there.
   const throttlesRef = useRef<Map<number, ReturnType<typeof createTextThrottle>>>(new Map())
   // The caret rides the last block that has text — the end of what the user is
   // reading. hasLiveTextTail (the hosts' StreamingCursor gate) is the same test
@@ -89,7 +93,7 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
             throttlesRef.current.set(i, throttle)
           }
           // eslint-disable-next-line react-hooks/purity -- the stream throttle's arrival clock: feed() decides how much of the accumulated text may show now
-          const shown = throttle.feed(block.text, performance.now())
+          const shown = throttle.feed(block.text, performance.now(), toolsStarted === true)
           return (
             <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>
               <StreamingMarkdown shown={shown} tail={i === tailIndex} />
@@ -160,7 +164,7 @@ export function SegmentView({
   onKillTool,
   onRespondToTool,
 }: SegmentViewProps): React.ReactElement {
-  if (seg.type === 'streaming') return <StreamingText blocks={seg.blocks} />
+  if (seg.type === 'streaming') return <StreamingText blocks={seg.blocks} toolsStarted={seg.toolsStarted === true} />
 
   if (seg.type === 'execution') {
     return (

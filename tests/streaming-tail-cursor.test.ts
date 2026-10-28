@@ -172,6 +172,55 @@ describe('one cursor per run', () => {
   })
 })
 
+// The tool-call flush (2026-10-28 report): within one round the model narrates
+// text, then streams a tool_use. The execution segment (tool card) mounts on
+// the first tick that carries the block — which can land INSIDE the parse
+// throttle's 150ms interval — and the sentence above it must be COMPLETE in
+// that same render, not one interval behind. buildSegments stamps the round's
+// tool_use presence as `toolsStarted` on the streaming segment; StreamingText
+// force-feeds its throttle with it.
+describe('tool-call flush signal', () => {
+  const toolUse = (id: string): ContentBlock => ({ type: 'tool_use', id, name: 'read', input: { file_path: 'x.ts' } })
+
+  it('buildSegments stamps toolsStarted from the round\'s tool_use presence', () => {
+    const build = (blocks: ContentBlock[]): Segment[] =>
+      buildSegments({ messages: [], isStreaming: true, streamingBlocks: blocks, cached: [], streamingToolAccum: new Map() })
+    const textOnly = build([text('narration')])
+    expect(textOnly[textOnly.length - 1]).toMatchObject({ type: 'streaming', toolsStarted: false })
+    const withTool = build([text('narration'), toolUse('tu_1')])
+    const streamingSeg = withTool.find((s) => s.type === 'streaming')
+    expect(streamingSeg).toMatchObject({ type: 'streaming', toolsStarted: true })
+    // thinking + tool, no text: no streaming segment exists to stamp
+    expect(build([thinking('…'), toolUse('tu_2')]).some((s) => s.type === 'streaming')).toBe(false)
+  })
+
+  it('the tick that mounts the tool card renders the sentence complete, even inside the throttle interval', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const render = async (blocks: ContentBlock[]) => {
+      await act(async () => { root.render(React.createElement(Host, { blocks, isRequesting: true })); await flush() })
+    }
+    try {
+      clock = 0
+      await render([text('Reading the config fi')])
+      const p = () => container.querySelector('.x-markdown p')?.textContent ?? ''
+      expect(p()).toContain('Reading the config fi')
+      // Next tick at t=100 — INSIDE the 150ms interval. The old shape froze
+      // the sentence tail here while the card rendered below it; the flush
+      // must show the full sentence in the very render that mounts the card.
+      clock = 100
+      await render([text('Reading the config file done.'), toolUse('tu_1')])
+      expect(p()).toContain('Reading the config file done.')
+      // and the execution segment is on screen below the completed sentence
+      expect(container.querySelector('[data-segment-head]')).not.toBeNull()
+    } finally {
+      await act(async () => { root.unmount(); await flush() })
+      container.remove()
+    }
+  })
+})
+
 // The two production hosts compose the rule the harness above reproduces; a
 // host that reverted to `show={isRequesting}` would blink two cursors again.
 describe('wiring', () => {
@@ -186,5 +235,12 @@ describe('wiring', () => {
     expect(src).toContain('tail: { component: StreamingTail }')
     expect(src).toContain('streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD}')
     expect(src).toContain('a.shown === b.shown && a.tail === b.tail')
+  })
+
+  it('the tool-call flush rides buildSegments into the throttle feed', () => {
+    expect(read(R('components', 'chat', 'message-segments.ts'))).toContain('toolsStarted: toolBlocks.length > 0')
+    const view = read(R('components', 'chat', 'SegmentView.tsx'))
+    expect(view).toContain('toolsStarted={seg.toolsStarted === true}')
+    expect(view).toContain('throttle.feed(block.text, performance.now(), toolsStarted === true)')
   })
 })

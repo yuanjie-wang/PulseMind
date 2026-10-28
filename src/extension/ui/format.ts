@@ -92,22 +92,29 @@ export function toolObjectSummary(block: ToolUseBlock): string {
   }
 }
 
+/** The half after the label — mirrors the chat's tool-summary.ts (same
+ *  unknown-family `k=v` fallback, description excluded). This is what the
+ *  tool head renders beside the bold verb; `toolBlockSummary` there repeated
+ *  the verb (「运行命令  运行命令 · …」). */
+export function toolDetailSummary(block: ToolUseBlock): string {
+  const object = toolObjectSummary(block)
+  if (object) return object
+  const input = block.input
+  if (!input) return ''
+  const entries = Object.entries(input).filter(([k]) => k !== 'description')
+  if (entries.length === 0) return ''
+  const [k, v] = entries[0]
+  const val = typeof v === 'string' ? (v.length > 40 ? `${v.slice(0, 37)}...` : v) : JSON.stringify(v).slice(0, 40)
+  return `${k}=${val}`
+}
+
 /** One-line summary of a tool call — `动词 · 对象原文` (D1=C: exec's object
  *  stays the raw command; the approval row carries the command text on both
- *  surfaces). Unknown tools keep the `k=v` chain, description excluded. */
+ *  surfaces). Composed from the detail half, so the two can never drift. */
 export function toolBlockSummary(block: ToolUseBlock): string {
   const label = toolDisplayName(block.name)
-  const object = toolObjectSummary(block)
-  if (!object) {
-    const input = block.input
-    if (!input) return label
-    const entries = Object.entries(input).filter(([k]) => k !== 'description')
-    if (entries.length === 0) return label
-    const [k, v] = entries[0]
-    const val = typeof v === 'string' ? (v.length > 40 ? `${v.slice(0, 37)}...` : v) : JSON.stringify(v).slice(0, 40)
-    return `${label} · ${k}=${val}`
-  }
-  return `${label} · ${object}`
+  const detail = toolDetailSummary(block)
+  return detail ? `${label} · ${detail}` : label
 }
 
 /** `950ms` / `1.4s` — the chat's duration format for the action row. */

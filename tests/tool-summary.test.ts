@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest'
-import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from '../src/renderer/src/components/chat/tool-summary'
+import { toolBlockSummary, toolDetailSummary, toolDisplayName, subAgentSessionTitle } from '../src/renderer/src/components/chat/tool-summary'
 import { registerToolDescriptions, resetToolDescriptions, lookupToolDescription } from '../src/renderer/src/components/chat/tool-descriptions'
 import type { ToolUseBlock } from '../src/renderer/src/types/agent'
 
@@ -89,6 +89,44 @@ describe('toolBlockSummary object half stays verbatim', () => {
     expect(toolBlockSummary(block('read', {}), zh)).toBe('读取文件')
     const noInput = { type: 'tool_use', id: 't', name: 'read', status: 'completed' } as unknown as ToolUseBlock
     expect(toolBlockSummary(noInput, zh)).toBe('读取文件')
+  })
+})
+
+/** The half the header renders beside the already-bold verb (2026-10-28 用户
+ *  报告：整句 toolBlockSummary 让动词读两遍——「运行命令  运行命令 · …」）。
+ *  toolBlockSummary 仍是拼接形态，留给没有加粗标签位的面（ExecutionSegment
+ *  的折叠叙述头），所以两条必须永远互为拼装、不能漂移。 */
+describe('toolDetailSummary is the half after the label', () => {
+  it('object families return the object verbatim, no label prefix', () => {
+    expect(toolDetailSummary(block('exec', { command: 'npm install && npm run build' }))).toBe('npm install && npm run build')
+    expect(toolDetailSummary(block('read', { file_path: '/tmp/a/index.ts' }))).toBe('/tmp/a/index.ts')
+    expect(toolDetailSummary(block('write', { file_path: '/tmp/a.ts', content: 'x'.repeat(2048) }))).toBe('/tmp/a.ts (2.0 KB)')
+    expect(toolDetailSummary(block('webfetch', { url: 'https://example.com/a/b' }))).toBe('example.com')
+  })
+
+  it('unknown family falls to the k=v chain, description excluded, no label', () => {
+    expect(toolDetailSummary(block('spawn_agent', { subAgentId: 'exp_1', task: 'do it', description: 'intent' }))).toBe('subAgentId=exp_1')
+    expect(toolDetailSummary(block('mcp__x__y', { repo: 'foo' }))).toBe('repo=foo')
+  })
+
+  it('empty or absent input → empty string (the bold label stands alone)', () => {
+    expect(toolDetailSummary(block('read', {}))).toBe('')
+    const noInput = { type: 'tool_use', id: 't', name: 'read', status: 'completed' } as unknown as ToolUseBlock
+    expect(toolDetailSummary(noInput)).toBe('')
+  })
+
+  it('composition invariant: toolBlockSummary = label · detail', () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['exec', { command: 'npm test' }],
+      ['read', { file_path: '/tmp/a.ts' }],
+      ['spawn_agent', { subAgentId: 'exp_1', task: 'do it' }],
+      ['read', {}],
+    ]
+    for (const [name, input] of cases) {
+      const b = block(name, input)
+      const detail = toolDetailSummary(b)
+      expect(toolBlockSummary(b, zh)).toBe(detail ? `${toolDisplayName(name, zh)} · ${detail}` : toolDisplayName(name, zh))
+    }
   })
 })
 

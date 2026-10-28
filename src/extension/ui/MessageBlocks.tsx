@@ -18,7 +18,7 @@
 import { memo, useRef, useMemo, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
-import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
+import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolDetailSummary, toolDisplayName, toolObjectSummary } from './format'
 import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
 import { renderMarkdown, splitHtmlFences } from './markdown'
@@ -552,7 +552,8 @@ export function ToolBlock({ block, completedFromResult, awaiting, onApprovalResp
   // the header carries 跳过/运行 while it is collapsed (see ApprovalArea in
   // components/chat), and the card's own pair takes over once the user opens it.
   const [collapsed, setCollapsed] = useState(block.name !== 'ask_user')
-  const summary = toolBlockSummary(block)
+  // Detail half only — the bold pm-tool-name beside it already names the verb.
+  const summary = toolDetailSummary(block)
   const streaming = block.status === 'pending' && !awaiting
   const isAskUser = block.name === 'ask_user'
 
