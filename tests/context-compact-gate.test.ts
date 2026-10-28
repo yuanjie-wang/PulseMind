@@ -199,7 +199,7 @@ describe('context_compact dispatched from its own tool batch must not be refused
     expect(result).toContain('已压缩')
   })
 
-  it('a GENUINELY in-flight request (no DONE yet) still refuses — the gate keeps its race guard', async () => {
+  it('a GENUINELY in-flight request (no DONE yet) REGISTERS the drop for the next build — no refusal, no second call', async () => {
     const host = makeStreamHost()
     setHost(host)
     const engine = makeEngine(host)
@@ -213,8 +213,11 @@ describe('context_compact dispatched from its own tool batch must not be refused
     expect(engine.currentRequestId).toBeTruthy()
 
     const outcome = await engine.compactForTool({ notes: '交接' })
-    expect(outcome.ok).toBe(false)
-    expect(outcome.reason).toBe('request_in_flight')
+    // PLAN-tool-issues #6: registration, not refusal — the next build's
+    // lightCompact is force-armed (the notes gap rides the executor's
+    // deferred receipt, the guard itself stays race-safe).
+    expect(outcome).toMatchObject({ ok: true, deferred: true })
+    expect(engine.pendingToolCompactForce).toBe(true)
 
     // Leave the runner parked on its never-settling await; nothing polls.
     void running

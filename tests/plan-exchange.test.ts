@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 
 const { execSpawnAgent } = await import('../src/renderer/src/agent/executors/spawn-tool')
+const { resetProjectInstructionsRootCache } = await import('../src/renderer/src/agent/system-prompt-builder')
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import { setHost } from '../src/renderer/src/agent/host'
 import type { ToolExecContext } from '../src/renderer/src/agent/executors/context'
@@ -195,7 +196,7 @@ const subMessages = (text: string) => [
 
 interface Captured { content: string; isError: boolean }
 
-function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number | null; reportBody?: string }) {
+function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number | null; reportBody?: string; reportSizes?: Array<number | null>; followUp?: { completes?: boolean } }) {
   const calls = {
     results: [] as Captured[],
     executions: [] as string[],
@@ -210,6 +211,13 @@ function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number 
   const host = {
     getFileStat: (filePath: string) => {
       calls.statPaths.push(filePath)
+      // The report-size queue consumes ONLY on the report path: the project
+      // instructions' git-root walk stats `.git` through the same host, and a
+      // queue keyed on call order would feed it the report's verdict.
+      if (opts.reportSizes && filePath.endsWith('report.md')) {
+        const size = opts.reportSizes.length > 1 ? (opts.reportSizes.shift() as number | null) : opts.reportSizes[0]
+        return Promise.resolve(size === null || size === undefined ? null : { size, birthtime: '', mtime: '', isDirectory: false })
+      }
       return Promise.resolve(opts.reportSize === null || opts.reportSize === undefined ? null : { size: opts.reportSize, birthtime: '', mtime: '', isDirectory: false })
     },
     readFile: (filePath: string) => {
@@ -241,16 +249,36 @@ function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number 
     formatExecResult: () => '',
   } as unknown as ToolExecContext
   const plan = createPlanDag('exchange', [{ description: '调研节点' }, { description: '下游', dependsOn: [1] }])
+  const followUp = { asked: [] as Array<{ id: string; task: string }> }
+  if (opts.followUp) {
+    ;(ex as Record<string, unknown>).followUpSubAgent = (id: string, task: string) => {
+      followUp.asked.push({ id, task })
+      return {
+        id: 'hnudge', subConvId: id, messages: [], abort: () => {},
+        waitForCompletion: async () => ({
+          status: opts.followUp!.completes === false ? 'failed' : 'completed',
+          messages: [{ id: 'mn', role: 'assistant', createdAt: new Date().toISOString(), contentBlocks: [{ type: 'text', text: 'nudged, report written' }] }],
+          outputTokens: 3,
+        }),
+      }
+    }
+  }
   ;(ex as { calls: typeof calls }).calls = calls
   const tool = (input: Record<string, unknown>) =>
     // autoDispatch: exchange-contract dispatches are the scheduler's own
     // post-scheduler — the call shape its ownership gate exempts.
     ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input: input.planNode !== undefined ? { ...input, autoDispatch: true } : input, status: 'pending' }) as ToolUseBlock
-  return { ex: ex as ToolExecContext, calls, tool, state, plan }
+  return { ex: ex as ToolExecContext, calls, tool, state, plan, followUp }
 }
 
 describe('spawn choke point: admission in, exit verified', () => {
-  beforeEach(() => { setHost({} as unknown as PulseHost) })
+  beforeEach(() => {
+    setHost({} as unknown as PulseHost)
+    // The project-instructions fallback's git-root walk is TTL-cached at
+    // module level — a previous test's stub answers for the same workspace
+    // must not leak into this one (resetProjectInstructionsRootCache hook).
+    resetProjectInstructionsRootCache()
+  })
 
   it('the admission contract rides the spawn system prompt, invisible in the first message', async () => {
     const { ex, calls, tool, state, plan } = makeExchangeContext({
@@ -361,7 +389,11 @@ describe('spawn choke point: admission in, exit verified', () => {
 
     await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
 
-    expect(calls.statPaths).toEqual([]) // never even looked
+    // Never looked at the report. The two .git probes are the root AGENTS.md
+    // fallback's walk (2026-10-28: .pulsemind body empty here → workspace-root
+    // read → TTL-cached git-root discovery walks /tmp/ws_ex then /tmp, finds
+    // no marker, gives up) — the report file is what must stay untouched.
+    expect(calls.statPaths).toEqual(['/tmp/ws_ex/.git', '/tmp/.git'])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(0)
     expect(calls.results[0].content).toContain('**Split:**')
@@ -378,5 +410,70 @@ describe('spawn choke point: admission in, exit verified', () => {
     expect(calls.statPaths).toEqual([])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(0)
+  })
+})
+
+// ── PLAN-tool-issues #7（2026-10-28）：契约违约先恢复、后判死 ──
+// 路径是系统铸造、系统注入的（报告契约节就在子代理 system prompt 里），
+// 缺报告 = 子代理违约，不是父代理漏传。违约曾直接判 FAILED——一次漏写的
+// 文件写入放大成整节点重跑（原库 3 个节点死于此）。现在先向同一暖代理发
+// 一次补写 nudge（骑本派发槽位），重验；仍缺才 FAILED。
+describe('report-contract recovery: nudge the warm agent before failing the node', () => {
+  it('a nudged agent that writes the report settles DELIVERED — handoff and stamp recorded', async () => {
+    const { ex, calls, tool, state, plan, followUp } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex',
+      reportSizes: [null, 120], // first verify: missing; after the nudge: written
+      followUp: { completes: true },
+    })
+    state.resultText = '任务完成（但忘了写报告）'
+
+    const block = tool({ task: '调研节点', planNode: 1 })
+    await execSpawnAgent(ex, block)
+
+    expect(followUp.asked).toHaveLength(1)
+    expect(followUp.asked[0]!.id).toBe('sub_ex')
+    expect(followUp.asked[0]!.task).toContain(`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
+    expect(followUp.asked[0]!.task).toContain('Do NOT redo the work')
+    // The node survives: delivered, not failed.
+    expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
+    expect(calls.handoffs).toHaveLength(1)
+    expect(calls.reports).toHaveLength(1)
+    const result = calls.results[0]!
+    expect(result.isError).toBe(false)
+    expect(result.content).not.toContain('Report contract violated')
+    expect(block.exitCode).toBe(0)
+  })
+
+  it('a nudged agent that still does not write fails the node — and the envelope says the recovery was tried', async () => {
+    const { ex, calls, tool, state, plan, followUp } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex',
+      reportSizes: [null, null],
+      followUp: { completes: true },
+    })
+    state.resultText = '任务完成（但忘了写报告）'
+
+    await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
+
+    expect(followUp.asked).toHaveLength(1) // exactly ONE nudge, no loop
+    expect(calls.executions).toEqual(['begin', 'running', 'failed'])
+    expect(calls.handoffs).toHaveLength(0)
+    const result = calls.results[0]!
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('Report contract violated')
+    expect(result.content).toContain(`no report file at /tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
+    expect(result.content).toContain('recovery nudge was already sent')
+    expect(result.content).toContain('agentId "sub_ex"')
+  })
+
+  it('a nudged agent whose follow-up FAILS also falls back to FAILED (no second nudge)', async () => {
+    const { ex, calls, tool, followUp } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex',
+      reportSizes: [null, null],
+      followUp: { completes: false },
+    })
+    await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
+    expect(followUp.asked).toHaveLength(1)
+    expect(calls.executions).toEqual(['begin', 'running', 'failed'])
+    expect(calls.results[0]!.content).toContain('recovery nudge was already sent')
   })
 })

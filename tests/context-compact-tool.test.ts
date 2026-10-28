@@ -104,16 +104,23 @@ function resultContentOf(copy: AgentMessage[], tuId: string): string | undefined
 beforeEach(() => { engineBodies.length = 0 })
 
 describe('guards ①—④ (main action only; free_results exempt from ②③)', () => {
-  it('① an in-flight request (the marker pair, not agentStatus) refuses with request_in_flight', async () => {
+  it('① an in-flight request (the marker pair, not agentStatus) REGISTERS instead of refusing (PLAN-tool-issues #6)', async () => {
     const engine = makeEngine({ cycles: 3, contextLength: 1000 })
     engine.currentRequestId = 'api_test_1'
     const out = await engine.compactForTool({})
-    expect(out).toMatchObject({ ok: false, reason: 'request_in_flight' })
+    // Registration, not refusal: the drop is armed for the next build (the
+    // same one-shot force a successful call arms itself); the prewarm cannot
+    // run in flight, hence deferred (notes gap honest-enveloped executor-side).
+    expect(out).toMatchObject({ ok: true, deferred: true })
+    expect(engine.pendingToolCompactForce).toBe(true)
     // The build phase arms no request id (its summary call rides the same
-    // transport) — the second in-flight marker covers it (watchdog pair).
+    // transport) — the second in-flight marker covers it (watchdog pair);
+    // registering twice just re-arms the same flag.
+    engine.pendingToolCompactForce = false
     engine.currentRequestId = null
     engine.prepareLoopInProgress = true
-    expect((await engine.compactForTool({})).reason).toBe('request_in_flight')
+    expect(await engine.compactForTool({})).toMatchObject({ ok: true, deferred: true })
+    expect(engine.pendingToolCompactForce).toBe(true)
     // Both markers null is the sanctioned moment EVEN with agentStatus still
     // 'streaming' — the auto-run path never flips the status between requests
     // (only approveTool / the delegated loop / the plan scheduler write
@@ -385,5 +392,44 @@ describe('wiring — the scans that keep the channel honest', () => {
     expect(engineSrc).toContain('this.pendingToolCompactForce = false')
     expect(engineSrc).toContain('this.toolCompactUsedThisTurn = false')
     expect(engineSrc).toContain('clearMandatedToolResultIds()')
+  })
+})
+
+describe('deferred registration envelope (PLAN-tool-issues #6)', () => {
+  it('an in-flight call renders 已登记 — and closes the notes/free_results gaps honestly', async () => {
+    const added: Array<{ content: string; isError: boolean }> = []
+    const { execContextCompactTool } = await import('../src/renderer/src/agent/executors/domain-tools')
+    await execContextCompactTool(
+      {
+        compactContext: async () => ({ ok: true, deferred: true }),
+        addToolResult: (_id: string, content: string, isError: boolean) => { added.push({ content, isError }) },
+      } as never,
+      { name: 'context_compact', id: 'call_deferred', input: { notes: '交接笔记', free_results: ['tu_3'] } } as never,
+    )
+    expect(added).toHaveLength(1)
+    // A registration is NOT a failure — the model must not read it as one.
+    expect(added[0]!.isError).toBe(false)
+    expect(added[0]!.content).toContain('压缩已登记')
+    expect(added[0]!.content).toContain('下一次请求构建')
+    expect(added[0]!.content).toContain('无需再次调用')
+    // The two things a deferred run cannot do must be named, not silently dropped.
+    expect(added[0]!.content).toContain('交接笔记在延后模式下不会落地')
+    expect(added[0]!.content).toContain('free_results 点名在延后模式下未处理')
+    expect(added[0]!.content).toContain('不要因压缩收尾')
+  })
+
+  it('a deferred call with no notes/free_results stays a one-liner', async () => {
+    const added: Array<{ content: string; isError: boolean }> = []
+    const { execContextCompactTool } = await import('../src/renderer/src/agent/executors/domain-tools')
+    await execContextCompactTool(
+      {
+        compactContext: async () => ({ ok: true, deferred: true }),
+        addToolResult: (_id: string, content: string, isError: boolean) => { added.push({ content, isError }) },
+      } as never,
+      { name: 'context_compact', id: 'call_deferred_bare', input: {} } as never,
+    )
+    expect(added[0]!.isError).toBe(false)
+    expect(added[0]!.content).not.toContain('交接笔记在延后模式下')
+    expect(added[0]!.content).not.toContain('free_results 点名')
   })
 })

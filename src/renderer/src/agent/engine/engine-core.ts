@@ -11,7 +11,7 @@
 
 import type { AgentMessage, AgentStatus, ContentBlock, SteerOutcome, ToolUseBlock } from '../../types/agent'
 import type { SubAgentResult } from '../agent-utils'
-import type { AgentEngineOptions } from '../AgentEngine'
+import type { AgentEngine, AgentEngineOptions } from '../AgentEngine'
 import type { ToolExecutor } from '../tool-executors'
 import type { PlanManager } from '../plan-manager'
 import type { PlanScheduler } from './plan-scheduler'
@@ -129,6 +129,10 @@ export interface EngineCore {
 
   // ── Spawn/sub-agent state ──
   activeSubAgents: Map<string, EngineCore>
+  /** Settled sub-engines kept for spawn_agent `agentId` follow-up (2026-10-28
+   *  续聊原语). spawn-manager's retainCompleted/followUpCompleted are the only
+   *  writers — LRU capped at SUB_AGENT_FOLLOWUP_KEEP, cleared on restart. */
+  completedSubAgents: Map<string, { engine: AgentEngine; title: string }>
   spawnSystemPrompt?: string
   spawnTitle?: string
   /** True only for an engine SpawnManager constructed as a child (NOT for a

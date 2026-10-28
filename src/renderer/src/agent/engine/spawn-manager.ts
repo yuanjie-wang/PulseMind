@@ -11,6 +11,11 @@ import { getLoopIterationLimit } from '../agent-utils'
 import { getHost } from '../host'
 import type { EngineCore } from './engine-core'
 
+/** 续聊注册表的 LRU 帽（2026-10-28 续聊原语）：每条目是一个完整子引擎（含
+ *  全部消息历史）——帽必须小，5 个已是「最近几轮专家」的合理驻留面。进程
+ *  重启清空（引擎不入库；跨重启续聊=重水化，前瞻未做）。 */
+export const SUB_AGENT_FOLLOWUP_KEEP = 5
+
 export class SpawnManager {
   private _lastSpawnProgressAt = 0
 
@@ -77,6 +82,13 @@ export class SpawnManager {
 
     const engine = new AgentEngine(subOpts)
 
+    // 会话文件变更台账共享（2026-10-28 工作区树着色）：子引擎的 executor 直接持有
+    // 父引擎的那一份——树着色的是「本会话改了什么」，子代理写的文件也算。引用
+    // 共享让嵌套派发自然上卷到根引擎，completedSubAgents 的 LRU 淘汰也不丢记录；
+    // onChange 只挂在根引擎那份上（AgentEngine 构造器接的是自己新建的台账，被
+    // 这里换掉后成了孤儿），所以 file_changes 事件只从托管会话发出一次。
+    engine.toolExecutor.fileChanges = this.engine.toolExecutor.fileChanges
+
     // The narrow parent-plan bridge (v2 R6): the executor is built before the
     // sub-engine knows its parent, so spawn-manager — the one module that sees
     // both — wires the merge callback here. S2 discipline holds: the sub-agent
@@ -130,7 +142,13 @@ export class SpawnManager {
       detachWatchdog()
       this.engine.activeSubAgents.delete(id)
     }
-    engine.completionPromise!.then(cleanup, cleanup)
+    // 续聊注册表（2026-10-28）：settle 不再等于丢弃——结算把引擎保留进
+    // completedSubAgents（LRU 帽），spawn_agent 的 agentId 从这里唤醒同一个
+    // 引擎带全部上下文继续；重新派发从零开始的老二选一之外多了第三条路。
+    engine.completionPromise!.then(() => {
+      this.retainCompleted(subConvId, engine, config.title)
+      cleanup()
+    }, cleanup)
 
     const handle: SubAgentHandle = {
       id,
@@ -172,6 +190,62 @@ export class SpawnManager {
     // with the kick-off message exactly as it does for a user's send.
     this.engine.turnClock.start()
     this.engine.continueLoop()
+  }
+
+  /** Resolve the spawn completion promise if this is a spawned agent. */
+  /** 续聊注册表的 LRU 写入：同 id 重置（follow-up 完成后再次保留），帽外按
+   *  Map 插入序淘汰最老。只在本引擎（父）的注册表上操作。 */
+  retainCompleted(subConvId: string, engine: AgentEngine, title?: string): void {
+    const registry = this.engine.completedSubAgents
+    registry.delete(subConvId)
+    registry.set(subConvId, { engine, title: title || 'Sub-agent' })
+    while (registry.size > SUB_AGENT_FOLLOWUP_KEEP) {
+      const oldest = registry.keys().next().value
+      if (oldest === undefined) break
+      registry.delete(oldest)
+    }
+  }
+
+  /** agentId 续聊（2026-10-28）：从注册表取出已结算的子引擎，重绑保存器/
+   *  看门狗/父会话 activeSubAgents（stop/cancel 面必须重新覆盖它），换新
+   *  completionPromise，以 userText 追问同一个引擎——全上下文在场，发现成本
+   *  只付一次。注册表未命中（LRU 淘汰/进程重启/双续聊竞态）返回 null，调用
+   *  方给出「全新派发」的恢复话术。注意本方法运行在父引擎的 spawn-manager
+   *  上（注册表在父引擎字段），对子引擎的唤醒经 engine.followUpRun。 */
+  followUpCompleted(subConvId: string, userText: string): SubAgentHandle | null {
+    const reg = this.engine.completedSubAgents.get(subConvId)
+    if (!reg) return null
+    this.engine.completedSubAgents.delete(subConvId)
+    const engine = reg.engine
+    // 防御在飞：注册表只收 settled 引擎（pop 即离开注册表，双续聊竞态落到
+    // null），但一个便宜的真值检查好过论证每一条交错路径。
+    if (engine.pendingToolIds.size > 0 || engine.currentRequestId) return null
+    const id = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    this.engine.activeSubAgents.set(id, engine)
+    const detachSaver = attachSubConversationSaver(engine, subConvId)
+    const detachWatchdog = attachSubAgentWatchdog(engine, subConvId)
+    const cleanup = (): void => {
+      detachSaver()
+      detachWatchdog()
+      this.engine.activeSubAgents.delete(id)
+    }
+    engine.completionPromise = new Promise<SubAgentResult>((resolve) => {
+      engine.resolveCompletion = resolve
+    })
+    engine.completionPromise.then(() => {
+      this.retainCompleted(subConvId, engine, reg.title)
+      cleanup()
+    }, cleanup)
+    engine.followUpRun(userText)
+    const handle: SubAgentHandle = {
+      id,
+      subConvId,
+      get messages() { return engine.messages },
+      get agentStatus() { return engine.agentStatus },
+      abort: () => engine.cancelLoop(),
+      waitForCompletion: () => engine.completionPromise!,
+    }
+    return handle
   }
 
   /** Resolve the spawn completion promise if this is a spawned agent. */

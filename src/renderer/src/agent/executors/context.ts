@@ -30,6 +30,11 @@ export interface CompactToolOutcome {
   ok: boolean
   /** Why the main action was refused (absent on success). */
   reason?: 'request_in_flight' | 'already_this_turn' | 'not_worthwhile' | 'nothing_to_drop'
+  /** A request was in flight, so the prewarm could not run: the call was
+   *  REGISTERED instead — pendingToolCompactForce arms the next build's
+   *  lightCompact (PLAN-tool-issues #6). The executor renders a deferred
+   *  receipt, not a refusal. */
+  deferred?: boolean
   /** free_results ids accepted for mandated compression. */
   freedResults?: string[]
   /** free_results ids skipped, with the guard that skipped them. */
@@ -132,6 +137,12 @@ export interface ToolExecContext {
    *  auto path and approveTool's released-shell path. A failed test run resets
    *  too: the failure itself is the lesson. Optional so old test fakes construct. */
   noteVerifyExec?(command: string): void
+  /** 已完成子代理的续聊（2026-10-28 续聊原语）：agentId（=子会话 id）→ 同一
+   *  引擎带全部上下文继续（spawn-manager 的注册表）。未命中（LRU 淘汰/进程
+   *  重启/双续聊竞态）返回 null，调用方给出「全新派发」的恢复话术。Optional
+   *  so old test fakes construct; AgentEngine 构造后晚接线（parentPlanMerge
+   *  同款）。 */
+  followUpSubAgent?: (subConvId: string, task: string) => import('../agent-utils').SubAgentHandle | null
   /** Format exec tool result with exit code and stdout/stderr separation. */
   formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
 }

@@ -11,7 +11,7 @@ import { generateMsgId } from '../agent-utils'
 import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent'
 import { buildCommandFromSkillInput, detectShellFileWrite, shellFileWriteRejection } from '../command-builder'
 import { installTypeOf } from '../executors/install-tool'
-import { safeInvoke, safeInvokeObserver } from '../agent-utils'
+import { safeInvoke, safeInvokeObserver, editToolTargetPaths } from '../agent-utils'
 import { TOOL_PARAM_LIMITS, MAX_LIVE_OUTPUT_CHARS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
@@ -253,7 +253,10 @@ export class ExecutionFlow {
 
     try {
       const timeoutMs = targetBlock.input.timeout != null ? Number(targetBlock.input.timeout) * 1000 : undefined
-      const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
+      // Same shell key as the auto path (review P0-1): an approved command's
+      // cd/export must land in the SAME persistent shell the auto-run commands
+      // use, or the session's state forks between the two dispatch sites.
+      const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs, this.engine.opts.conversationId)
       this.engine.executingProcessId = processId
       this.engine.executingToolUseId = toolUseId
       span.claim(processId)
@@ -475,7 +478,11 @@ export class ExecutionFlow {
     const wd = this.engine.opts.workspaceDir
     const tierHeld = this.heldTiers().has('write')
     for (const t of tools) {
-      if (wd && isProjectInstructionsPath(String(t.input?.file_path || ''), wd)) {
+      // editToolTargetPaths names EVERY path one call writes — including each
+      // `diff --git` section of an atomic multi-file edit — so a protected
+      // file cannot ride to disk inside a multi-file diff's later section.
+      const targets = editToolTargetPaths(t.input)
+      if (wd && targets.some((p) => isProjectInstructionsPath(p, wd))) {
         if (this.engine.isSpawnedSubAgent) out.denied.push(t)
         else out.held.push(t)
         continue
@@ -561,7 +568,7 @@ export class ExecutionFlow {
         for (const t of writes.denied) {
           t.exitCode = -1
           t.status = 'completed'
-          this.engine.addToolResult(t.id, '子代理无权修改项目指令文件（.pulsemind/AGENTS.md）——它是用户所有的工作区约定，修订须由用户提出。请完成你自己的节点工作；如认为约定需要修订，在你的报告里向父代理建议。', true)
+          this.engine.addToolResult(t.id, '子代理无权修改项目指令文件（AGENTS.md / .pulsemind/AGENTS.md）——它是用户所有的工作区约定，修订须由用户提出。请完成你自己的节点工作；如认为约定需要修订，在你的报告里向父代理建议。', true)
         }
         this.engine.notify()
       }
@@ -585,7 +592,7 @@ export class ExecutionFlow {
           const builtinNames = new Set(this.engine.opts.toolManager.getEnabledTools().map(x => x.definition.name))
           this.engine.selectedMcpTools = names.filter(n => !builtinNames.has(n))
           this.engine.selectedBuiltinTools = names.filter(n => builtinNames.has(n))
-        })
+        }, () => [...this.engine.selectedBuiltinTools, ...this.engine.selectedMcpTools])
         else if (t.name === 'install') await this.engine.toolExecutor.execInstall(t)
         else if (t.name === 'spawn_agent') await this.engine.toolExecutor.execSpawnAgent(t)
         else if (t.name === 'webfetch') await this.engine.toolExecutor.execWebFetch(t)

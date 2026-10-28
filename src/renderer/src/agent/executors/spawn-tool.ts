@@ -30,6 +30,7 @@ import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { ToolUseBlock, TextBlock } from '../../types/agent'
 import { MAX_TOOL_RESULT_TOKENS, SPAWN_ROUND_ENVELOPE_BUDGET, MIN_SPAWN_ENVELOPE_BUDGET } from '../engine/engine-constants'
 import { getLoopIterationLimit } from '../agent-utils'
+import { SUB_AGENT_FOLLOWUP_KEEP } from '../engine/spawn-manager'
 
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
@@ -80,6 +81,23 @@ async function readReportHead(path: string): Promise<string> {
     const text = await getHost().readFile(path)
     return (text ?? '').slice(0, REPORT_STATUS_HEAD_CHARS)
   } catch { return '' }
+}
+
+/** 报告契约违约的一次恢复轮（PLAN-tool-issues #7，2026-10-28）：经注册表向
+ *  同一暖代理发一次补写 nudge，重验文件。注册表未命中（LRU 淘汰/重启）或
+ *  续聊未完成都按「未补齐」回落——调用方的 FAILED 路径照旧。返回是否已补齐。 */
+export async function nudgeReportContract(ex: ToolExecContext, subConvId: string, reportPath: string): Promise<boolean> {
+  const handle = ex.followUpSubAgent?.(subConvId,
+    `Your task finished, but the Report Contract is NOT satisfied: the report file at "${reportPath}" is missing or empty, and the plan is about to mark this node FAILED. Write the report file NOW with the write tool to that exact path (create parent directories as needed) — summarize what you did, the deliverables and findings, and end with a line "Status: success" / "Status: partial" / "Status: failed". Do NOT redo the work; write the report from your existing context.`)
+  if (!handle) return false
+  try {
+    const result = await handle.waitForCompletion()
+    if (result.status !== 'completed') return false
+  } catch { return false }
+  try {
+    const stat = await getHost().getFileStat(reportPath)
+    return (stat?.size ?? 0) > 0
+  } catch { return false }
 }
 
 /** Per-envelope token budget for a round that dispatched `batchTotal`
@@ -150,6 +168,19 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const isExplore = preset === 'explore'
     if (preset && !isExplore) throw new Error(`Unknown preset "${preset}" — the only supported value is "explore".`)
 
+    // agentId 续聊（2026-10-28 续聊原语）：对已完成子代理的追问通道。与派发
+    // 期注入的三样东西互斥（身份/工具集/计划节点契约都是派发时注入的，续聊
+    // 引擎已带全量）——同步拒绝，不进槽位队列。
+    const agentId = String(t.input?.agentId || '').trim()
+    if (agentId) {
+      if (subAgentId) throw new Error('agentId (follow-up) cannot be combined with subAgentId — the continued agent already carries its identity. Drop subAgentId.')
+      if (preset) throw new Error('agentId (follow-up) cannot be combined with preset — the continued agent already carries its toolset. Drop preset.')
+      const fuPlanNode = t.input?.planNode
+      if (fuPlanNode !== undefined && fuPlanNode !== null && fuPlanNode !== '') {
+        throw new Error('agentId (follow-up) cannot be combined with planNode — a follow-up is free-form continuation of a warm agent, not a plan-node dispatch. Drop planNode.')
+      }
+    }
+
     // Plan linkage (PLAN-plan-dag): the delegated task names the plan node it
     // implements, so create_plan numbering, spawn dispatch and advance_plan
     // settlement all speak the same ids. Validated against the LIVE plan — a
@@ -190,6 +221,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // 是只读侦察——两个契约互斥，同步拒绝让模型改用自由派发。
     if (isExplore && planNode) {
       throw new Error('preset="explore" cannot be combined with planNode — an explore pass is read-only reconnaissance with no report file to deliver. Dispatch it as a free-form task instead.')
+    }
+
+    // 续聊路由（2026-10-28）：agentId 走自己的通道，位于再派发门之前——对
+    // 同一代理的追问不是「重派已完成的活」（门要防的是重新付一遍发现成本，
+    // 续聊恰恰是免掉它的机制），不取专家包、不组装 spawn 提示词。
+    if (agentId) {
+      await execAgentFollowUp(ex, t, agentId, task)
+      return
     }
 
     // Re-dispatch gate (2026-10-27): a task this session already COMPLETED is
@@ -575,6 +614,22 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         if (size <= 0) reportViolation = expectedPath
         else declaredStatus = extractDeclaredStatus(await readReportHead(expectedPath)) ?? extractDeclaredStatus(subText)
       }
+      // Recovery round (PLAN-tool-issues #7, 2026-10-28): a violated contract
+      // used to FAIL the node outright — but the node's work was done and the
+      // agent is still warm, so one omitted file write escalated into a full
+      // re-run (3 real nodes died this way; the path is system-minted and
+      // system-injected via the Report Contract section, so the miss is
+      // sub-agent non-compliance, not a parent omission). Nudge the SAME warm
+      // engine once via the registry — riding THIS dispatch's already-held
+      // slot, since followUpSubAgent is the bare registry call — re-verify;
+      // only a still-missing report fails the node.
+      if (reportViolation && planNode && exchange) {
+        const recovered = await nudgeReportContract(ex, handle.subConvId, reportViolation)
+        if (recovered) {
+          reportViolation = null
+          declaredStatus = extractDeclaredStatus(await readReportHead(exchange.reportPath(planNode.id))) ?? extractDeclaredStatus(subText)
+        }
+      }
       if (reportViolation) execution('failed') // from 'running' — the CAS allows running→failed
       else execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
       // Hand-off capture (PLAN-plan-scheduler S8): a successful node's output
@@ -602,7 +657,8 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // missing, so this reads as a FAILURE for the consult round.
       if (reportViolation && planNode) {
         const summary = `## Sub-Agent Result (failed — report contract)\n\n`
-          + `**Report contract violated:** no report file at ${reportViolation} (missing or empty). The plan treats the report as the deliverable, so the node is marked FAILED.\n\n`
+          + `**Report contract violated:** no report file at ${reportViolation} (missing or empty). The plan treats the report as the deliverable, so the node is marked FAILED.`
+          + ` A recovery nudge was already sent to the same warm agent (agentId "${handle.subConvId}") and it still did not write the report.\n\n`
           + (subText ? `**What the sub-agent said it did (unverified):**\n${subText}\n\n` : '')
           + `**Decide next:** re-dispatch it with spawn_agent planNode=${nodeNumberOf(planNode)} — the retry sees the same contract and must write its report to that path — or settle it with advance_plan action="fail" / "skip".`
         t.exitCode = 1
@@ -629,7 +685,8 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         t.status = 'completed'
         ex.addToolResult(
           t.id,
-          `## Sub-Agent Result (completed)\n\nDelegated to **${expertName}**. The expert's conclusion is delivered to the user verbatim as the message that follows — do NOT restate or summarize it.`,
+          `## Sub-Agent Result (completed)\n\nDelegated to **${expertName}**. The expert's conclusion is delivered to the user verbatim as the message that follows — do NOT restate or summarize it.`
+            + `\n\n(Follow-ups: this agent stays warm for the session — spawn_agent { agentId: "${handle.subConvId}", task: "…" } continues it with full context; a spawn WITHOUT agentId starts a fresh agent.)`,
           false,
           undefined,
           envelopeBudget
@@ -669,6 +726,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         // says what to do: report, don't re-run.
         summary += result.status === 'completed'
           ? '\n\n**This result is the deliverable.** Report it to the user in your own words and move on — do NOT re-dispatch the same or a near-identical task.'
+            + `\n\n**Follow-up channel:** this agent stays warm for the session — continue its context with spawn_agent { agentId: "${handle.subConvId}", task: "…" }; a spawn WITHOUT agentId starts a fresh agent.`
           : '\n\n**Report this outcome to the user.** Do NOT silently re-dispatch the same task; retry only with a meaningfully different task description, or ask the user.'
 
         t.exitCode = result.status === 'completed' ? 0 : 1
@@ -707,6 +765,87 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     t.exitCode = -1
     t.status = 'completed'
     ex.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent failed'}`, true)
+  }
+  ex.notify()
+}
+
+/** agentId 续聊的执行通道（2026-10-28 续聊原语）：与自由派发共享槽位纪律
+ *  （嵌套不排队、FIFO 到达序、停止拒启），但跳过专家包/提示词组装——引擎
+ *  是从注册表唤醒的现成者。信封是自由派发完成形态的续聊变体：状态、摘要、
+ *  close-out，末尾再教一次续聊通道（链条可以继续）。结果照常进
+ *  spawnTaskResults 台账——对同一追问文本的自由重派仍会被门拦住。 */
+async function execAgentFollowUp(ex: ToolExecContext, t: ToolUseBlock, agentId: string, task: string): Promise<void> {
+  t.status = 'queued'; ex.notify()
+  const budgetKey = subAgentBudgetKey(ex.opts)
+  const nested = ex.isSpawnedSubAgent?.() ?? false
+  const busy = activeSubAgentCount(budgetKey)
+  const parallelLimit = getSubAgentParallelLimit()
+  if (!nested && (busy >= parallelLimit || queuedSubAgentCount(budgetKey) > 0)) {
+    t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${parallelLimit} 个），前面还有等待空位的续聊…`
+    ex.notify()
+  }
+  const release = nested ? tryAcquireSubAgentSlot(budgetKey) : await acquireSubAgentSlot(budgetKey)
+  if (!release) {
+    t.exitCode = -1
+    t.status = 'completed'
+    ex.addToolResult(t.id, nested
+      ? '并行槽位已满：嵌套续聊不排队等待。请稍后再追问，或直接用你自己的工具继续。'
+      : '子代理续聊未启动：本次执行已被停止。', true)
+    ex.notify()
+    return
+  }
+  t.status = 'running'; ex.notify()
+  try {
+    const handle = ex.followUpSubAgent?.(agentId, task)
+    if (!handle) {
+      t.exitCode = -1
+      t.status = 'completed'
+      ex.addToolResult(
+        t.id,
+        `agentId "${agentId}" is no longer warm — the follow-up registry keeps the most recent ${SUB_AGENT_FOLLOWUP_KEEP} completed agents per session, and an app restart empties it. Re-delegate as a FRESH spawn, folding the context you still need into the task text (this rejection is not the re-dispatch gate — a fresh spawn with the original task text passes it).`,
+        true,
+      )
+      ex.notify()
+      return
+    }
+    t.subConvId = handle.subConvId
+    ex.notify()
+    const result = await handle.waitForCompletion()
+    const subAssistantTexts = result.messages
+      .filter(m => m.role === 'assistant')
+      .flatMap(m => m.contentBlocks)
+    const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
+    const envelopeBudget = spawnEnvelopeBudget(ex.spawnBatchTotal?.() ?? 1)
+    if (result.status === 'completed') {
+      t.exitCode = 0
+      t.status = 'completed'
+      const summary = `## Sub-Agent Result (follow-up, completed)\n\nThe continued agent answered your follow-up with its full prior context in hand.\n\n### Summary\n${subText}`
+        + `\n\n**Continue it again** — it stays warm: spawn_agent { agentId: "${handle.subConvId}", task: "…" }. A spawn WITHOUT agentId starts a fresh agent. Report this result to the user in your own words — do NOT re-send the follow-up.`
+      t.output = `子代理续聊完成. ${subText}`
+      ex.addToolResult(t.id, summary, false, undefined, envelopeBudget)
+    } else {
+      t.exitCode = 1
+      t.status = 'completed'
+      const detail = (result.error ? `**Reason:** ${result.error}\n` : '') + (subText ? `**Partial Output:**\n${subText}` : '')
+      const summary = `## Sub-Agent Result (follow-up, ${result.status})\n\nThe continued agent did not complete successfully.\n\n${detail}`
+        + `\n\n**Report this outcome to the user.** The agent (agentId "${handle.subConvId}") stays warm — one more follow-up is a legitimate retry if the failure looks transient; a fresh spawn re-pays the discovery cost.`
+      t.output = `子代理续聊${result.status === 'aborted' ? '已被停止' : '失败'}${result.error ? `：${result.error}` : ''}`
+      ex.addToolResult(t.id, summary, result.status === 'error', undefined, envelopeBudget)
+    }
+    // Ledger the follow-up's own text: a later free-form re-dispatch of the
+    // SAME follow-up is exactly what the gate exists for.
+    if (ex.spawnTaskResults) {
+      ex.spawnTaskResults.set(
+        spawnTaskSignature(task),
+        result.status === 'completed' ? 'completed' : result.status === 'aborted' ? 'aborted' : 'failed',
+      )
+    }
+  } catch (err) {
+    t.exitCode = -1
+    t.status = 'completed'
+    ex.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent follow-up failed'}`, true)
+  } finally {
+    release()
   }
   ex.notify()
 }

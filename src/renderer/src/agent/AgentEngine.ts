@@ -41,7 +41,7 @@ import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-co
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
 import { RepeatCallGuard, formatRepeatHint, toolCallSignature } from './engine/loop-guard'
-import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
+import type { CompactionEvent, SessionFileChange } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
 import { regroupToolResults } from '../llm/regroup-tool-results'
@@ -195,6 +195,11 @@ export interface AgentEngineCallbacks {
   onStatusChanged?: (status: AgentStatus) => void
   onStreamingBlocksChanged?: (blocks: ContentBlock[]) => void
   onPlanChanged?: (plan: Plan | null) => void
+  /** The session's file-change ledger moved (2026-10-28 工作区树着色): a tool
+   *  of this engine OR of any sub-engine under it created/rewrote a file, or
+   *  reset() cleared the ledger. Transport maps it onto the `file_changes`
+   *  session event; the payload is the full list. */
+  onFileChangesChanged?: (changes: SessionFileChange[]) => void
   /** A compaction pass ran (request-time drop, post-turn prewarm or explicit
    *  /compact). Transport maps it onto the `compaction` session event so the
    *  UI can show what happened instead of leaving the user to infer it from a
@@ -404,6 +409,25 @@ export class AgentEngine implements EngineCore {
   /** Active spawned sub-agents, keyed by sub-agent id */
   /** @internal */
   activeSubAgents = new Map<string, AgentEngine>()
+  /** 已完成子代理的续聊注册表（2026-10-28 续聊原语）：subConvId → 引擎。spawn
+   *  完成时 spawn-manager 的 cleanup 不再丢弃引擎而是保留在此（LRU 帽
+   *  SUB_AGENT_FOLLOWUP_KEEP），spawn_agent 的 agentId 参数经
+   *  spawnManager.followUpCompleted 唤醒同一个引擎带全部上下文继续。内存换
+   *  发现成本：每条目是一个完整引擎（含消息历史），帽 5 个即封顶。 */
+  /** @internal */
+  completedSubAgents = new Map<string, { engine: AgentEngine; title: string }>()
+  /** 后台任务完成唤醒（2026-10-28）：main 在后台子进程 exit 的同一拍经
+   *  session-manager 推进本队列；prepareLoopRequest 构建下一次请求时渲染进
+   *  state block 的 `## Background Tasks` 节并清空——一次性指针消息，模型
+   *  无须记得轮询 exec_logs。同 pid 只保留最新一条。 */
+  /** @internal */
+  backgroundNotices: Array<{ pid: number; code: number | null }> = []
+  /** @internal */
+  enqueueBackgroundNotice = (pid: number, code: number | null): void => {
+    this.backgroundNotices = this.backgroundNotices.filter((n) => n.pid !== pid)
+    this.backgroundNotices.push({ pid, code })
+    while (this.backgroundNotices.length > 10) this.backgroundNotices.shift()
+  }
   /** @internal Tool-use id of the spawn_agent call the last startDelegatedLoop
    *  minted. It is the ONLY call whose expert result may be delivered verbatim
    *  (the @-summon's whole point); a model-emitted spawn_agent never matches, so
@@ -509,15 +533,6 @@ export class AgentEngine implements EngineCore {
   private manualCompactActive = false
   private postTurnPrewarmInFlight = false
 
-  // ── Background-exit wake-up (2026-10-28 后台任务唤醒) ────────────────
-
-  /** Undelivered background-exit notices. terminal.ts discovers a background
-   *  child's death on the main side and pushes (pid, code) here through
-   *  session-manager's listener; the NEXT request's state block renders them
-   *  once and drains. A request without a state block leaves the queue
-   *  untouched — exec_logs remains the discovery channel either way. */
-  private pendingBackgroundNotices: Array<{ pid: number; code: number | null }> = []
-
   /** Explicit /compact [指示词]: force-compact from the next request on, and
    *  prewarm the summary now (one LLM call at idle instead of blocking the
    *  next turn). Resolves with the compaction event for UI feedback, or null
@@ -604,7 +619,20 @@ export class AgentEngine implements EngineCore {
     // both markers are null: exactly the sanctioned moment — compactNow's
     // blanket guard was the over-conservative one (D4).
     if (this.currentRequestId || this.prepareLoopInProgress) {
-      return { ok: false, reason: 'request_in_flight' }
+      // PLAN-tool-issues #6 (2026-10-28): this used to REFUSE with advice the
+      // model could neither use nor verify — 「等回合结束再调」 is self-defeating
+      // (the turn-end auto-compaction runs anyway) and there is no way to ask
+      // whether a request is in flight (the stale-id window once refused 7/7
+      // real calls, stream-runner 2026-10-21). The residual races this guard
+      // still sees are handled by REGISTRATION instead: pendingToolCompactForce
+      // arms the NEXT build's lightCompact — the same one-shot force a
+      // successful call arms itself — and a build-phase race is harmless (the
+      // in-flight build either picks the force up before its own read or the
+      // next one does; both materialize the drop). The prewarm (fresh summary
+      // + notes) genuinely cannot run in flight, so a deferred registration
+      // rides the build-time summarizer and honest-envelopes the notes gap.
+      this.pendingToolCompactForce = true
+      return { ok: true, deferred: true }
     }
 
     // ── free_results: the orthogonal light action (D3b). Exempt from ②③ —
@@ -771,6 +799,22 @@ export class AgentEngine implements EngineCore {
       // guards + prewarm + mandate all live here; the executor only formats.
       (call) => this.compactForTool(call),
     )
+    // 续聊回调（2026-10-28）：executor 的 followUpSubAgent 字段由此接线到本
+    // 引擎的 spawn-manager 注册表——晚接线（parentPlanMerge 同款）而非再加一
+    // 个位置参数，构造参数序列已经太长。
+    this.toolExecutor.followUpSubAgent = (subConvId, task) => this.followUpSubAgent(subConvId, task)
+    // 会话文件变更台账 → 协议事件（2026-10-28）。Wired on THIS engine's own
+    // ledger; a spawned sub-engine's ledger is swapped for its parent's right
+    // after construction (spawn-manager), orphaning this hook — which is the
+    // point: one emitter per hosted session, sub-agent writes ride the root's.
+    this.toolExecutor.fileChanges.onChange = (changes) => this.callbacks.onFileChangesChanged?.(changes)
+  }
+
+  /** The session's file-change ledger (2026-10-28): engineCall `getFileChanges`
+   *  and the re-attach snapshot read it here; live updates ride the
+   *  `file_changes` event. */
+  getFileChanges(): SessionFileChange[] {
+    return this.toolExecutor.fileChanges.list()
   }
 
   /** Persist plan changes to DB whenever PlanManager mutates the plan. */
@@ -1200,15 +1244,6 @@ export class AgentEngine implements EngineCore {
     }
   }
 
-  /** Main-side background exit → session-manager listener lands here. The
-   *  engine may be mid-turn or idle; either way the notice waits for the next
-   *  prepareLoopRequest. Capped so a burst of dying processes can't grow the
-   *  queue unbounded while the session sits parked. */
-  enqueueBackgroundNotice(pid: number, code: number | null): void {
-    this.pendingBackgroundNotices.push({ pid, code })
-    if (this.pendingBackgroundNotices.length > 20) this.pendingBackgroundNotices.shift()
-  }
-
   /**
    * Build the loop's LLM request: system prompt, tool schemas, compaction
    * pipeline and hook processing. Returns transport-ready request parts.
@@ -1241,6 +1276,14 @@ export class AgentEngine implements EngineCore {
     // by the build: a stream-idle retry of the nudge round rebuilds without it.
     const continuationNudge = this.pendingEarlyStopNudge
     this.pendingEarlyStopNudge = false
+    // Background-exit notices (2026-10-28 后台任务唤醒): drained into THIS
+    // request's state block and cleared on build — one-shot wake-up, the
+    // pointer names exec_logs as the recovery channel if the model misses it.
+    // A build failure loses the notice (degrades to exec_logs polling — the
+    // pre-feature status quo); the log tail is never the source of truth here.
+    const backgroundNotices = this.backgroundNotices.length > 0
+      ? this.backgroundNotices.map((n) => ({ pid: n.pid, code: n.code }))
+      : undefined
     const spResult = await buildSystemPrompt({
       opts,
       spawnSystemPrompt: this.spawnSystemPrompt,
@@ -1250,6 +1293,7 @@ export class AgentEngine implements EngineCore {
       summon: this.summon,
       toolProtocols,
       continuationNudge,
+      backgroundNotices,
       // The gauge must report the POST-PIPELINE size of this request, but the
       // pipeline below needs the state block's byte length first — so pass 1
       // ships the SENTINEL and the real section is swapped in after
@@ -1262,6 +1306,7 @@ export class AgentEngine implements EngineCore {
       // (conv_20261021155951: 「上下文只剩不到 4%，我必须小批量并一次成功」).
       contextUsage: { tokens: null, window: this.opts.contextLength || 128_000 },
     })
+    if (backgroundNotices) this.backgroundNotices = []
     const systemPrompt = spResult.systemPrompt
     // The state block's MESSAGE is built AFTER the compaction pipeline below:
     // its gauge section is swapped for the real post-pipeline number there
@@ -1436,16 +1481,6 @@ export class AgentEngine implements EngineCore {
       stateBlockText = stateBlockText.slice(0, at)
         + buildContextWindowSection({ tokens: contextTokensOf(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
         + stateBlockText.slice(at + CONTEXT_GAUGE_SENTINEL.length)
-    }
-    // Background-exit notices (2026-10-28): render ONCE, into the final
-    // message of this request — the state block is per-turn, never persisted,
-    // so the cache only re-bills its own tail block. A round with no state
-    // block holds the queue for the next one; exec_logs stays the fallback.
-    if (this.pendingBackgroundNotices.length > 0 && stateBlockText !== null) {
-      const lines = this.pendingBackgroundNotices
-        .map((n) => `- background process pid=${n.pid} exited (code=${n.code ?? 'killed/failed to spawn'}) — fetch its output with exec_logs before relying on it`)
-      stateBlockText += `\n## Background\n${lines.join('\n')}`
-      this.pendingBackgroundNotices = []
     }
     const stateBlock: AgentMessage | null = stateBlockText !== null
       ? {
@@ -1632,6 +1667,27 @@ export class AgentEngine implements EngineCore {
   // directly would spawn an expert outside the session's three-slot budget.
   // `spawn-tool` is currently the only production caller.
   spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => this.spawnManager.spawnSubAgent(config)
+  /** agentId 续聊的父侧路由（2026-10-28）：注册表在 spawn-manager 上。 */
+  followUpSubAgent = (subConvId: string, task: string): SubAgentHandle | null =>
+    this.spawnManager.followUpCompleted(subConvId, task)
+  /** 续聊的子侧入口：同一引擎带全部消息历史醒来——追加一条 user 追问消息，
+   *  重置回合机器后继续循环（startSpawnLoop 的续用形：不重建消息、不重置
+   *  spawn 身份；系统提示词原样保留，续聊与首轮同契约）。 */
+  followUpRun = (userText: string): void => {
+    this.loopCount = 0
+    this.maxLoopCount = getLoopIterationLimit()
+    this.isCancelled = false
+    this.pendingToolIds = new Set()
+    this.messages = [...this.messages, {
+      id: `followup_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      role: 'user',
+      contentBlocks: [{ type: 'text', text: userText }],
+      createdAt: new Date().toISOString(),
+    }]
+    this.opts.adapter.reconcileMessages?.(this.messages)
+    this.turnClock.start()
+    this.continueLoop()
+  }
   startSpawnLoop = (config: SpawnSubAgentConfig): void => this.spawnManager.startSpawnLoop(config)
   resolveCompletionIfSpawned = (status: SubAgentResult['status']): void => this.spawnManager.resolveCompletionIfSpawned(status)
 
@@ -1701,6 +1757,9 @@ export class AgentEngine implements EngineCore {
     this.toolCompactUsedThisTurn = false
     this.compactor.clearMandatedToolResultIds()
     this.compactor.clearStrippedThinkingIds()
+    // A fresh conversation has changed no files yet: the ledger (and the tree
+    // rows it paints) go with the history. Emits only if there was anything.
+    this.toolExecutor.fileChanges.clear()
     this.notify()
   }
 

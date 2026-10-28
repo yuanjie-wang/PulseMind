@@ -43,6 +43,12 @@ export interface BuildSystemPromptParams {
    *  section (tests, spawned sessions). Per-turn volatile — state block only,
    *  clock still last. */
   contextUsage?: { tokens: number | null; window: number }
+  /** Background-exit wake-ups (2026-10-28 后台任务唤醒): background: true
+   *  processes that finished since the last request, as pre-formatted lines.
+   *  Rendered as a `## Background Tasks` section and drained by the engine at
+   *  build time — one-shot, state block only (never persisted, never
+   *  rendered), so the cache contract holds. Absent → no section. */
+  backgroundNotices?: Array<{ pid: number; code: number | null }>
 }
 
 /** Sentinel standing in for the Context Window gauge while the compaction
@@ -231,8 +237,9 @@ async function buildStateBlock(params: {
   summon?: SummonState | null
   continuationNudge?: boolean
   contextUsage?: { tokens: number | null; window: number }
+  backgroundNotices?: Array<{ pid: number; code: number | null }>
 }): Promise<string> {
-  const { opts, plan, summon, continuationNudge, contextUsage } = params
+  const { opts, plan, summon, continuationNudge, contextUsage, backgroundNotices } = params
   const sections: string[] = []
 
   // Git status — OFF unless the user turned the injection on in settings, and
@@ -328,6 +335,14 @@ async function buildStateBlock(params: {
     } catch { /* stats unavailable — the section just stays out */ }
   }
 
+  // Background-exit wake-ups (2026-10-28 后台任务唤醒): one-shot news from
+  // main's process registry, drained by prepareLoopRequest at build time.
+  // Sits just before the gauge — freshest news reads next to the freshest
+  // numbers; the clock keeps its last position either way.
+  if (backgroundNotices && backgroundNotices.length > 0) {
+    sections.push(buildBackgroundTasksSection(backgroundNotices))
+  }
+
   // Context Window gauge (user 2026-10-10): the model owns the context_compact
   // decision, so it needs an occupancy number it can trust — the POST-PIPELINE
   // size of this request (sentinel here; prepareLoopRequest swaps the real
@@ -407,73 +422,177 @@ function buildProjectSection(name?: string, overview?: string): string | null {
 export const MAX_PROJECT_AGENTS_CHARS = 8_000
 
 /**
- * The workspace-local conventions file. PulseMind namespaces it under
+ * The workspace-local conventions file — PulseMind's OWN namespace under
  * .pulsemind/ (the scratch dir's parent, already the app's own namespace in
- * every workspace) rather than the workspace root on purpose: a root
- * AGENTS.md belongs to whichever coding tool opened that directory, and two
- * tools sharing one law file means neither owns its wording.
+ * every workspace). It remains the only WRITE surface: a root AGENTS.md is
+ * shared with every other coding tool that reads the repo, so PulseMind
+ * never authors it (amended 2026-10-28: the root file is now READ as a
+ * fallback — see readProjectInstructions).
  */
 export function projectAgentsPath(workspaceDir: string): string {
   return `${workspaceDir}/.pulsemind/AGENTS.md`
 }
 
 /**
- * Whether a model-supplied file_path names the project instructions file —
- * the write surface the state block teaches the model to treat as
+ * The workspace-root AGENTS.md — the cross-tool conventions file every major
+ * coding agent reads. Read-only for PulseMind (fallback source when
+ * .pulsemind/AGENTS.md is absent, 2026-10-28): the model is taught to treat
+ * its body as context and to record PulseMind-specific conventions in
+ * projectAgentsPath instead. Because that body IS injected as standing
+ * instructions, isProjectInstructionsPath protects it like the .pulsemind
+ * file — user-owned law, edits go through the approval ladder.
+ */
+export function rootAgentsPath(workspaceDir: string): string {
+  return `${workspaceDir}/AGENTS.md`
+}
+
+/**
+ * Whether a model-supplied file_path names a project instructions file —
+ * the write surfaces the state block teaches the model to treat as
  * user-owned law (「never delete or reword existing lines — append, or
- * propose the change first」). The approval-side half of that teaching
- * (2026-10-27): a write/edit to this path is HELD for approval at EVERY
- * level including 'auto' — 「propose the change first」 translated into the
- * ladder; a spawned sub-agent (nobody to approve) gets a flat rejection at
- * dispatch instead. Resolution rides resolveToolFilePath (the executor's own
- * spelling) and the comparison normalizes separators, so `\.pulsemind\…`
- * matches on Windows too. A `~`-spelled path never matches (the read gate's
- * same deliberate gap).
+ * propose the change first」). Covers BOTH files: .pulsemind/AGENTS.md
+ * (PulseMind's own) and the workspace-root AGENTS.md whose body is injected
+ * as the read-only fallback — once a file's bytes ride the prompt as law,
+ * an unreviewed write to it would poison every later session. The
+ * approval-side half of that teaching (2026-10-27): a write/edit to either
+ * path is HELD for approval at EVERY level including 'auto' — 「propose the
+ * change first」 translated into the ladder; a spawned sub-agent (nobody to
+ * approve) gets a flat rejection at dispatch instead. Resolution rides
+ * resolveToolFilePath (the executor's own spelling) and the comparison
+ * normalizes separators, so `\.pulsemind\…` matches on Windows too. A
+ * `~`-spelled path never matches (the read gate's same deliberate gap).
  */
 export function isProjectInstructionsPath(filePath: string, workspaceDir?: string): boolean {
   if (!workspaceDir) return false
   const raw = filePath.trim()
   if (!raw) return false
   const norm = (p: string): string => p.replace(/\\/g, '/')
-  return norm(resolveToolFilePath(raw, workspaceDir)) === norm(projectAgentsPath(workspaceDir))
+  const target = norm(resolveToolFilePath(raw, workspaceDir))
+  return target === norm(projectAgentsPath(workspaceDir)) || target === norm(rootAgentsPath(workspaceDir))
+}
+
+// ── repo-root discovery (the root AGENTS.md fallback's third candidate) ──
+
+/** Ancestor levels the `.git` walk visits before giving up. High enough for
+ *  any realistic monorepo nesting, low enough that a workspace under a deep
+ *  home directory cannot wander toward `/`. */
+const REPO_ROOT_WALK_LIMIT = 8
+
+/** Discovery results older than this re-walk (verify-loop's TTL pattern):
+ *  buildStateBlock runs on EVERY tool-loop iteration, so an uncached walk
+ *  here would multiply by the iteration count. Negative results (no repo —
+ *  the minted-scratch case) are cached too; that is the common case. */
+export const PROJECT_ROOT_CACHE_TTL_MS = 10 * 60_000
+
+const repoRootCache = new Map<string, { at: number; root: string | null }>()
+
+/** Test reset hook — the module cache must not leak a fixture workspace into
+ *  the next test (resetVerifyCommandsCache precedent). */
+export function resetProjectInstructionsRootCache(): void {
+  repoRootCache.clear()
 }
 
 /**
- * Read + normalize the project-instructions file: trimmed, capped at
- * MAX_PROJECT_AGENTS_CHARS with the tail replaced by a read-back pointer.
- * Returns '' when the file is absent, unreadable or whitespace-only — the
- * caller decides what an empty body means (state block: empty-state pointer
- * for project-bound conversations; spawn: no section at all). Disk is read at
- * point of use, so an edit lands on the next request with no registration
- * step — the same philosophy as pick_skill's freshSkillDefinition.
+ * The nearest ancestor of workspaceDir containing a `.git` marker (directory
+ * or worktree file), or null. Pure fs stats through the host — no git
+ * process spawn on the request path. Cached per workspaceDir.
  */
-export async function readProjectInstructionsBody(workspaceDir: string): Promise<string> {
-  const path = projectAgentsPath(workspaceDir)
-  let text = ''
-  try {
-    text = (await getHost().readFile(path)) ?? ''
-  } catch { /* absent or unreadable → empty body */ }
-  const body = text.trim()
-  if (!body || body.length <= MAX_PROJECT_AGENTS_CHARS) return body
+async function discoverGitRoot(workspaceDir: string): Promise<string | null> {
+  const now = Date.now()
+  const hit = repoRootCache.get(workspaceDir)
+  if (hit && now - hit.at < PROJECT_ROOT_CACHE_TTL_MS) return hit.root
+  let root: string | null = null
+  let dir = workspaceDir
+  for (let i = 0; i < REPO_ROOT_WALK_LIMIT; i++) {
+    try {
+      if (await getHost().getFileStat(`${dir}/.git`)) { root = dir; break }
+    } catch { /* stat failure = not a marker here; keep walking */ }
+    const parent = dir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '')
+    if (!parent || parent === dir) break
+    dir = parent
+  }
+  repoRootCache.set(workspaceDir, { at: now, root })
+  return root
+}
+
+export interface ProjectInstructionsRead {
+  body: string
+  /** Absolute path of the file the body came from; null when none was found. */
+  path: string | null
+  /** 'project' = PulseMind's own .pulsemind/AGENTS.md; 'root' = the shared
+   *  workspace-root / repo-root AGENTS.md. */
+  source: 'project' | 'root' | null
+}
+
+async function readInstructionsFile(path: string): Promise<string> {
+  try { return ((await getHost().readFile(path)) ?? '').trim() } catch { return '' }
+}
+
+function capInstructionsBody(body: string, path: string): string {
+  if (body.length <= MAX_PROJECT_AGENTS_CHARS) return body
   return body.slice(0, MAX_PROJECT_AGENTS_CHARS) +
     `\n\n(The file exceeds ${MAX_PROJECT_AGENTS_CHARS} chars; the rest is not shown — \`read\` ${path} if you need it.)`
 }
 
 /**
+ * Read + normalize the project-instructions body, first candidate with
+ * non-whitespace content wins:
+ *   1. .pulsemind/AGENTS.md — PulseMind's own file, the only write surface;
+ *   2. <workspaceDir>/AGENTS.md — the shared cross-tool file at the
+ *      workspace root (the workspace IS the repo root for most projects);
+ *   3. <gitRoot>/AGENTS.md — a workspace nested INSIDE a repo reads the
+ *      repo root's shared file (discovery is TTL-cached, negative too).
+ * Each candidate is read from disk at point of use — an edit lands on the
+ * next request with no registration step (freshSkillDefinition philosophy);
+ * only the git-root WALK is cached, since it costs stats per ancestor.
+ */
+export async function readProjectInstructions(workspaceDir: string): Promise<ProjectInstructionsRead> {
+  const projectPath = projectAgentsPath(workspaceDir)
+  const projectBody = await readInstructionsFile(projectPath)
+  if (projectBody) return { body: capInstructionsBody(projectBody, projectPath), path: projectPath, source: 'project' }
+  const rootPath = rootAgentsPath(workspaceDir)
+  const rootBody = await readInstructionsFile(rootPath)
+  if (rootBody) return { body: capInstructionsBody(rootBody, rootPath), path: rootPath, source: 'root' }
+  const gitRoot = await discoverGitRoot(workspaceDir)
+  if (gitRoot && gitRoot !== workspaceDir) {
+    const repoPath = `${gitRoot}/AGENTS.md`
+    const repoBody = await readInstructionsFile(repoPath)
+    if (repoBody) return { body: capInstructionsBody(repoBody, repoPath), path: repoPath, source: 'root' }
+  }
+  return { body: '', path: null, source: null }
+}
+
+/**
+ * Body-only wrapper (spawn pass-through shape): the content is what a
+ * sub-agent needs; provenance lives in the state block's section header.
+ */
+export async function readProjectInstructionsBody(workspaceDir: string): Promise<string> {
+  return (await readProjectInstructions(workspaceDir)).body
+}
+
+/**
  * The main agent's `## Project Instructions` state-block section. Full file
- * when present; otherwise a one-line empty-state pointer — but ONLY for
- * project-bound conversations (opts.projectName): the pointer teaches the
- * write path, and a plain chat's minted scratch workspace has no conventions
- * to record, so it gets nothing at all.
+ * when present (PulseMind's own, else the shared root AGENTS.md as fallback);
+ * otherwise a one-line empty-state pointer — but ONLY for project-bound
+ * conversations (opts.projectName): the pointer teaches the write path, and
+ * a plain chat's minted scratch workspace has no conventions to record, so
+ * it gets nothing at all.
  */
 async function buildProjectInstructionsSection(opts: AgentEngineOptions): Promise<string | null> {
   if (!opts.workspaceDir) return null
-  const body = await readProjectInstructionsBody(opts.workspaceDir)
-  if (body) {
+  const read = await readProjectInstructions(opts.workspaceDir)
+  if (read.body && read.path) {
+    if (read.source === 'root') {
+      return [
+        '## Project Instructions',
+        `Standing instructions for this project, from ${read.path} — the repo's shared AGENTS.md, also read by other coding tools. Follow it for work in this workspace, but treat it as read-only context: PulseMind-specific conventions belong in ${projectAgentsPath(opts.workspaceDir)} — offer to record them there when the user states one.`,
+        read.body,
+      ].join('\n')
+    }
     return [
       '## Project Instructions',
       `Standing instructions for this project, from ${projectAgentsPath(opts.workspaceDir)}. Follow them for work in this workspace. The file is user-authored: when updating it, never delete or reword existing lines — append, or propose the change first.`,
-      body,
+      read.body,
     ].join('\n')
   }
   if (opts.projectName) {
@@ -611,6 +730,18 @@ function buildClockSection(): string {
  * call is refused; the force target is 0.6×. Exported for the section's math
  * pins.
  */
+/** The `## Background Tasks` wake-up section (2026-10-28). Exported pure for
+ *  the format pins; prepareLoopRequest drains the engine's queue into the
+ *  param, so a notice renders EXACTLY ONCE — the state block is never
+ *  persisted, and exec_logs remains the full-output channel if the model
+ *  misses the pointer. */
+export function buildBackgroundTasksSection(notices: Array<{ pid: number; code: number | null }>): string {
+  const lines = notices.slice(0, 10).map((n) =>
+    `- Background task pid=${n.pid} finished (${n.code === null ? 'killed by a signal' : `exit code ${n.code}`}). Read its final output with exec_logs(pid=${n.pid})${n.code === 0 ? '' : ' and check what went wrong before continuing'}.`,
+  )
+  return ['## Background Tasks', 'These background processes finished since your last turn — you did not need to poll for them:', ...lines].join('\n')
+}
+
 /** The gauge line. The number is the POST-PIPELINE size of THIS request (see
  *  BuildSystemPromptParams.contextUsage for the 口径 history). Guard ③ still
  *  refuses context_compact in transcript-pressure units and prints its own

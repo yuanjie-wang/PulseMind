@@ -32,12 +32,14 @@ type Transport = {
 }
 const transport = new AgentSessionManagerImpl() as unknown as Transport
 
-/** Just enough engine for snapshot() to read — it projects four fields off it. */
+/** Just enough engine for snapshot() to read — it projects five fields off it
+ *  (the file-change ledger rides the snapshot since 2026-10-28). */
 const engine = {
   agentStatus: { status: 'idle' } as AgentStatus,
   messages: [],
   streamingBlocks: [],
   plan: null,
+  getFileChanges: () => [],
 }
 ;(transport as unknown as { ensureEntry: unknown }).ensureEntry = async () => ({ engine })
 ;(transport as unknown as { sessions: Map<string, unknown> }).sessions = new Map([[CONV, { engine }]])

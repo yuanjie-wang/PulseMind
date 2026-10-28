@@ -5,6 +5,8 @@ import {
   buildSystemPrompt,
   MAX_PROJECT_AGENTS_CHARS,
   projectAgentsPath,
+  rootAgentsPath,
+  resetProjectInstructionsRootCache,
 } from '../src/renderer/src/agent/system-prompt-builder'
 import { execSpawnAgent } from '../src/renderer/src/agent/executors/spawn-tool'
 import type { ToolExecContext } from '../src/renderer/src/agent/executors/context'
@@ -36,8 +38,10 @@ interface FsSpec {
   [path: string]: string | Error
 }
 
-/** Host stub whose readFile answers from `files`; unlisted paths ENOENT. */
-function installHost(files: FsSpec = {}) {
+/** Host stub whose readFile answers from `files`; unlisted paths ENOENT.
+ *  `stats` names the paths getFileStat reports as existing (the `.git` walk's
+ *  repo markers); anything else stats as null. */
+function installHost(files: FsSpec = {}, stats: string[] = []) {
   const reads: string[] = []
   setHost({
     // git + commands injection both default OFF — zero noise in the block.
@@ -49,6 +53,8 @@ function installHost(files: FsSpec = {}) {
       if (hit === undefined) throw new Error(`ENOENT: ${path}`)
       return hit
     },
+    getFileStat: async (path: string) =>
+      stats.includes(path) ? { size: 1, birthtime: '', mtime: '', isDirectory: true } : null,
   } as unknown as PulseHost)
   return reads
 }
@@ -59,7 +65,10 @@ const prompt = (opts: Record<string, unknown>) =>
 
 const agentsPath = () => projectAgentsPath(WS)
 
-afterEach(() => setHost(null as unknown as PulseHost))
+afterEach(() => {
+  setHost(null as unknown as PulseHost)
+  resetProjectInstructionsRootCache()
+})
 
 describe('## Project Instructions — the state-block injection point', () => {
   it('injects the file body, verbatim and trimmed, naming its path', async () => {
@@ -143,6 +152,109 @@ describe('## Project Instructions — the state-block injection point', () => {
     const { stateBlock } = await prompt({ projectName: 'Demo' })
     expect(stateBlock).not.toContain('## Project Instructions')
     expect(reads).toHaveLength(0)
+  })
+})
+
+// ── the root AGENTS.md fallback (2026-10-28) ──────────────────────────────
+//
+// The shared cross-tool AGENTS.md is READ as a fallback when PulseMind's own
+// file is absent — workspace root first, then the git root for a workspace
+// nested inside a repo — but never written (the state block teaches
+// 「read-only context」 and points PulseMind-specific conventions at
+// projectAgentsPath). .pulsemind/AGENTS.md always wins when present.
+
+describe('root AGENTS.md fallback', () => {
+  it('absent .pulsemind + present workspace-root AGENTS.md → root body with the read-only teaching line', async () => {
+    installHost({ [rootAgentsPath(WS)]: '- 全仓用 pnpm' })
+    const { stateBlock } = await prompt({ workspaceDir: WS, projectName: 'Demo' })
+    expect(stateBlock).toContain('## Project Instructions')
+    expect(stateBlock).toContain('- 全仓用 pnpm')
+    expect(stateBlock).toContain(`${WS}/AGENTS.md`)
+    expect(stateBlock).toContain('read-only context')
+    // PulseMind-specific conventions still learn their own write path.
+    expect(stateBlock).toContain(agentsPath())
+    expect(stateBlock).not.toContain('no .pulsemind/AGENTS.md yet')
+  })
+
+  it('.pulsemind/AGENTS.md wins when both exist — root never injected alongside', async () => {
+    installHost({ [agentsPath()]: '- PulseMind 约定', [rootAgentsPath(WS)]: '- 共享约定' })
+    const { stateBlock } = await prompt({ workspaceDir: WS })
+    expect(stateBlock).toContain('- PulseMind 约定')
+    expect(stateBlock).toContain('user-authored')
+    expect(stateBlock).not.toContain('- 共享约定')
+    expect(stateBlock).not.toContain(rootAgentsPath(WS))
+  })
+
+  it('a workspace nested inside a repo reads the repo-root AGENTS.md (the .git walk)', async () => {
+    const SUB = '/tmp/pm-agents-md-repo/sub'
+    installHost({ ['/tmp/pm-agents-md-repo/AGENTS.md']: '- monorepo 根约定' }, ['/tmp/pm-agents-md-repo/.git'])
+    const { stateBlock } = await prompt({ workspaceDir: SUB, projectName: 'Demo' })
+    expect(stateBlock).toContain('- monorepo 根约定')
+    expect(stateBlock).toContain('/tmp/pm-agents-md-repo/AGENTS.md')
+  })
+
+  it('the direct workspace-root file beats the git-root one (nearest law first)', async () => {
+    const SUB = '/tmp/pm-agents-md-repo2/sub'
+    installHost(
+      { [`${SUB}/AGENTS.md`]: '- 子目录约定', ['/tmp/pm-agents-md-repo2/AGENTS.md']: '- 根约定' },
+      ['/tmp/pm-agents-md-repo2/.git'],
+    )
+    const { stateBlock } = await prompt({ workspaceDir: SUB })
+    expect(stateBlock).toContain('- 子目录约定')
+    expect(stateBlock).not.toContain('- 根约定')
+  })
+
+  it('the git-root walk is TTL-cached (one walk per window) and resettable', async () => {
+    const SUB = '/tmp/pm-agents-md-repo3/sub'
+    const stats = ['/tmp/pm-agents-md-repo3/.git']
+    let statCalls = 0
+    const reads: string[] = []
+    setHost({
+      getSettings: async () => ({}),
+      readFile: async (path: string) => {
+        reads.push(path)
+        if (path === '/tmp/pm-agents-md-repo3/AGENTS.md') return '- 根约定'
+        throw new Error(`ENOENT: ${path}`)
+      },
+      getFileStat: async (path: string) => {
+        if (stats.includes(path)) { statCalls++; return { size: 1, birthtime: '', mtime: '', isDirectory: true } }
+        return null
+      },
+    } as unknown as PulseHost)
+    await prompt({ workspaceDir: SUB })
+    const afterFirst = statCalls
+    expect(afterFirst).toBeGreaterThan(0)
+    await prompt({ workspaceDir: SUB })
+    expect(statCalls).toBe(afterFirst) // cache hit — no re-walk
+    resetProjectInstructionsRootCache()
+    await prompt({ workspaceDir: SUB })
+    expect(statCalls).toBe(afterFirst * 2) // reset → re-walk
+  })
+
+  it('a root file over the cap is truncated with a pointer at the ROOT path', async () => {
+    installHost({ [rootAgentsPath(WS)]: 'A'.repeat(MAX_PROJECT_AGENTS_CHARS) + 'TAIL' })
+    const { stateBlock } = await prompt({ workspaceDir: WS })
+    expect(stateBlock).toContain('The file exceeds')
+    expect(stateBlock).toContain('`read` ' + rootAgentsPath(WS))
+    expect(stateBlock).not.toContain('TAIL')
+  })
+
+  it('no candidates anywhere → the plain empty-state (or nothing) exactly as before', async () => {
+    installHost({})
+    const bound = await prompt({ workspaceDir: WS, projectName: 'Demo' })
+    expect(bound.stateBlock).toContain('no .pulsemind/AGENTS.md yet')
+    const plain = await prompt({ workspaceDir: WS })
+    expect(plain.stateBlock).not.toContain('## Project Instructions')
+  })
+
+  it('the spawn pass-through carries the root body too (content only)', async () => {
+    installHost({ [`${WS}/AGENTS.md`]: '- 共享约定，子代理也要守' })
+    const { ex, getConfig } = makeContext({ workspaceDir: WS })
+    await execSpawnAgent(ex, tool({ task: '写周报' }))
+    const sp = getConfig()!.systemPrompt
+    expect(sp).toContain('# Project Instructions')
+    expect(sp).toContain('- 共享约定，子代理也要守')
+    expect(sp).not.toContain('read-only context') // no teaching — content only
   })
 })
 

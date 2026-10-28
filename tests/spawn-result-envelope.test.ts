@@ -61,8 +61,12 @@ describe('spawn result envelope: the last line tells the model what to do next',
     expect(content).toContain('译文：猪在哪里？')
     expect(content).toContain('**This result is the deliverable.**')
     expect(content).toContain('do NOT re-dispatch')
-    // The close-out is the LAST thing the model reads.
-    expect(content.trimEnd().endsWith('near-identical task.')).toBe(true)
+    // The close-out is the last thing before the follow-up channel (2026-10-28
+    // 续聊原语): report-don't-redeliver teaching now flows straight into the
+    // warmer alternative — same tail position, one richer sentence.
+    expect(content).toContain('**Follow-up channel:**')
+    expect(content.indexOf('**This result is the deliverable.**')).toBeLessThan(content.indexOf('**Follow-up channel:**'))
+    expect(content.trimEnd().endsWith('a fresh agent.')).toBe(true)
   })
 
   it('failed result ends with report-the-outcome, and marks the result as an error', async () => {
@@ -104,7 +108,7 @@ describe('spawn result envelope: the last line tells the model what to do next',
     // The close-out still comes last: report, don't re-dispatch.
     expect(content).toContain('**This result is the deliverable.**')
     expect(content.indexOf('the scheduler settles it automatically')).toBeLessThan(content.indexOf('**This result is the deliverable.**'))
-    expect(content.trimEnd().endsWith('near-identical task.')).toBe(true)
+    expect(content.trimEnd().endsWith('a fresh agent.')).toBe(true)
   })
 
   it('direct plan keeps the settle-now instruction (that mode never auto-settles)', async () => {

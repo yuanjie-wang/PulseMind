@@ -246,7 +246,9 @@ describe('ExecutionFlow approveTool 路由表', () => {
     const block = toolUse('t1', 'exec', { command: 'echo hi' })
     raw.messages.push(msg([block]))
     await flow.approveTool('t1')
-    expect(host.executeCommand).toHaveBeenCalledWith('echo hi', undefined, undefined)
+    // 4th arg = the engine's conversationId → its persistent shell key (review
+    // P0-1): the approval release must land in the SAME shell as the auto path.
+    expect(host.executeCommand).toHaveBeenCalledWith('echo hi', undefined, undefined, 'conv_exec_flow')
     expect(raw.executingProcessId).toBe('pid-1')
     host.emitExit('pid-1', 0)
     expect(calls.results).toEqual([{ id: 't1', content: '(no output)', isError: false }])
@@ -270,7 +272,7 @@ describe('ExecutionFlow approveTool 路由表', () => {
     ctx.raw.messages.push(msg([toolUse('t1', 'exec', { command: 'danger' })]))
     await ctx.flow.approveTool('t1')
     expect(hook).toHaveBeenCalled()
-    expect(ctx.host.executeCommand).toHaveBeenCalledWith('safe --cmd', undefined, undefined)
+    expect(ctx.host.executeCommand).toHaveBeenCalledWith('safe --cmd', undefined, undefined, 'conv_exec_flow')
 
     // hook 清空命令 → 阻断，不执行
     const emptyHook = async () => ({ command: '', cwd: '' })
@@ -304,7 +306,7 @@ describe('ExecutionFlow approveTool 路由表', () => {
     const { raw, flow, host } = makeCore()
     raw.messages.push(msg([toolUse('t1', 'exec', { command: 'x', timeout: 5 })]))
     await flow.approveTool('t1')
-    expect(host.executeCommand).toHaveBeenCalledWith('x', undefined, 5000)
+    expect(host.executeCommand).toHaveBeenCalledWith('x', undefined, 5000, 'conv_exec_flow')
   })
 
   it('terminalError 只吃第一个，后续忽略', async () => {
