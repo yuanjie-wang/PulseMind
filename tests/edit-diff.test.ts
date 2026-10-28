@@ -213,6 +213,60 @@ describe('summarizeEditChanges — the segment header badge', () => {
   })
 })
 
+// ── The multi-file atomic form: one card, one meta boundary per file, ──────
+// per-file hunk numbering (each section is its own diff against its own
+// file — carrying numbers across the boundary would fabricate file lines).
+
+describe('buildEditDiffModel — multi-file mode', () => {
+  const edit = (input: Record<string, unknown>) => ({ type: 'tool_use', name: 'edit', status: 'completed', input })
+  const MULTI = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -10,1 +10,1 @@',
+    '-old a',
+    '+new a',
+    'diff --git a/lib/b.ts b/lib/b.ts',
+    '--- a/lib/b.ts',
+    '+++ b/lib/b.ts',
+    '@@ -2,1 +2,1 @@',
+    '-old b',
+    '+new b',
+  ].join('\n')
+
+  it('renders a meta boundary per file and resets the numbering per section', () => {
+    const model = buildEditDiffModel({ diff: MULTI })
+    expect(model.error).toBeUndefined()
+    expect(model.lines[0]).toEqual({ type: 'meta', text: '── src/a.ts ──' })
+    expect(model.lines[1]).toMatchObject({ type: 'del', text: 'old a', oldNo: 10 })
+    expect(model.lines[2]).toMatchObject({ type: 'add', text: 'new a', newNo: 10 })
+    const boundary = model.lines.findIndex((l) => l.type === 'meta' && l.text.includes('lib/b.ts'))
+    expect(boundary).toBeGreaterThan(0)
+    expect(model.lines[boundary]).toEqual({ type: 'meta', text: '── lib/b.ts ──' })
+    // numbers restart at THIS section's hunk header, not b.ts's real line + a.ts's offset
+    expect(model.lines[boundary + 1]).toMatchObject({ type: 'del', text: 'old b', oldNo: 2 })
+    expect(model.lines[boundary + 2]).toMatchObject({ type: 'add', text: 'new b', newNo: 2 })
+  })
+
+  it('file_path present → headers ignored (single-file semantics, like the executor)', () => {
+    const model = buildEditDiffModel({ file_path: '/ws/src/a.ts', diff: MULTI })
+    expect(model.lines.every((l) => l.type !== 'meta' || !l.text.startsWith('──'))).toBe(true)
+  })
+
+  it('a --- /dev/null section is flagged（新建）in its boundary line', () => {
+    const model = buildEditDiffModel({
+      diff: 'diff --git a/new.ts b/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1,1 @@\n+hi',
+    })
+    expect(model.lines[0]).toEqual({ type: 'meta', text: '── new.ts（新建） ──' })
+    expect(model.lines[1]).toMatchObject({ type: 'add', text: 'hi', newNo: 1 })
+  })
+
+  it('the badge counts a multi-file call across its sections', () => {
+    const summary = summarizeEditChanges([edit({ diff: MULTI })])
+    expect(summary).toEqual({ added: 2, removed: 2 })
+  })
+})
+
 describe('wiring — the badge reaches the collapsed header', () => {
   const ROOT = join(__dirname, '..')
   const read = (p: string) => readFileSync(join(ROOT, p), 'utf8')

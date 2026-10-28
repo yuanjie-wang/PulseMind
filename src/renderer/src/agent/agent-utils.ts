@@ -1,4 +1,5 @@
 import { getHost } from './host'
+import { parseMultiFileDiff } from '../../../shared/diff/patch-utils'
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 export function generateMsgId(): string {
@@ -139,6 +140,25 @@ export function resolveToolFilePath(filePath: string, workspaceDir?: string): st
   if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath) || filePath.startsWith('~')) return filePath
   const sep = workspaceDir.includes('\\') ? '\\' : '/'
   return workspaceDir + sep + filePath
+}
+
+/**
+ * Every filesystem path one write/edit tool call targets, RAW (unresolved —
+ * consumers run resolveToolFilePath/isProjectInstructionsPath themselves, the
+ * same contract the read-before-write gate's consumers follow). Single path
+ * for everything with a file_path; the multi-file diff form (no file_path)
+ * names its targets in the `diff --git` section headers. The approval-side
+ * protected-path gate reads THIS so a multi-file diff cannot smuggle
+ * .pulsemind/AGENTS.md past the ladder inside one of its sections.
+ */
+export function editToolTargetPaths(input: unknown): string[] {
+  const inp = (input ?? {}) as { file_path?: unknown; diff?: unknown }
+  const rawFp = typeof inp.file_path === 'string' ? inp.file_path.trim() : ''
+  if (rawFp) return [rawFp]
+  if (typeof inp.diff !== 'string' || !inp.diff.trim()) return []
+  const sections = parseMultiFileDiff(inp.diff)
+  if (!sections) return []
+  return sections.map((s) => s.path).filter(Boolean)
 }
 
 /** POSIX '…' quoting: inside single quotes NOTHING is special except ' itself,

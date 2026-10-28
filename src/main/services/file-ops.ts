@@ -3,10 +3,10 @@
  * file-ops.handler.ts closures, extracted so both the IPC handlers and the
  * main-process agent host call the same functions.
  */
-import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/promises'
+import { readFile, writeFile, appendFile, stat, mkdir, readdir, unlink } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
-import { patchContent } from '../../shared/diff/patch-utils'
+import { patchContent, parseUnifiedDiff } from '../../shared/diff/patch-utils'
 import { editMissError } from '../../shared/diff/edit-similarity'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
@@ -36,6 +36,24 @@ export interface PatchFileResult {
   success: boolean
   replacements: number
   error?: string
+}
+
+/** One pre-split section of a multi-file diff (the renderer's parseMultiFileDiff
+ *  output): each entry carries its own file and its own single-file diff text.
+ *  isNew marks a `--- /dev/null` section — the file must not exist. */
+export interface PatchFilesEntry {
+  filePath: string
+  diff: string
+  isNew?: boolean
+}
+
+export interface PatchFilesResult {
+  success: boolean
+  /** Total hunks applied across every file. */
+  replacements: number
+  error?: string
+  /** Per-file manifest of what the SUCCESSFUL call landed. */
+  files?: Array<{ path: string; isNew: boolean }>
 }
 
 export interface WriteFileInput {
@@ -323,6 +341,141 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
       }
       await writeFile(safePath, result.content!, 'utf-8')
       return { success: true, replacements: result.replacements }
+    })
+  } catch (err) {
+    return {
+      success: false,
+      replacements: 0,
+      error: err instanceof Error ? err.message : 'Unknown error'
+    }
+  }
+}
+
+/** Every hunk of a `--- /dev/null` section must be a pure addition — there is
+ *  no old content to match context or removals against. Built from the + lines
+ *  directly rather than patchContent('', …): applyPatch splits '' into [''],
+ *  and its append-at-end splice would leave a phantom leading empty line. */
+function newFileContentFromDiff(diff: string): { success: boolean; content?: string; hunks?: number; error?: string } {
+  const hunks = parseUnifiedDiff(diff.replace(/\r\n/g, '\n'))
+  if (hunks.length === 0) return { success: false, error: 'No valid hunks found in diff' }
+  const out: string[] = []
+  for (const h of hunks) {
+    for (const l of h.lines) {
+      if (l.startsWith('+')) out.push(l.slice(1))
+      else if (l.startsWith('-') || l.startsWith(' ')) {
+        return { success: false, error: 'a --- /dev/null (new file) section must contain only + lines' }
+      }
+    }
+  }
+  return { success: true, content: out.join('\n'), hunks: hunks.length }
+}
+
+/**
+ * Atomic multi-file patch: apply every entry's diff or touch NOTHING.
+ * Each entry is validated up front (office reject, sandbox, duplicate
+ * resolution), all locks are taken in sorted order before any read (the only
+ * multi-lock holder in the codebase, so sorting cannot deadlock), every patch
+ * is applied in memory first, and only then are files written — a write
+ * failure rolls back the entries already written from the in-memory originals.
+ * One mismatching hunk anywhere rejects the whole call with the named file.
+ */
+export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Promise<PatchFilesResult> {
+  try {
+    const entries = input.entries
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { success: false, replacements: 0, error: 'no file entries in the multi-file patch' }
+    }
+    // ── Validate every entry before anything touches disk ──
+    const resolved: Array<{ safePath: string; filePath: string; diff: string; isNew: boolean }> = []
+    for (const e of entries) {
+      const officeReject = officeBinaryReject(e.filePath)
+      if (officeReject) return { success: false, replacements: 0, error: `${e.filePath}: ${officeReject}` }
+      const guard = await guardFsTarget(e.filePath, 'write')
+      if (!guard.ok) return { success: false, replacements: 0, error: `${e.filePath}: ${guard.reason}` }
+      const safePath = await resolveWritablePath(e.filePath)
+      if (resolved.some((r) => r.safePath === safePath)) {
+        return { success: false, replacements: 0, error: `duplicate file section: ${e.filePath} — one section per file in a multi-file diff` }
+      }
+      resolved.push({ safePath, filePath: e.filePath, diff: e.diff, isNew: e.isNew === true })
+    }
+    // ── Lock every path, sorted, before the first read ──
+    const ordered = [...resolved].sort((a, b) => (a.safePath < b.safePath ? -1 : a.safePath > b.safePath ? 1 : 0))
+    const acquire = async (i: number, fn: () => Promise<PatchFilesResult>): Promise<PatchFilesResult> =>
+      i >= ordered.length ? fn() : withPathLock(ordered[i].safePath, () => acquire(i + 1, fn))
+    return await acquire(0, async (): Promise<PatchFilesResult> => {
+      // ── Read all originals, checking existence against isNew ──
+      const originals: string[] = []
+      const beforeStats: string[] = []
+      for (const r of ordered) {
+        if (r.isNew) {
+          let exists = false
+          try { exists = (await stat(r.safePath)).isFile() } catch { exists = false }
+          if (exists) {
+            return { success: false, replacements: 0, error: `${r.filePath} already exists — a --- /dev/null section only creates new files; send a normal update section for it instead` }
+          }
+          originals.push('')
+          beforeStats.push('missing')
+          continue
+        }
+        const before = await statSignature(r.safePath)
+        beforeStats.push(before)
+        let content: string | null = null
+        try { content = await readFile(r.safePath, 'utf-8') } catch { content = null }
+        if (content === null) {
+          return { success: false, replacements: 0, error: `${r.filePath}: file not found — an update section needs an existing file (create one with a --- /dev/null section)` }
+        }
+        originals.push(content)
+      }
+      // ── Patch all in memory ──
+      const patched: string[] = []
+      let totalHunks = 0
+      for (let i = 0; i < ordered.length; i++) {
+        const r = ordered[i]
+        if (r.isNew) {
+          const made = newFileContentFromDiff(r.diff)
+          if (!made.success) return { success: false, replacements: 0, error: `${r.filePath}: ${made.error}` }
+          patched.push(made.content!)
+          totalHunks += made.hunks!
+        } else {
+          const result = patchContent(originals[i], r.diff)
+          if (!result.success) return { success: false, replacements: 0, error: `${r.filePath}: ${result.error}` }
+          patched.push(result.content!)
+          totalHunks += result.replacements
+        }
+      }
+      // ── Staleness re-check: the file each read licensed must still be the
+      // same file at write time (svcPatchFile's read-modify-write window,
+      // widened to the whole entry set) ──
+      for (let i = 0; i < ordered.length; i++) {
+        if (ordered[i].isNew) continue
+        if ((await statSignature(ordered[i].safePath)) !== beforeStats[i]) {
+          return { success: false, replacements: 0, error: `${ordered[i].filePath}: ${STALE_FILE_ERROR}` }
+        }
+      }
+      // ── Write all, rolling back on the first write failure ──
+      const written: number[] = []
+      for (let i = 0; i < ordered.length; i++) {
+        const r = ordered[i]
+        try {
+          if (r.isNew) await mkdir(path.dirname(r.safePath), { recursive: true })
+          await writeFile(r.safePath, patched[i], 'utf-8')
+          written.push(i)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Unknown error'
+          for (const j of written) {
+            try {
+              if (ordered[j].isNew) await unlink(ordered[j].safePath)
+              else await writeFile(ordered[j].safePath, originals[j], 'utf-8')
+            } catch { /* best effort — report the original failure either way */ }
+          }
+          return { success: false, replacements: 0, error: `${r.filePath}: write failed (${msg}) — files written earlier in this call were restored` }
+        }
+      }
+      return {
+        success: true,
+        replacements: totalHunks,
+        files: ordered.map((r) => ({ path: r.filePath, isNew: r.isNew })),
+      }
     })
   } catch (err) {
     return {

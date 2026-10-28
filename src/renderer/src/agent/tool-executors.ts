@@ -27,6 +27,8 @@ import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspe
 import { formatOfficeReadResult } from './office-read-format'
 import { formatOfficeSearchResult } from './office-search-format'
 import { detectVerifyCommands, isSourceFilePath, isVerifyExecCommand, officeSpotCheckHint, summarizeTestOutput, verifyStreakHint, VERIFY_STREAK_THRESHOLD } from './verify-loop'
+import { parseMultiFileDiff, type MultiFileSection } from '../../../shared/diff/patch-utils'
+import { SessionFileLedger } from '../../../shared/agent-session/file-changes'
 
 
 import { execRecallTool, execMemoryTool, execContextCompactTool, execToolResultSearchTool, execSkillCommand } from './executors/domain-tools'
@@ -50,6 +52,25 @@ export { UI_PREVIEW_MAX } from './executors/context'
 // the model reads large files).
 const READ_DEFAULT_LINE_LIMIT = 500        // read: default lines per page (2026-10-28: 200 → 500 — fewer round-trips on the files models actually face; the token-level net is MAX_READ_RESULT_TOKENS)
 const READ_MAX_LINE_LIMIT = 1000           // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
+
+/** webfetch 的结果信封（PLAN-tool-issues #2，2026-10-28）。默认套 `--- WebFetch ---`
+ *  元数据头；`raw: true` 直出 body——元数据头曾让 JSON/API 调用方的 parse 必崩
+ *  （原库 19 会话 ~30 次，2026-07 起），只能迂回 exec+curl。`maxLength` 在这里才
+ *  真实生效：schema 一直 advertised 它、执行器却从未读过（死参数）。超长时截前
+ *  N 字符并标注原长；raw 下也标——截过的 body 本就不再是合法 JSON，不标只会让
+ *  模型盲猜。全局护栏（MAX_TOOL_RESULT_TOKENS + tmp/trunc 落盘）仍是最终后盾。 */
+export function buildWebFetchDisplay(
+  url: string, method: string, result: string, opts: { raw?: boolean; maxLength?: number } = {},
+): string {
+  const max = Number(opts.maxLength)
+  const clipped = Number.isFinite(max) && max > 0 && result.length > max
+  const body = clipped ? result.slice(0, max) : result
+  const clipNote = clipped
+    ? `\n\n[Clipped by maxLength: showing ${max.toLocaleString()} of ${result.length.toLocaleString()} chars]`
+    : ''
+  if (opts.raw) return body + clipNote
+  return `--- WebFetch ---\n  URL: ${url}\n  Method: ${method}\n  Size: ${result.length.toLocaleString()} chars\n--- End WebFetch ---\n\n${body}${clipNote}`
+}
 
 /** read 的行号前缀（2026-10-28，cat -n 同款）：绝对行号 + tab 前缀给模型一个
  *  跨回合共享的坐标系——「改 350 行附近」成为合法表达，重读定位也少一次
@@ -270,6 +291,19 @@ export class ToolExecutor implements ToolExecContext {
    *  reach-in shape spawn-manager uses for parentPlanMerge). */
   readFilePaths = new Map<string, { mtime: string; size: number }>()
 
+  /** 会话文件变更台账（2026-10-28 工作区树会话改动着色）: every path this
+   *  session's write/edit/patch/office_edit/export_document SUCCEEDED on, with
+   *  created|modified decided at first touch (SessionFileLedger). Unlike
+   *  readFilePaths this is per SESSION, not per engine: spawn-manager hands each
+   *  sub-engine its parent's instance (shared by reference — nested spawns roll
+   *  up through the chain, and a sub-engine evicted from the follow-up LRU
+   *  loses nothing), because the tree paints what the CONVERSATION did, whoever
+   *  did it. A display record, not an authorization record — the read gate's
+   *  per-engine shape is deliberate and this one does not copy it. Shell-side
+   *  writes (a script's own output files) are outside it; exec's file-write gate
+   *  keeps the model's direct writes on the tool path anyway. */
+  fileChanges = new SessionFileLedger()
+
   // ── Verify-loop soft gate state (2026-10-27, agent/verify-loop.ts) ──
   // Per-session like readFilePaths (one executor per engine): consecutive
   // source-file edits arm the streak, a verify-shaped exec resets it, and the
@@ -286,6 +320,11 @@ export class ToolExecutor implements ToolExecContext {
    *  @internal not `private` on purpose — tests seed it to exercise the
    *  re-dispatch gate without driving a real spawn first. */
   spawnTaskResults = new Map<string, 'completed' | 'failed' | 'aborted'>()
+
+  /** agentId 续聊回调（2026-10-28 续聊原语）：由 AgentEngine 构造后晚接线到
+   *  其 spawn-manager 的 completedSubAgents 注册表（parentPlanMerge 同款）；
+   *  absent（旧测试桩）时续聊统一落「not warm」拒绝。 */
+  followUpSubAgent?: (subConvId: string, task: string) => SubAgentHandle | null
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -354,7 +393,14 @@ export class ToolExecutor implements ToolExecContext {
    *  office session never sees this machinery. Non-source paths (notes,
    *  deliverables, the .pulsemind scratch namespace) never count. */
   private async noteSourceEdit(fp: string, text: string): Promise<string> {
-    if (!isSourceFilePath(fp)) return text
+    return this.noteSourceEdits([fp], text)
+  }
+
+  /** Multi-file variant: one atomic call counts as ONE source edit no matter
+   *  how many source files it touched — the streak measures "edits since a
+   *  verification ran", and a single tool call is one such moment. */
+  private async noteSourceEdits(fps: string[], text: string): Promise<string> {
+    if (!fps.some((p) => isSourceFilePath(p))) return text
     this.sourceEditsSinceVerify++
     if (this.sourceEditsSinceVerify < VERIFY_STREAK_THRESHOLD || this.verifyHintFired) return text
     this.sourceEditsSinceVerify = 0
@@ -362,6 +408,64 @@ export class ToolExecutor implements ToolExecContext {
     if (cmds.length === 0) return text
     this.verifyHintFired = true
     return `${text}\n${verifyStreakHint(cmds)}`
+  }
+
+  /** The edit tool's atomic multi-file form: a git-style diff with one
+   *  `diff --git` section per file and NO file_path (its presence keeps the
+   *  single-file semantics — the headers are ignored there). The whole call
+   *  applies or nothing does: every section is validated HERE (path spelling,
+   *  read-before-write per existing target, non-existence for `--- /dev/null`
+   *  create targets) before the host call, and svcPatchFiles repeats the
+   *  sandbox/office/staleness checks for all entries before the first write. */
+  private async execMultiFilePatch(t: ToolUseBlock, diff: string): Promise<void> {
+    const sections: MultiFileSection[] = parseMultiFileDiff(diff) ?? []
+    if (sections.length === 0) {
+      throw new Error('multi-file diff mode needs git-style sections (`diff --git a/<path> b/<path>` per file) — or pass file_path for a single-file edit')
+    }
+    const targets: Array<{ fp: string; section: MultiFileSection }> = []
+    const seen = new Set<string>()
+    for (const s of sections) {
+      if (s.isDelete) throw new Error(`multi-file diff cannot delete ${s.path} (+++ /dev/null) — remove files with exec rm instead`)
+      if (s.isRename) throw new Error(`multi-file diff cannot rename ${s.path} — create the new file in this diff and remove the old one with exec rm afterwards`)
+      if (!s.path) throw new Error('a diff --git section carries no usable file path — use plain `+++ b/<path>` headers')
+      const fp = this.resolveWorkspacePath(s.path)
+      if (seen.has(fp)) throw new Error(`duplicate section for ${fp} — one section per file in a multi-file diff`)
+      seen.add(fp)
+      targets.push({ fp, section: s })
+    }
+    // Read-before-write gate across the whole set, all-or-nothing: one
+    // unread target rejects the call by name before any section is applied.
+    const unready: string[] = []
+    for (const { fp, section } of targets) {
+      const stat = await getHost().getFileStat(fp)
+      if (section.isNew) {
+        if (stat) throw new Error(`${fp} already exists — a --- /dev/null section only creates new files; update it with a normal section instead`)
+        continue
+      }
+      const rec = this.readFilePaths.get(fp)
+      if (!rec) { unready.push(fp); continue }
+      this.assertUnchangedOnDisk(stat, rec)
+    }
+    if (unready.length > 0) {
+      throw new Error(`multi-file edit requires a prior read of every target in this session — not yet read: ${unready.join(', ')} — call read on each, then retry`)
+    }
+    const result = await getHost().patchFiles({
+      entries: targets.map(({ fp, section }) => ({ filePath: fp, diff: section.diff, isNew: section.isNew })),
+    })
+    if (result.success) {
+      for (const { fp, section } of targets) {
+        await this.refreshReadSignature(fp)
+        this.fileChanges.note(fp, section.isNew ? 'created' : 'modified')
+      }
+    }
+    const plainText = result.success
+      ? `Applied ${result.replacements} hunk(s) across ${targets.length} file(s):\n${targets.map(({ fp, section }) => `- ${fp}${section.isNew ? ' (new)' : ''}`).join('\n')}`
+      : `Error: ${result.error || 'Patch failed'}`
+    let resultText = plainText
+    if (result.success) resultText = await this.noteSourceEdits(targets.map((x) => x.fp), resultText)
+    t.output = plainText
+    this.addToolResult(t.id, resultText, !result.success)
+    t.exitCode = result.success ? 0 : 1
   }
 
   /** The streak's exec-side reset, called from BOTH exec dispatch points
@@ -633,22 +737,24 @@ export class ToolExecutor implements ToolExecContext {
         // Read-before-write gate (ENGINEERING_WORKFLOW #1): replacing bytes
         // the model has not seen — or saw but that have since changed on disk
         // — is the silent-loss case. append never destroys existing bytes and
-        // a missing stat means a new file, so neither is gated.
-        if (!append) {
-          const existing = await getHost().getFileStat(fp)
-          if (existing && !existing.isDirectory) {
-            const rec = this.readFilePaths.get(fp)
-            if (!rec) {
-              throw new Error(`${fp} already exists and has not been read in this session — read it before replacing it (or use a new file name / append: true)`)
-            }
-            this.assertUnchangedOnDisk(existing, rec)
+        // a missing stat means a new file, so neither is gated. The stat runs
+        // for append too: the change ledger needs "did it exist" either way.
+        const existing = await getHost().getFileStat(fp)
+        if (!append && existing && !existing.isDirectory) {
+          const rec = this.readFilePaths.get(fp)
+          if (!rec) {
+            throw new Error(`${fp} already exists and has not been read in this session — read it before replacing it (or use a new file name / append: true)`)
           }
+          this.assertUnchangedOnDisk(existing, rec)
         }
         const bytes = utf8ByteLength(content)
         const done = `Written ${bytes} bytes to ${fp}${append ? ' (appended)' : ''}`
         t.output = `Writing ${bytes} bytes to ${fp}...`; this.notify()
         const result = await writeFileChunked(fp, content, append)
-        if (result.success) await this.refreshReadSignature(fp)
+        if (result.success) {
+          await this.refreshReadSignature(fp)
+          this.fileChanges.note(fp, existing ? 'modified' : 'created')
+        }
         // Soft gate (2026-10-27): the manual's ≤5KB-per-call advice, echoed in
         // the result when a call blows past it. Deliberately NOT a rejection —
         // a legit large generated file must not be blocked, the note only
@@ -743,6 +849,7 @@ export class ToolExecutor implements ToolExecContext {
             parts.push(`变更预览:\n${truncated}`)
           }
           const toolText = this.noteOfficeEdit(parts.join('\n'))
+          this.fileChanges.note(fp, 'modified')
           t.output = summary
           this.addToolResult(t.id, toolText, false)
           t.exitCode = 0
@@ -858,8 +965,12 @@ export class ToolExecutor implements ToolExecContext {
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
+        // Stat'd before the export so the change ledger knows whether this
+        // run minted the file or replaced an earlier export.
+        const existedBefore = (await getHost().getFileStat(fp)) != null
         const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, htmlPath, fontSize, filePath: fp })
         if (result.success) {
+          this.fileChanges.note(result.path || fp, existedBefore ? 'modified' : 'created')
           const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)${result.report ? `\n${result.report}` : ''}`
           t.output = summary
           this.addToolResult(t.id, summary, false)
@@ -871,39 +982,51 @@ export class ToolExecutor implements ToolExecContext {
           t.exitCode = 1
         }
       } else if (t.name === 'edit') {
-        let fp = String(t.input.file_path || '')
-        if (!fp) throw new Error('file_path is required')
-        fp = this.resolveWorkspacePath(fp)
-        // Read-before-write gate (ENGINEERING_WORKFLOW #1), ahead of BOTH
-        // forms (diff and old_str): a path the model never read this session
-        // cannot be edited from imagination, and a path whose bytes changed
-        // after the read must be re-read — old_str could still match while
-        // the surrounding intent has moved under it.
-        const rec = this.readFilePaths.get(fp)
-        if (!rec) {
-          throw new Error(`edit requires a prior read of ${fp} in this session — call read on it first, then retry (a path seen in search/list_dir output does not count)`)
-        }
-        this.assertUnchangedOnDisk(await getHost().getFileStat(fp), rec)
-
-        const diff = String(t.input.diff || '')
-        if (diff) {
-          const result = await getHost().patchFile({ filePath: fp, diff })
-          if (result.success) await this.refreshReadSignature(fp)
-          let resultText = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`
-          if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
-          t.output = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : resultText
-          this.addToolResult(t.id, resultText, !result.success)
-          t.exitCode = result.success ? 0 : 1
+        const rawFp = String(t.input.file_path || '')
+        const diffInput = String(t.input.diff || '')
+        if (!rawFp && diffInput) {
+          await this.execMultiFilePatch(t, diffInput)
         } else {
-          const oldStr = String(t.input.old_str || ''); const newStr = String(t.input.new_str || ''); const multi = t.input.multi === true
-          if (!oldStr) throw new Error('old_str is required (or use diff parameter)')
-          const result = await getHost().editFile({ filePath: fp, oldStr, newStr, multi })
-          if (result.success) await this.refreshReadSignature(fp)
-          let resultText = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`
-          if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
-          t.output = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : resultText
-          this.addToolResult(t.id, resultText, !result.success)
-          t.exitCode = result.success ? 0 : 1
+          if (!rawFp) throw new Error('file_path is required (or send a multi-file diff with `diff --git` sections and no file_path — see the edit instructions)')
+          let fp = rawFp
+          fp = this.resolveWorkspacePath(fp)
+          // Read-before-write gate (ENGINEERING_WORKFLOW #1), ahead of BOTH
+          // forms (diff and old_str): a path the model never read this session
+          // cannot be edited from imagination, and a path whose bytes changed
+          // after the read must be re-read — old_str could still match while
+          // the surrounding intent has moved under it.
+          const rec = this.readFilePaths.get(fp)
+          if (!rec) {
+            throw new Error(`edit requires a prior read of ${fp} in this session — call read on it first, then retry (a path seen in search/list_dir output does not count)`)
+          }
+          this.assertUnchangedOnDisk(await getHost().getFileStat(fp), rec)
+
+          const diff = diffInput
+          if (diff) {
+            const result = await getHost().patchFile({ filePath: fp, diff })
+            if (result.success) {
+              await this.refreshReadSignature(fp)
+              this.fileChanges.note(fp, 'modified')
+            }
+            let resultText = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`
+            if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
+            t.output = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : resultText
+            this.addToolResult(t.id, resultText, !result.success)
+            t.exitCode = result.success ? 0 : 1
+          } else {
+            const oldStr = String(t.input.old_str || ''); const newStr = String(t.input.new_str || ''); const multi = t.input.multi === true
+            if (!oldStr) throw new Error('old_str is required (or use diff parameter)')
+            const result = await getHost().editFile({ filePath: fp, oldStr, newStr, multi })
+            if (result.success) {
+              await this.refreshReadSignature(fp)
+              this.fileChanges.note(fp, 'modified')
+            }
+            let resultText = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`
+            if (result.success) resultText = await this.noteSourceEdit(fp, resultText)
+            t.output = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : resultText
+            this.addToolResult(t.id, resultText, !result.success)
+            t.exitCode = result.success ? 0 : 1
+          }
         }
       }
     } catch (err) { const em = `Error: ${err instanceof Error ? err.message : 'exec failed'}`; t.output = em; this.addToolResult(t.id, em, true); t.exitCode = -1 }
@@ -1069,8 +1192,9 @@ export class ToolExecutor implements ToolExecContext {
   async execBrowser(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
+      // Empty code is legal (PLAN-tool-issues A4-r): the kernel answers with
+      // the live capability manifest instead of running anything.
       const code = String(t.input?.code || '')
-      if (!code.trim()) throw new Error('code is required')
       const timeoutMs = Number(t.input?.timeoutMs) || undefined
       const r = await getHost().browserRunCode(code, { timeoutMs, conversationId: this.opts.conversationId })
       const parts: string[] = []
@@ -1110,8 +1234,11 @@ export class ToolExecutor implements ToolExecContext {
       const result = await getHost().apiFetch(url, { method, headers, body })
       if (result === null) throw new Error('Request failed or was blocked')
 
-      // No truncation here — the global guardrail in addToolResult caps it.
-      const display = `--- WebFetch ---\n  URL: ${url}\n  Method: ${method}\n  Size: ${result.length.toLocaleString()} chars\n--- End WebFetch ---\n\n${result}`
+      // Only the caller's own maxLength clips here — the global guardrail in
+      // addToolResult (MAX_TOOL_RESULT_TOKENS + tmp/trunc offload) is the backstop.
+      const raw = t.input?.raw === true
+      const maxLength = t.input?.maxLength !== undefined ? Number(t.input.maxLength) : undefined
+      const display = buildWebFetchDisplay(url, method, result, { raw, maxLength })
       this.addToolResult(t.id, display, false)
       t.exitCode = 0
     } catch (err) {
@@ -1121,8 +1248,8 @@ export class ToolExecutor implements ToolExecContext {
     t.status = 'completed'; this.notify()
   }
 
-  async execPickTool(t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
-    return pickToolImpl(this, t, setSelectedTools)
+  async execPickTool(t: ToolUseBlock, setSelectedTools: (names: string[]) => void, getActivatedTools?: () => string[]): Promise<void> {
+    return pickToolImpl(this, t, setSelectedTools, getActivatedTools)
   }
 
   async execSpawnAgent(t: ToolUseBlock): Promise<void> {

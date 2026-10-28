@@ -171,6 +171,7 @@ export const IPC_CHANNELS = {
   UTIL_DELETE_PATH: 'util:delete-path',
   UTIL_EDIT_FILE: 'util:edit-file',
   UTIL_PATCH_FILE: 'util:patch-file',
+  UTIL_PATCH_FILES: 'util:patch-files',
   UTIL_WRITE_FILE: 'util:write-file',
   UTIL_EDIT_DOCX: 'util:edit-docx',
   UTIL_EDIT_PPTX: 'util:edit-pptx',

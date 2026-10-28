@@ -38,6 +38,7 @@ export const HOST_METHOD_KEYS = [
   'writeFile',
   'editFile',
   'patchFile',
+  'patchFiles',
   'getFileStat',
   'convertFileToMarkdown',
   'copyFileToTmp',

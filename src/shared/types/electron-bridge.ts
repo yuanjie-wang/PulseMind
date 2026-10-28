@@ -250,14 +250,19 @@ export interface ElectronAPI {
   clearExperiences: () => Promise<number>
   onExperiencesChanged: (callback: () => void) => () => void
 
-  // Terminal
-  executeCommand: (command: string, cwd?: string, timeoutMs?: number) => Promise<string>
+  // Terminal. `shellKey` (the calling engine's conversationId) selects the
+  // engine's persistent shell on the main-process host (review P0-1): a parent
+  // and its parallel sub-agents share one session context but must not share
+  // a shell. The preload/IPC bridge ignores it — the renderer terminal is not
+  // an agent and never gets a persistent shell.
+  executeCommand: (command: string, cwd?: string, timeoutMs?: number, shellKey?: string) => Promise<string>
   execCommandSync: (command: string, cwd?: string, timeoutMs?: number) => Promise<{ output: string; code: number | null }>
   killCommand: (processId: string) => Promise<void>
   // Background process mode (PLAN-coding-contract P0-3) + session exec
   // allowlist (P0-2 #5). The agent graph reaches these only through the
   // main-process host; the bridge implementations satisfy the PulseHost shape.
-  executeBackground: (command: string, cwd?: string) => Promise<{ pid: number }>
+  // A cwd-less background command inherits the engine shell's current cwd.
+  executeBackground: (command: string, cwd?: string, shellKey?: string) => Promise<{ pid: number }>
   execLogs: (pid: number, tailBytes?: number) => Promise<string | null>
   execKill: (pid: number) => Promise<boolean>
   getExecAllowlist: () => Promise<string[]>
@@ -445,6 +450,7 @@ export interface ElectronAPI {
   deletePath: (target: string) => Promise<{ success: boolean; error?: string }>
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
+  patchFiles: (input: { entries: Array<{ filePath: string; diff: string; isNew?: boolean }> }) => Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }>
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
   editDocx: (input: {
     filePath: string
@@ -577,7 +583,7 @@ export interface ElectronAPI {
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>
-  agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown } | null>
+  agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown; fileChanges: unknown[] } | null>
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]) => Promise<unknown>
   agentSessionRefreshOptions: (sessionId: string) => Promise<void>
   serviceGetStatus: () => Promise<ServiceStatus>

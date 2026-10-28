@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { editMissError, findSimilarRegion, hunkMismatchError } from '../src/shared/diff/edit-similarity'
+import { editMissError, findSimilarRegion, hunkMismatchError, stripReadNumbering } from '../src/shared/diff/edit-similarity'
 import { patchContent } from '../src/shared/diff/patch-utils'
 
 // ── PLAN-coding-contract (harness 反馈层): a failed edit used to surface the
@@ -161,6 +161,97 @@ describe('hunkMismatchError — the diff mode counterpart', () => {
     expect(msg).not.toContain('None of the hunk')
     expect(msg).toContain('lines 1–4')
     expect(msg).toContain('4 | }')
+  })
+})
+
+// ── B12 (review 2026-10-28): read prints every content line with a `%6d\t`
+// number, and a needle pasted verbatim from that output misses even the
+// trimmed similarity gate (the number survives trim mid-line) — landing in
+// the "wrong file?" branch while the tool itself just printed the prefixes.
+// The errors must NAME the prefix, but only when the de-numbered text really
+// matches the file, so `N\t`-shaped content (TSV) is never misdiagnosed.
+
+describe('stripReadNumbering — the verbatim-read-copy shape', () => {
+  it('strips a %6d prefix (leading spaces are the number field alignment)', () => {
+    expect(stripReadNumbering('     2\tbeta line two')).toBe('beta line two')
+    expect(stripReadNumbering('    12\t  indented code()')).toBe('  indented code()')
+    expect(stripReadNumbering('1234567\tno padding needed')).toBe('no padding needed')
+  })
+
+  it('an empty file line copies as the bare prefix and strips to empty', () => {
+    expect(stripReadNumbering('     5\t\n     6\tconst a = 1')).toBe('\nconst a = 1')
+  })
+
+  it('any line without the prefix (or a trailing newline) is not a read copy → null', () => {
+    expect(stripReadNumbering('function padLeft() {\n     7\t  return x\n}')).toBeNull()
+    expect(stripReadNumbering('     1\tx\n')).toBeNull() // trailing '' fails the all-lines rule; normal diagnosis handles it
+    expect(stripReadNumbering('')).toBeNull()
+  })
+})
+
+describe('read-prefix detection in the miss errors (B12)', () => {
+  it('the B12 repro: a prefixed old_str is named as such and shown its bare match', () => {
+    const file = 'alpha line\nbeta line two\ngamma'
+    const msg = editMissError('/ws/f.txt', file, '     2\tbeta line two')
+    expect(msg.startsWith('old_str not found in /ws/f.txt.')).toBe(true)
+    expect(msg).toContain("line-number prefix")
+    expect(msg).toContain('Strip the prefixes and retry')
+    expect(msg).toContain('lines 2–2')
+    expect(msg).toContain('2 | beta line two')
+    expect(msg).not.toContain("None of old_str's lines appear")
+    expect(msg).not.toContain('wrong file')
+  })
+
+  it('a fully prefixed multi-line needle reports where the bare text matches', () => {
+    const needle = [
+      '     6\tfunction padLeft(text, width) {',
+      '     7\t  return " ".repeat(width - text.length) + text',
+      '     8\t}',
+    ].join('\n')
+    const msg = editMissError('/ws/a.js', FILE, needle)
+    expect(msg).toContain('line-number prefix')
+    expect(msg).toContain('lines 6–8')
+    expect(msg).toContain('7 |   return " ".repeat(width - text.length) + text')
+  })
+
+  it('a prefixed needle whose bare text is not in the file keeps the honest miss wording', () => {
+    const msg = editMissError('/ws/a.js', FILE, '     1\tfunction nope() {\n     2\t  return 1')
+    expect(msg).toContain("None of old_str's lines appear")
+    expect(msg).not.toContain('line-number prefix')
+  })
+
+  it('a TSV-shaped needle (genuinely `N\\t` content) is never misread as a read copy', () => {
+    const tsv = 'id\tname\n1\talpha\n2\tbeta'
+    // '2\tbeta' exists verbatim in the file, '3\tgamma' does not — a drifted
+    // TSV needle, not a read copy. Stripping would look for bare 'beta'/'gamma',
+    // which do not exist either, so the prefix branch must stay out and the
+    // fragmentary diagnosis (the one honest reading) fires.
+    const msg = editMissError('/ws/data.tsv', tsv, '2\tbeta\n3\tgamma')
+    expect(msg).toContain('fragmentary resemblance')
+    expect(msg).toContain('Only 1/2')
+    expect(msg).not.toContain('line-number prefix')
+  })
+
+  it('partially prefixed needles keep the normal diagnosis', () => {
+    const needle = ['function padLeft(text, width) {', '     7\t  return " ".repeat(width - text.length) + text', '}']
+    const msg = editMissError('/ws/a.js', FILE, needle.join('\n'))
+    expect(msg).toContain('2/3 line(s) line up')
+    expect(msg).not.toContain('line-number prefix')
+  })
+
+  it('hunkMismatchError: prefixed context/removed lines are named with the bare region', () => {
+    const msg = hunkMismatchError(50, ['     2\t  MODE: "safe",', '     3\t  RETRIES: 2,'], FILE)
+    expect(msg.startsWith('Hunk at line 50 does not match file content.')).toBe(true)
+    expect(msg).toContain('line-number prefix')
+    expect(msg).toContain('Rebuild the hunk from the bare text')
+    expect(msg).toContain('lines 2–3')
+    expect(msg).not.toContain('None of the hunk')
+  })
+
+  it('hunkMismatchError: mixed typed/prefixed lines keep the closest-region wording', () => {
+    const msg = hunkMismatchError(50, ['  MODE: "safe",', '     3\t  RETRIES: 2,'], FILE)
+    expect(msg).toContain('fragmentary resemblance')
+    expect(msg).not.toContain('line-number prefix')
   })
 })
 

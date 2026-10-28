@@ -16,6 +16,17 @@
  * patch-utils (shared, also parsed by the renderers' diff views) both call
  * it, so the hint semantics cannot drift between string-edit and diff-hunk
  * failures.
+ *
+ * Read-copy detection (B12, review 2026-10-28): `read` prints every content
+ * line with an absolute `N\t` prefix (cat -n style), and a needle pasted
+ * verbatim from that output misses twice — the exact match, then even the
+ * trimmed similarity gate (the number survives trim mid-line) — landing in
+ * the "None of old_str's lines appear — wrong file?" branch while the tool
+ * itself just printed those prefixes. Both error constructors therefore try
+ * the de-numbered needle first and NAME the prefix when, and only when, the
+ * bare text actually matches the file; a needle whose lines genuinely look
+ * like `N\t` (TSV data) or that is wrong beyond the prefixes falls through
+ * to the honest normal wording.
  */
 
 export interface SimilarRegion {
@@ -39,6 +50,24 @@ export interface SimilarRegion {
 
 const PREVIEW_MAX_LINES = 12
 const PREVIEW_MAX_LINE_CHARS = 200
+
+/** read's per-line coordinate prefix: a `%6d\t` field, so leading spaces are
+ *  the number field's own right-alignment (a 7-digit line number needs none). */
+const READ_NUMBERING_RE = /^\s*\d+\t/
+
+/** The needle with read's `N\t` prefixes stripped from every line, or null
+ *  when the shape is not a verbatim read copy (ANY line without a prefix).
+ *  Returns a HINT CANDIDATE only — callers must confirm the stripped text
+ *  actually matches the file before blaming the prefix, so genuinely `N\t`-
+ *  shaped content (TSV) is never misdiagnosed: a TSV needle that exists in
+ *  the file matches exactly upstream and never reaches the error path, and
+ *  one that does not exist strips to text that also does not match, which
+ *  falls through to the normal diagnosis. */
+export function stripReadNumbering(needle: string): string | null {
+  const lines = needle.split('\n')
+  if (!lines.every((l) => READ_NUMBERING_RE.test(l))) return null
+  return lines.map((l) => l.replace(READ_NUMBERING_RE, '')).join('\n')
+}
 
 export function findSimilarRegion(content: string, needle: string, previewMaxLines = PREVIEW_MAX_LINES): SimilarRegion | null {
   const fileLines = content.split('\n')
@@ -116,6 +145,17 @@ export function findSimilarRegion(content: string, needle: string, previewMaxLin
  *  region's location and verbatim text, so the retry needs no fresh read. */
 export function editMissError(filePath: string, normalizedContent: string, oldStr: string): string {
   const base = `old_str not found in ${filePath}`
+  // A verbatim read copy misses even the trimmed gate, so without this branch
+  // it is diagnosed as "wrong file". Only a stripped needle that really lands
+  // in the file earns the prefix accusation (see stripReadNumbering).
+  const stripped = stripReadNumbering(oldStr)
+  if (stripped !== null) {
+    const strippedRegion = findSimilarRegion(normalizedContent, stripped)
+    if (strippedRegion && !strippedRegion.fragmentary) {
+      const where = `lines ${strippedRegion.startLine}–${strippedRegion.endLine}`
+      return `${base}. Every line of old_str still carries read's \`N\\t\` line-number prefix — read prints it as a coordinate (cat -n style), it is NOT part of the file, and a prefixed old_str can never match. Strip the prefixes and retry with the bare text, which matches at ${where}:\n${strippedRegion.preview}`
+    }
+  }
   const region = findSimilarRegion(normalizedContent, oldStr)
   if (!region) {
     return `${base}. None of old_str's lines appear in the file (ignoring leading/trailing whitespace) — you may be targeting the wrong file, or the code differs more than expected. Re-read the target file to find the actual text before retrying.`
@@ -141,6 +181,18 @@ export function editMissError(filePath: string, normalizedContent: string, oldSt
 export function hunkMismatchError(oldStart: number, expectedLines: string[], content: string): string {
   const base = `Hunk at line ${oldStart} does not match file content. Expected different content in the target region.`
   if (expectedLines.length === 0) return base
+  // Same read-copy trap as the string-edit miss: context/removed lines pasted
+  // from read's numbered output carry `N\t` mid-line, invisible to both the
+  // exact hunk match and the trimmed scan. Same discipline — only accuse the
+  // prefix when the de-numbered expected lines actually sit in the file.
+  const stripped = stripReadNumbering(expectedLines.join('\n'))
+  if (stripped !== null) {
+    const strippedRegion = findSimilarRegion(content, stripped)
+    if (strippedRegion && !strippedRegion.fragmentary) {
+      const where = `lines ${strippedRegion.startLine}–${strippedRegion.endLine}`
+      return `${base} Every expected line still carries read's \`N\\t\` line-number prefix — a coordinate read prints, NOT part of the file, so the hunk can never match as sent. Rebuild the hunk from the bare text, which sits at ${where}:\n${strippedRegion.preview}`
+    }
+  }
   const region = findSimilarRegion(content, expectedLines.join('\n'))
   if (!region) {
     return `${base} None of the hunk's context/removed lines appear in the file — the hunk likely targets a stale line number or the wrong region. Re-read the file and regenerate the diff from the actual text.`

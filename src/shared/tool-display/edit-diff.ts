@@ -16,7 +16,7 @@
 // lines, never as a truncated diff (the display fold below the renderers is a
 // presentation concern and happens on the full model).
 
-import { parseUnifiedDiff } from '../diff/patch-utils'
+import { parseMultiFileDiff, parseUnifiedDiff, type MultiFileSection } from '../diff/patch-utils'
 import { buildUnifiedDiff } from '../diff/unified'
 
 export interface EditDiffLine {
@@ -45,9 +45,17 @@ export function countChangedLines(lines: EditDiffLine[]): { added: number; remov
   return { added, removed }
 }
 
-export function buildEditDiffModel(input: { diff?: unknown; old_str?: unknown; new_str?: unknown }): EditDiffModel {
+export function buildEditDiffModel(input: { file_path?: unknown; diff?: unknown; old_str?: unknown; new_str?: unknown }): EditDiffModel {
   // diff mode first — it is the authoritative shape when both are present.
   if (typeof input?.diff === 'string' && input.diff.trim().length > 0) {
+    // The multi-file shape is the executor's ONLY when file_path is absent —
+    // with a file_path the `diff --git` headers are ignored (single-file
+    // semantics), so the display must ignore them too.
+    const hasOwnPath = typeof input?.file_path === 'string' && input.file_path.trim().length > 0
+    if (!hasOwnPath) {
+      const sections = parseMultiFileDiff(input.diff)
+      if (sections && sections.length > 0) return multiFileToModel(sections)
+    }
     return hunksToModel(parseUnifiedDiff(input.diff), input.diff)
   }
   if (typeof input?.old_str === 'string' && typeof input?.new_str === 'string') {
@@ -83,7 +91,7 @@ export function summarizeEditChanges(
   let counted = false
   for (const block of blocks) {
     if (block?.name !== 'edit' || block.status !== 'completed') continue
-    const model = buildEditDiffModel((block.input ?? {}) as { diff?: unknown; old_str?: unknown; new_str?: unknown })
+    const model = buildEditDiffModel((block.input ?? {}) as { file_path?: unknown; diff?: unknown; old_str?: unknown; new_str?: unknown })
     if (model.error) continue
     const counts = countChangedLines(model.lines)
     if (counts.added === 0 && counts.removed === 0) continue
@@ -124,6 +132,25 @@ function hunksToModel(hunks: ReturnType<typeof parseUnifiedDiff>, rawDiff: strin
         lines.push({ type: 'meta', text: raw })
       }
     }
+  }
+  return { lines }
+}
+
+/** One atomic multi-file call renders as one card: a meta boundary line per
+ *  file, then that file's hunks with per-file numbering (each section is a
+ *  real unified diff against its own file, so its hunk numbers restart —
+ *  carrying them across the boundary would fabricate line numbers). Both
+ *  renderers already display meta lines, so no component changes. */
+function multiFileToModel(sections: MultiFileSection[]): EditDiffModel {
+  const lines: EditDiffLine[] = []
+  for (const s of sections) {
+    lines.push({ type: 'meta', text: `── ${s.path}${s.isNew ? '（新建）' : ''}${s.isDelete ? '（删除）' : ''} ──` })
+    const m = hunksToModel(parseUnifiedDiff(s.diff), s.diff)
+    if (m.error) {
+      lines.push({ type: 'meta', text: m.error })
+      continue
+    }
+    lines.push(...m.lines)
   }
   return { lines }
 }

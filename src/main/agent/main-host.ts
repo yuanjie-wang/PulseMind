@@ -130,12 +130,15 @@ export const mainHost: PulseHost = {
   onApiStreamRetry: (callback) => onApiStreamEvent('retry', callback),
 
   // ── Terminal ──
-  executeCommand: async (command, cwd, timeoutMs) =>
+  // shellKey = the calling engine's conversationId → its persistent shell
+  // (review P0-1); the service falls back to the per-command spawn on Windows
+  // and outside a session.
+  executeCommand: async (command, cwd, timeoutMs, shellKey) =>
     svcExecuteCommand(command, cwd, timeoutMs, {
       output: (processId, type, data) => emitTerminal({ channel: 'output', processId, type, data }),
       exit: (processId, code, signal) => emitTerminal({ channel: 'exit', processId, code, signal }),
       error: (processId, message) => emitTerminal({ channel: 'error', processId, message }),
-    }),
+    }, shellKey),
   execCommandSync: (command, cwd, timeoutMs) => svcExecSync(command, cwd, timeoutMs),
   killCommand: async (processId) => {
     svcKillCommand(processId)
@@ -144,7 +147,7 @@ export const mainHost: PulseHost = {
   // the ALS session context wrapped around engine entry points, so they only
   // answer inside one — outside a session the allowlist reads empty and pid
   // channels refuse (no session → nothing is ours).
-  executeBackground: async (command, cwd) => svcExecuteBackground(command, cwd),
+  executeBackground: async (command, cwd, shellKey) => svcExecuteBackground(command, cwd, shellKey),
   execLogs: async (pid, tailBytes) => svcExecLogs(pid, tailBytes),
   execKill: async (pid) => svcExecKill(pid),
   getExecAllowlist: async () => {
@@ -181,6 +184,7 @@ export const mainHost: PulseHost = {
   writeFile: (input) => fileOps.svcWriteFile(input),
   editFile: (input) => fileOps.svcEditFile(input),
   patchFile: (input) => fileOps.svcPatchFile(input),
+  patchFiles: (input) => fileOps.svcPatchFiles(input),
   getFileStat: (filePath) => fileOps.svcFileStat(filePath),
   convertFileToMarkdown: (filePath) => fileOps.svcConvertToMarkdown(filePath),
   copyFileToTmp: (sourcePath) => fileOps.svcCopyFileToTmp(sourcePath),

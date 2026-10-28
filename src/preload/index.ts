@@ -375,6 +375,8 @@ const electronAPI = {
   }): Promise<{ success: boolean; replacements: number; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_FILE, input),
   patchFile: (input: { filePath: string; diff: string }): Promise<{ success: boolean; replacements: number; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILE, input),
+  patchFiles: (input: { entries: Array<{ filePath: string; diff: string; isNew?: boolean }> }): Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILES, input),
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
   editDocx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
@@ -515,7 +517,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HYDRATE, sessionId, messages, historySummary),
-  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown } | null> =>
+  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown; fileChanges: unknown[] } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_SNAPSHOT, sessionId),
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),

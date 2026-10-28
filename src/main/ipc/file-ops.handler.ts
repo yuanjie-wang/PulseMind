@@ -11,6 +11,7 @@ import {
   svcWriteFile,
   svcEditFile,
   svcPatchFile,
+  svcPatchFiles,
   svcConvertToMarkdown,
   svcSaveBase64Image,
   svcCopyFileToTmp,
@@ -32,6 +33,8 @@ import type {
   EditFileResult,
   PatchFileInput,
   PatchFileResult,
+  PatchFilesEntry,
+  PatchFilesResult,
   WriteFileInput,
   WriteFileResult,
   DirEntry,
@@ -84,6 +87,9 @@ export function registerFileOpsHandlers(): void {
 
   // ── Patch file (unified diff) ────────────────────────────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_PATCH_FILE, (_event, input: PatchFileInput): Promise<PatchFileResult> => svcPatchFile(input))
+
+  // ── Patch files (atomic multi-file git-style diff) ───────────────
+  ipcMain.handle(IPC_CHANNELS.UTIL_PATCH_FILES, (_event, input: { entries: PatchFilesEntry[] }): Promise<PatchFilesResult> => svcPatchFiles(input))
 
   // ── Convert file to markdown via markitdown (cached in tmp/read-cache) ──
   ipcMain.handle(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, (_event, filePath: string) => svcConvertToMarkdown(filePath))
