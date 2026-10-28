@@ -10,7 +10,7 @@
  * DOM-free by construction: the extension runs this inside a content script.
  */
 import type { AgentMessage, AgentStatus, ContentBlock, Plan, ToolUseBlock } from '../../renderer/src/types/agent'
-import type { AgentEventData, CompactionEvent, StatusSnapshot } from '../agent-protocol'
+import type { AgentEventData, CompactionEvent, SessionFileChange, StatusSnapshot } from '../agent-protocol'
 import { applyMessagesAppend } from './messages'
 
 export interface SessionState {
@@ -23,12 +23,15 @@ export interface SessionState {
   /** Last compaction pass this session ran (drives the composer's 已压缩 chip
    *  and the ring's post-compaction projection). */
   lastCompaction: CompactionEvent | null
+  /** The session's file-change ledger (2026-10-28): what its tools created or
+   *  rewrote, sub-agents included — the 工作区 tree's paint source. */
+  fileChanges: SessionFileChange[]
   /** Resolved working directory (PLAN-0.4.0 M8), reported back on session create. */
   workspaceDir?: string
 }
 
 export function freshSessionState(): SessionState {
-  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null, lastCompaction: null }
+  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null, lastCompaction: null, fileChanges: [] }
 }
 
 /** Fold the wire's status carrier into a mirrored status.
@@ -159,6 +162,10 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       state.plan = data.plan ?? null
       return true
     }
+    case 'file_changes': {
+      state.fileChanges = data.changes ?? []
+      return true
+    }
     case 'tool_status': {
       // The engine mutates tool_use blocks in place and the wire carries only the
       // diff — patch the mirrored messages by (messageId, toolUseId). The patch
@@ -214,9 +221,13 @@ export function seedSessionState(state: SessionState, snapshot: {
   status: StatusSnapshot
   streamingBlocks: unknown[]
   plan: unknown
+  /** Optional on the type so an older main (or a test fixture) that omits the
+   *  ledger seeds an empty one instead of `undefined`. */
+  fileChanges?: unknown
 }): void {
   state.messages = snapshot.messages as AgentMessage[]
   state.agentStatus = mirroredStatus(snapshot.status)
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
+  state.fileChanges = Array.isArray(snapshot.fileChanges) ? (snapshot.fileChanges as SessionFileChange[]) : []
 }

@@ -239,6 +239,16 @@ export interface CompactionEvent {
  *  them: an honest absence beats a fake zero. */
 export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number }
 
+/** One file the session's own tools created or rewrote (2026-10-28 工作区树
+ *  会话改动着色). `kind` is fixed at the FIRST touch and never revised: a file
+ *  the session created stays `created` through every later edit — the tree
+ *  answers "did this come from the conversation", not "what did the last call
+ *  do". Paths are absolute, in the executor's resolveToolFilePath spelling.
+ *  The `file_changes` event and the session snapshot carry the whole ledger
+ *  (tens of entries at most), never a diff. */
+export type SessionFileChangeKind = 'created' | 'modified'
+export interface SessionFileChange { path: string; kind: SessionFileChangeKind }
+
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */
 export type AgentEventData =
@@ -269,6 +279,11 @@ export type AgentEventData =
   | { type: 'tool_start'; toolUseId: string; name: string; input: unknown }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; exitCode?: number }
   | { type: 'plan_update'; plan: PlanSnapshot | null }
+  /** The session's file-change ledger grew (or reset cleared it) — always the
+   *  full list, so a client that attached late never reconciles diffs. Sub-agent
+   *  writes ride the PARENT session's event: the ledger is shared down the
+   *  spawn tree. */
+  | { type: 'file_changes'; changes: SessionFileChange[] }
   | { type: 'spawn_progress'; message: string }
   /** The engine compacted the outgoing context copy (or prewarmed the summary
    *  for it). Carries its own numbers so a client can show what happened —
