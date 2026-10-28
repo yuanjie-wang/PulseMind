@@ -56,7 +56,12 @@ export function buildGitAction(name: string, input: Record<string, unknown>, cwd
 
   /** Render a GitResult into readable text for the model and the tool card. */
 export function formatGitResult(name: string, result: GitResult): string {
-    if (!result.ok) return `Git error: ${result.error?.message ?? 'unknown'}`
+    if (!result.ok) {
+      // Host-normalized not-repo (code 128, PLAN-tool-issues #8): the friendly
+      // line the status/diff shapes already had, now for log/commit/restore too.
+      if (result.error?.code === 128) return '(not a git repository)'
+      return `Git error: ${result.error?.message ?? 'unknown'}`
+    }
     switch (name) {
       case 'git_status': {
         const data = result.data as GitStatusInfo | undefined

@@ -5,7 +5,7 @@
 // facade (agent), emitImage, and a console. No require/process/fs/net.
 
 import vm from 'node:vm'
-import { createBrowserFacade, type FacadeImage } from '../../shared/browser-client/facade'
+import { createBrowserFacade, type BrowserFacade, type FacadeImage } from '../../shared/browser-client/facade'
 import { serializeResult } from '../../shared/browser-client/serialize'
 import { BROWSER_DEFAULT_TIMEOUT_MS, type BrowserCommand, type BrowserCommandResult } from '../../shared/browser-client/protocol'
 
@@ -23,7 +23,51 @@ export interface BrowserRunOutput {
   error?: string
 }
 
+/** The live capability manifest (PLAN-tool-issues A4-r, 2026-10-28): derived by
+ *  walking an ACTUAL facade instance — the same rule the member guard's menu
+ *  already follows (member-guard.ts: read off the object, never hand-written),
+ *  so a new facade member shows up here automatically and the manifest cannot
+ *  drift the way a hand-kept doc did (the webfetch lesson). Three levels under
+ *  `agent` reach `browsers.tabs.list`; per-method signatures and per-backend
+ *  differences stay in `agent.documentation()`, which the tail points at.
+ *  `Object.entries` reads through the guard's Proxy to the target's own keys —
+ *  the get trap only fires on unknown members. */
+export function describeBrowserCapabilities(facade: BrowserFacade): string {
+  const walk = (target: object, prefix: string, depth: number): string[] => {
+    const lines: string[] = []
+    for (const [name, value] of Object.entries(target)) {
+      const label = `${prefix}${name}`
+      if (typeof value === 'function') lines.push(`- ${label}()`)
+      else if (value !== null && typeof value === 'object' && depth > 0) {
+        lines.push(`- ${label}（子对象）`)
+        lines.push(...walk(value, `${label}.`, depth - 1))
+      } else lines.push(`- ${label}（字段）`)
+    }
+    return lines
+  }
+  return [
+    '## Browser sandbox — live capability manifest',
+    '',
+    '沙盒全局只有三个：`agent`（门面，成员如下）、`emitImage(base64, mime?)`（截图出图）、`console`。没有 require/process/fs/net，也没有定时器——等待用 `await tab.waitForTimeout(ms)`。',
+    '',
+    ...walk(facade.agent, 'agent.', 3),
+    '',
+    '各方法签名与后端差异：`await agent.documentation()`（或 `agent.documentation.list()` / `.get(name)`）。',
+  ].join('\n')
+}
+
 export async function runBrowserCode(input: BrowserRunInput, execute: (cmd: BrowserCommand) => Promise<BrowserCommandResult>): Promise<BrowserRunOutput> {
+  // Empty code is the self-check (A4-r): dump the manifest instead of erroring —
+  // proactive discovery, not guess-then-read-the-error. The probe facade is
+  // never invoked (the walk only reads the object graph).
+  if (!input.code.trim()) {
+    const probe = createBrowserFacade({
+      execute: async () => { throw new Error('manifest probe never executes commands') },
+      emitImage: () => {},
+    })
+    return { result: describeBrowserCapabilities(probe), truncated: false, images: [], console: [] }
+  }
+
   const images: FacadeImage[] = []
   const consoleLines: string[] = []
 

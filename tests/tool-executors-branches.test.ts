@@ -465,10 +465,12 @@ describe('execPickSkill 矩阵', () => {
 })
 
 describe('execBrowser / execWebFetch', () => {
-  it('browser：空 code 拒绝；富结果分节；错误置 isError', async () => {
+  it('browser：空 code 转发 kernel（回能力清单，A4-r）；富结果分节；错误置 isError', async () => {
     let h = makeHarness()
+    // 空 code 不再拒绝——原样转发给 host，kernel 回 capability manifest。
     await h.executor.execBrowser(t('t1', 'browser', {}))
-    expect(h.results[0]).toMatchObject({ isError: true, content: 'Error: code is required' })
+    expect(h.results[0].isError).toBe(false)
+    expect(h.host.browserRunCode).toHaveBeenCalledWith('', { timeoutMs: undefined, conversationId: 'c1' })
 
     h = makeHarness()
     ;(h.host.browserRunCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ result: 'a\nb', console: ['c1', 'c2'], images: [{ base64: 'QQ==' }] })

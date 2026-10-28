@@ -74,7 +74,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── edit ──────────────────────────────────────────────────────────
   {
     name: 'edit',
-    description: 'Apply exact replacements or unified diffs to an existing file.',
+    description:
+      'Apply exact replacements, a unified diff, or an atomic multi-file git-style diff to files. Multi-file form changes several files in one all-or-nothing call.',
     category: 'file',
     triggers: ['edit', 'change', 'replace', 'update', 'fix', 'patch', 'diff'],
     input_schema: {
@@ -82,7 +83,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         file_path: {
           type: 'string',
-          description: 'Absolute path to the file to edit.',
+          description:
+            'Absolute path to the file to edit. Required for search/replace and single-file diff mode; omit it to run a multi-file diff (targets then come from the diff headers).',
         },
         old_str: {
           type: 'string',
@@ -99,10 +101,9 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         diff: {
           type: 'string',
           description:
-            '(diff mode) Unified diff to apply. More token-efficient than search/replace. Include 1-2 context lines. See instructions for format details.',
+            '(diff mode) Unified diff to apply. More token-efficient than search/replace; include 1-2 context lines. Multi-file form: a git-style diff with one `diff --git a/<path> b/<path>` section per file (no file_path) — applied ATOMICALLY: any failed hunk rejects the whole call and `--- /dev/null` sections create new files. See instructions for format details.',
         },
       },
-      required: ['file_path'],
     },
     instructions: toolInstructions.edit,
     builtIn: true,
@@ -164,6 +165,15 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         exclude: {
           type: 'string',
           description: 'File glob pattern(s) to exclude. Comma-separated for multiple (e.g. "*.test.ts" or "node_modules,dist").',
+        },
+        output_mode: {
+          type: 'string',
+          enum: ['content', 'files_with_matches', 'count'],
+          description: 'content (default): matching lines as path:line:text. files_with_matches: only the paths of files that match — the cheap way to learn WHICH files to read. count: path:N matches per file — size a pattern before reading.',
+        },
+        context: {
+          type: 'integer',
+          description: 'Lines of context before and after each match (0-5, default 0). Context lines print as path-line-text. Content mode only.',
         },
       },
       required: ['query'],
@@ -357,7 +367,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── webfetch ───────────────────────────────────────────────────────
   {
     name: 'webfetch',
-    description: 'Fetch a URL and return its content as text. Supports GET and POST requests.',
+    description: 'Fetch a URL and return its content as text. Supports GET and POST requests. Set raw:true for JSON/API payloads you will parse — the body comes back as-is, without the metadata header.',
     category: 'system',
     input_schema: {
       type: 'object',
@@ -366,9 +376,13 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         method: { type: 'string', enum: ['GET', 'POST'], description: 'HTTP method (GET or POST).' },
         headers: { type: 'object', description: 'Optional HTTP headers as key-value pairs (e.g. {"Authorization": "Bearer xxx"}).' },
         body: { type: 'string', description: 'Request body for POST requests.' },
+        raw: {
+          type: 'boolean',
+          description: 'Return the response body exactly as received, with no `--- WebFetch ---` metadata header. Use for JSON and other API payloads you intend to parse. Default false.',
+        },
         maxLength: {
           type: 'integer',
-          description: 'Maximum characters to return (default: no limit, but large responses are automatically truncated with head+tail).',
+          description: 'Clip the body to this many characters; a trailing note states the original size. Default: no clip (very large results still hit the engine-wide tool-result guardrail, which truncates head+tail and saves the full text under ~/.pulsemind/tmp/trunc/).',
         },
       },
       required: ['url'],
@@ -548,7 +562,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── pick_tool ──────────────────────────────────────────────────────
   {
     name: 'pick_tool',
-    description: 'Select and activate MCP tools by server, intent, or exact names.',
+    description: 'Select and activate hidden tools — MCP servers or gated built-in categories — by server, intent, or exact names. Call with NO arguments to list everything pick-able and which of it is already active.',
     category: 'system',
     input_schema: {
       type: 'object',
@@ -569,7 +583,6 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
             'Name of an MCP server to activate all its tools. Use this to load every tool from a specific MCP server. Ignored if "names" is provided.',
         },
       },
-      oneOf: [{ required: ['intent'] }, { required: ['names'] }, { required: ['serverName'] }],
     },
     instructions: toolInstructions.pick_tool,
     builtIn: true,
@@ -761,6 +774,11 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           enum: ['explore'],
           description:
             "Optional. 'explore' runs this delegation as READ-ONLY reconnaissance: the sub-agent's toolset is restricted to search/find/read/list_dir/office_read/recall and it reports a path:line map (entry points, key facts, gaps) instead of editing anything. Use it to map an unfamiliar area cheaply before planning or coding. Cannot be combined with planNode.",
+        },
+        agentId: {
+          type: 'string',
+          description:
+            "Optional. FOLLOW-UP channel: a previous Sub-Agent Result's agentId (its sub_xxx conversation id). Sends task as a new message to THAT agent — it wakes with its full prior context, so follow-up questions and iterations cost no re-discovery. Omit to spawn a fresh agent. The registry keeps the most recent completed agents per session. Cannot be combined with subAgentId / preset / planNode.",
         },
       },
       required: ['task'],
@@ -1065,7 +1083,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'browser',
     description:
-      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts. Full manual: pick_skill(name=\'browser\') — load it before the first browser call of a session.',
+      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts. Full manual: pick_skill(name=\'browser\') — load it before the first browser call of a session. Self-check: omit `code` to dump the live capability manifest of the sandbox.',
     category: 'browser',
     input_schema: {
       type: 'object',
@@ -1073,14 +1091,13 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         code: {
           type: 'string',
           description:
-            'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.',
+            'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call. Omit or empty: returns the live capability manifest of the sandbox instead of running code.',
         },
         timeoutMs: {
           type: 'integer',
           description: 'Wall-clock budget for this call (default 60000, max 300000).',
         },
       },
-      required: ['code'],
     },
     instructions: toolInstructions.browser,
     builtIn: true,

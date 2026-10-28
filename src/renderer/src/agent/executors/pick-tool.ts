@@ -9,6 +9,11 @@ import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId, isBuiltinServerId 
 import type { ToolUseBlock } from '../../types/agent'
 import type { ToolExecContext } from './context'
 
+/** Rejection-side teaching (failure-time, zero cost on the happy path): every
+ *  "not found" answer names the self-check so the model never has to guess at
+ *  tool existence twice. */
+const LIST_HINT = 'Call pick_tool with no arguments to list every pick-able tool and category (and which are already active).'
+
 /** One pickable tool: an MCP tool, or a gated built-in (whose `instructions`
  *  manual rides the activation result — gated manuals are excluded from the
  *  system prompt's Tool Protocols so the shared trunk stays byte-stable). */
@@ -20,7 +25,10 @@ interface PickCandidate {
   instructions?: string
 }
 
-export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
+export async function execPickTool(
+  ex: ToolExecContext, t: ToolUseBlock, setSelectedTools: (names: string[]) => void,
+  getActivatedTools?: () => string[],
+): Promise<void> {
   t.status = 'running'; ex.notify()
   try {
     // 可用连接器白名单（专家 / 子代理）：白名单外的服务器连候选都不进，
@@ -95,7 +103,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
         else notFound.push(name)
       }
       if (validNames.length === 0) {
-        ex.addToolResult(t.id, `No MCP or built-in tools found matching names: ${notFound.join(', ')}.`, true)
+        ex.addToolResult(t.id, `No MCP or built-in tools found matching names: ${notFound.join(', ')}. ${LIST_HINT}`, true)
         t.exitCode = 1; t.status = 'completed'; ex.notify(); return
       }
       const matched = allTools.filter(t => validNames.includes(t.name))
@@ -152,13 +160,48 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
         t.exitCode = 0; t.status = 'completed'; ex.notify(); return
       }
 
-      ex.addToolResult(t.id, `Server or category "${serverNameInput}" not found. Available servers: ${servers.filter(s => s.status === 'connected').map(s => s.id).join(', ') || '(none)'}. Available built-in categories: ${Object.keys(BUILTIN_CATEGORY_SUMMARIES).join(', ')}.`, true)
+      ex.addToolResult(t.id, `Server or category "${serverNameInput}" not found. Available servers: ${servers.filter(s => s.status === 'connected').map(s => s.id).join(', ') || '(none)'}. Available built-in categories: ${Object.keys(BUILTIN_CATEGORY_SUMMARIES).join(', ')}. ${LIST_HINT}`, true)
       t.exitCode = 1; t.status = 'completed'; ex.notify(); return
     }
 
-    // ── Mode 3: intent-based matching (server level) ───────────────
+    // ── Mode 0: no arguments → list what is pick-able (PLAN-tool-issues #5) ──
+    // The pick_tool description already names the categories, but a model that
+    // called an unactivated tool by name got only a rejection and had no way to
+    // ASK (8 such rejections in the user's library). The listing is the same
+    // whitelist-filtered candidate set the other modes draw from; `*` marks
+    // what is already active, read through the engine getter when wired.
     const intent = String(t.input?.intent || '')
-    if (!intent) throw new Error('One of "names", "serverName", or "intent" must be provided')
+    if (!intent) {
+      const servers = (await getHost().mcpListServers()).filter(s => s.status === 'connected' && (!allowedServers || allowedServers.has(s.id)))
+      const gated = ex.opts.toolManager.getEnabledTools().map(x => x.definition).filter(d => d.availability === 'gated')
+      const active = new Set(getActivatedTools?.() ?? [])
+      const mark = (name: string): string => active.has(name) ? `${name}*` : name
+      const byCategory = new Map<string, string[]>()
+      for (const d of gated) byCategory.set(d.category, [...(byCategory.get(d.category) ?? []), d.name])
+      const builtinRows = [...byCategory].map(([cat, names]) => {
+        const summary = BUILTIN_CATEGORY_SUMMARIES[cat]
+        return `- **${cat}**: ${names.map(mark).join(', ')}${summary ? ` — ${summary}` : ''}`
+      })
+      const mcpRows = servers.map(s => {
+        const summary = getCachedMcpServers().find(ss => ss.id === s.id)?.summary
+        return `- **${s.id}** "${s.name}": ${s.tools.map(x => mark(x.name)).join(', ') || '(no tools)'}${summary ? ` — ${summary}` : ''}`
+      })
+      if (builtinRows.length === 0 && mcpRows.length === 0) {
+        ex.addToolResult(t.id, 'Nothing is pick-able right now: no connected MCP servers and no gated built-in categories. Every enabled tool is already in your tool list.', false)
+        t.exitCode = 0; t.status = 'completed'; ex.notify(); return
+      }
+      const sections = [
+        '## Pick-able Tools (hidden until activated)',
+        'Always-on tools are already in your tool list and are not repeated here. `*` = already activated in this conversation.',
+        ...(builtinRows.length > 0 ? ['### Built-in categories', ...builtinRows] : []),
+        ...(mcpRows.length > 0 ? ['### MCP servers (connected)', ...mcpRows] : []),
+        'Activate with `pick_tool({ names: [...] })`, `pick_tool({ serverName: "<category or server id>" })`, or `pick_tool({ intent: "..." })`. Activated tools become regular tools in subsequent turns.',
+      ]
+      ex.addToolResult(t.id, sections.join('\n\n'), false)
+      t.exitCode = 0; t.status = 'completed'; ex.notify(); return
+    }
+
+    // ── Mode 3: intent-based matching (server level) ───────────────
 
     t.output = `Matching intent to MCP servers and built-in tools: ${intent.slice(0, 80)}...`; ex.notify()
     const allTools2 = await fetchCandidateTools()

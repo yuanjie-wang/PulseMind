@@ -74,11 +74,25 @@ Read the file first so \`old_str\` matches exactly, whitespace and indentation i
 |-----------|------|-----|
 | Changing a few lines in a small file, or 1-2 lines in any file | **search/replace** | short and unique beats computing line numbers |
 | Many scattered lines in a large file, multiple edits in one call, deletions, mid-file insertions | **diff** | only send changed hunks; one diff carries multiple hunks; pure insertion = \`@@ -start,0 +start,count @@\` |
+| The same change spans 2+ files, or files must land together (refactor, API change + call sites) | **multi-file diff** | one ATOMIC call — any failed hunk rejects the whole call, nothing partial |
 
 ### Rules
 - search/replace: deleting text = empty \`new_str\`; replace ALL occurrences with \`multi: true\`; no match = the op fails
-- diff: include 1-2 context lines per hunk for reliable matching — hunks are validated against the file before applying
+- diff: each hunk opens with the FULL numbered header \`@@ -start,count +start,count @@\` (count may be omitted when it is 1) — \`start\` is the file line number read printed; counts are the body's line sums (old = context + removed, new = context + added); a bare \`@@\` parses as nothing and rejects the whole call. Body lines each carry one prefix character: \` \` context (1-2 lines for reliable matching — hunks are validated against the file before applying), \`-\` removed, \`+\` added. Example:
+
+  \`\`\`
+  @@ -12,2 +12,2 @@
+   unchanged context line
+  -removed line
+  +new line
+  \`\`\`
 - \`old_str\` must come from a \`read\` of THIS file in THIS session — text quoted from an earlier turn's tool output may be stale. Enforced: an edit to a path \`read\` (or \`write\`) has not touched this session is rejected — so is an edit after the file changed on disk since that read.
+
+### Multi-file diff (atomic)
+- Omit \`file_path\` and send a git-style diff: one \`diff --git a/<path> b/<path>\` section per file, each with its own \`---\`/\`+++\` headers and hunks; paths are workspace-relative or absolute. One section per file.
+- The call is all-or-nothing: a mismatching hunk in ANY section rejects the call by naming that file — fix the named section and resend.
+- \`--- /dev/null\` + \`+++ b/<path>\` creates a new file (hunks must be pure \`+\` lines). Deleting or renaming files is NOT a diff — remove with exec \`rm\` afterwards.
+- Every existing target must have been \`read\` this session first (same gate as single-file); new files are exempt.
 `,
 
   list_dir: `## list_dir
@@ -96,7 +110,9 @@ Regex supported. Find the relevant files here before reading or editing them.
 
 ### Guidelines
 - Narrow with \`include\`/\`exclude\` globs (\`*.ts\`, exclude \`node_modules\`)
-- Output truncates at 100 matches — tighten the pattern instead of paging
+- \`output_mode\`: \`content\` (default) prints \`path:line:text\`; \`files_with_matches\` prints only the matching files' paths — the cheapest way to learn WHICH files to read; \`count\` prints \`path:N\` per file — size a pattern before reading
+- \`context\` (0–5) adds that many lines before and after each hit, printed as \`path-line-text\` with \`--\` between groups; content mode only
+- Output truncates at 100 LINES, and context lines count toward it (context 5 ≈ 16 hits) — tighten the pattern or drop context instead of paging
 `,
 
   find: `## find
@@ -128,6 +144,7 @@ Execute a shell command on the local machine.
 ### Guidelines
 - **Files are written only by \`write\`/\`edit\` — enforced:** a command that creates or modifies files via redirection (\`>\`, \`>>\`, \`&>\`), heredoc, \`tee\` or PowerShell's Out-File/Set-Content/Add-Content is rejected before it runs (to /dev/null and \`2>&1\` are fine). exec is for what comes after the file exists (compilers, interpreters, git, package managers); keep a command's output by reading the tool result, not a file
 - Prefer safe, read-only commands unless the user explicitly asks for modifications; explore the filesystem with \`read\`/\`search\`/\`list_dir\`
+- **The shell persists across calls (macOS/Linux):** every exec runs in this session's own shell, so \`cd\`, \`export\`, \`source .venv/bin/activate\`, \`nvm use\` carry over to later commands — no \`cd x && …\` prefix needed, and an explicit \`cwd\` moves the shell there for good. A command's stdin is /dev/null (interactive prompts read EOF — feed input with pipes or heredocs). A timeout, kill or \`exit\` restarts the shell in the same directory, but exported variables are gone. \`background: true\` starts where the shell currently is. On Windows every command still starts fresh
 - The idle timeout (default 60s) kills a command that produces no output; commands are also hard-capped at a 900s wall-clock — for anything longer-running or persistent, use \`background: true\`. Output is capped at 1MB.
 - Always explain what the command does and why you are running it
 `,
@@ -190,6 +207,7 @@ Compact context now, at a moment YOU judge right — automatic compaction still 
 - A topic switch: the previous thread is closed
 - Before a large new stage that will need the whole window
 - Do NOT call speculatively: calls with plenty of window left are refused (the refusal reports the actual headroom), and at most once per turn. Never instead of finishing the task — compacting does not end anything.
+- If a request happens to be in flight, the call is REGISTERED, not refused: the drop lands automatically on the next request build. Do not call again to "retry" — one registration is enough.
 
 ### How
 - \`notes\` — write it like a note to your successor: current progress, the next step, pitfalls discovered. It is injected VERBATIM into later requests and is the highest-value thing you can attach. Plain timing-only calls (no arguments) are legal but weaker.
@@ -316,6 +334,7 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 - The sub-agent CANNOT install skills or modify tool preferences
 - **One delegation per task.** When a result arrives with status \`completed\`, the text under **### Summary** IS the deliverable: report it to the user in your own words and move on. NEVER re-dispatch the same or a near-identical task — a second run cannot improve a result you already hold. Enforced: re-sending a task text this session already completed is rejected before any sub-agent starts (a FAILED task's retry is not blocked). If the result misses the mark, say so and ask the user, don't delegate again silently
 - **preset="explore"** delegates a READ-ONLY reconnaissance pass: the sub-agent gets only search/find/read/list_dir/office_read/recall and must return a \`path:line\` map (entry points, key facts, gaps) instead of changing anything. Use it to map unfamiliar code cheaply before planning or editing — its isolated context absorbs the reading cost yours would have. It cannot be combined with planNode.
+- **agentId (follow-up)** continues a COMPLETED sub-agent instead of spawning a new one: pass the agentId printed in its Sub-Agent Result and the agent wakes with its FULL prior context — follow-up questions, corrections and iterations cost no re-discovery. Prefer it over a fresh spawn whenever you would otherwise re-explain the same background; a follow-up cannot be combined with subAgentId/preset/planNode. Fresh spawns (no agentId) start clean agents.
 `,
 
   create_plan: `## create_plan
@@ -410,6 +429,8 @@ Select and activate hidden tools — MCP (Model Context Protocol) tools from ser
 
 Three activation modes: \`names\` = exact tool names, activated directly; \`serverName\` = an MCP server id or a built-in category, loading all its tools; \`intent\` = a sub-agent LLM picks the best matching units. Available servers and categories are listed in this tool's description. Activated tools become regular tools in subsequent turns — call again later to activate more.
 
+Self-check: call \`pick_tool\` with NO arguments to list everything pick-able right now, with the already-active ones marked — do this instead of guessing whether a tool exists or calling it unactivated.
+
 Built-in categories also auto-activate when the conversation mentions their topic (e.g. "commit", "branch", "记得", "知识库") — call \`pick_tool\` explicitly when you need them sooner.
 `,
 
@@ -425,9 +446,10 @@ Built-in categories also auto-activate when the conversation mentions their topi
 Fetch a URL and return its content as text — web pages, API responses, or POST submissions.
 
 ### Output
-- Small responses (≤10KB) come back inline behind a \`--- WebFetch ---\` metadata header
-- Large ones are saved to \`~/.pulsemind/tmp/webfetch_<url>.txt\`; only the first 10KB shows inline, with a \`Note:\` pointing at the full file
-- Hard caps: 50MB, 30s timeout
+- By default the body comes back behind a \`--- WebFetch ---\` metadata header (URL / Method / Size). Pass \`raw: true\` to get the body exactly as received — do this for JSON and other API payloads you intend to parse; the header would break the parse.
+- \`maxLength\` clips the body to that many characters (a trailing note states the original size). There is no other webfetch-specific size limit.
+- Very large results hit the engine-wide tool-result guardrail shared by every tool: the result is truncated head+tail and the FULL text is saved under \`~/.pulsemind/tmp/trunc/\` — the \`[Tool result truncated: …]\` marker names the exact file; \`read\` it to page through. For a big JSON API response, prefer \`raw: true\` with a focused \`maxLength\`, or narrow the request itself (paging / filter parameters).
+- Hard caps: 50MB response, 30s timeout
 `,
 
   git_status: `## git_status

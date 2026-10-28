@@ -156,8 +156,18 @@ export function editDocx(buffer: Buffer, ops: DocxOp[], opts?: { resolveImageByt
 export class OpBatchError extends Error {
   readonly results: OpResult[]
   constructor(results: OpResult[]) {
-    const failed = results.filter((r) => !r.ok)
-    super(`第 ${failed.map((f) => f.index + 1).join('、')} 个 op 失败，整批未应用: ${failed.map((f) => f.detail).join('；')}`)
+    // Real failures head the message; the dry-run verdicts of the ops the batch
+    // never reached follow (PLAN-tool-issues #4) — one refusal now tells the
+    // model everything it must fix before resubmitting, instead of one op per
+    // failed round.
+    const failed = results.filter((r) => !r.ok && !r.preflight)
+    const preflight = results.filter((r) => r.preflight)
+    let message = `第 ${failed.map((f) => f.index + 1).join('、')} 个 op 失败，整批未应用: ${failed.map((f) => f.detail).join('；')}`
+    if (preflight.length > 0) {
+      const mark = (r: OpResult): string => r.preflight === 'pass' ? '✓' : r.preflight === 'fail' ? '✗' : '—'
+      message += `。其余 op 已空跑预检（未写入）: ${preflight.map((r) => `第 ${r.index + 1} 个 ${mark(r)} ${r.detail}`).join('；')}。一并修正后整批重提`
+    }
+    super(message)
     this.results = results
   }
 }

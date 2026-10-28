@@ -291,3 +291,95 @@ describe('insert_image without [Content_Types].xml (module-11 P2-2)', () => {
     expect(new AdmZip(outcome.buffer).readFile('word/document.xml')!.toString('utf8')).toContain('Hi')
   })
 })
+
+// ── PLAN-tool-issues #4（2026-10-28）：整批拒绝携带未触达 op 的空跑判定 ──
+// 一个 op 失败曾经整批拒、报错只点名失败者——其余 op 是否本可成功，模型只能
+// 再失败一轮轮地问。现在失败后的剩余 op 空跑（同一 applyOne，结果丢弃、链式
+// 传 xml），拒绝信封一次报出全部判定；全有或全无的结算语义不变。
+describe('batch refusal carries a dry-run verdict for every unreached op (PLAN-tool-issues #4)', () => {
+  const threeParagraphDocx = (): Buffer => {
+    const zip = new AdmZip(CORPUS['simple.docx']())
+    const xml = zip.readFile('word/document.xml')!.toString('utf8')
+    const three = xml.replace(
+      '<w:p><w:r><w:t xml:space="preserve">Hello world</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t xml:space="preserve">Alpha contract</w:t></w:r></w:p>' +
+        '<w:p><w:r><w:t xml:space="preserve">Beta contract</w:t></w:r></w:p>' +
+        '<w:p><w:r><w:t xml:space="preserve">Gamma tail</w:t></w:r></w:p>',
+    )
+    const out = new AdmZip()
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue
+      out.addFile(entry.entryName, entry.entryName === 'word/document.xml' ? Buffer.from(three, 'utf8') : (zip.readFile(entry.entryName) as Buffer))
+    }
+    return out.toBuffer()
+  }
+
+  const BATCH = (op3: { op: string } & Record<string, unknown>) => [
+    { op: 'replace_text', find: 'Alpha', replace: 'ALPHA' }, // applies
+    { op: 'replace_text', find: 'contract', replace: 'X', expected_count: 5 }, // fails: 2 hits
+    op3,
+  ] as never
+
+  it('a later op that WOULD have passed is reported as ✓ 预检, with its own detail', () => {
+    let err: OpBatchError | null = null
+    try {
+      editDocx(threeParagraphDocx(), BATCH({ op: 'replace_text', find: 'Beta', replace: 'BETA' }))
+      expect.unreachable()
+    } catch (e) { err = e as OpBatchError }
+    expect(err).toBeInstanceOf(OpBatchError)
+    expect(err!.message).toContain('第 2 个 op 失败')
+    expect(err!.message).toContain('命中 2 处（expected_count=5）')
+    expect(err!.message).toContain('其余 op 已空跑预检（未写入）')
+    expect(err!.message).toContain('第 3 个 ✓')
+    expect(err!.message).toContain('替换 1 处')
+    expect(err!.message).toContain('一并修正后整批重提')
+    const pre = err!.results.filter((r) => r.preflight)
+    expect(pre).toHaveLength(1)
+    expect(pre[0]).toMatchObject({ index: 2, ok: true, preflight: 'pass' })
+  })
+
+  it('a later op that would ALSO fail carries its own hit count in the same refusal', () => {
+    let err: OpBatchError | null = null
+    try {
+      editDocx(threeParagraphDocx(), BATCH({ op: 'replace_text', find: 'no-such-text', replace: 'x' }))
+      expect.unreachable()
+    } catch (e) { err = e as OpBatchError }
+    expect(err!.message).toContain('第 3 个 ✗')
+    expect(err!.message).toContain('命中 0 处（expected_count=1）')
+    expect(err!.results[2]).toMatchObject({ preflight: 'fail', ok: false })
+  })
+
+  it('insert_image after a failure is marked skipped, never simulated', () => {
+    let err: OpBatchError | null = null
+    try {
+      editDocx(threeParagraphDocx(), BATCH({ op: 'insert_image', image: 'missing.png', paragraph: 0 }))
+      expect.unreachable()
+    } catch (e) { err = e as OpBatchError }
+    expect(err!.message).toContain('第 3 个 —')
+    expect(err!.message).toContain('未预检')
+    expect(err!.results[2]).toMatchObject({ preflight: 'skip', ok: false })
+  })
+
+  it('the dry run writes nothing: source bytes intact, preflight chain starts from the failed batch state', () => {
+    const source = threeParagraphDocx()
+    try {
+      editDocx(source, BATCH({ op: 'replace_text', find: 'Gamma', replace: 'GAMMA' }))
+      expect.unreachable()
+    } catch { /* refusal is the point */ }
+    expect(new AdmZip(source).readFile('word/document.xml')!.toString('utf8')).toContain('Alpha contract')
+    // The preflight sees the state the op would have had (post-op1), not the
+    // original: op3 replaces 'Gamma' — present in both states here — so the
+    // ✓ proves the chain ran, and the FILE is untouched.
+    expect(new AdmZip(source).readFile('word/document.xml')!.toString('utf8')).toContain('Gamma tail')
+  })
+
+  it('a fully-passing batch carries no preflight entries', () => {
+    const outcome = editDocx(threeParagraphDocx(), [
+      { op: 'replace_text', find: 'Alpha', replace: 'ALPHA' },
+      { op: 'replace_text', find: 'Beta', replace: 'BETA' },
+    ])
+    // editDocx signals success by NOT throwing (the service layer wraps it).
+    expect(outcome.results).toHaveLength(2)
+    expect(outcome.results.every((r) => r.preflight === undefined)).toBe(true)
+  })
+})

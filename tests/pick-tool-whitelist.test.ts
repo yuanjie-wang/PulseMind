@@ -84,3 +84,112 @@ describe('execPickTool — serverName/intent 模式的连接器白名单', () =>
     }
   })
 })
+
+// ── PLAN-tool-issues #5（2026-10-28）：无参自检 + 拒绝侧教学 ──
+// 模型点名一个未激活工具只得到拒绝，且没有任何「问一句现在能拿什么」的口子
+// （原库 8 次）。无参 pick_tool 现在列出可拿全集（沿用白名单过滤的候选源，
+// * 标已激活），两处拒绝文案点名这个自检。
+describe('execPickTool — Mode 0: the no-argument self-check', () => {
+  const GATED = [
+    { definition: { name: 'git_status', availability: 'gated', category: 'git', description: 'git status', input_schema: { type: 'object' }, instructions: 'manual' } },
+    { definition: { name: 'recall', availability: 'gated', category: 'memory', description: 'recall', input_schema: { type: 'object' }, instructions: '' } },
+  ]
+
+  function makeListEx(allowedMcpServers?: string[], activated: string[] = []) {
+    const results: Array<{ id: string, content: string, isError: boolean }> = []
+    setHost({
+      mcpListServers: vi.fn(async () => SERVERS),
+      onMcpServersChanged: () => () => {},
+    } as unknown as PulseHost)
+    const ex = {
+      opts: {
+        allowedMcpServers,
+        toolManager: { getEnabledTools: () => GATED as never },
+        adapter: {}, apiKey: 'k', baseURL: 'https://x', model: 'm', maxTokens: 10,
+      },
+      addToolResult: (_id: string, content: string, isError: boolean) => { results.push({ id: _id, content, isError }) },
+      notify: () => {},
+    } as never as Parameters<typeof execPickTool>[0]
+    return { ex, results, getActivated: () => activated }
+  }
+
+  it('no arguments lists gated categories and MCP servers, *-marking the active ones', async () => {
+    const { ex, results, getActivated } = makeListEx(undefined, ['git_status'])
+    await execPickTool(ex, t('t0', {}), () => {}, getActivated)
+    const text = results[0]!.content
+    expect(results[0]!.isError).toBe(false)
+    expect(text).toContain('## Pick-able Tools')
+    expect(text).toContain('- **git**: git_status*')
+    expect(text).toContain('- **memory**: recall')
+    expect(text).toContain('srv_free')
+    expect(text).toContain('srv_gated')
+    expect(text).toContain('pick_tool({ names: [...] })')
+    // Always-on tools are not repeated.
+    expect(text).not.toContain('webfetch')
+  })
+
+  it('the whitelist filters the listing too — a restricted expert cannot even see the others', async () => {
+    const { ex, results, getActivated } = makeListEx(['srv_free'])
+    await execPickTool(ex, t('t0', {}), () => {}, getActivated)
+    expect(results[0]!.content).toContain('srv_free')
+    expect(results[0]!.content).not.toContain('srv_gated')
+  })
+
+  it('nothing pick-able says so honestly instead of erroring', async () => {
+    // Whitelist [] kills every server; a defs override kills the gated rows.
+    const saved = GATED.splice(0, GATED.length)
+    try {
+      const { ex, results } = makeListEx([])
+      await execPickTool(ex, t('t0', {}), () => {}, () => [])
+      expect(results[0]!.isError).toBe(false)
+      expect(results[0]!.content).toContain('Nothing is pick-able right now')
+    } finally {
+      GATED.push(...saved)
+    }
+  })
+
+  it('without the getter wired the listing still works, just without * marks', async () => {
+    const { ex, results } = makeListEx(undefined, ['git_status'])
+    await execPickTool(ex, t('t0', {}), () => {})
+    expect(results[0]!.content).toContain('- **git**: git_status')
+    expect(results[0]!.content).toContain('- **memory**: recall')
+    expect(results[0]!.content).not.toContain('git_status*')
+  })
+
+  it('both rejections name the self-check (failure-time teaching)', async () => {
+    const { ex, results, getActivated } = makeListEx()
+    await execPickTool(ex, t('t1', { names: ['no_such_tool'] }), () => {}, getActivated)
+    expect(results[0]!.content).toContain('No MCP or built-in tools found matching names: no_such_tool')
+    expect(results[0]!.content).toContain('Call pick_tool with no arguments')
+
+    const h2 = makeListEx()
+    await execPickTool(h2.ex, t('t2', { serverName: 'nope' }), () => {}, h2.getActivated)
+    expect(h2.results[0]!.content).toContain('Call pick_tool with no arguments')
+  })
+})
+
+describe('pick_tool self-check wiring (PLAN-tool-issues #5)', () => {
+  it('schema: oneOf is gone and the description advertises the no-arg mode', async () => {
+    const { BUILT_IN_TOOLS } = await import('../src/renderer/src/tools/built-in-tools')
+    const def = BUILT_IN_TOOLS.find((d) => d.name === 'pick_tool')!
+    expect((def.input_schema as Record<string, unknown>).oneOf).toBeUndefined()
+    expect(def.description).toContain('NO arguments')
+    expect(def.description).toContain('already active')
+  })
+
+  it('manual: the self-check sentence rides the protocol', async () => {
+    const { toolInstructions } = await import('../src/renderer/src/tools/tool-instructions')
+    expect(toolInstructions.pick_tool).toContain('NO arguments')
+    expect(toolInstructions.pick_tool).toContain('instead of guessing whether a tool exists')
+  })
+
+  it('execution-flow passes the activated-set getter; tool-executors forwards the 4th param', async () => {
+    const { readFileSync } = await import('node:fs')
+    const read = (p: string) => readFileSync(process.cwd() + '/src/' + p, 'utf8')
+    const flow = read('renderer/src/agent/engine/execution-flow.ts')
+    expect(flow).toContain('() => [...this.engine.selectedBuiltinTools, ...this.engine.selectedMcpTools]')
+    const te = read('renderer/src/agent/tool-executors.ts')
+    expect(te).toContain('getActivatedTools?: () => string[]')
+    expect(te).toContain('pickToolImpl(this, t, setSelectedTools, getActivatedTools)')
+  })
+})

@@ -25,6 +25,11 @@ export interface OpResult {
   op: string
   ok: boolean
   detail: string
+  /** Set on entries the batch never attempted for real: after one op fails,
+   *  the remaining ops are dry-run so the refusal can carry every verdict
+   *  (PLAN-tool-issues #4). `pass` = would have applied, `fail` = its own
+   *  error, `skip` = not dry-runnable (insert_image). `ok` mirrors pass. */
+  preflight?: 'pass' | 'fail' | 'skip'
 }
 
 export interface PreparedImageInsert {
@@ -196,6 +201,13 @@ export function applyOps(
       results.push({ index, op: op.op, ok: false, detail: err instanceof Error ? err.message : String(err) })
       // L5: a failed op refuses the whole batch — partial application is how
       // the rejected external design corrupted documents silently.
+      // PLAN-tool-issues #4 (2026-10-28): the refusal used to name only the
+      // failed op, so the model learned each remaining op's verdict by another
+      // failed round (a translation-proofing session ran 15.2% tool errors,
+      // nearly all this loop). The unattempted ops are dry-run below — the
+      // same applyOne, result discarded, chained so each sees the state it
+      // would have — and ride the refusal as `preflight` entries.
+      results.push(...preflightRemaining(current, ops, index + 1))
       return { xml, results, outline: [], tables: [], imageInserts: [] }
     }
   }
@@ -207,6 +219,30 @@ export function applyOps(
     tables: model.tables.map((t) => ({ index: t.index, rows: t.rows.length, cols: t.rows[0]?.cells.length ?? 0 })),
     imageInserts,
   }
+}
+
+/** Dry-run the ops a failed batch never reached. insert_image is skipped, not
+ *  simulated: its prepareImage callback mutates the package's image state
+ *  (media parts, rels), which a run that will be thrown away must not touch.
+ *  Everything else goes through the real applyOne against a scratch string. */
+function preflightRemaining(xml: string, ops: DocxOp[], from: number): OpResult[] {
+  const out: OpResult[] = []
+  let dry = xml
+  for (let index = from; index < ops.length; index++) {
+    const op = ops[index]
+    if (op.op === 'insert_image') {
+      out.push({ index, op: op.op, ok: false, preflight: 'skip', detail: 'insert_image: 未预检（写入型，前序 op 修正后按序执行）' })
+      continue
+    }
+    try {
+      const detail = applyOne(dry, op, { imageInserts: [] })
+      dry = detail.xml
+      out.push({ index, op: op.op, ok: true, preflight: 'pass', detail: detail.message })
+    } catch (err) {
+      out.push({ index, op: op.op, ok: false, preflight: 'fail', detail: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return out
 }
 
 function applyOne(

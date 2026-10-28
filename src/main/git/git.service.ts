@@ -322,6 +322,28 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
         // 只能来自用户自己的终端操作，提交它属用户本人动作的转发。
       }
     }
+    // Locale-proof repo gate for the three reads (PLAN-tool-issues #8,
+    // 2026-10-28): isNotRepo() matched ENGLISH stderr, but git speaks the
+    // user's locale — 「致命错误：不是 Git 仓库」 never matched, so the
+    // structured isRepo shapes in gitStatus/gitDiff were dead for localized
+    // installs, git_log had no catch at all, and `git diff` outside a repo
+    // let git itself dump the full --no-index usage screen. rev-parse is
+    // structural, not textual: one pre-check arms all three. The cwd
+    // existence check comes first so a missing directory is not mislabeled a
+    // repo question.
+    if (action.action === 'status' || action.action === 'diff' || action.action === 'log') {
+      const st = await stat(resolve(action.cwd)).catch(() => null)
+      if (!st || !st.isDirectory()) {
+        return { ok: false, error: { code: 1, message: `cwd 不存在或不是目录：${resolve(action.cwd)} — 先确认路径，或用 exec ls 查看` } }
+      }
+      if (!(await checkIsRepo(action.cwd))) {
+        if (action.action === 'status') {
+          return { ok: true, data: { isRepo: false, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflict: [] } }
+        }
+        if (action.action === 'diff') return { ok: true, data: { isRepo: false } }
+        return { ok: false, error: { code: 128, message: `not a git repository: ${action.cwd} — run git init first, or compare files without git` } }
+      }
+    }
     switch (action.action) {
       case 'is_repo': {
         const data = { isRepo: await checkIsRepo(action.cwd) }

@@ -145,3 +145,41 @@ describe('browser manual lives in the built-in skill, not the shared trunk', () 
     expect(skill.builtIn).toBe(true)
   })
 })
+
+// ── edit 手册的 diff 形态教学（2026-10-29，计算器会话实测事故：deepseek-
+// v4.1-flash 的首个 diff 用裸 `@@` 当 hunk 头被整单拒收）。上游教学此前只有
+// 「纯插入 = @@ -start,0 +start,count @@」一个括号提过完整头形状，hunk 头语法
+// 全靠失败时教。现在 Rules 里补：完整语法 + 计数口径 + 裸 @@ 的后果 + 三行示例
+// （static per toolset，一次性 re-bill，当场消除格式猜测）。
+describe('edit manual teaches the hunk-header contract', () => {
+  // 钉运行时手册（BUILT_IN_TOOLS 携带的 instructions，即模型实际收到的字节），
+  // 不钉 tool-instructions.ts 源码——源码里模板字符串的反引号是转义形态，
+  // 扫源码既绕又测不到真实注入值。
+  const editManual = (BUILT_IN_TOOLS.find((t) => t.name === 'edit')!.instructions || '').trim()
+
+  it('states the full header grammar with the count arithmetic', () => {
+    expect(editManual).toContain('@@ -start,count +start,count @@')
+    expect(editManual).toContain('old = context + removed, new = context + added')
+    expect(editManual).toContain('`start` is the file line number read printed')
+  })
+
+  it('names the bare-@@ failure and its consequence', () => {
+    expect(editManual).toContain('a bare `@@` parses as nothing and rejects the whole call')
+  })
+
+  it('carries a 3-line example whose header counts equal its own body sums', () => {
+    // 示例头 -12,2 +12,2 配 1 上下文 + 1 删 + 1 增：applyPatch 的 splice 按
+    // 头的 oldCount 吃区间，虚高的计数会静默吞掉 hunk 后一行——示例的算术
+    // 必须自洽，否则教给最爱照抄的那批模型的是吃行形状。
+    expect(editManual).toContain(
+      [
+        '```',
+        '  @@ -12,2 +12,2 @@',
+        '   unchanged context line',
+        '  -removed line',
+        '  +new line',
+        '  ```',
+      ].join('\n'),
+    )
+  })
+})

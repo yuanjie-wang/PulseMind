@@ -158,3 +158,19 @@ describe('real-input primitives — manual points at the playbook and the lookup
     expect(manual).toContain('tab.clipboard')
   })
 })
+
+// ── PLAN-tool-issues #11（2026-10-28）：示例不得用 `const tabs` 影子绑定 ──
+// 子代理的 `tabs.get is not a function` 实测来源：示例先 `const tabs = …list()`
+// 再教 `browsers.tabs.get(id)`，`tabs` 这个名字诱导模型对 list 结果调 .get。
+// 改名 tabList 后这里钉死：手册与 documentation 都不得再出现影子示例。
+describe('browser example bindings do not shadow the tabs namespace', () => {
+  const read = (p: string): string => readFileSync(new URL('../' + p, import.meta.url), 'utf-8')
+  for (const file of ['src/renderer/src/skills/built-in/browser.ts', 'src/shared/browser-client/documentation.ts']) {
+    it(`${file} binds the list as tabList, never as tabs`, () => {
+      const src = read(file)
+      expect(src).not.toMatch(/const tabs\s*=/)
+      expect(src).toContain('const tabList = await browsers.tabs.list()')
+      expect(src).toContain('browsers.tabs.get(id)')
+    })
+  }
+})

@@ -91,6 +91,25 @@ export function shellFileWriteRejection(trip: string): string {
   return `Error: command rejected — it writes files through shell ${trip}. Files are created and modified only with the write/edit tools (preview, workspace isolation, version snapshots); exec runs against files that already exist. To keep a command's output, read it from this tool result instead of redirecting it to a file.`
 }
 
+export type SearchOutputMode = 'content' | 'files_with_matches' | 'count'
+export const SEARCH_CONTEXT_MAX = 5
+
+/** search 的 context / output_mode 归一（2026-10-28）。schema 承诺的参数必须
+ *  被执行器真读（webfetch 的教训），而执行器就是这个构建器——所以归一后的值
+ *  进全部四个命令臂，没有哪条臂静默忽略它们。fail-closed：未知 output_mode
+ *  回 content；context 取整、下限 0、上限 SEARCH_CONTEXT_MAX；非 content
+ *  模式下 context 归 0（路径/计数输出没有上下文可言，也免去 rg/grep 对
+ *  `-l`/`-c` 搭 `-C` 的各自脾气）。 */
+export function normalizeSearchOptions(input: Record<string, unknown>): { context: number; mode: SearchOutputMode } {
+  const rawMode = String(input.output_mode || '')
+  const mode: SearchOutputMode = rawMode === 'files_with_matches' || rawMode === 'count' ? rawMode : 'content'
+  const rawCtx = Number(input.context)
+  const context = mode === 'content' && Number.isFinite(rawCtx)
+    ? Math.min(SEARCH_CONTEXT_MAX, Math.max(0, Math.floor(rawCtx)))
+    : 0
+  return { context, mode }
+}
+
 export function buildCommandFromSkillInput(toolName: string, input: Record<string, unknown>, platform: string, ripgrepPath?: string | null): string {  const isWin = platform === 'win32' || (
     !platform && typeof navigator !== 'undefined' && /Windows|Win64/i.test(navigator.userAgent)
   )
@@ -166,6 +185,19 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       const exclude = String(input.exclude || '')
       const includePatterns = include ? include.split(',').map(s => s.trim()).filter(Boolean) : []
       const excludePatterns = exclude ? exclude.split(',').map(s => s.trim()).filter(Boolean) : []
+      const { context, mode } = normalizeSearchOptions(input)
+      // Mode/context flags ride AFTER the globs so a default call (content, no
+      // context) builds the byte-identical command it always did; rg and grep
+      // both take options after operands (the -g/--include flags already rely
+      // on it). grep's -C is attached (`-C3`): BSD grep documents the argument
+      // as optional-and-attached and busybox has no --context= long form, so
+      // the attached spelling is the one all three accept.
+      const rgModeFlags = mode === 'files_with_matches' ? ' -l' : mode === 'count' ? ' --count' : context > 0 ? ` -C ${context}` : ''
+      const grepModeFlags = mode === 'files_with_matches' ? ' -l' : mode === 'count' ? ' -c' : context > 0 ? ` -C${context}` : ''
+      // grep -rc lists EVERY file as path:N including N=0 (rg --count prints
+      // only matching files) — drop the zeros or a wide tree pushes the real
+      // counts past the 100-line cap.
+      const grepCountFilter = mode === 'count' ? " | grep -v ':0$'" : ''
       const mkIncludeFlags = (ps: string[]) => ps.map(p => ` -g '${psEscape(p)}'`).join('')
       const mkExcludeFlags = (ps: string[]) => ps.map(p => ` -g '!${psEscape(p)}'`).join('')
       // The grep fallback rides the same `sh -c` channel as every arm above —
@@ -178,18 +210,33 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         if (ripgrepPath) {
           let cmd = `& '${psEscape(ripgrepPath)}' -n --no-heading -i --max-columns 200 '${psEscape(query)}' '${psEscape(searchDir)}'`
           cmd += mkIncludeFlags(includePatterns) + mkExcludeFlags(excludePatterns)
+          cmd += rgModeFlags
           return cmd + ' | Select-Object -First 100'
         }
         let cmd = `if (Get-Command rg -ErrorAction SilentlyContinue) { `
         cmd += `rg -n --no-heading -i --max-columns 200 '${psEscape(query)}' '${psEscape(searchDir)}'`
         cmd += mkIncludeFlags(includePatterns) + mkExcludeFlags(excludePatterns)
+        cmd += rgModeFlags
         cmd += ` 2>$null } else { `
         cmd += `Get-ChildItem -Path '${psEscape(searchDir)}' -Recurse -File`
         if (include) cmd += ` -Include '${psEscape(include)}'`
         if (exclude) {
           cmd += ` | Where-Object { ${excludePatterns.map(p => `$_.FullName -notlike '${psEscape('*' + p.replace(/^\*+/, ''))}'`).join(' -and ')} }`
         }
-        cmd += ` | Select-String -Pattern '${psEscape(query)}' | Select-Object -First 100 | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ':' + $_.Line.Trim() }`
+        // Select-String mirrors rg's three shapes by hand: -List is files-with-
+        // matches (first hit per file, full path so the model can read it),
+        // Group-Object Path is --count, and -Context N carries the pre/post
+        // lines, printed rg-style as path-line-text around the path:line:text hit.
+        const psQuery = psEscape(query)
+        if (mode === 'files_with_matches') {
+          cmd += ` | Select-String -Pattern '${psQuery}' -List | Select-Object -First 100 | ForEach-Object { $_.Path }`
+        } else if (mode === 'count') {
+          cmd += ` | Select-String -Pattern '${psQuery}' | Group-Object Path | Select-Object -First 100 | ForEach-Object { $_.Name + ':' + $_.Count }`
+        } else if (context > 0) {
+          cmd += ` | Select-String -Pattern '${psQuery}' -Context ${context} | Select-Object -First 100 | ForEach-Object { $m = $_; $n = $m.LineNumber; $pre = @($m.Context.PreContext); $post = @($m.Context.PostContext); for ($i = 0; $i -lt $pre.Count; $i++) { $m.Filename + '-' + ($n - $pre.Count + $i) + '-' + $pre[$i].Trim() }; $m.Filename + ':' + $n + ':' + $m.Line.Trim(); for ($i = 0; $i -lt $post.Count; $i++) { $m.Filename + '-' + ($n + 1 + $i) + '-' + $post[$i].Trim() } }`
+        } else {
+          cmd += ` | Select-String -Pattern '${psQuery}' | Select-Object -First 100 | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ':' + $_.Line.Trim() }`
+        }
         cmd += ` }`
         return cmd
       }
@@ -198,6 +245,7 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         let cmd = `"${shEscape(ripgrepPath)}" -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
         cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
         cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
+        cmd += rgModeFlags
         // stderr 并进输出（audit 2026-10-10 #4）：管道以 head 收尾，rg 的退出
         // 码到不了执行器——/dev/null 曾把正则错误这类真实失败一起吞成空输出。
         return cmd + ' 2>&1 | head -100'
@@ -205,9 +253,11 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       let cmd = `if command -v rg >/dev/null 2>&1; then rg -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
       cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
       cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
+      cmd += rgModeFlags
       cmd += ` 2>&1; else grep -rn "${shEscape(query)}" "${shEscape(searchDir)}"`
       cmd += mkGrepInclude(includePatterns) + mkGrepExclude(excludePatterns)
-      cmd += ` 2>&1; fi | head -100`
+      cmd += grepModeFlags
+      cmd += ` 2>&1${grepCountFilter}; fi | head -100`
       return cmd
     }
     case 'find': {
