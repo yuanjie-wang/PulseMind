@@ -4,6 +4,8 @@ import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { extractSnippet } from '../../shared/search/snippet'
 import { conversationKeyOf } from '../../shared/conversation-key'
+import { buildSearchNeedles } from '../../shared/memory-pages'
+import { escapeLikePattern } from '../../shared/memory/like-pattern'
 import { getDb } from './database'
 import { perfTime } from '../perf/perf-log'
 
@@ -772,9 +774,12 @@ export function listConversationsForMemory(opts: {
 
 /**
  * Search conversations by keyword in title, summary, and keywords fields.
- * Uses LIKE '%keyword%' — performs a full table scan over conversations,
- * but the table is small (title/summary/keywords are short text columns),
- * so this is fast even with thousands of conversations.
+ * 切词 OR + 命中数粗排（2026-10-28 recall 零命中修复）：旧实现把整串 query 当一个
+ * 连续子串去 LIKE——多词查询等价短语匹配，比 AND 更严，是 recall「换词序结果翻转、
+ * 零命中无线索」的主因。needle 与 memory 源同一匹配栈（buildSearchNeedles.likeNeedles：
+ * ≥2 字符、CJK 长串滑窗二元组、小写、16 帽；SQLite LIKE 对 ASCII 天然不区分大小写）；
+ * OR 保召回，matchScore = 命中 needle 数把多词齐中的行排前（对齐 memory 源
+ * 「bm25 精排在前、兜底恒后」的分工）。表小（短文本列），全表扫描仍快。
  */
 export function searchConversationsByKeyword(
   query: string, limit = 20,
@@ -783,9 +788,21 @@ export function searchConversationsByKeyword(
   id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string
 }> {
   const database = getDb()
-  const pattern = `%${query}%`
-  const conditions: string[] = ["type = 'normal' AND (title LIKE ? OR summary LIKE ? OR keywords LIKE ?)"]
-  const params: unknown[] = [pattern, pattern, pattern]
+  const needles = buildSearchNeedles(query).likeNeedles
+  if (needles.length === 0) return []
+  const pats = needles.map((n) => `%${escapeLikePattern(n)}%`)
+  // COALESCE 是 NULL 毒化护栏（探针 page 实测）：summary/keywords 可空，
+  // `NULL LIKE …` 得 NULL 而非 0——某个词在可空列上不命中就把整个求和拖成 NULL，
+  // 排序沉底。逐项收口成严格 0/1，WHERE 侧语义不变（NULL 本就不通过）。
+  const likeTerm = `COALESCE(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\', 0)`
+  const terms = needles.map(() => likeTerm)
+  const conditions: string[] = [`type = 'normal' AND (${terms.join(' OR ')})`]
+  // 每个 term 的 title/summary/keywords 各一个 ?，占位符按文本序绑定——参数必须
+  // 逐 term 展开成 pat×3 连排；若按 pats 整组 spread 重复，会把不同词轮流塞进
+  // 同一 term 的三个字段位（探针实测把单词行抬成多词分）。SELECT（matchScore）与
+  // WHERE 各一份，再 dateFilter、limit。
+  const clausePats = pats.flatMap((p) => [p, p, p])
+  const params: unknown[] = [...clausePats, ...clausePats]
 
   if (dateFilter) {
     if (dateFilter.createdAfter) { conditions.push('created_at >= ?'); params.push(dateFilter.createdAfter) }
@@ -796,10 +813,13 @@ export function searchConversationsByKeyword(
 
   params.push(limit)
   return database.prepare(
-    `SELECT id, title, summary, keywords, updated_at AS updatedAt
-     FROM conversations
-     WHERE ${conditions.join(' AND ')}
-     ORDER BY updated_at DESC
+    `SELECT id, title, summary, keywords, updatedAt FROM (
+       SELECT id, title, summary, keywords, updated_at AS updatedAt,
+         ${terms.join(' + ')} AS matchScore
+       FROM conversations
+       WHERE ${conditions.join(' AND ')}
+     )
+     ORDER BY matchScore DESC, updatedAt DESC
      LIMIT ?`
   ).all(...params) as Array<{
     id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string

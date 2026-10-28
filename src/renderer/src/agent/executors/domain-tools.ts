@@ -37,7 +37,18 @@ function formatFreeResultsReceipt(o: CompactToolOutcome): string[] {
 /** context_compact 结果信封（PLAN-context-compact-tool §3）：最后字节点名
  *  下一步——模型靠工具结果的最后字节决定下一个动作，压缩成功的收尾必须
  *  明确「继续任务，不要收尾」。拒绝路径同样回执已生效的 free_results 点名。 */
-function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean): string {
+function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean, hadFreeResults: boolean): string {
+  // Deferred registration (PLAN-tool-issues #6): an in-flight request no longer
+  // refuses — the call is armed for the next build. The envelope must say so
+  // AND close the two gaps the deferred path cannot cover (fresh notes, named
+  // free_results), or the model would assume both landed.
+  if (o.deferred) {
+    const lines = ['当前有请求在飞，压缩已登记：将在下一次请求构建时自动执行（轻量裁剪，摘要由构建期生成），无需再次调用。']
+    if (hadNotes) lines.push('交接笔记在延后模式下不会落地；若重要，请在任务收尾时改用 todo 或 memory 保存。')
+    if (hadFreeResults) lines.push('free_results 点名在延后模式下未处理；若那些结果确实碍事，请在正常调用时重发一次。')
+    lines.push('继续当前任务——不要因压缩收尾。')
+    return lines.join('\n')
+  }
   if (!o.ok) {
     let refusal: string
     switch (o.reason) {
@@ -93,7 +104,7 @@ export async function execContextCompactTool(ex: ToolExecContext, t: ToolUseBloc
       notes: hadNotes ? input.notes as string : undefined,
       freeResults: Array.isArray(input.free_results) ? input.free_results.map((v) => String(v)) : undefined,
     })
-    const text = formatCompactOutcome(outcome, hadNotes)
+    const text = formatCompactOutcome(outcome, hadNotes, Array.isArray(input.free_results) && input.free_results.length > 0)
     t.exitCode = outcome.ok ? 0 : 1
     t.output = text.slice(0, UI_PREVIEW_MAX)
     ex.addToolResult(t.id, text, !outcome.ok)
@@ -174,12 +185,21 @@ export async function execRecallTool(ex: ToolExecContext, t: ToolUseBlock): Prom
     const km = ex.opts.knowledgeManager
     const scopeBaseId = ex.opts.knowledgeBaseScope?.id ?? undefined
 
+    // 源异常记账（2026-10-28 recall 零命中修复）：四个源各自吞错成空数组，曾让
+    // 「检索挂了」与「库里没有」共用一个出口、话术无法区分。失败源按名记账，
+    // 零命中与部分命中两条出口都回读。
+    const sourceErrors: string[] = []
+    const swallowSource = (label: string) => (_err: unknown): never[] => {
+      sourceErrors.push(label)
+      return []
+    }
+
     const [memoryPages, conversations, rawMatches, wikiMatches] = await Promise.all([
       // 经验与 recall 彻底隔离（PLAN-capability-followups E6/E7）：列表召回排除 experience
-      getHost().searchMemoryPages({ query, limit: limit * 2 }).then((rs) => rs.filter((r) => r.type !== 'experience')).catch(() => []),
-      getHost().searchConversationsByKeyword(query).catch(() => []),
-      km ? km.searchContent(query, scopeBaseId).catch(() => []) : Promise.resolve([]),
-      km ? km.searchWiki(query, scopeBaseId).catch(() => []) : Promise.resolve([]),
+      getHost().searchMemoryPages({ query, limit: limit * 2 }).then((rs) => rs.filter((r) => r.type !== 'experience')).catch(swallowSource('memory')),
+      getHost().searchConversationsByKeyword(query).catch(swallowSource('conversations')),
+      km ? km.searchContent(query, scopeBaseId).catch(swallowSource('knowledge (raw)')) : Promise.resolve([]),
+      km ? km.searchWiki(query, scopeBaseId).catch(swallowSource('knowledge (wiki)')) : Promise.resolve([]),
     ])
 
     const hits: RecallHit[] = []
@@ -220,7 +240,16 @@ export async function execRecallTool(ex: ToolExecContext, t: ToolUseBlock): Prom
 
     const top = interleaveRecallHits(hits, limit)
     if (top.length === 0) {
-      const note = `No results for "${query}" across memory, conversations, or the knowledge base.`
+      // OR-semantics honesty (PLAN-tool-issues #9, 2026-10-28; conversation 源
+      // 切词 OR 同日落地——四个源现在全部词级 OR，零命中即没有任何一个词在任何一个
+      // 源出现，单词重探结构性不可能非零，所以线索是失败源而不是降级重跑):
+      // the bare one-liner read as a malfunction and sent the model into
+      // full-tree greps. Name the semantics and, when a source errored, the
+      // difference between a search failure and an empty corpus.
+      const failureNote = sourceErrors.length > 0
+        ? ` ${sourceErrors.length} source(s) errored during this search (${sourceErrors.join(', ')}) — zero hits may be a search failure rather than an empty corpus.`
+        : ''
+      const note = `No results for "${query}" across memory, conversations, or the knowledge base.${failureNote} (Keywords are matched with OR, so zero hits means none of them appear in any source — if you expected content, the corpus likely does not have it; try different keywords, or use pick_skill for capabilities.)`
       t.output = note; ex.addToolResult(t.id, note, false); t.exitCode = 0; return true
     }
     const sections = top.map((h, i) => {
@@ -241,7 +270,12 @@ export async function execRecallTool(ex: ToolExecContext, t: ToolUseBlock): Prom
       return `${head}${alias}${path}\n    ${h.body.replace(/\n/g, '\n    ')}`
     })
     const out = sections.join('\n')
-    t.output = out.slice(0, MEMORY_PREVIEW_MAX)
+    // 部分失败也要说（零命中分支的同款记账）：有命中时源挂了不会自证，
+    // 结果页看起来完整、实则缺源。
+    const partialNote = sourceErrors.length > 0
+      ? `\n\n(${sourceErrors.length} source(s) errored during this search — ${sourceErrors.join(', ')}; results may be incomplete.)`
+      : ''
+    t.output = (out + partialNote).slice(0, MEMORY_PREVIEW_MAX)
     ex.addToolResult(t.id, t.output, false)
     t.exitCode = 0
     return true
@@ -338,11 +372,11 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
     // so the engine's foreground-process scalar never sees this process.
     if (t.input?.background === true) {
       try {
-        const { pid } = await getHost().executeBackground(command, cwd || undefined)
+        const { pid } = await getHost().executeBackground(command, cwd || undefined, ex.opts.conversationId)
         t.exitCode = 0
         t.status = 'completed'
         t.backgroundPid = pid
-        const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. Read its output with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends); stop it with exec_kill(pid=${pid}).`
+        const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${pid}).`
         t.output = note
         ex.addToolResult(t.id, note, false)
       } catch (err) {
@@ -387,7 +421,9 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
         ex.noteVerifyExec?.(command)
         resolve()
       }
-      getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
+      // conversationId doubles as the persistent-shell key (review P0-1): this
+      // engine's cd/export live in its own shell, apart from its sub-agents'.
+      getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined, ex.opts.conversationId)
         .then(pid => { ex.onProcessStart?.(pid); span.claim(pid) })
         .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
     })

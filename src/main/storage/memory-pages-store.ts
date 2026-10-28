@@ -461,6 +461,9 @@ export function setMemoryPageRetired(id: string, retired: boolean, reason?: stri
 
 // ── 检索（M0a 定形的匹配栈）──
 
+const LIKE_HEAD_SCORE = 50
+// title/aliases 兜底命中的粗排中位（2026-10-28）：二字词进不了 trigram FTS，只能走
+// LIKE 兜底——标题/别名命中的页压过 body-only 命中，但都让位一切 bm25 命中（负分）。
 const LIKE_FALLBACK_SCORE = 100
 const FTS_CANDIDATE_POOL = 40
 
@@ -500,13 +503,19 @@ export function searchMemoryPages(input: MemoryPageSearchInput): MemoryPageSearc
   const ftsHitIds = new Set(scores.keys())
   for (const needle of likeNeedles) {
     const pat = `%${escapeLikePattern(needle)}%`
+    // headHit 子查询（2026-10-28）：同一个兜底内部区分 title/aliases 命中（中位）
+    // 与 body-only 命中（恒后），否则「标题就是查询词」的页与「正文顺带提了一嘴」
+    // 的页同分、只靠 updatedAt 决胜负。
     const rows = database
       .prepare(
-        `SELECT id FROM memory_pages
+        `SELECT id, (title LIKE ? ESCAPE '\\' OR aliases LIKE ? ESCAPE '\\') AS headHit
+         FROM memory_pages
          WHERE title LIKE ? ESCAPE '\\' OR aliases LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\'`
       )
-      .all(pat, pat, pat) as Array<{ id: string }>
-    for (const r of rows) scores.set(r.id, Math.min(scores.get(r.id) ?? Infinity, LIKE_FALLBACK_SCORE))
+      .all(pat, pat, pat, pat, pat) as Array<{ id: string; headHit: number }>
+    for (const r of rows) {
+      scores.set(r.id, Math.min(scores.get(r.id) ?? Infinity, r.headHit ? LIKE_HEAD_SCORE : LIKE_FALLBACK_SCORE))
+    }
   }
 
   // 取代链解析：命中折叠到活页（活页取更优分），再按 type 过滤

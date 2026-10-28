@@ -56,3 +56,18 @@ describe('interleaveRecallHits', () => {
     expect(interleaveRecallHits([], 10)).toEqual([])
   })
 })
+
+// ── PLAN-tool-issues #9（2026-10-28）：零命中信封要点破 OR 语义 ──
+// 四条检索腿全部按词 OR（memory FTS OR、knowledge/wiki rg 多 -e、唯一整串匹配
+// 只剩 conversation LIKE），零命中 = 每个词都没命中 = 大概率语料里真没有——
+// 裸单行曾读作故障，把模型推进全盘 grep。「放宽到 X」在 OR 语义下结构上无 X，
+// 不做；这里钉的是文案把语义与可能真相说破。
+describe('zero-hit envelope names the OR semantics (source scan)', () => {
+  it('the recall executor teaches semantics instead of a bare miss', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../src/renderer/src/agent/executors/domain-tools.ts', import.meta.url), 'utf-8')
+    expect(src).toContain('Keywords are matched with OR')
+    expect(src).toContain('the corpus likely does not have it')
+    expect(src).toContain('use pick_skill for capabilities')
+  })
+})
