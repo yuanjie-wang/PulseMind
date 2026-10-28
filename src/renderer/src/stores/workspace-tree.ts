@@ -46,3 +46,48 @@ export function removeNode<T extends TreeNodeShape>(nodes: T[], key: string): T[
   })
   return changed ? next : nodes
 }
+
+// ── Live re-list for session-created files (2026-10-28 工作区树着色) ──
+// A file the session just created is not in any level the tree has already
+// listed. Re-reading the whole tree would remount it (spinner, lost scroll),
+// so the tree re-lists ONE level: the nearest ancestor of the new file that
+// it has loaded. The helpers below decide which one, separator-agnostic like
+// dropSubtree above.
+
+/** The directory part of `p` (either separator); '' when there is none. */
+export function parentDir(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return i < 0 ? '' : p.slice(0, i)
+}
+
+function findNode<T extends TreeNodeShape>(nodes: T[], key: string): T | undefined {
+  for (const node of nodes) {
+    if (String(node.key) === key) return node
+    if (node.children) {
+      const hit = findNode(node.children as T[], key)
+      if (hit) return hit
+    }
+  }
+  return undefined
+}
+
+/**
+ * The deepest directory on `dir`'s chain (from `dir` itself up to the
+ * workspace root) whose listing the tree HOLDS: a nested dir counts when its
+ * node is present with `children` set — rc-tree's `loadData` and the restore
+ * pass are the only writers of that field — and the root always counts. A
+ * `dir` outside the root is not the tree's to re-list → null.
+ *
+ * Why the nearest LOADED one and not the parent: a parent the tree never
+ * listed needs nothing (expanding it reads fresh), but its own nearest listed
+ * ancestor is now stale too — it does not know a new folder chain exists under
+ * it — and that is the level whose re-read makes the new rows reachable.
+ */
+export function loadedAncestor<T extends TreeNodeShape>(nodes: T[], workspaceDir: string, dir: string): string | null {
+  if (dir === workspaceDir) return workspaceDir
+  if (!dir.startsWith(`${workspaceDir}/`) && !dir.startsWith(`${workspaceDir}\\`)) return null
+  for (let cur = dir; cur.length > workspaceDir.length; cur = parentDir(cur)) {
+    if (findNode(nodes, cur)?.children !== undefined) return cur
+  }
+  return workspaceDir
+}

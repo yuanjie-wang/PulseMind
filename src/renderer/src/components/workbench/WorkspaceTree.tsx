@@ -19,17 +19,28 @@
 //     as a flat-by-comparison result tree, all levels expanded.
 // Selection is controlled by the parent (WorkspacePane) so the address bar and
 // an agent-opened preview can highlight the same file.
+// Rows the SESSION touched are painted (2026-10-28, user: 用不同颜色区分由本轮
+// 会话新增或改变的文件): a file the conversation's tools created reads in
+// --pm-ws-created, one they rewrote in --pm-ws-modified, and a folder takes its
+// subtree's colour (any rewrite inside → modified, else created). The source is
+// the engine's own ledger (sessionFileChangesStore ← `file_changes` event +
+// the initial pull below), not mtimes — a build step or the user's editor
+// touching a file is not "the session changed it". A created file's parent
+// level is re-listed in place so the new row shows up without 刷新.
 // Labels stay hardcoded Chinese — the pane's own convention
 // (工作区/浏览器/工作计划).
 
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tree, Tooltip, Button, Input, Spin, Modal, message } from 'antd'
 import type { DataNode, EventDataNode } from 'antd/es/tree'
 import { CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { isDirty } from '../../stores/preview-edit'
 import { useWorkspaceTreeStore, NO_EXPANDED_KEYS } from '../../stores/workspaceTreeStore'
-import { removeNode } from '../../stores/workspace-tree'
+import { loadedAncestor, parentDir, removeNode } from '../../stores/workspace-tree'
+import { NO_FILE_CHANGES, useSessionFileChangesStore } from '../../stores/sessionFileChangesStore'
+import { fileChangeMarks, normalizeChangePath } from '../../../../shared/agent-session/file-changes'
+import type { SessionFileChange, SessionFileChangeKind } from '../../../../shared/agent-protocol'
 
 const { DirectoryTree } = Tree
 
@@ -42,6 +53,12 @@ const TREE_CSS = `
 .pm-ws-row { flex: 1; min-width: 0; display: flex; align-items: center; }
 .pm-ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-ws-hit { background: var(--pm-warn-bg); border-radius: 2px; }
+/* Session-change inks (see the header). On the name span, not the row: the
+   selected row's grey wash and ink come from the theme's directoryNodeSelected*
+   tokens on the wrapper, and the name keeps its colour on top of them the way
+   an editor's explorer does. */
+.pm-ws-name.pm-ws-created { color: var(--pm-ws-created); }
+.pm-ws-name.pm-ws-modified { color: var(--pm-ws-modified); }
 /* Reserved, not hidden-by-reflow: the row keeps its geometry whether or not the
    pointer is on it, so running the mouse down the tree never shifts the names. */
 .pm-ws-actions { flex: none; display: flex; align-items: center; gap: 2px; margin-left: 6px; visibility: hidden; }
@@ -105,6 +122,13 @@ function keepSubtrees(prev: WorkspaceNode[] | undefined, next: WorkspaceNode[]):
   })
 }
 
+/** One level re-read in place — the root (which has no node of its own) or a
+ *  nested dir — keeping every deeper subtree the user has open. */
+function replaceLevel(entries: WorkspaceNode[], workspaceDir: string, dir: string, level: WorkspaceEntry[]): WorkspaceNode[] {
+  const children = level.map(entryToNode)
+  return dir === workspaceDir ? keepSubtrees(entries, children) : withChildren(entries, dir, children)
+}
+
 /** Centered one-line hint for the no-workspace / unreadable / empty states. */
 function Hint({ text }: { text: string }): React.ReactElement {
   return (
@@ -129,6 +153,8 @@ function rowVisible(entries: WorkspaceNode[], ancestors: string[], filePath: str
 interface RowProps {
   entry: WorkspaceEntry
   highlight?: string
+  /** The session-change ink for this row (file or folder), if any. */
+  mark?: SessionFileChangeKind
   onCopy: (entry: WorkspaceEntry) => void
   onDelete: (entry: WorkspaceEntry) => void
 }
@@ -157,10 +183,10 @@ function HighlightedName({ name, highlight }: { name: string; highlight?: string
 /** One row's title: the name, then the two hover actions. Rendered through
  *  `titleRender` so the handlers are always the current ones while the tree
  *  data stays plain data. */
-function TreeRow({ entry, highlight, onCopy, onDelete }: RowProps): React.ReactElement {
+function TreeRow({ entry, highlight, mark, onCopy, onDelete }: RowProps): React.ReactElement {
   return (
     <span className="pm-ws-row" data-ws-path={entry.path}>
-      <span className="pm-ws-name">
+      <span className={mark ? `pm-ws-name pm-ws-${mark}` : 'pm-ws-name'} data-ws-mark={mark}>
         <HighlightedName name={entry.name} highlight={highlight} />
       </span>
       <span className="pm-ws-actions">
@@ -210,6 +236,11 @@ function dropPreviewTab(conversationId: string | undefined, path: string): void 
 const SEARCH_DEBOUNCE_MS = 250
 const MAX_WALKED_DIRS = 400
 const MAX_MATCHES = 100
+
+/** Session-created files re-list their parent level after this quiet window:
+ *  a sub-agent scaffolding ten files fires ten ledger events in a burst, and
+ *  one re-read per touched level is all the tree needs. */
+const LIVE_RELIST_DEBOUNCE_MS = 300
 
 interface SearchResult {
   nodes: WorkspaceNode[]
@@ -414,6 +445,78 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     [reqKey],
   )
 
+  // ── Session-change paint (2026-10-28) ──
+  // The ledger copy for THIS conversation; the paint map derives every row's
+  // ink from it (files exact, folders by subtree). NO_FILE_CHANGES keeps an
+  // untouched conversation's memo input stable.
+  const changes = useSessionFileChangesStore((s) => (conversationId ? s.byConversation[conversationId] : undefined)) ?? NO_FILE_CHANGES
+  const marks = useMemo(() => fileChangeMarks(changes, workspaceDir), [changes, workspaceDir])
+
+  // Initial pull: the desktop mirror is built from events alone (it never
+  // snapshots), so a tree mounted AFTER the writes — tab switch, window reload
+  // — would start blank without asking main for the ledger. Re-runs on 刷新 so
+  // the colours re-read with the disk. A conversation with no live session
+  // (opened, never sent) has nothing to paint and the call simply fails.
+  useEffect(() => {
+    if (!conversationId) return
+    let cancelled = false
+    window.electronAPI.agentSessionEngineCall(conversationId, 'getFileChanges', [])
+      .then((v) => {
+        if (!cancelled && Array.isArray(v)) useSessionFileChangesStore.getState().set(conversationId, v as SessionFileChange[])
+      })
+      .catch(() => { /* no live session — nothing to paint */ })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId, tick])
+
+  // Live re-list: a file the session just CREATED is missing from the level
+  // the tree already listed (rewrites need nothing — the row exists, only its
+  // ink changes). Re-read the nearest loaded ancestor of each new file, in
+  // place through setRoot like the reveal effect does, never through `tick`
+  // (which remounts the tree: spinner, lost scroll). Entries handled for this
+  // tree load are remembered so a later ledger event re-reads only what is
+  // new; a fresh load (new reqKey) already reflects the disk and starts over.
+  // `current` is read through a ref: it is what the setRoot below changes,
+  // and a dep on it would cancel this effect's own batch mid-flight.
+  const currentRef = useRef(current)
+  useEffect(() => {
+    currentRef.current = current
+  }, [current])
+  const relistedRef = useRef<{ key: string; seen: Set<string> }>({ key: '', seen: new Set() })
+  useEffect(() => {
+    if (!workspaceDir || searching) return
+    if (relistedRef.current.key !== reqKey) relistedRef.current = { key: reqKey, seen: new Set() }
+    const seen = relistedRef.current.seen
+    const fresh = changes.filter((c) => c.kind === 'created' && !seen.has(c.path))
+    if (fresh.length === 0) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const cur = currentRef.current
+      // Still loading: the listing in flight is newer than any ledger entry,
+      // so there is nothing to re-read — and nothing is marked seen, so the
+      // entries are reconsidered on the next ledger event.
+      if (!cur || cur.key !== reqKey) return
+      const dirs = new Set<string>()
+      for (const c of fresh) {
+        seen.add(c.path)
+        // Normalized like the paint map's keys: the ledger spells the model's
+        // own segments (`./notes/a.md`), the tree's keys are path.join's.
+        const dir = loadedAncestor(cur.entries, workspaceDir, parentDir(normalizeChangePath(c.path)))
+        if (dir) dirs.add(dir)
+      }
+      for (const dir of dirs) {
+        const level = await window.electronAPI.listDir(dir)
+        if (cancelled) return
+        if (level) setRoot((prev) => (prev && prev.key === reqKey ? { ...prev, entries: replaceLevel(prev.entries, workspaceDir, dir, level.entries) } : prev))
+      }
+    }, LIVE_RELIST_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [changes, workspaceDir, searching, reqKey])
+
   // Click = selection, and a file click also previews beside the tree
   // (openFile brings the workbench up on 工作区, so a click still opens the
   // pane when it was folded). Clicking the selected row again deselects; the
@@ -486,7 +589,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   const titleRender = (node: DataNode): React.ReactNode => {
     const entry = (node as WorkspaceNode).entry
     if (!entry) return node.title as React.ReactNode
-    return <TreeRow entry={entry} highlight={searching ? debounced : undefined} onCopy={copyPath} onDelete={requestDelete} />
+    return <TreeRow entry={entry} highlight={searching ? debounced : undefined} mark={marks.get(entry.path)} onCopy={copyPath} onDelete={requestDelete} />
   }
 
   const refresh = () => {

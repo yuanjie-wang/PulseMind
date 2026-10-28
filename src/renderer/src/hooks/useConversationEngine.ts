@@ -11,6 +11,7 @@ import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 import { applySessionEvent, freshSessionState, type SessionState } from '../../../shared/agent-session/mirror'
+import { useSessionFileChangesStore } from '../stores/sessionFileChangesStore'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
 import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
@@ -241,6 +242,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       st.streamingBlocks = []
       st.plan = null
       st.historySummary = null
+      st.fileChanges = []
+      useSessionFileChangesStore.getState().drop(convId)
     },
     loadConversation(msgs: AgentMessage[]) {
       st.messages = msgs
@@ -374,6 +377,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // Transport-only events (token/tool_start/spawn_progress/…) are not
       // mirrored; the follow-up below must not run for them.
       if (!applySessionEvent(st, data)) return
+
+      // The 工作区 tree reads the ledger off a store, not the mirror (the mirror
+      // is a ref here and four component layers away from the tree) — mirror
+      // the fold's result into it so both say the same thing.
+      if (data.type === 'file_changes') useSessionFileChangesStore.getState().set(sessionId, st.fileChanges)
 
       if (data.type === 'status') {
         // The light IS the mirrored status, read through statusToLight. 已读 is
@@ -541,6 +549,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     enginesRef.current.delete(convId)
     statesRef.current.delete(convId)
     touchTimesRef.current.delete(convId)
+    useSessionFileChangesStore.getState().drop(convId)
   }, [])
 
   const listEvictionCandidates = useCallback((): string[] => {

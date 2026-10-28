@@ -39,7 +39,7 @@ import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalog
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
-import { svcReapBackgroundPids as reapBackgroundPids } from '../services/terminal'
+import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
 import { messageContentSignature } from '../../shared/agent-session/message-content'
@@ -53,7 +53,7 @@ import { getBundledRipgrepPath, getPlatformName } from '../services/platform-inf
 import { perfTime } from '../perf/perf-log'
 import { keepAwake } from '../system/keep-awake'
 import { rememberLastUsedApprovalMode, rememberLastUsedProfileId, seedLastUsedDefaults } from './last-used-defaults'
-import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, StatusSnapshot, ModelState, CompactionEvent } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, StatusSnapshot, ModelState, CompactionEvent, SessionFileChange } from '../../shared/agent-protocol'
 
 interface Managers {
   toolManager: ToolManager
@@ -511,6 +511,10 @@ export class AgentSessionManagerImpl {
         extracted++
         if (result.pages > 0) console.log(`[memory-sweep] ${c.id}: ${result.pages} page op(s)`)
       }
+      // 上次提取时刻落设置（settings.memoryLastSweepAt，渲染端整存时由
+      // SETTINGS_SET 保留）：定时与手动「立即提取」同源同款。早退分支（总开关
+      // 全关/无可用 profile）不算跑过，不落笔——面板显示的必须是真跑过的时刻。
+      await settingsStore.update((s) => ({ ...s, memoryLastSweepAt: new Date().toISOString() }))
       return extracted
     } finally {
       this.sweepInFlight = false
@@ -1050,7 +1054,7 @@ export class AgentSessionManagerImpl {
 
   /** UI snapshot for (re)activating a session. */
   async snapshot(sessionId: string): Promise<{
-    messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null
+    messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null; fileChanges: SessionFileChange[]
   } | null> {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
@@ -1065,6 +1069,7 @@ export class AgentSessionManagerImpl {
       status: statusSnapshotOf(status),
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
+      fileChanges: entry.engine.getFileChanges(),
     }
   }
 
@@ -1105,6 +1110,10 @@ export class AgentSessionManagerImpl {
       case 'clearError': return engine.clearError()
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
+      // The 工作区 tree's initial pull (2026-10-28): the desktop client builds its
+      // mirror from events alone and never snapshots, so a tree mounted after
+      // the writes happened (tab switch, window reload) reads the ledger here.
+      case 'getFileChanges': return entry.engine.getFileChanges()
       case 'compactNow': return engine.compactNow(args[0] as string | undefined)
       case 'debugSubAgents':
         // Read-only diagnostic (conv_20260930091135: two plan sub-agents parked
@@ -1132,6 +1141,11 @@ export class AgentSessionManagerImpl {
         // (by design — they must survive pause/abort/new-command), so the
         // session's own teardown is their only remaining reaper.
         reapBackgroundPids(this.sandboxContexts.get(sessionId)?.backgroundPids ?? [])
+        // Same for the persistent shells (review P0-1): the engine's cleanup
+        // kills a command in flight, but an idle shell — the session's own and
+        // every sub-agent's — only dies here. Keyed by session so the sub-agent
+        // shells (session::subConvId) go with their parent.
+        reapSessionShells(sessionId)
         this.sessions.delete(sessionId)
         this.lastSentLen.delete(sessionId)
         this.messageContentRegistry.delete(sessionId)
@@ -1266,6 +1280,7 @@ export class AgentSessionManagerImpl {
       },
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan }),
+      onFileChangesChanged: (changes: SessionFileChange[]) => this.emit(sessionId, { type: 'file_changes', changes }),
       onCompaction: (event: CompactionEvent) => this.emit(sessionId, { type: 'compaction', event }),
     }
   }

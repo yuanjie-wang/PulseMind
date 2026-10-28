@@ -118,6 +118,12 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-warn-border': '#ffd591',
     '--pm-error': '#cf1322',
     '--pm-success': '#389e0d',
+    /** 工作区 tree row inks for files the session itself created / rewrote
+     *  (2026-10-28): VS Code's light-modern git decoration pair (untracked /
+     *  modified) — their own roles, not --pm-success/--pm-warn, which are
+     *  status colours and would make a changed file read as a warning. */
+    '--pm-ws-created': '#587c0c',
+    '--pm-ws-modified': '#895503',
     // Input-layer roles (M2/T3) — light = the literal each replaced.
     /** The composer card's frosted fill. The opaque one is `--pm-elevated`:
      *  Windows drops the blur, so the same card is painted flat there. */
@@ -401,6 +407,8 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-warn-border': '#7c5914',
     '--pm-error': '#ff7875',
     '--pm-success': '#49aa19',
+    '--pm-ws-created': '#73c991',
+    '--pm-ws-modified': '#e2c08d',
     '--pm-elevated-glass': 'rgba(31, 31, 31, 0.85)',
     '--pm-border-veil': 'rgba(255, 255, 255, 0.14)',
     '--pm-border-veil-weak': 'rgba(255, 255, 255, 0.10)',
