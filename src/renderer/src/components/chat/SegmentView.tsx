@@ -79,8 +79,9 @@ function StreamingText({ blocks, toolsStarted }: { blocks: ContentBlock[]; tools
   // no longer changes, so the forced feed is an idempotent no-op there.
   const throttlesRef = useRef<Map<number, ReturnType<typeof createTextThrottle>>>(new Map())
   // The caret rides the last block that has text — the end of what the user is
-  // reading. hasLiveTextTail (the hosts' StreamingCursor gate) is the same test
-  // over the segment, so the foot caret is gone exactly while this one shows.
+  // reading — and yields once the round moves on to its tool call (the text is
+  // finished reading material then; hasLiveTextTail is the same test over the
+  // segment, so the foot caret takes over exactly when this one steps aside).
   const tailIndex = lastLiveTextIndex(blocks)
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
@@ -96,7 +97,7 @@ function StreamingText({ blocks, toolsStarted }: { blocks: ContentBlock[]; tools
           const shown = throttle.feed(block.text, performance.now(), toolsStarted === true)
           return (
             <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>
-              <StreamingMarkdown shown={shown} tail={i === tailIndex} />
+              <StreamingMarkdown shown={shown} tail={i === tailIndex && toolsStarted !== true} />
             </div>
           )
         })}

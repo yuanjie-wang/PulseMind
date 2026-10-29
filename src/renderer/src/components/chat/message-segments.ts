@@ -55,12 +55,17 @@ export function lastLiveTextIndex(blocks: readonly ContentBlock[]): number {
   return -1
 }
 
-/** A live text tail is on screen — the streaming segment has text, so its
+/** A live text tail is on screen — the streaming segment has text and the
+ *  round has not moved past it (its tool_use is not streaming yet), so its
  *  in-text caret is drawn. The transcript's bottom StreamingCursor yields to
  *  it (hosts pass `show={isRequesting && !hasLiveTextTail(segments)}`): one
- *  caret moves from the column's foot into the sentence, never two cursors. */
+ *  caret moves from the column's foot into the sentence, never two cursors.
+ *  Once `toolsStarted` flips (the text block is done, tool args are streaming)
+ *  the in-text tail yields back — the finished sentence is reading material,
+ *  the live position is the foot again (2026-10-28 report: the caret used to
+ *  stay parked at the completed text while the tool card ran). */
 export function hasLiveTextTail(segs: readonly Segment[]): boolean {
-  return segs.some((s) => s.type === 'streaming' && lastLiveTextIndex(s.blocks) >= 0)
+  return segs.some((s) => s.type === 'streaming' && s.toolsStarted !== true && lastLiveTextIndex(s.blocks) >= 0)
 }
 
 /** Same segment, and unchanged content: reused by the structural-sharing cache

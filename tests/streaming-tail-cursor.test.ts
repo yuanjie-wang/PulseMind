@@ -25,6 +25,7 @@ const noop = () => {}
 const flush = async (): Promise<void> => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 const text = (t: string): ContentBlock => ({ type: 'text', text: t })
 const thinking = (t: string): ContentBlock => ({ type: 'thinking', thinking: t })
+const toolUse = (id: string): ContentBlock => ({ type: 'tool_use', id, name: 'read', input: { file_path: 'x.ts' } })
 const R = (...p: string[]) => join(__dirname, '..', 'src', 'renderer', 'src', ...p)
 const read = (p: string) => readFileSync(p, 'utf8')
 
@@ -88,6 +89,10 @@ describe('hasLiveTextTail / lastLiveTextIndex', () => {
     expect(hasLiveTextTail([{ type: 'execution', msgs: [{ id: 'streaming-think', role: 'assistant', createdAt: '', contentBlocks: [thinking('…')] }] }])).toBe(false)
     expect(hasLiveTextTail([])).toBe(false)
   })
+
+  it('is false once the round\'s tool call has begun — the finished text yields to the foot', () => {
+    expect(hasLiveTextTail([{ type: 'streaming', blocks: [text('done narrating')], toolsStarted: true }])).toBe(false)
+  })
 })
 
 describe('one cursor per run', () => {
@@ -145,6 +150,32 @@ describe('one cursor per run', () => {
     } finally { await m.close() }
   })
 
+  // 2026-10-28 report: the caret used to stay parked at the end of the
+  // completed narration while the tool card ran below it. The round lifecycle
+  // is foot → in-text → foot, with exactly one caret at every stage.
+  it('the caret yields back to the foot when the round moves on to its tool call', async () => {
+    const m = await mount([text('Done narrating.'), toolUse('tu_1')])
+    try {
+      const carets = m.carets()
+      expect(carets).toHaveLength(1)
+      expect(m.inText(carets[0])).toBe(false)
+      expect(m.atFoot(carets[0])).toBe(true)
+    } finally { await m.close() }
+  })
+
+  it('full round lifecycle: foot while thinking, in-text while text streams, foot once the tool call begins', async () => {
+    const m = await mount([thinking('…')])
+    try {
+      expect(m.atFoot(m.carets()[0])).toBe(true)
+      await m.render([thinking('…'), text('Answer text')])
+      expect(m.inText(m.carets()[0])).toBe(true)
+      await m.render([thinking('…'), text('Answer text'), toolUse('tu_1')])
+      expect(m.carets()).toHaveLength(1)
+      expect(m.inText(m.carets()[0])).toBe(false)
+      expect(m.atFoot(m.carets()[0])).toBe(true)
+    } finally { await m.close() }
+  })
+
   it('the streamed markdown fades its text in (x-markdown enableAnimation)', async () => {
     const m = await mount([text('fade me')])
     try {
@@ -180,8 +211,6 @@ describe('one cursor per run', () => {
 // tool_use presence as `toolsStarted` on the streaming segment; StreamingText
 // force-feeds its throttle with it.
 describe('tool-call flush signal', () => {
-  const toolUse = (id: string): ContentBlock => ({ type: 'tool_use', id, name: 'read', input: { file_path: 'x.ts' } })
-
   it('buildSegments stamps toolsStarted from the round\'s tool_use presence', () => {
     const build = (blocks: ContentBlock[]): Segment[] =>
       buildSegments({ messages: [], isStreaming: true, streamingBlocks: blocks, cached: [], streamingToolAccum: new Map() })
@@ -242,5 +271,8 @@ describe('wiring', () => {
     const view = read(R('components', 'chat', 'SegmentView.tsx'))
     expect(view).toContain('toolsStarted={seg.toolsStarted === true}')
     expect(view).toContain('throttle.feed(block.text, performance.now(), toolsStarted === true)')
+    // the same signal yields the in-text tail (hasLiveTextTail agrees, so the
+    // foot caret takes over in the same render — still one cursor)
+    expect(view).toContain('tail={i === tailIndex && toolsStarted !== true}')
   })
 })
