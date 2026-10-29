@@ -429,16 +429,22 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
       // ── Patch all in memory ──
       const patched: string[] = []
       let totalHunks = 0
+      // One bad hunk holds back every other section (nothing is written); when
+      // those files did not need to land together, the atomic form only turned
+      // one miss into N — say so, so the retry can split instead of resending.
+      const heldBack = ordered.length > 1
+        ? ` — nothing was written: the other ${ordered.length - 1} section(s) of this diff are held back by this one (all-or-nothing). If these files need not land together, send them as separate single-file search/replace edits so one bad hunk cannot block the rest.`
+        : ''
       for (let i = 0; i < ordered.length; i++) {
         const r = ordered[i]
         if (r.isNew) {
           const made = newFileContentFromDiff(r.diff)
-          if (!made.success) return { success: false, replacements: 0, error: `${r.filePath}: ${made.error}` }
+          if (!made.success) return { success: false, replacements: 0, error: `${r.filePath}: ${made.error}${heldBack}` }
           patched.push(made.content!)
           totalHunks += made.hunks!
         } else {
           const result = patchContent(originals[i], r.diff)
-          if (!result.success) return { success: false, replacements: 0, error: `${r.filePath}: ${result.error}` }
+          if (!result.success) return { success: false, replacements: 0, error: `${r.filePath}: ${result.error}${heldBack}` }
           patched.push(result.content!)
           totalHunks += result.replacements
         }

@@ -47,7 +47,8 @@ export function noHunksError(diff: string): string {
     // verbatim by applyPatch's splice and silently eats the trailing line, so
     // a teaching example whose arithmetic does not add up teaches exactly that
     // mistake to the models likeliest to copy it verbatim.
-    '\nExample:\n@@ -12,2 +12,2 @@\n unchanged context line\n-removed line\n+added line'
+    '\nExample:\n@@ -12,2 +12,2 @@\n unchanged context line\n-removed line\n+added line' +
+    '\nFor a change inside ONE file, prefer search/replace (`old_str`/`new_str`) — it needs no hunk header at all.'
   const headerRe = /^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@/
   if (atLines.length === 0) {
     return `No valid hunks found in diff: there is no \`@@\` hunk header anywhere in the payload, so it does not parse as a unified diff at all. ${shape}`

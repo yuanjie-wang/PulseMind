@@ -167,13 +167,21 @@ export function editMissError(filePath: string, normalizedContent: string, oldSt
     // memory and drifted (an extra/remembered line shifting everything).
     // Claiming "none of the lines appear" here would send the model off to
     // re-read the wrong file.
-    return `${base}. Only ${region.matchedLines}/${region.totalLines} of old_str's line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). You may be re-creating the code from memory: re-read ${where} and retry with old_str copied verbatim from the file, or pass a unified diff via the \`diff\` parameter — hunks re-anchor on context, not exact text. Closest fragment:\n${region.preview}`
+    return `${base}. Only ${region.matchedLines}/${region.totalLines} of old_str's line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). You may be re-creating the code from memory: re-read ${where} and retry with old_str copied verbatim from the file. Closest fragment:\n${region.preview}`
   }
   if (region.whitespaceOnly) {
-    return `${base}. A match EXISTS at ${where}: all ${region.totalLines} line(s) are identical once surrounding whitespace is ignored, so the miss is indentation or invisible characters. Retry with old_str copied verbatim from the file (or pass a unified diff via the \`diff\` parameter — hunks re-anchor on context, not exact text). Actual file content at ${where}:\n${region.preview}`
+    return `${base}. A match EXISTS at ${where}: all ${region.totalLines} line(s) are identical once surrounding whitespace is ignored, so the miss is indentation or invisible characters. Retry with old_str copied verbatim from the text below, indentation included. Actual file content at ${where}:\n${region.preview}`
   }
-  return `${base}. Closest matching region is at ${where}: ${region.matchedLines}/${region.totalLines} line(s) line up (ignoring surrounding whitespace). Actual file content there:\n${region.preview}\nRe-read that range and retry with old_str taken verbatim from the file, or pass a unified diff anchored on the lines above.`
+  return `${base}. Closest matching region is at ${where}: ${region.matchedLines}/${region.totalLines} line(s) line up (ignoring surrounding whitespace). Actual file content there:\n${region.preview}\nRe-read that range and retry with old_str taken verbatim from the lines above.`
 }
+
+/** Every hunk failure ends by steering to search/replace: a single-file hunk
+ *  needs an exact start line AND exact text while `old_str` needs only the
+ *  text, so retrying the diff is the weaker move — measured on the flash-class
+ *  models this app runs (2026-10-29): diff-form edits failed 59–91% while
+ *  search/replace held at ~2%. */
+const SWITCH_TO_REPLACE =
+  'Redo this change as search/replace — `old_str`/`new_str` copied verbatim from the file text — rather than resending the diff: it needs no start line or counts, and hunks are never re-anchored.'
 
 /** The diff mode counterpart: a hunk whose context/removed lines do not match.
  *  Same hint family — the expected lines usually sit somewhere nearby, and the
@@ -190,19 +198,19 @@ export function hunkMismatchError(oldStart: number, expectedLines: string[], con
     const strippedRegion = findSimilarRegion(content, stripped)
     if (strippedRegion && !strippedRegion.fragmentary) {
       const where = `lines ${strippedRegion.startLine}–${strippedRegion.endLine}`
-      return `${base} Every expected line still carries read's \`N\\t\` line-number prefix — a coordinate read prints, NOT part of the file, so the hunk can never match as sent. Rebuild the hunk from the bare text, which sits at ${where}:\n${strippedRegion.preview}`
+      return `${base} Every expected line still carries read's \`N\\t\` line-number prefix — a coordinate read prints, NOT part of the file, so the hunk can never match as sent. Rebuild the hunk from the bare text, which sits at ${where} — or better, use that bare text as \`old_str\` in a search/replace:\n${strippedRegion.preview}`
     }
   }
   const region = findSimilarRegion(content, expectedLines.join('\n'))
   if (!region) {
-    return `${base} None of the hunk's context/removed lines appear in the file — the hunk likely targets a stale line number or the wrong region. Re-read the file and regenerate the diff from the actual text.`
+    return `${base} None of the hunk's context/removed lines appear in the file — the hunk likely targets a stale line number or the wrong region. Re-read the file, then ${SWITCH_TO_REPLACE}`
   }
   const where = `lines ${region.startLine}–${region.endLine}`
   if (region.fragmentary) {
-    return `${base} Only ${region.matchedLines}/${region.totalLines} of the hunk's expected line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). Re-read the file and regenerate the diff from the actual text. Closest fragment at ${where}:\n${region.preview}`
+    return `${base} Only ${region.matchedLines}/${region.totalLines} of the hunk's expected line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). Re-read ${where}, then ${SWITCH_TO_REPLACE} Closest fragment:\n${region.preview}`
   }
   if (region.whitespaceOnly) {
-    return `${base} The expected lines DO exist at ${where} (whitespace differs) — re-anchor the hunk on the exact text below:\n${region.preview}`
+    return `${base} The expected lines DO exist at ${where} (whitespace differs). ${SWITCH_TO_REPLACE} Exact text:\n${region.preview}`
   }
-  return `${base} The closest region to the hunk's expected content is at ${where} (${region.matchedLines}/${region.totalLines} line(s) line up):\n${region.preview}\nRe-read that range and regenerate the diff from the actual file text.`
+  return `${base} The closest region to the hunk's expected content is at ${where} (${region.matchedLines}/${region.totalLines} line(s) line up):\n${region.preview}\n${SWITCH_TO_REPLACE}`
 }

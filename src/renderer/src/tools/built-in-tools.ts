@@ -101,7 +101,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         diff: {
           type: 'string',
           description:
-            '(diff mode) Unified diff to apply. More token-efficient than search/replace; include 1-2 context lines. Multi-file form: a git-style diff with one `diff --git a/<path> b/<path>` section per file (no file_path) — applied ATOMICALLY: any failed hunk rejects the whole call and `--- /dev/null` sections create new files. See instructions for format details.',
+            '(diff mode) Unified diff to apply. For a change inside ONE file prefer old_str/new_str — a hunk needs an exact start line AND exact text and is not re-anchored. Include 1-2 context lines. Multi-file form: a git-style diff with one `diff --git a/<path> b/<path>` section per file (no file_path) — applied ATOMICALLY: any failed hunk rejects the whole call and `--- /dev/null` sections create new files. See instructions for format details.',
         },
       },
     },

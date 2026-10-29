@@ -70,15 +70,18 @@ Read what the question needs, not what the file contains.
 Read the file first so \`old_str\` matches exactly, whitespace and indentation included. read prints line-number prefixes (\`N\t\`) — copy the text WITHOUT them; a prefixed old_str never matches.
 
 ### Which mode
+**Default: search/replace** (\`old_str\`/\`new_str\`) for every change inside ONE file, whatever the file's size — it needs only the exact text, no line arithmetic. Several changes in one file = several search/replace calls (the same message is fine); each is validated on its own, so one miss never takes the others down.
+
 | Situation | Mode | Why |
 |-----------|------|-----|
-| Changing a few lines in a small file, or 1-2 lines in any file | **search/replace** | short and unique beats computing line numbers |
-| Many scattered lines in a large file, multiple edits in one call, deletions, mid-file insertions | **diff** | only send changed hunks; one diff carries multiple hunks; pure insertion = \`@@ -start,0 +start,count @@\` |
-| The same change spans 2+ files, or files must land together (refactor, API change + call sites) | **multi-file diff** | one ATOMIC call — any failed hunk rejects the whole call, nothing partial |
+| Any change inside ONE file — few or many lines, deletions, insertions | **search/replace** | exact text is all it needs. A \`diff\` hunk needs an exact start line AND exact text, and hunks are NOT re-anchored — strictly harder, nothing gained |
+| The same change spans 2+ files AND they must land together (refactor, API change + call sites) | **multi-file diff** | one ATOMIC call — any failed hunk rejects the whole call, nothing partial |
+| Single-file \`diff\` | avoid | only when several hunks in one file must land atomically |
 
 ### Rules
 - search/replace: deleting text = empty \`new_str\`; replace ALL occurrences with \`multi: true\`; no match = the op fails
-- diff: each hunk opens with the FULL numbered header \`@@ -start,count +start,count @@\` (count may be omitted when it is 1) — \`start\` is the file line number read printed; counts are the body's line sums (old = context + removed, new = context + added); a bare \`@@\` parses as nothing and rejects the whole call. Body lines each carry one prefix character: \` \` context (1-2 lines for reliable matching — hunks are validated against the file before applying), \`-\` removed, \`+\` added. Example:
+- A rejected hunk is a signal to switch, not to retry: redo that change as search/replace from the text the error shows.
+- diff: each hunk opens with the FULL numbered header \`@@ -start,count +start,count @@\` (count may be omitted when it is 1) — \`start\` is the file line number read printed; counts are the body's line sums (old = context + removed, new = context + added); pure insertion = \`@@ -start,0 +start,count @@\`; a bare \`@@\` parses as nothing and rejects the whole call. Body lines each carry one prefix character: \` \` context (1-2 lines for reliable matching — hunks are validated against the file before applying), \`-\` removed, \`+\` added. Example:
 
   \`\`\`
   @@ -12,2 +12,2 @@

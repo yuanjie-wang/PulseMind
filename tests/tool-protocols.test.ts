@@ -183,3 +183,43 @@ describe('edit manual teaches the hunk-header contract', () => {
     )
   })
 })
+
+// ── 2026-10-29（edit 形态引导）：882 次 edit 的历史数据（scripts/probe-edit-
+// failure-stats.mjs）——本应用跑的 flash 档模型上 diff 形态失败 59–91%、
+// search/replace 稳在 ~2%，而旧「Which mode」表把「多处分散改动/一次多处/删除/
+// 插入」都指向 diff，等于给弱模型开了扇通往失败形态的大门。手册改口：单文件
+// 一律 search/replace，diff 只留给多文件原子落地；hunk 被拒 = 换形态而非重试。
+describe('edit manual steers single-file changes to search/replace (2026-10-29)', () => {
+  const editManual = (BUILT_IN_TOOLS.find((t) => t.name === 'edit')!.instructions || '').trim()
+
+  it('declares search/replace the default for every change inside one file', () => {
+    expect(editManual).toContain('**Default: search/replace**')
+    expect(editManual).toContain('for every change inside ONE file')
+    expect(editManual).toContain('| Any change inside ONE file — few or many lines, deletions, insertions | **search/replace** |')
+  })
+
+  it('reserves diff for files that must land together and marks single-file diff as avoid', () => {
+    expect(editManual).toContain('spans 2+ files AND they must land together')
+    expect(editManual).toContain('| Single-file `diff` | avoid |')
+    // The old row that invited diff for scattered/multiple/deletion/insertion edits is gone.
+    expect(editManual).not.toContain('Many scattered lines in a large file')
+    expect(editManual).not.toContain('short and unique beats computing line numbers')
+  })
+
+  it('tells the truth about hunks (not re-anchored) and teaches the switch on rejection', () => {
+    expect(editManual).toContain('hunks are NOT re-anchored')
+    expect(editManual).toContain('A rejected hunk is a signal to switch, not to retry')
+  })
+
+  it('keeps the pure-insertion header shape that used to live in the mode table', () => {
+    expect(editManual).toContain('pure insertion = `@@ -start,0 +start,count @@`')
+  })
+
+  it('the schema no longer sells diff as the efficient choice (schema bytes are read before the manual)', () => {
+    const edit = BUILT_IN_TOOLS.find((t) => t.name === 'edit')!
+    const diffDesc = (edit.input_schema.properties as Record<string, { description?: string }>).diff.description ?? ''
+    expect(diffDesc).not.toContain('More token-efficient')
+    expect(diffDesc).toContain('For a change inside ONE file prefer old_str/new_str')
+    expect(diffDesc).toContain('is not re-anchored')
+  })
+})

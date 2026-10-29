@@ -335,8 +335,21 @@ describe('svcPatchFiles: the transaction', () => {
     ] })
     expect(res.success).toBe(false)
     expect(res.error).toContain(`${B}:`)
+    // 2026-10-29: the rejection names the collateral — the other section was
+    // held back by this one — and offers the split (separate search/replace
+    // edits) so one bad hunk stops turning one miss into N.
+    expect(res.error).toContain('the other 1 section(s) of this diff are held back by this one')
+    expect(res.error).toContain('separate single-file search/replace edits')
     expect(readFileSync(A, 'utf-8')).toBe('alpha')
     expect(readFileSync(B, 'utf-8')).toBe('bravo')
+  })
+
+  it('a single-section diff carries no held-back collateral note', async () => {
+    writeFileSync(B, 'bravo', 'utf-8')
+    const bogus = 'diff --git a/b.ts b/b.ts\n--- a/b.ts\n+++ b/b.ts\n@@ -1,1 +1,1 @@\n-WRONG\n+B'
+    const res = await svcPatchFiles({ entries: [{ filePath: B, diff: bogus }] })
+    expect(res.success).toBe(false)
+    expect(res.error).not.toContain('held back')
   })
 
   it('a write failure rolls back the files already written from their originals', async () => {

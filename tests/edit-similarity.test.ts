@@ -116,7 +116,24 @@ describe('editMissError — the edit tool\'s not-found surface', () => {
   it('a partial miss reports the match ratio instead of pretending certainty', () => {
     const msg = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n  return "x".repeat(width) + text\n}')
     expect(msg).toContain('2/3 line(s) line up')
-    expect(msg).toContain('unified diff')
+    expect(msg).toContain('retry with old_str taken verbatim from the lines above')
+  })
+
+  it('never steers a miss toward the diff form (2026-10-29: hunks are not re-anchored)', () => {
+    // The old fallback 「pass a unified diff — hunks re-anchor on context, not
+    // exact text」 was false: applyPatch splices at the exact start line and
+    // demands byte-exact context, so a whitespace miss in old_str is the same
+    // miss in a hunk PLUS a line number to get right. Measured on the app's
+    // flash-class models, diff-form edits failed 59–91% vs ~2% for
+    // search/replace — the advice pushed a struggling model into the weaker form.
+    const whitespace = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n    return " ".repeat(width - text.length) + text\n}')
+    const fragmentary = editMissError('/ws/a.js', FILE, ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'].join('\n'))
+    const partial = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n  return "x".repeat(width) + text\n}')
+    for (const msg of [whitespace, fragmentary, partial]) {
+      expect(msg).not.toContain('unified diff')
+      expect(msg).not.toContain('re-anchor')
+      expect(msg).not.toContain('`diff` parameter')
+    }
   })
 
   it('a needle absent from the file says so — usually the wrong file', () => {
@@ -263,6 +280,48 @@ describe('patchContent integration — the mismatch error now carries the hint',
     expect(result.error).toMatch(/does not match/i) // the frozen phrase (longitudinal)
     expect(result.error).toContain('lines 2–3') // where the expected lines really sit
     expect(result.error).toContain('-RETRIES: 2,'.slice(1)) // verbatim file text in the preview
+  })
+})
+
+// ── 2026-10-29 (edit-form steering): on this app's flash-class models the
+// diff form failed 59–91% of calls while search/replace held at ~2% (882
+// calls measured, scripts/probe-edit-failure-stats.mjs), and the hunk errors
+// used to end with 「regenerate the diff」 — keeping the model on the weaker
+// form at exactly the moment it was failing. Every reachable hunk failure
+// now ends by steering to search/replace, and the zero-hunk rejection says
+// a single-file change needs no header at all.
+
+describe('hunk failures steer to search/replace instead of a diff retry', () => {
+  const STEER = 'Redo this change as search/replace'
+
+  it('every reachable hunkMismatchError branch carries the switch', () => {
+    const closest = hunkMismatchError(50, ['  MODE: "safe",', '  RETRIES: 2,'], FILE)
+    const whitespace = hunkMismatchError(50, ['function padLeft(text, width) {', '    return " ".repeat(width - text.length) + text', '}'], FILE)
+    const fragmentary = hunkMismatchError(50, ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'], FILE)
+    const none = hunkMismatchError(50, ['function nope() {', '  return 1'], FILE)
+    for (const msg of [closest, whitespace, fragmentary, none]) {
+      expect(msg).toContain(STEER)
+      expect(msg).toContain('hunks are never re-anchored')
+      expect(msg).not.toContain('regenerate the diff')
+    }
+  })
+
+  it('the read-prefix branch offers the bare text as old_str, keeping its own accusation', () => {
+    const msg = hunkMismatchError(50, ['     2\t  MODE: "safe",', '     3\t  RETRIES: 2,'], FILE)
+    expect(msg).toContain('line-number prefix')
+    expect(msg).toContain('Rebuild the hunk from the bare text')
+    expect(msg).toContain('use that bare text as `old_str` in a search/replace')
+  })
+
+  it('the bare one-liner (unreachable from applyPatch) stays frozen', () => {
+    expect(hunkMismatchError(5, [], FILE)).not.toContain(STEER)
+  })
+
+  it('a zero-hunk diff is told that a single-file change needs no header', () => {
+    const result = patchContent(FILE, '@@\n-RETRIES: 2,\n+RETRIES: 5,')
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('No valid hunks found in diff')
+    expect(result.error).toContain('prefer search/replace (`old_str`/`new_str`) — it needs no hunk header at all')
   })
 })
 
