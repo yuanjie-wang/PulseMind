@@ -198,10 +198,62 @@ describe('extractInvokeToolCalls: boolean parameter restoration', () => {
       toolManager: { getEnabledTools: () => [{ definition: { name: 'write' } }] },
     } as never
     const text = '<invoke name="write"><parameter name="append">false</parameter><parameter name="content">true story</parameter></invoke>'
-    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text } as ContentBlock])
+    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text }] as ContentBlock[])
     const call = blocks.find(b => b.type === 'tool_use') as ToolUseBlock
     expect(call.input.append).toBe(false)
     expect(call.input.content).toBe('true story')
+  })
+
+  // ── review_20261028 中7：强转按参数白名单/schema，不再对所有名字生效 ──
+  it('free-text content that is EXACTLY "true" stays a string (the silent-rewrite bug)', () => {
+    const opts = {
+      toolManager: { getEnabledTools: () => [{ definition: { name: 'write' } }] },
+    } as never
+    const text = '<invoke name="write"><parameter name="file_path">/a.txt</parameter><parameter name="content">true</parameter></invoke>'
+    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text }] as ContentBlock[])
+    const call = blocks.find(b => b.type === 'tool_use') as ToolUseBlock
+    expect(call.input.content).toBe('true')
+    expect(typeof call.input.content).toBe('string')
+  })
+
+  it('the tool schema is the verdict: boolean-typed coerces, string-typed does not', () => {
+    const schema = {
+      input_schema: { properties: { append: { type: 'boolean' }, content: { type: 'string' } } },
+    }
+    const opts = {
+      toolManager: { getEnabledTools: () => [{ definition: { name: 'write', ...schema } }] },
+    } as never
+    const text = '<invoke name="write"><parameter name="append">true</parameter><parameter name="content">false</parameter></invoke>'
+    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text }] as ContentBlock[])
+    const call = blocks.find(b => b.type === 'tool_use') as ToolUseBlock
+    expect(call.input.append).toBe(true)
+    expect(call.input.content).toBe('false')
+  })
+
+  it('a schema union type including boolean coerces (xlsx set_cell value shape)', () => {
+    const schema = {
+      input_schema: { properties: { value: { type: ['string', 'number', 'boolean', 'null'] } } },
+    }
+    const opts = {
+      toolManager: { getEnabledTools: () => [{ definition: { name: 'office_edit', ...schema } }] },
+    } as never
+    const text = '<invoke name="office_edit"><parameter name="value">true</parameter></invoke>'
+    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text }] as ContentBlock[])
+    const call = blocks.find(b => b.type === 'tool_use') as ToolUseBlock
+    expect(call.input.value).toBe(true)
+  })
+
+  it('an unknown tool with no schema gets the flat-whitelist fallback, nothing else', () => {
+    const opts = {
+      toolManager: { getEnabledTools: () => [{ definition: { name: 'read' } }] },
+    } as never
+    const text = '<invoke name="read"><parameter name="multi">true</parameter><parameter name="file_path">true</parameter></invoke>'
+    const { blocks } = extractInvokeToolCalls(opts, [{ type: 'text', text }] as ContentBlock[])
+    const call = blocks.find(b => b.type === 'tool_use') as ToolUseBlock
+    // multi is whitelisted (read.multi), file_path is not a boolean param —
+    // a path that happens to read "true" must survive as a path.
+    expect(call.input.multi).toBe(true)
+    expect(call.input.file_path).toBe('true')
   })
 })
 

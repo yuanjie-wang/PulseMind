@@ -57,6 +57,59 @@ export const STREAM_NETWORK_ERROR_MARKERS = [
   'ENOTFOUND',
 ]
 
+// Structured transport codes (review_20261028 中5): the PRIMARY arm of the
+// network-failure verdict. The string markers above are human-readable text
+// from Node / undici / the proxy — any reword (Node upgrade, proxy change)
+// used to silently switch the retry OFF with no signal anywhere. undici wraps
+// the real cause in `err.cause`, so the walk below sees the machine code even
+// when the surface text is a bare TypeError('fetch failed'); the text markers
+// remain as the SECONDARY arm for layers that surface plain prose with no
+// code at all (the proxy's 'Request aborted' sweep, undici's bare
+// 'terminated').
+const TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT',
+  'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN', 'ENOTFOUND',
+  'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT', 'UND_ERR_ABORTED', 'ABORT_ERR',
+])
+// What an UNMATCHED code must look like before we call it transport-shaped
+// and warn: errno-style (E…), undici's UND_ERR_… family, or the fetch abort
+// code. Everything else (HTTP status numbers, custom strings) is not claimed
+// as transport.
+const TRANSPORT_CODE_SHAPE = /^(E[A-Z0-9_]+|UND_ERR_[A-Z_]+|ABORT_ERR)$/
+
+export interface TransportFailureVerdict {
+  retryable: boolean
+  /** A code from the error's cause chain that LOOKS transport-shaped but is
+   *  not in TRANSPORT_ERROR_CODES — the caller must warn loudly: this is the
+   *  shape where a retry silently stopped happening (review_20261028 中5). */
+  unknownCode?: string
+}
+
+/** Walk err → cause (undici nesting) collecting machine codes: `code` and
+ *  `errno`, stringified. Bounded depth — cause chains are 1–2 deep in
+ *  practice; the bound only caps pathological wrapping. */
+function collectErrorCodes(err: unknown, depth = 0): string[] {
+  if (!err || typeof err !== 'object' || depth >= 5) return []
+  const e = err as { code?: unknown; errno?: unknown; cause?: unknown }
+  const codes: string[] = []
+  if (typeof e.code === 'string' || typeof e.code === 'number') codes.push(String(e.code))
+  if (typeof e.errno === 'string' || typeof e.errno === 'number') codes.push(String(e.errno))
+  return [...codes, ...collectErrorCodes(e.cause, depth + 1)]
+}
+
+/** The mid-stream network-failure verdict (stream-runner's retry gate).
+ *  Structured codes first, text markers second, and a flagged fall-through
+ *  when a transport-shaped code matched neither — the third case is how a
+ *  reworded failure becomes VISIBLE instead of silently non-retryable. */
+export function classifyTransportFailure(err: unknown, message: string): TransportFailureVerdict {
+  const codes = collectErrorCodes(err)
+  if (codes.some(c => TRANSPORT_ERROR_CODES.has(c))) return { retryable: true }
+  if (STREAM_NETWORK_ERROR_MARKERS.some(m => message.includes(m))) return { retryable: true }
+  const unknownCode = codes.find(c => TRANSPORT_CODE_SHAPE.test(c) && !TRANSPORT_ERROR_CODES.has(c))
+  return unknownCode ? { retryable: false, unknownCode } : { retryable: false }
+}
+
 // ── Stream-done watchdog ───────────────────────────────────────────────
 // done/error are emitted synchronously inside performLlmStream before its
 // promise resolves, so a still-pending streamDonePromise after that resolve

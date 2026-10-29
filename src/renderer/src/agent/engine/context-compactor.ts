@@ -54,6 +54,12 @@ const MIN_USER_TURNS = 2
 // emergencyTruncate's phase-2 trim: tool_result bodies become this many chars
 // plus a tool_result_search pointer, oldest first, until the estimate fits.
 const OVERFLOW_STRIP_PREFIX = 1500
+// emergencyTruncate's phase-2c trigger (review_20261028 中4): a tool_use STRING
+// parameter over this many chars is a candidate for elision. TOOL_PARAM_LIMITS
+// lets write.content ride 500K chars into history — far past small windows —
+// and once such a block sits in the protection window nothing below can touch
+// it. Below the line the param is not the culprit and stays verbatim.
+const OVERFLOW_TOOL_PARAM_CHARS = 20_000
 // Token budget for replaying the dropped region's USER messages verbatim into
 // the compacted copy (P0 of the 2026-09-23 gap analysis). The summary is a
 // ~900-token structured paraphrase; the user's own words are the intent record
@@ -717,12 +723,13 @@ export class ContextCompactor {
    *  report: the ring said 35% while the model refused the request). The
    *  trigger estimates above missed the overflow — that is WHY the request
    *  went out oversized — so their thresholds are ignored here: drop the
-   *  oldest whole messages, and if the unsplittable tail still overshoots (a
-   *  collector message holding a whole spawn batch, say), strip the OLDEST
-   *  tool_result bodies to a short prefix + tool_result_search pointer until
-   *  the estimate fits. Pairing is untouched — the placeholder keeps the
-   *  tool_use_id, so the request stays well-formed. Operates on the API copy
-   *  only; this.messages is never touched. */
+   *  oldest whole messages, then strip, oldest first and in this order:
+   *  tool_result bodies to a short prefix + tool_result_search pointer
+   *  (phase 2), whole thinking blocks (2b), giant tool_use string params
+   *  (2c, review_20261028 中4) — until the estimate fits. Pairing is
+   *  untouched — the placeholder keeps the tool_use_id, so the request stays
+   *  well-formed. Operates on the API copy only; this.messages is never
+   *  touched. */
   emergencyTruncate(messages: AgentMessage[], hardLimit: number, fixedOverhead = 0): AgentMessage[] {
     if (hardLimit <= 0) return messages
     const target = Math.floor(hardLimit * 0.6)
@@ -792,8 +799,52 @@ export class ContextCompactor {
       }
     }
 
+    // Phase 2c — tool_use giant STRING params, oldest first (review_20261028
+    // 中4): the result-side and thinking layers above can both come up short
+    // when the overflow itself is a write.content / spawn task that rode into
+    // history inside the protection window — no layer below emergency touches
+    // tool_use params, so the request would 400 forever. Elide the oversized
+    // STRING VALUES only: keys and small values keep the call legible, the
+    // tool_use_id keeps result pairing intact, and a shortened string value
+    // cannot break JSON structure. The full input still lives in the engine's
+    // own history copy and the transcript UI — this trims the API copy of a
+    // call that already executed.
+    for (let i = 0; i < stripped.length && total > target; i++) {
+      const msg = stripped[i]
+      if (msg.role !== 'assistant') continue
+      if (!msg.contentBlocks.some(b => b.type === 'tool_use')) continue
+      let modified = false
+      const blocks = msg.contentBlocks.map((block) => {
+        if (block.type !== 'tool_use') return block
+        const tu = block as ToolUseBlock
+        if (!tu.input || total <= target) return block
+        const input: Record<string, unknown> = {}
+        let touched = false
+        for (const [key, value] of Object.entries(tu.input)) {
+          if (typeof value !== 'string' || value.length <= OVERFLOW_TOOL_PARAM_CHARS) {
+            input[key] = value
+            continue
+          }
+          const elided = value.length - OVERFLOW_STRIP_PREFIX
+          const replacement =
+            `${value.slice(0, OVERFLOW_STRIP_PREFIX)}` +
+            `\n\n… [上下文超限，该参数在请求副本中截断（约 ${elided.toLocaleString()} 字符省略）——调用已执行，结果见对应 tool_result，写入的文件可在工作区 read 取回] …`
+          total -= estimateTextTokens(value) - estimateTextTokens(replacement)
+          input[key] = replacement
+          touched = true
+        }
+        if (!touched) return block
+        modified = true
+        return { ...tu, input }
+      })
+      if (modified) {
+        stripped[i] = { ...msg, contentBlocks: blocks }
+        strippedAny = true
+      }
+    }
+
     if (strippedAny) {
-      console.log(`[AgentEngine] emergencyTruncate: stripped oldest tool_result/thinking blocks for a ${hardLimit}-token provider limit (context now ~${Math.max(0, Math.round(total))})`)
+      console.log(`[AgentEngine] emergencyTruncate: stripped oldest tool_result/thinking/tool_use-param content for a ${hardLimit}-token provider limit (context now ~${Math.max(0, Math.round(total))})`)
       return stripped
     }
     return working

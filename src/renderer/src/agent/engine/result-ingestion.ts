@@ -9,6 +9,31 @@ import { TOOL_PARAM_LIMITS, MAX_TOOL_INPUT_JSON_BYTES, MAX_ERROR_RESULT_TOKENS }
 import { estimateTextTokens } from './context-estimate'
 import type { AgentEngineOptions } from '../AgentEngine'
 
+  /** Boolean-param fallback for the XML recovery when a definition ships no
+   *  usable schema (review_20261028 中7): the flat booleans worth coercing
+   *  blind. The tool's JSON schema is the primary verdict and already covers
+   *  every built-in and any MCP server that declares one — this set only
+   *  keeps the 2026-10-24 append-overwrite fix alive for schema-less
+   *  definitions (the exact shape the original bug was hit on). */
+  const XML_BOOLEAN_PARAM_FALLBACK = new Set([
+    'write.append', 'read.multi', 'read.binary', 'search.multi', 'find.recursive',
+    'exec.background', 'exec.sudo', 'webfetch.raw',
+  ])
+
+  /** Whether `<parameter>` text 'true'/'false' may become a JSON boolean:
+   *  the schema says so, or (schema absent) the flat whitelist does. A free
+   *  text param whose content happens to be 'true' stays a string — the old
+   *  blanket coercion silently rewrote written-file content. */
+  function isXmlBooleanParam(
+    enabled: Array<{ definition: { name: string; input_schema?: { properties?: Record<string, { type?: string | string[] }> } } }>,
+    toolName: string, paramName: string,
+  ): boolean {
+    const def = enabled.find(t => t.definition.name === toolName)?.definition
+    const propType = def?.input_schema?.properties?.[paramName]?.type
+    if (propType !== undefined) return propType === 'boolean' || (Array.isArray(propType) && propType.includes('boolean'))
+    return XML_BOOLEAN_PARAM_FALLBACK.has(`${toolName}.${paramName}`)
+  }
+
 
   /** The tool-result guardrail's context shape (MAX_TOOL_RESULT_TOKENS /
    *  MAX_ERROR_RESULT_TOKENS): normal results over the caller's token budget
@@ -64,7 +89,8 @@ import type { AgentEngineOptions } from '../AgentEngine'
   }
 
   export function extractInvokeToolCalls(opts: AgentEngineOptions, blocks: ContentBlock[]): { blocks: ContentBlock[]; converted: boolean } {
-  const enabledNames = new Set(opts.toolManager.getEnabledTools().map(t => t.definition.name))
+  const enabled = opts.toolManager.getEnabledTools()
+  const enabledNames = new Set(enabled.map(t => t.definition.name))
   let converted = false
   const result: ContentBlock[] = []
 
@@ -87,14 +113,20 @@ import type { AgentEngineOptions } from '../AgentEngine'
         const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["']>([\s\S]*?)<\/parameter>/g
         let pm: RegExpExecArray | null
         while ((pm = paramRe.exec(body)) !== null) {
-          // XML parameter bodies are strings by construction; restore the
-          // boolean literals so strict-typed executors keep working — `write`'s
-          // `append === true` silently executed an OVERWRITE when the recovery
-          // handed it the STRING "true" while the model had asked to append
-          // (2026-10-24 harness review). Numbers deliberately stay strings:
-          // every consumer already Number()-coerces at use sites.
+          // XML parameter bodies are strings by construction; restore boolean
+          // literals ONLY where the param is actually boolean-typed
+          // (review_20261028 中7): the old blanket coercion flipped
+          // write.content / edit.new_str / diff whenever their text was
+          // exactly 'true' or 'false' — written-file content silently
+          // replaced. Numbers deliberately stay strings: every consumer
+          // already Number()-coerces at use sites.
+          const key = pm[1].trim()
           const rawParam = pm[2].trim()
-          input[pm[1].trim()] = rawParam === 'true' ? true : rawParam === 'false' ? false : rawParam
+          if ((rawParam === 'true' || rawParam === 'false') && isXmlBooleanParam(enabled, name, key)) {
+            input[key] = rawParam === 'true'
+          } else {
+            input[key] = rawParam
+          }
         }
         if (Object.keys(input).length === 0) continue
         calls.push({ name, input })
