@@ -105,7 +105,12 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   const nonce = useMemo(() => generateNonce(), [path, elementMode])
   // 编码过的单一构造器（full_20261011 M3-P1-2）：裸拼曾让含 % 的路径吃 403、
   // 含 # 的路径读错文件（pmPreview=1 供 served 页面读 location.search）。
-  const src = localFileUrl(path, elementMode ? 'pmPreview=1' : undefined)
+  // 每次重载（reloadTick 翻 key 重挂）都导航到**不同**的 URL：Chromium 对同
+  // URL 的帧导航可能复用已提交（或已卡死）的文档——这正是刷新想逃离的状态
+  // （2026-10-29 白屏报告：同会话内大文件预览持续白屏直到重启，小文件正常）。
+  // serve 端忽略未知参数（isPreviewUrl 只认 pmPreview=1），pmTick 不会误入
+  // 元素编辑分支。
+  const src = localFileUrl(path, `${elementMode ? 'pmPreview=1&' : ''}pmTick=${reloadTick}`)
 
   // M10: the nonce is registered in the MAIN process (per mount) and the
   // protocol handler stamps it into the served picker — the URL no longer

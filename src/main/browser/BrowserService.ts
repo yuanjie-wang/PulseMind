@@ -217,6 +217,7 @@ export class BrowserService {
         // the pane update landed, or one the agent opened — is reused rather
         // than duplicated, so the resolution is the same one the dock uses.
         const entry = action.tabId ? this.resolveTab(action.tabId, scope) : (this.activePaneEntry(scope) ?? (await this.createUserPaneTab(scope)))
+        await this.ensureLivePage(entry)
         auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNavigate', target: url, decision: 'allowed' })
         const beforeUrl = entry.tab.page.url()
         await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
@@ -474,6 +475,7 @@ export class BrowserService {
       // Tab-carrying commands from here on; the `in` guard narrows the union.
       if (!('tabId' in cmd)) return browserError('UNKNOWN_METHOD', `命令缺少 tabId：${(cmd as { method: string }).method}`)
       const entry = this.resolveTab(cmd.tabId, scopeId)
+      await this.ensureLivePage(entry)
       const page = entry.tab.page
       switch (cmd.method) {
         case 'getState':
@@ -834,6 +836,23 @@ export class BrowserService {
     if (!entry) throw new Error(`Tab 不存在：${tabId}（用 tabs.list() 重新核对）`)
     if (entry.scopeId !== scopeId) throw new Error('Tab 不属于当前会话')
     return entry
+  }
+
+  /** CDP idle-disconnect recovery (2026-10-29 白屏根因): the app-view backend
+   *  drops its connectOverCDP session after its idle timeout — a live session
+   *  wedges the MAIN window's preview frames (the pane's html 预览 white-screens
+   *  until restart) — which invalidates stored Page handles. Probe the handle;
+   *  a dead one re-resolves through the backend's refreshTab. Alive pages pay
+   *  one evaluate round-trip. */
+  private async ensureLivePage(entry: ServiceTab): Promise<void> {
+    const backend = this.backendFor(entry.backendId)
+    if (!backend.refreshTab) return
+    const alive = await entry.tab.page
+      .evaluate(() => true)
+      .then(() => true)
+      .catch(() => false)
+    if (alive) return
+    entry.tab = await backend.refreshTab(entry.id)
   }
 
   private async tabInfo(entry: ServiceTab): Promise<BrowserTabInfo> {

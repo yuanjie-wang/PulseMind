@@ -29,6 +29,19 @@ const MARKER_KEY = '__pulsemindAgentTab'
 
 export type PaneTabOrigin = 'user' | 'agent'
 
+/** How long the connectOverCDP session survives with no browser command.
+ *  The session is what wedges the MAIN window's preview frames (2026-10-29
+ *  白屏根因, see disconnectCdp): while it lives, every new sandboxed subframe
+ *  the app window creates is held un-committed by Playwright's browser-wide
+ *  Target.setAutoAttach(waitForDebuggerOnStart) and never adopted — the pane
+ *  sits on about:blank forever. Dropping the handle releases them (measured:
+ *  commits return the moment the session dies), so the connection is kept
+ *  only while agent browser commands actually flow; the next command
+ *  reconnects in ~200ms. 90s comfortably spans an LLM round-trip inside one
+ *  agent browser task and still clears well before a user goes back to the
+ *  工作区 preview. */
+const CDP_IDLE_DISCONNECT_MS = 90_000
+
 interface DownloadMeta {
   origin: PaneTabOrigin
   scopeId: string
@@ -37,6 +50,10 @@ interface DownloadMeta {
 export class AppViewBackend implements BackendAdapter {
   private browser: Browser | null = null
   private views = new Map<string, WebContentsView>()
+  /** tabId → the MARKER token injected into that view; refreshTab() re-finds
+   *  the Playwright page by it after an idle reconnect. */
+  private tokens = new Map<string, string>()
+  private idleTimer: NodeJS.Timeout | null = null
   private downloadMeta = new WeakMap<WebContents, DownloadMeta>()
   private downloadsWired = false
   /** Tab URL/title changes → BrowserService re-broadcasts the pane state. */
@@ -66,7 +83,10 @@ export class AppViewBackend implements BackendAdapter {
   }
 
   async start(): Promise<void> {
-    if (this.browser?.isConnected?.()) return
+    if (this.browser?.isConnected?.()) {
+      this.armIdleDisconnect()
+      return
+    }
     const port = readDevToolsPort()
     if (!port) throw new Error('应用内嵌浏览器后端不可用：调试端口未就绪')
     // Same deferral as ManagedBackend: playwright-core is ~170ms of require()
@@ -78,11 +98,14 @@ export class AppViewBackend implements BackendAdapter {
     // connection died without stop(). Those tabs' cross-origin frames predate
     // the new auto-attach and are invisible to it (see oopif-heal.ts).
     if (this.views.size > 0) await this.healAdoptedViews()
+    this.armIdleDisconnect()
   }
 
   async stop(): Promise<void> {
+    this.clearIdleDisconnect()
     for (const [, view] of this.views) this.destroyView(view)
     this.views.clear()
+    this.tokens.clear()
     if (this.browser) {
       try {
         this.browser.close()
@@ -90,6 +113,68 @@ export class AppViewBackend implements BackendAdapter {
         /* already gone */
       }
       this.browser = null
+    }
+  }
+
+  /** Re-arm on every command path: start() is the lazy entry each backend
+   *  method shares, so this is the keepalive. Fires → disconnectCdp(). */
+  private armIdleDisconnect(): void {
+    this.clearIdleDisconnect()
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      this.disconnectCdp()
+    }, CDP_IDLE_DISCONNECT_MS)
+    // Never hold the process open for the timer (app quit paths call stop(),
+    // but a quit that skips it must not hang on the handle).
+    this.idleTimer.unref?.()
+  }
+
+  private clearIdleDisconnect(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
+  }
+
+  /** Drop the Playwright handle WITHOUT touching the views: the pane tabs are
+   *  Electron-owned WebContentsViews and keep rendering; only the CDP
+   *  automation session dies — and with it the main window's frame wedge
+   *  (this.browser.close() on a connectOverCDP browser disconnects, it does
+   *  not close adopted pages). Reversible: start() reconnects in ~200ms. */
+  private disconnectCdp(): void {
+    if (!this.browser) return
+    try {
+      this.browser.close()
+    } catch {
+      /* already gone */
+    }
+    this.browser = null
+  }
+
+  /** A live BackendTab for an EXISTING view, reconnecting as needed — the
+   *  recovery path after an idle disconnect ate the old Page handles. The
+   *  marker is RE-INJECTED before the sweep: newTab injects it on the
+   *  about:blank it starts from, so any page that navigated since (which is
+   *  every real tab) no longer carries it. */
+  async refreshTab(tabId: string): Promise<BackendTab> {
+    await this.start()
+    const view = this.views.get(tabId)
+    const token = this.tokens.get(tabId)
+    if (!view || view.webContents.isDestroyed() || !token) {
+      throw new Error(`应用窗格中没有这个标签页：${tabId}`)
+    }
+    await view.webContents
+      .executeJavaScript(`${MARKER_KEY} = ${JSON.stringify(token)}`, true)
+      .catch(() => { /* unreadable document — the sweep reports it */ })
+    const page = await this.findPageByToken(token)
+    return {
+      page,
+      close: async () => {
+        this.views.delete(tabId)
+        this.tokens.delete(tabId)
+        appViewDock.detach(view)
+        this.destroyView(view)
+      },
     }
   }
 
@@ -111,6 +196,7 @@ export class AppViewBackend implements BackendAdapter {
     })
     const token = prefixedId('tok', 12)
     this.views.set(options.tabId, view)
+    this.tokens.set(options.tabId, token)
     this.wireDownloadRouting()
     this.downloadMeta.set(view.webContents, { origin, scopeId })
     const notify = () => this.onTabActivity?.(options.tabId)
@@ -143,6 +229,7 @@ export class AppViewBackend implements BackendAdapter {
       // The view was already registered — tear it down so a failed newTab
       // never leaves an orphaned blank pane behind.
       this.views.delete(options.tabId)
+      this.tokens.delete(options.tabId)
       this.destroyView(view)
       throw err
     }
@@ -151,6 +238,7 @@ export class AppViewBackend implements BackendAdapter {
       page,
       close: async () => {
         this.views.delete(options.tabId)
+        this.tokens.delete(options.tabId)
         appViewDock.detach(view)
         this.destroyView(view)
       },

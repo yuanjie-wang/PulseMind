@@ -35,4 +35,8 @@ export interface BackendAdapter {
   userOpenTabs?(): Promise<Array<{ id: string; url: string; title: string }>>
   /** Adopt a user-visible tab as controlled (app-view only). */
   claimTab?(tabId: string): Promise<void>
+  /** A live tab handle for an EXISTING tabId, reconnecting as needed
+   *  (app-view only): the CDP idle-disconnect invalidates old Page handles,
+   *  and a command holding one re-resolves through here instead of failing. */
+  refreshTab?(tabId: string): Promise<BackendTab>
 }

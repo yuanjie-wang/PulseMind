@@ -511,6 +511,28 @@ function createWindow(): void {
     details.preventDefault()
   })
 
+  // ── Preview-frame navigation forensics (2026-10-29 白屏现场) ── The pane's
+  // white screen showed: the protocol handler serves 200 every time, yet the
+  // iframe sits on about:blank forever — the document never commits, with no
+  // error anywhere. These hooks persist the frame-navigation lifecycle for
+  // local-file URLs into main.log, so the next occurrence says exactly which
+  // link broke: start without commit = delivery problem; no start at all =
+  // the renderer never dispatched the navigation. Main frame and app-origin
+  // traffic stays out of the log.
+  const isPreviewNav = (url: string): boolean => url.startsWith('local-file://')
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (isPreviewNav(details.url)) writeLog('INFO', `preview-nav start frame=${details.isMainFrame ? 'main' : 'sub'} ${details.url.slice(0, 160)}`)
+  })
+  // `did-frame-navigate` fires post-commit — its main-frame variant is the
+  // app's own business; subframe commits are the preview evidence (start
+  // without this line = the response was never delivered to the frame loader).
+  mainWindow.webContents.on('did-frame-navigate', (_event, url, _inPlace, isMainFrame) => {
+    if (isPreviewNav(url)) writeLog('INFO', `preview-nav COMMIT frame=${isMainFrame ? 'main' : 'sub'} ${url.slice(0, 160)}`)
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isPreviewNav(url)) writeLog('WARN', `preview-nav FAIL code=${code} ${description} frame=${isMainFrame ? 'main' : 'sub'} ${url.slice(0, 160)}`)
+  })
+
   // ── Unresponsive-renderer recovery ──
   // 'unresponsive' fires when the renderer's JS loop is stuck (long sync task,
   // GC death spiral) — the "app frozen but not crashed" state that used to

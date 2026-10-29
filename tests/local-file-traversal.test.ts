@@ -2,10 +2,12 @@
 // 读取面。两道门：原始 wire URL（URL 构造器解析时会折叠 `..`/`%2e%2e` 段，
 // 解析后的路径永远看不到穿越——必须在解析前查）；解析后的路径（兜 win32
 // hostname 分支与构造器失败的 fallback 分支）。
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   hasPathTraversal,
-  resolveLocalFilePath,
   serveLocalFile,
   urlRefusedForTraversal,
 } from '../src/main/preview/serve-preview'
@@ -52,5 +54,27 @@ describe('serveLocalFile refuses traversal before any IO', () => {
     // The URL-failure fallback (undecodable %-sequence) keeps its dots — gate
     // two still refuses, and gate one already failed it closed.
     expect(hasPathTraversal('/a/%zz../..')).toBe(true)
+  })
+})
+
+describe('pmTick cache-buster (2026-10-29 白屏排查)', () => {
+  const tmpFile = join(tmpdir(), `pm-pmtick-${Date.now()}.html`)
+  const body = '<!DOCTYPE html><html><body>pm-tick-body</body></html>'
+  beforeAll(() => { writeFileSync(tmpFile, body) })
+  afterAll(() => { rmSync(tmpFile, { force: true }) })
+
+  it('a pmTick-only query serves the RAW file — never the picker copy', async () => {
+    // HtmlPreview remounts with ?pmTick=N so a reload navigates to a DISTINCT
+    // URL (same-URL frame navigations can reuse a wedged document); isPreviewUrl
+    // matches pmPreview=1 exactly, so the reload must stay on the plain branch.
+    const res = await serve(`local-file://${tmpFile}?pmTick=3`)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe(body)
+  })
+
+  it('pmTick alongside pmPreview=1 still serves the preview copy', async () => {
+    const res = await serve(`local-file://${tmpFile}?pmPreview=1&pmTick=3`)
+    expect(res.status).toBe(200)
+    expect(await res.text()).not.toBe(body)
   })
 })
