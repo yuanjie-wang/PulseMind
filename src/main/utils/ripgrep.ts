@@ -55,3 +55,23 @@ export function parseRgLine(line: string): RgLine | null {
     content: line.slice(match[0].length).trim(),
   }
 }
+
+/** True when execFile failed to RUN the search binary, as opposed to the binary
+ *  reporting "no matches".
+ *
+ *  2026-10-29（recall 零命中复核）：storage 层的 rg/grep 通道原本一律
+ *  `if (err && !stdout) resolve([])`，于是「rg 没装 / 起不来 / 被 timeout 杀掉」
+ *  与「扫了、确实没命中」在上一层长得一模一样。recall 的 swallowSource 只认
+ *  reject，永远等不到这条，零命中话术因此敢说「任何一个词都没出现过」——而其中
+ *  可能只是检索引擎不可用。这个判定是那条记账能成立的前提。
+ *
+ *  rg/grep 的退出码语义：1 = 没有匹配（正常结束），2+ = 自身报错；spawn 失败
+ *  （ENOENT/EACCES）与 maxBuffer 溢出给的是**字符串** code。err 为 null 即干净
+ *  跑完，无论有没有命中都不算失败。 */
+export function isSearchEngineFailure(err: unknown): boolean {
+  if (!err) return false
+  const e = err as { code?: string | number; killed?: boolean }
+  if (typeof e.code === 'string') return true
+  if (e.killed) return true
+  return typeof e.code === 'number' && e.code !== 1
+}

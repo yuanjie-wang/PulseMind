@@ -26,7 +26,7 @@ import {
   type KnowledgeBaseRow
 } from './knowledge.db'
 import { getDb } from './database'
-import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'
+import { ripgrepBinary, parseRgLine, buildRgSearchArgs, isSearchEngineFailure } from '../utils/ripgrep'
 import {
   KNOWLEDGE_SCHEMA_DIR,
   KNOWLEDGE_RAW_DIR,
@@ -465,23 +465,37 @@ export async function searchContent(query: string, baseId?: string): Promise<Con
   // When searching a specific base, only rg that base's raw dir
   if (baseId !== undefined) {
     const rawDir = getBaseRawDir(baseId)
+    let engineFailure = false
     if (existsSync(rawDir)) {
-      const rgResults = await searchContentViaRipgrep(query, rawDir, baseId)
-      if (rgResults.length > 0) return rgResults
+      const rg = await searchContentViaRipgrep(query, rawDir, baseId)
+      if (rg.matches.length > 0) return rg.matches
+      engineFailure = rg.engineFailure
     }
-    return ftsContentSearch(query, baseId)
+    const fts = ftsContentSearch(query, baseId)
+    // 引擎不可用不许伪装成空库（2026-10-29）：FTS 也空时才是真的没内容，此时若
+    // rg 根本没跑起来，抛出交给 recall 的 swallowSource('knowledge (raw)') 记账。
+    if (fts.length === 0 && engineFailure) {
+      throw new Error('knowledge raw search engine unavailable (ripgrep could not be run) — no results here is a search failure, not an empty corpus')
+    }
+    return fts
   }
 
   // Search all bases
   const allResults: ContentMatch[] = []
+  let engineFailure = false
   for (const b of listKnowledgeBases()) {
     const rawDir = getBaseRawDir(b.id)
     if (!existsSync(rawDir)) continue
-    const rgResults = await searchContentViaRipgrep(query, rawDir, b.id)
-    allResults.push(...rgResults)
+    const rg = await searchContentViaRipgrep(query, rawDir, b.id)
+    if (rg.engineFailure) engineFailure = true
+    allResults.push(...rg.matches)
   }
   if (allResults.length > 0) return allResults
-  return ftsContentSearch(query, baseId)
+  const fts = ftsContentSearch(query, baseId)
+  if (fts.length === 0 && engineFailure) {
+    throw new Error('knowledge raw search engine unavailable (ripgrep could not be run) — no results here is a search failure, not an empty corpus')
+  }
+  return fts
 }
 
 function ftsContentSearch(query: string, baseId?: string): ContentMatch[] {
@@ -498,17 +512,19 @@ function ftsContentSearch(query: string, baseId?: string): ContentMatch[] {
 /** Run ripgrep on raw knowledge files. Multi-keyword queries use -F -e for OR.
  *  `baseId` is the dir's owning base — relative paths repeat per base, so the
  *  DB row must be resolved against the SAME base the scan ran in (M15). */
-async function searchContentViaRipgrep(query: string, rawDir: string, baseId: string): Promise<ContentMatch[]> {
+async function searchContentViaRipgrep(
+  query: string, rawDir: string, baseId: string,
+): Promise<{ matches: ContentMatch[]; engineFailure: boolean }> {
   return new Promise((resolve) => {
     // 共享 builder（review_20261013 高2）：M10-P0-1 修了 wiki 兄弟分支，本
     // 通道的单词臂曾把 query 裸推进 argv——`--pre=` 形态的旗标注入原样存活。
     // 空白 query 在 builder 里收口返回 null（review_20261015 中1：零 `-e` 的
     // argv 会把 dir 当 PATTERN）——null 即无命中，rg 不会被调用。
     const args = buildRgSearchArgs(query, rawDir)
-    if (!args) { resolve([]); return }
+    if (!args) { resolve({ matches: [], engineFailure: false }); return }
 
     execFile(ripgrepBinary(), args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err && !stdout) { resolve([]); return }
+      if (err && !stdout) { resolve({ matches: [], engineFailure: isSearchEngineFailure(err) }); return }
 
       const fileMap = new Map<string, string[]>()
       for (const line of stdout.split('\n')) {
@@ -529,7 +545,7 @@ async function searchContentViaRipgrep(query: string, rawDir: string, baseId: st
           results.push({ id: file.id, filePath: relPath, title: file.title, sourceType: file.source_type, excerpts })
         }
       }
-      resolve(results)
+      resolve({ matches: results, engineFailure: false })
     })
   })
 }

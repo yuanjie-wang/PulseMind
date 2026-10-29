@@ -41,7 +41,7 @@ import {
   moveKnowledgeFileToBase,
   moveKnowledgeFilesToBase,
 } from '../storage/knowledge-store'
-import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'
+import { ripgrepBinary, parseRgLine, buildRgSearchArgs, isSearchEngineFailure } from '../utils/ripgrep'
 import { getDb } from '../storage/database'
 import type { KnowledgeFile, KnowledgeBase } from '../../shared/types/knowledge'
 
@@ -328,6 +328,9 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
 
   const results: WikiSearchMatch[] = []
   const limit = 30
+  // 引擎不可用记账（2026-10-29）：比「零命中」更早发生的一类空——rg/grep 压根
+  // 没跑起来。见函数尾部的抛出与 utils/ripgrep.ts 的 isSearchEngineFailure。
+  let engineFailure = false
 
   const terms = query.split(/\s+/).filter(Boolean)
 
@@ -367,7 +370,7 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
     if (!rgArgs) return
     await new Promise<void>((resolve) => {
       execFile(ripgrepBinary(), rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-        if (err && !stdout) { resolve(); return }
+        if (err && !stdout) { if (isSearchEngineFailure(err)) engineFailure = true; resolve(); return }
         parseOutput(stdout, dir)
         resolve()
       })
@@ -376,7 +379,7 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
       terms.length = 0; terms.push(query)
       await new Promise<void>((resolve) => {
         execFile(ripgrepBinary(), rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-          if (err && !stdout) { resolve(); return }
+          if (err && !stdout) { if (isSearchEngineFailure(err)) engineFailure = true; resolve(); return }
           parseOutput(stdout, dir)
           resolve()
         })
@@ -385,7 +388,7 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
     if (results.length === 0 && process.platform !== 'win32') {
       await new Promise<void>((resolve) => {
         execFile('grep', buildGrepArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-          if (err && !stdout) { resolve(); return }
+          if (err && !stdout) { if (isSearchEngineFailure(err)) engineFailure = true; resolve(); return }
           parseOutput(stdout, dir)
           resolve()
         })
@@ -404,6 +407,13 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
     }
   }
 
+  // 「引擎不可用」不许伪装成「库里没有」（2026-10-29）：只有零结果且确实有引擎
+  // 起不来时才抛——正常扫完没命中仍然是干净的空数组，那是真话。
+  // 抛出会被 recall 的 swallowSource('knowledge (wiki)') 接住，零命中话术于是能
+  // 说出「可能是检索失败」；知识库面板侧由 IPC 的 withRawResponse 转成错误响应。
+  if (results.length === 0 && engineFailure) {
+    throw new Error('wiki search engine unavailable (ripgrep/grep could not be run) — no results here is a search failure, not an empty corpus')
+  }
   return results.slice(0, limit)
 }
 

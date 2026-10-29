@@ -109,10 +109,17 @@ describe('buildRgSearchArgs — the query is a value on BOTH channels', () => {
 
 describe('search call sites use the shared resolver', () => {
   const read = (p: string): string => readFileSync(join(__dirname, '..', p), 'utf8')
+  // 契约是「这些符号来自那一个模块」，不是 import 行的字面量文本。2026-10-29 给
+  // 两处 import 追加 isSearchEngineFailure 时，三处整行断言同时变红——钉行文本会把
+  // 每一次合理的加导出都变成假警报，而它想防的「各自实现一份 rg plumbing」并不因
+  // 多一个导出而回潮。
+  const ripgrepImport = (src: string): string =>
+    /import \{([^}]+)\} from '\.\.\/utils\/ripgrep'/.exec(src)?.[1] ?? ''
 
   it('knowledge-store spawns rg via ripgrepBinary and parses via parseRgLine', () => {
     const src = read('src/main/storage/knowledge-store.ts')
-    expect(src).toContain("import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'")
+    const imported = ripgrepImport(src)
+    for (const sym of ['ripgrepBinary', 'parseRgLine', 'buildRgSearchArgs']) expect(imported).toContain(sym)
     expect(src).not.toContain("execFile('rg'")
     expect(src).toContain('execFile(ripgrepBinary()')
     expect(src).not.toContain("line.indexOf(':')")
@@ -120,7 +127,8 @@ describe('search call sites use the shared resolver', () => {
 
   it('knowledge-queries spawns rg via ripgrepBinary, parses via parseRgLine, and gates grep to Unix', () => {
     const src = read('src/main/services/knowledge-queries.ts')
-    expect(src).toContain("import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'")
+    const imported = ripgrepImport(src)
+    for (const sym of ['ripgrepBinary', 'parseRgLine', 'buildRgSearchArgs']) expect(imported).toContain(sym)
     expect(src).not.toContain("execFile('rg'")
     expect(src).toContain('execFile(ripgrepBinary()')
     expect(src).toContain("process.platform !== 'win32')")
@@ -131,7 +139,8 @@ describe('search call sites use the shared resolver', () => {
 
   it('the content channel delegates to the shared builder too (M10-P0-1 fixed the wiki and missed this sibling — review_20261013 高2)', () => {
     const src = read('src/main/storage/knowledge-store.ts')
-    expect(src).toContain("import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'")
+    const imported = ripgrepImport(src)
+    for (const sym of ['ripgrepBinary', 'parseRgLine', 'buildRgSearchArgs']) expect(imported).toContain(sym)
     expect(src).toContain('buildRgSearchArgs(query, rawDir)')
     // The bare positional push — the injection itself — is gone from the file:
     expect(src).not.toMatch(/args\.push\(query\)/)

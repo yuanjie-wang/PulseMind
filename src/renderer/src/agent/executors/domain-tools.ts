@@ -246,10 +246,16 @@ export async function execRecallTool(ex: ToolExecContext, t: ToolUseBlock): Prom
       // the bare one-liner read as a malfunction and sent the model into
       // full-tree greps. Name the semantics and, when a source errored, the
       // difference between a search failure and an empty corpus.
+      //
+      // 2026-10-29 更正：上面「零命中即没有任何一个词在任何一个源出现」是过度声明，
+      // 两处不成立——①knowledge 的 rg 通道拿 `split(/\s+/)` 切词、`-F` 字面匹配，
+      // 没有 memory/conversation 那条 CJK 二元滑窗：不带空格的中文长串是**一个整串**
+      // 去匹配，所以「词没出现」推不出「片段没出现」；②rg/grep 起不来时曾 resolve
+      // 成空数组（现已在 storage 层抛给 swallowSource 记账）。话术按事实改口径。
       const failureNote = sourceErrors.length > 0
         ? ` ${sourceErrors.length} source(s) errored during this search (${sourceErrors.join(', ')}) — zero hits may be a search failure rather than an empty corpus.`
         : ''
-      const note = `No results for "${query}" across memory, conversations, or the knowledge base.${failureNote} (Keywords are matched with OR, so zero hits means none of them appear in any source — if you expected content, the corpus likely does not have it; try different keywords, or use pick_skill for capabilities.)`
+      const note = `No results for "${query}" across memory, conversations, or the knowledge base.${failureNote} (Keywords are matched with OR — one keyword matching anywhere is enough, so zero hits means no single keyword matched. The knowledge sources match CJK as literal runs with no word segmentation, so an unspaced Chinese phrase is searched as ONE string: retry with shorter or space-separated terms before concluding the content is absent. If you expected this content, the corpus likely does not have it; or use pick_skill for capabilities.)`
       t.output = note; ex.addToolResult(t.id, note, false); t.exitCode = 0; return true
     }
     const sections = top.map((h, i) => {
