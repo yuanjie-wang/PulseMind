@@ -2,7 +2,7 @@
 // Pure geometry shared by the renderer chrome (DOM) and the main-process dock
 // (native WebContentsView bounds) — both must agree on every pixel, so the
 // rules live here and are unit-tested. Decisions (2026-09-13): strict 16:9
-// WebView, vertically centered below the chrome; pane width default 40% of
+// WebView, vertically centered below the chrome; pane width default 30% of
 // the chat area, draggable, clamped to [320, 60% of chat area], remembered
 // globally in settings.
 
@@ -15,7 +15,7 @@ export const PANE_MIN_WIDTH = 320
 /** Drag ceiling: the chat area always keeps at least 40% of its width. */
 export const PANE_MAX_CHAT_RATIO = 0.6
 /** First-open default before the user drags. */
-export const PANE_DEFAULT_CHAT_RATIO = 0.4
+export const PANE_DEFAULT_CHAT_RATIO = 0.3
 /** Left-edge drag handle thickness (renderer DOM). */
 export const PANE_DRAG_HANDLE_WIDTH = 6
 /** The chat/pane divider is the workbench pane's own 1px CSS border —

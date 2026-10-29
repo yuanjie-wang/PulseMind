@@ -10,8 +10,8 @@ import {
 } from '../src/shared/browser/pane'
 
 describe('pane width clamp', () => {
-  it('defaults to 40% of the chat area', () => {
-    expect(defaultPaneWidth(1300)).toBe(520)
+  it('defaults to 30% of the chat area', () => {
+    expect(defaultPaneWidth(1300)).toBe(390)
   })
   it('clamps to [320, 60% of chat area]', () => {
     expect(clampPaneWidth(100, 1300)).toBe(320)

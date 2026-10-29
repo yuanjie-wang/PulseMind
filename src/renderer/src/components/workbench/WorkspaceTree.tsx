@@ -47,6 +47,16 @@ const { DirectoryTree } = Tree
 /** Row CSS. Scoped to this tree: antd's Tree is used elsewhere in the app and
  *  the title-row layout below is this view's own. */
 const TREE_CSS = `
+/* Per-level indent step (2026-10-29, user: 目录树的缩进距离有点宽). antd derives
+   the Tree's indentSize from titleHeight = controlHeightSM — 24px per level,
+   which is a wide staircase beside this pane's 12px labels. Scoped to this
+   tree: skill browsers elsewhere keep the stock step, and Settings' own Tree
+   never sees it. The selector carries the tree class twice over (root + indent
+   + unit) on purpose — it has to out-specify the component style antd injects
+   at runtime, which is also why there is no !important. Only the step shrinks:
+   row height and the 24px switcher slot (the caret cell) are untouched, so the
+   arrow's hit area and the hover actions keep their geometry. */
+.pm-ws-tree.ant-tree .ant-tree-indent .ant-tree-indent-unit { width: 16px; }
 .pm-ws-tree .ant-tree-node-content-wrapper { display: flex; align-items: center; }
 .pm-ws-tree .ant-tree-node-content-wrapper > .ant-tree-iconEle { flex: none; }
 .pm-ws-tree .ant-tree-title { flex: 1; min-width: 0; display: flex; align-items: center; }
