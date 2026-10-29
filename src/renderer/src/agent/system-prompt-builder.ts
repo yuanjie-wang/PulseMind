@@ -187,6 +187,10 @@ async function buildCorePrompt(opts: AgentEngineOptions, toolProtocols?: string)
   // ── Tool usage protocols (per-tool markdown from the enabled toolset) ──
   // Sits with the other tool-convention blocks and is static per toolset, so
   // the cached prefix only moves when the tool schemas move anyway.
+  // ── Cross-tool batching rule (2026-10-29): static per toolset, so it never
+  // moves the cached prefix; it sits immediately above the manuals it qualifies.
+  parts.push(PARALLEL_CALLS_SECTION)
+
   if (toolProtocols) parts.push(toolProtocols)
 
   parts.push(ENGINEERING_WORKFLOW)
@@ -962,6 +966,23 @@ const WINDOWS_SHELL_NOTES = `\
 const SESSION_STATE_NOTICE = `\
 ## Session State
 Volatile per-turn context — the current date and time, the workspace, git status, the current plan, the page a browser client is showing, and any matching skills/experiences — is appended as a \`<session-state>\` block in the FINAL message of the request. Read the values from the LATEST block; earlier blocks in the history are snapshots of earlier turns and may be stale.`
+
+// ── Batch independent calls (2026-10-29) ─────────────────────────────
+// The engine has always run read/list_dir/find/search under Promise.all
+// (execReadOnlyTools), but no manual ever said so — every one of them taught
+// a single call, so investigating ten files cost ten round trips, each
+// re-paying the whole context. This is the cross-tool rule that says the
+// engine's capability out loud; it rides the shared trunk (static per
+// toolset) instead of being repeated inside each tool's own manual.
+const PARALLEL_CALLS_SECTION = `\
+# Batching Independent Calls
+
+Each round trip re-sends the whole context, so the number of MESSAGES matters as much as the number of calls.
+
+- Two or more calls whose arguments do not depend on each other's RESULT belong in the SAME assistant message. read / list_dir / find / search then run concurrently — one wave, one latency.
+- Investigating N files or N directories is ONE message carrying N calls, not N messages carrying one.
+- Serialize only a real dependency: resolve a path before reading it, search before reading the hits it returns.
+- Ordering still governs writes, edits and shell commands — they keep their sequence. Batching is for read-only exploration.`
 
 const TOOL_CALL_FORMAT = `\
 ## Tool Call Format

@@ -223,3 +223,21 @@ describe('edit manual steers single-file changes to search/replace (2026-10-29)'
     expect(diffDesc).toContain('is not re-anchored')
   })
 })
+
+describe('Batching Independent Calls rides the shared trunk (2026-10-29)', () => {
+  const builderSrc = readFileSync('src/renderer/src/agent/system-prompt-builder.ts', 'utf8')
+
+  it('the section exists and teaches the cross-tool rule', () => {
+    expect(builderSrc).toContain('PARALLEL_CALLS_SECTION')
+    expect(builderSrc).toContain('# Batching Independent Calls')
+    expect(builderSrc).toContain('belong in the SAME assistant message')
+    expect(builderSrc).toContain('Serialize only a real dependency')
+  })
+
+  it('is pushed into the core prompt BEFORE the per-tool manuals it qualifies', () => {
+    const pushIdx = builderSrc.indexOf('parts.push(PARALLEL_CALLS_SECTION)')
+    const manualsIdx = builderSrc.indexOf('if (toolProtocols) parts.push(toolProtocols)')
+    expect(pushIdx).toBeGreaterThan(-1)
+    expect(manualsIdx).toBeGreaterThan(pushIdx)
+  })
+})
