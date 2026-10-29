@@ -667,14 +667,44 @@ export class ExecutionFlow {
       // Execute non-oversized tools
       const validTools = toolUses.filter(t => !oversizedIds.has(t.id))
       if (validTools.length > 0) {
-        await this.dispatchToolExecution(validTools)
+        // Bookkeeping must match the normal path below (review_20261028 中2):
+        // without the pending set + auto flag, every mid-dispatch result saw
+        // an empty set and a clear flag and re-fired continueLoop from
+        // addToolResult's straggler drain while its batch-mates were still
+        // executing — concurrent streams on the shared request state, the
+        // exact hazard the ask-family comment below names. The oversized
+        // blocks themselves are already settled (synthetic results above) and
+        // stay out of both registers.
+        this.engine.toolUseBlocks = validTools
+        this.engine.pendingToolIds = new Set(validTools.map(t => t.id))
+        this.engine.isAutoExecuting = true
+        try {
+          await this.dispatchToolExecution(validTools)
+        } finally {
+          this.engine.isAutoExecuting = false
+        }
       } else {
         // 纯合成批：全部被拒，结果已着陆、循环即将重请求 —— 与下方截断批同一
         // 计数口径；混批由 dispatchToolExecution 收尾的那一次打点覆盖，不重复。
         this.engine.recordToolBatchComplete()
       }
       this.engine.notify()
-      this.engine.continueLoop()
+      // Same drain gate as the normal tail below: a held call (the ladder
+      // re-applied inside dispatchToolExecution kept it out of the executors)
+      // or a background-exec straggler still owns the pending set — starting
+      // the next LLM round over it would run concurrent with its result.
+      // Held calls park the turn exactly the way addToolResult's tail paints
+      // awaiting_approval (AgentEngine's stillHeld filter reads the same
+      // toolUseBlocks register set above).
+      if (this.engine.pendingToolIds.size > 0) {
+        const stillHeld = this.engine.toolUseBlocks.filter(t => this.engine.pendingToolIds.has(t.id) && t.status === 'pending')
+        if (stillHeld.length > 0) {
+          this.engine.agentStatus = { status: 'awaiting_approval', tools: stillHeld }
+          this.engine.notify()
+        }
+      } else if (!this.engine.planScheduler.kick()) {
+        this.engine.continueLoop()
+      }
       return
     }
 

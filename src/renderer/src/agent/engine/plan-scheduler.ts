@@ -51,12 +51,18 @@ export class PlanScheduler {
     // Applicability gates. A cancelled engine (stop/pause) must not be revived
     // by a synthetic dispatch; a spawned sub-agent's plan stays model-driven
     // (user ruling: 子代理内建图维持模型驱动); a pending verbatim reply is a
-    // single-expert @-summon's conclusion and continueLoop owns that turn;
-    // and without a key the dispatch would only spawn experts doomed to fail,
-    // so let continueLoop raise its own error instead.
+    // single-expert @-summon's conclusion and continueLoop owns that turn.
+    // No apiKey gate (review_20261028 高1): `opts.apiKey` is legitimately empty
+    // for local providers (ollama/LM Studio) — the same gate was removed from
+    // approveTool for exactly that reason (execution-flow.ts, the M1.4 note) —
+    // and spawned experts ride the same api-proxy profile resolution as their
+    // parent, so an empty key here never meant "doomed to fail". What it DID
+    // mean: kick() returned false while spawn-tool's scheduler-ownership gate
+    // rejected the model's own manual dispatch of a never-started READY node —
+    // two individually correct gates stacking into a deadlock with no legal
+    // start path, and the stale-attempt demotion below skipped with it.
     if (engine.isCancelled || engine.isSpawnedSubAgent) return false
     if (engine.pendingVerbatimReply !== null) return false
-    if (!engine.opts.apiKey) return false
 
     const action = this.settleAll(nextScheduleAction(engine.planManager.plan))
 
@@ -103,7 +109,6 @@ export class PlanScheduler {
     const engine = this.engine
     if (engine.isCancelled || engine.isSpawnedSubAgent) return
     if (engine.pendingVerbatimReply !== null) return
-    if (!engine.opts.apiKey) return
     const action = this.settleAll(nextScheduleAction(engine.planManager.plan))
     // chain only — a clean `dispatch` here would re-enter handleToolUseResponse
     // while an engine batch is still live and clobber its drain accounting.

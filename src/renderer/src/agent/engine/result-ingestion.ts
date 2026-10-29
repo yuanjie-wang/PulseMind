@@ -5,27 +5,32 @@
  */
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { generateMsgId } from '../agent-utils'
-import { TOOL_PARAM_LIMITS, MAX_TOOL_INPUT_JSON_BYTES } from './engine-constants'
+import { TOOL_PARAM_LIMITS, MAX_TOOL_INPUT_JSON_BYTES, MAX_ERROR_RESULT_TOKENS } from './engine-constants'
 import { estimateTextTokens } from './context-estimate'
 import type { AgentEngineOptions } from '../AgentEngine'
 
 
   /** The tool-result guardrail's context shape (MAX_TOOL_RESULT_TOKENS /
-   *  MAX_READ_RESULT_TOKENS): errors pass whole; anything else over the token
-   *  budget is head+tail truncated (75%/25%) with a marker pointing at the
-   *  offload file — the CALLER writes the original to that file when
-   *  `truncated` is true. Pure so the budget is testable without an engine.
-   *  The length short-circuit skips estimation when even worst-case (all CJK)
-   *  fits the budget. */
+   *  MAX_ERROR_RESULT_TOKENS): normal results over the caller's token budget
+   *  are head+tail truncated (75%/25%) with a marker pointing at the offload
+   *  file — the CALLER writes the original to that file when `truncated` is
+   *  true. Errors ride a wider but FINITE line (MAX_ERROR_RESULT_TOKENS,
+   *  review_20261028 中1 — the old "errors pass whole" short-circuit let one
+   *  failed build's full stack fill the context window, and the collector
+   *  message it lands in sits inside every compaction layer's protection
+   *  window). Pure so the budget is testable without an engine. The length
+   *  short-circuit skips estimation when even worst-case (all CJK) fits the
+   *  effective budget. */
   export function applyToolResultBudget(
     content: string, isError: boolean, budget: number, offloadDest: string
   ): { text: string; truncated: boolean } {
-    if (isError || content.length <= budget) return { text: content, truncated: false }
+    const effective = isError ? Math.max(budget, MAX_ERROR_RESULT_TOKENS) : budget
+    if (content.length <= effective) return { text: content, truncated: false }
     const estTokens = estimateTextTokens(content)
-    if (estTokens <= budget) return { text: content, truncated: false }
+    if (estTokens <= effective) return { text: content, truncated: false }
     const perChar = estTokens / content.length
-    const head = Math.floor((budget * 0.75) / perChar)
-    const tail = Math.floor((budget * 0.25) / perChar)
+    const head = Math.floor((effective * 0.75) / perChar)
+    const tail = Math.floor((effective * 0.25) / perChar)
     const hidden = content.length - head - tail
     const text = `${content.slice(0, head)}\n\n… [Tool result truncated: ~${estTokens.toLocaleString()} tokens, ${hidden.toLocaleString()} chars omitted — full text saved at ${offloadDest}, use \`read\` to page through it] …\n\n${content.slice(-tail)}`
     return { text, truncated: true }
@@ -59,10 +64,9 @@ import type { AgentEngineOptions } from '../AgentEngine'
   }
 
   export function extractInvokeToolCalls(opts: AgentEngineOptions, blocks: ContentBlock[]): { blocks: ContentBlock[]; converted: boolean } {
-    const enabledNames = new Set(opts.toolManager.getEnabledTools().map(t => t.definition.name))
-    let converted = false
-    let callCounter = 0
-    const result: ContentBlock[] = []
+  const enabledNames = new Set(opts.toolManager.getEnabledTools().map(t => t.definition.name))
+  let converted = false
+  const result: ContentBlock[] = []
 
     for (const block of blocks) {
       if (block.type !== 'text') {
@@ -109,7 +113,12 @@ import type { AgentEngineOptions } from '../AgentEngine'
       for (const call of calls) {
         result.push({
           type: 'tool_use',
-          id: `invoke_${Date.now()}_${callCounter++}`,
+          // randomUUID, not Date.now()+counter (review_20261028 低2): the
+          // counter restarted at 0 on every call, so two recoveries in the
+          // same millisecond minted colliding ids and tool_result pairing
+          // (which keys on id) crossed wires. Same idiom as the
+          // tool_result_id above.
+          id: `invoke_${crypto.randomUUID()}`,
           name: call.name,
           input: call.input,
           status: 'pending'

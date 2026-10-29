@@ -215,11 +215,13 @@ export class SpawnManager {
   followUpCompleted(subConvId: string, userText: string): SubAgentHandle | null {
     const reg = this.engine.completedSubAgents.get(subConvId)
     if (!reg) return null
-    this.engine.completedSubAgents.delete(subConvId)
     const engine = reg.engine
     // 防御在飞：注册表只收 settled 引擎（pop 即离开注册表，双续聊竞态落到
-    // null），但一个便宜的真值检查好过论证每一条交错路径。
+    // null），但一个便宜的真值检查好过论证每一条交错路径。检查必须在
+    // delete 之前——先删后检会在命中时把已出注册表的可继续上下文永久丢弃
+    // ，调用方只能按全新派发重付发现成本（review_20261028 中3）。
     if (engine.pendingToolIds.size > 0 || engine.currentRequestId) return null
+    this.engine.completedSubAgents.delete(subConvId)
     const id = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
     this.engine.activeSubAgents.set(id, engine)
     const detachSaver = attachSubConversationSaver(engine, subConvId)

@@ -230,10 +230,14 @@ describe('spawn_agent planNode linkage', () => {
     // node click — the only copy that is persisted with the plan).
     expect(t.subConvId).toBe('sub_conv_B')
     expect(engine.planManager.plan.nodes[1].subConvId).toBe('sub_conv_B')
-    // Status-neutral at DISPATCH time: a dispatch links the node; settlement
-    // is the scheduler's (delegated) or advance_plan's (direct) — neither
-    // happens inside this call.
-    expect(engine.planManager.plan.nodes[1].status).toBe('pending')
+    // The dispatch itself is status-neutral, but the spawn's result tail
+    // settles a delivered node on the spot (settleAndChain — and since
+    // review_20261028 高1 removed the apiKey gate, that now also holds in
+    // this apiKey-less fake, the ollama/LM Studio shape; before the fix the
+    // gate kept the scheduler dead here and the node sat 'pending'). The
+    // envelope's "the scheduler settles it automatically" promise is now
+    // literally true in the same call.
+    expect(engine.planManager.plan.nodes[1].status).toBe('completed')
     const content = toolResultContent(engine, 'tu_p')
     expect(content).toContain('**Plan node n2** ("前端")')
     // Delegated mode (createPlanDag's default): the envelope hands the node

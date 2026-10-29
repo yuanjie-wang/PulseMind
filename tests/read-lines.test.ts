@@ -125,9 +125,15 @@ describe('read lines wiring', () => {
     expect(src).toContain('copy the text WITHOUT them')
   })
 
-  it('the read branch numbers both content paths after the ledger entry', () => {
+  it('numbering is presentation applied once, at the exit — never before a count', () => {
     const src = read('agent/tool-executors.ts')
-    expect(src).toContain('numberReadLines(content, offset)')
-    expect(src).toContain('numberReadLines(lines.slice(offset - 1')
+    // 唯一的表现层出口：formatReadOutput 把正文拼上去之前才加前缀。
+    expect(src).toContain('numberReadLines(rawContent, offset)')
+    // 两路都不得先编号再交给头部。头部一旦测量编号后的字符串，末尾换行就变成
+    // 幽灵行（600 行交付却报 601，2026-10-29）——这条负控就是那个回归路径。
+    expect(src).not.toContain('content = numberReadLines')
+    // 界面预览仍拿编号形态（shell 路与 markitdown 路各一处）。
+    expect(src).toContain('t.output = isError ? content : numberReadLines(content, offset)')
+    expect(src).toContain('t.output = numberReadLines(content, offset)')
   })
 })

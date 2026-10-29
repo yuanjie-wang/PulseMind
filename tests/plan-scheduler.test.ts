@@ -301,6 +301,69 @@ describe('PlanScheduler.settleAndChain — settle now, chain alongside the drain
   })
 })
 
+// ── PlanScheduler × local providers — empty apiKey is a legal shape ────────
+
+describe('PlanScheduler without an apiKey (review_20261028 高1: the gate deadlock)', () => {
+  /** `apiKey: ''` is the ollama/LM Studio常态. The old key gate made kick()
+   *  return false while spawn-tool's ownership gate rejected the model's own
+   *  manual dispatch — a delegated plan's READY nodes had NO legal start
+   *  path. Both tests pin that the scheduler owns the turn with no key. */
+  function localFixture(mgr: PlanManager) {
+    const dispatched: ToolUseBlock[] = []
+    const chained: ToolUseBlock[] = []
+    const engine = {
+      isCancelled: false,
+      isSpawnedSubAgent: false,
+      pendingVerbatimReply: null,
+      opts: { apiKey: '' },
+      planManager: mgr,
+      messages: [] as AgentMessage[],
+      toolUseBlocks: [] as ToolUseBlock[],
+      pendingToolIds: new Set<string>(),
+      agentStatus: { status: 'executing' },
+      notify: () => {},
+      addToolResult: () => {},
+      toolExecutor: { execSpawnAgent: async (call: ToolUseBlock) => { chained.push(call) } },
+      handleToolUseResponse: async (calls: ToolUseBlock[]) => { dispatched.push(...calls) },
+    }
+    return { engine, scheduler: new PlanScheduler(engine as unknown as EngineCore), dispatched, chained }
+  }
+
+  it('kick() dispatches a READY wave with no key — the scheduler owns the turn', () => {
+    const { mgr } = makeManager()
+    mgr.plan = createPlanDag('local pipe', [
+      { description: 'a' },                 // n1
+      { description: 'b', dependsOn: [1] }, // n2
+    ])
+    markNode(mgr.plan!, 1, 'completed') // n2 READY, nothing live → clean dispatch
+    const { scheduler, dispatched } = localFixture(mgr)
+
+    expect(scheduler.kick()).toBe(true)
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].input.planNode).toBe('n2')
+    expect(dispatched[0].input.autoDispatch).toBe(true)
+  })
+
+  it('settleAndChain() chains a ready dependent with no key', () => {
+    const { mgr } = makeManager()
+    mgr.plan = createPlanDag('local pipe 2', [
+      { description: 'a' },                 // n1
+      { description: 'b', dependsOn: [1] }, // n2
+      { description: 'c' },                 // n3 — the live drain
+    ])
+    mgr.beginNodeExecution(1, 'a1')
+    mgr.updateNodeExecution(1, 'a1', 'delivered')
+    mgr.recordNodeHandoff(1, 'a1', 'n1 out')
+    mgr.beginNodeExecution(3, 'a3')
+    const { scheduler, chained } = localFixture(mgr)
+
+    scheduler.settleAndChain()
+    expect(mgr.plan!.nodes[0].status).toBe('completed')
+    expect(chained).toHaveLength(1)
+    expect(chained[0].input.planNode).toBe('n2')
+  })
+})
+
 // ── PlanManager.autoSettle ─────────────────────────────────────────────────
 
 function makeManager() {
@@ -460,12 +523,14 @@ describe('formatUpstreamResults — what a downstream spawn receives', () => {
 // ── Wiring scans ───────────────────────────────────────────────────────────
 
 describe('scheduler wiring (source scans)', () => {
-  it('carries the kick() at all four hook sites', () => {
-    // resume, batch drain decision, the tail's live-chained branch (midDrain —
+  it('carries the kick() at all five hook sites', () => {
+    // resume, the auto-dispatch early tail's drain gate (a held-call-free
+    // pending set hands the turn to the scheduler before continueLoop), the
+    // batch drain decision, the tail's live-chained branch (midDrain —
     // review_20260930 中5: the tail's kick must not re-enter a clean dispatch
     // over live chained ids), and the handleEndTurnResponse entry.
     const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
-    expect((flow.match(/planScheduler\.kick\(/g) ?? []).length).toBe(4)
+    expect((flow.match(/planScheduler\.kick\(/g) ?? []).length).toBe(5)
     expect(flow).toContain('planScheduler.kick({ midDrain: true })')
     // addToolResult's async straggler tail — plus the mid-drain chain entry
     // that fires on every result which did NOT close the drain.

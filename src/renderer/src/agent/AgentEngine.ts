@@ -1832,12 +1832,13 @@ export class AgentEngine implements EngineCore {
 
   /** @internal */
   addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
-    // Global guardrail (see MAX_TOOL_RESULT_TOKENS above): errors are kept whole,
-    // anything else over the token budget is head+tail truncated and the full text
-    // is offloaded to ~/.pulsemind/tmp/trunc/ for the model to `read` back. read
-    // rides the same mechanism with its own higher budget (MAX_READ_RESULT_TOKENS)
-    // instead of the old blanket Infinity exemption — the truncation math lives in
-    // result-ingestion.applyToolResultBudget.
+    // Global guardrail (see MAX_TOOL_RESULT_TOKENS above): results over the
+    // caller's budget are head+tail truncated and the full text is offloaded to
+    // ~/.pulsemind/tmp/trunc/ for the model to `read` back; errors ride the
+    // wider but finite MAX_ERROR_RESULT_TOKENS line instead of the old "errors
+    // pass whole" exemption (review_20261028 中1). read uses its own higher
+    // budget (MAX_READ_RESULT_TOKENS) instead of the 4K default — the
+    // truncation math lives in result-ingestion.applyToolResultBudget.
     const budget = maxTokens ?? MAX_TOOL_RESULT_TOKENS
     const offloadDest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
     const { text, truncated } = applyToolResultBudget(content, isError, budget, offloadDest)

@@ -3,7 +3,8 @@ import { ToolExecutor } from '../src/renderer/src/agent/tool-executors'
 import { setHost } from '../src/renderer/src/agent/host'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import type { ToolUseBlock } from '../src/renderer/src/types/agent'
-import { MAX_READ_RESULT_TOKENS } from '../src/renderer/src/agent/engine/engine-constants'
+import { MAX_READ_RESULT_TOKENS, READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT } from '../src/renderer/src/agent/engine/engine-constants'
+import { buildCommandFromSkillInput } from '../src/renderer/src/agent/command-builder'
 
 /**
  * ToolExecutor 的分支补齐（AGENTS.md「单测纪律」2026-10-05）：直接实例化
@@ -290,7 +291,10 @@ describe('execReadOnlyTools — read 的三个通道', () => {
   it('shell 通道：wc -l 行数进元数据；错误三态（有输出不算错 / 空输出报失败 / 抛异常）', async () => {
     let h = makeHarness()
     ;(h.host.execCommandSync as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ code: 0, output: 'file content here' })
+      // Faithful page: a 42-line file delivers 42 lines. The old stub handed
+      // back ONE line while the header said 1-42 — exactly the dishonesty the
+      // new case below pins, so it cannot be the baseline here.
+      .mockResolvedValueOnce({ code: 0, output: Array.from({ length: 42 }, (_, i) => `L${i + 1}`).join('\n') })
       .mockResolvedValueOnce({ code: 0, output: '42 /a.txt' })
     await h.executor.execReadOnlyTools([t('t1', 'read', { file_path: '/a.txt' })])
     expect(h.results[0].content).toContain('(42 lines)')
@@ -312,6 +316,59 @@ describe('execReadOnlyTools — read 的三个通道', () => {
     ;(h.host.execCommandSync as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('spawn gone'))
     await h.executor.execReadOnlyTools([t('t4', 'read', { file_path: '/a.txt' })])
     expect(h.results[0]).toMatchObject({ isError: true, content: 'Error: spawn gone' })
+  })
+
+  it('read 分页诚实性（2026-10-29）：文件头的 Range 只报实际交付的行，不报请求值', async () => {
+    // 复现：请求 limit 1000，命令侧曾独立硬卡 500 行，而元数据头按请求值
+    // 算 readLen →「Range: lines 1-1000」。模型照此从 1001 续读，501-1000
+    // 被静默跳过——没有任何错误、没有任何一轮会暴露它。头只能陈述真正
+    // 交付的行数，这是模型决定下一次 offset 的唯一依据。
+    const delivered = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n')
+    const h = makeHarness()
+    ;(h.host.execCommandSync as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ code: 0, output: delivered })
+      .mockResolvedValueOnce({ code: 0, output: '3000 /a.txt' })
+    await h.executor.execReadOnlyTools([t('t1', 'read', { file_path: '/a.txt', limit: 1000 })])
+    expect(h.results[0].content).toContain('(3000 lines)')
+    expect(h.results[0].content).toContain('Range: lines 1-500')
+    expect(h.results[0].content).not.toContain('Range: lines 1-1000')
+  })
+
+  it('read 分页诚实性·行尾换行（2026-10-29 自检发现）：不得把末尾换行算成一行', async () => {
+    // 真实 head / PowerShell 的输出总以换行收尾，裸 split('\n') 会多切出一个
+    // 空串——600 行被算成 601 行。长页有 limit 和总行数兜住，只有「短尾页」
+    // 与「wc -l 失败」会真的多报，而多报正是这条改动要消灭的方向。
+    const page = Array.from({ length: 600 }, (_, i) => `L${i + 1}`).join('\n') + '\n'
+
+    let h = makeHarness()
+    ;(h.host.execCommandSync as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ code: 0, output: page })
+      .mockResolvedValueOnce({ code: 0, output: '3000 /a.txt' })
+    await h.executor.execReadOnlyTools([t('t1', 'read', { file_path: '/a.txt', limit: 1000 })])
+    expect(h.results[0].content).toContain('Range: lines 1-600')
+    expect(h.results[0].content).not.toContain('Range: lines 1-601')
+
+    // 同一页但 wc -l 失败（totalLines=0）：总行数不再兜底，只剩交付行数
+    h = makeHarness()
+    ;(h.host.execCommandSync as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ code: 0, output: page })
+      .mockResolvedValueOnce({ code: 1, output: '' })
+    await h.executor.execReadOnlyTools([t('t2', 'read', { file_path: '/a.txt', limit: 1000 })])
+    expect(h.results[0].content).toContain('Range: lines 1-600')
+    expect(h.results[0].content).not.toContain('Range: lines 1-601')
+  })
+
+  it('read 分页上限单一来源：命令侧不得比引擎接受的上限更窄', () => {
+    // 引擎侧 limit 允许到 READ_MAX_LINE_LIMIT，命令侧曾另卡一个常量 500 —
+    // 两套数字各说一套。现在共享同一个常量，这条用例就是那条接缝。
+    expect(buildCommandFromSkillInput('read', { file_path: '/a.txt', limit: 1000 }, 'darwin'))
+      .toContain(`head -n ${READ_MAX_LINE_LIMIT}`)
+    // 超大请求仍被同一上限收口（token 侧由 MAX_READ_RESULT_TOKENS 兜底）
+    expect(buildCommandFromSkillInput('read', { file_path: '/a.txt', limit: 99999 }, 'darwin'))
+      .toContain(`head -n ${READ_MAX_LINE_LIMIT}`)
+    // 省略 limit 的默认页保持不变
+    expect(buildCommandFromSkillInput('read', { file_path: '/a.txt' }, 'darwin'))
+      .toContain(`head -n ${READ_DEFAULT_LINE_LIMIT}`)
   })
 
   it('getLineCount：win32 走 PowerShell 管道，非零退出与异常都归零', async () => {

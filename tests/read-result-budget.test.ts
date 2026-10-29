@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MAX_READ_RESULT_TOKENS, MAX_TOOL_RESULT_TOKENS } from '../src/renderer/src/agent/engine/engine-constants'
+import { MAX_ERROR_RESULT_TOKENS, MAX_READ_RESULT_TOKENS, MAX_TOOL_RESULT_TOKENS } from '../src/renderer/src/agent/engine/engine-constants'
 import { applyToolResultBudget } from '../src/renderer/src/agent/engine/result-ingestion'
 
 const ROOT = join(__dirname, '..')
@@ -82,9 +82,54 @@ describe('applyToolResultBudget — the guardrail shape read now shares', () => 
     expect(truncated).toBe(true)
     expect(text).toContain('Tool result truncated')
   })
+})
 
-  it('errors pass whole regardless of size', () => {
-    const page = '汉'.repeat(40_000)
+// ── Error results are NOT exempt — they ride a wider but finite line
+// (review_20261028 中1). The old `isError ||` short-circuit let one failed
+// build's full stack — or a 200K-char exec transcript — fill the context
+// ungated, and the collector message it lands in sits inside every compaction
+// layer's protection window, so nothing downstream could relieve it either.
+describe('MAX_ERROR_RESULT_TOKENS — errors get headroom, not infinity', () => {
+  const DEST = '~/.pulsemind/tmp/trunc/trunc_abcdef01_1700000000000.txt'
+
+  it('is 4× the normal line and strictly above it', () => {
+    expect(MAX_ERROR_RESULT_TOKENS).toBe(16_000)
+    expect(MAX_ERROR_RESULT_TOKENS).toBe(4 * MAX_TOOL_RESULT_TOKENS)
+    expect(MAX_ERROR_RESULT_TOKENS).toBeLessThan(MAX_READ_RESULT_TOKENS)
+  })
+
+  it('a failed build within the error line lands whole', () => {
+    // 15,000 CJK chars ≈ 15,000 tokens < 16,000 — a full test-failure log
+    // fits the error headroom even though it dwarfs the normal 4K line.
+    const page = '汉'.repeat(15_000)
+    const { text, truncated } = applyToolResultBudget(page, true, MAX_TOOL_RESULT_TOKENS, DEST)
+    expect(truncated).toBe(false)
+    expect(text).toBe(page)
+  })
+
+  it('an error over the error line is head+tail truncated with the offload marker', () => {
+    const page = '汉'.repeat(40_000) // 40,000 tokens > 16,000
+    const { text, truncated } = applyToolResultBudget(page, true, MAX_TOOL_RESULT_TOKENS, DEST)
+    expect(truncated).toBe(true)
+    expect(text.startsWith(page.slice(0, 12_000))).toBe(true) // 75% of 16K
+    expect(text.endsWith(page.slice(-4_000))).toBe(true) // 25% of 16K
+    expect(text).toContain('Tool result truncated')
+    expect(text).toContain(DEST)
+  })
+
+  it('the asymmetry is real: the same content is cut as a result and kept as an error', () => {
+    const page = '汉'.repeat(10_000) // 10,000 tokens: over 4K, under 16K
+    const normal = applyToolResultBudget(page, false, MAX_TOOL_RESULT_TOKENS, DEST)
+    const error = applyToolResultBudget(page, true, MAX_TOOL_RESULT_TOKENS, DEST)
+    expect(normal.truncated).toBe(true)
+    expect(error.truncated).toBe(false)
+    expect(error.text).toBe(page)
+  })
+
+  it('a caller grant above the error line is preserved, never shrunk', () => {
+    // read-style callers pass MAX_READ_RESULT_TOKENS: an error there keeps
+    // the 30K grant (Math.max), it does not fall back to 16K.
+    const page = '汉'.repeat(20_000)
     const { text, truncated } = applyToolResultBudget(page, true, MAX_READ_RESULT_TOKENS, DEST)
     expect(truncated).toBe(false)
     expect(text).toBe(page)

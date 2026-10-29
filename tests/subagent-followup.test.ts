@@ -119,6 +119,25 @@ describe('SpawnManager follow-up lifecycle (real engines)', () => {
     mgr.retainCompleted('sub_lru_1', engines[1])
     expect(parent.completedSubAgents.size).toBe(SUB_AGENT_FOLLOWUP_KEEP)
   })
+
+  it('an in-flight engine stays addressable — the defense check precedes the registry delete (review_20261028 中3)', () => {
+    setHost(makeMockHost())
+    const parent = makeEngine('conv_fu_inflight')
+    const child = makeEngine('sub_conv_inflight')
+    parent.completedSubAgents.set('sub_conv_inflight', { engine: child, title: 'Scout' })
+    // The race: a settled engine that still carries a live request. Under the
+    // old delete-before-check order this call returned null AND evicted the
+    // engine — the follow-up context was gone for good.
+    child.pendingToolIds.add('toolu_still_draining')
+    expect(parent.followUpSubAgent('sub_conv_inflight', 'too early')).toBeNull()
+    expect(parent.completedSubAgents.get('sub_conv_inflight')?.engine).toBe(child)
+    // In-flight over: the SAME registry entry answers the next call.
+    child.pendingToolIds.clear()
+    const handle = parent.followUpSubAgent('sub_conv_inflight', 'now')
+    expect(handle).not.toBeNull()
+    expect(handle!.subConvId).toBe('sub_conv_inflight')
+    expect([...parent.activeSubAgents.values()]).toContain(child)
+  })
 })
 
 // ── 父侧：execSpawnAgent 的 agentId 路由（假上下文，redispatch-gate 风格） ──

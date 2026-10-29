@@ -600,6 +600,30 @@ describe('ExecutionFlow 批前合成路径', () => {
     expect(raw.continueLoop).toHaveBeenCalled()
   })
 
+  it('超大混批的簿记与正常路径对称：批内落地不提前续环（review_20261028 中2）', async () => {
+    const { raw, flow, calls } = makeCore()
+    const big = toolUse('t_big', 'write', { content: 'x'.repeat(1_050_000) })
+    const read = toolUse('t_read', 'read', { file_path: '/a' })
+    // 旧代码在这里的形状：pendingToolIds 空集 + isAutoExecuting false ⇒ read
+    // 的结果一落地（批友还没跑完/刚跑完）就提前 continueLoop——与批尾那次
+    // 合起来是并发流。钉法：结果落地当下 auto 标志必须在场且续环未发生。
+    const atResultTime = { autoFlag: false, continuedAlready: true }
+    ;(raw.toolExecutor as Record<string, unknown>).execReadOnlyTools = async (blocks: ToolUseBlock[]) => {
+      atResultTime.autoFlag = raw.isAutoExecuting === true
+      atResultTime.continuedAlready = raw.continueLoop.mock.calls.length > 0
+      for (const b of blocks) { calls.executor.push(['execReadOnlyTools', b.name]); b.status = 'completed'; raw.addToolResult(b.id, 'ok', false) }
+    }
+    await flow.handleToolUseResponse([big, read])
+    expect(atResultTime.autoFlag).toBe(true)
+    expect(atResultTime.continuedAlready).toBe(false)
+    expect(raw.isAutoExecuting).toBe(false) // finally 复位，与正常路径同型
+    expect(raw.pendingToolIds.size).toBe(0) // 批排干
+    expect(raw.toolUseBlocks.map(t => t.id)).toEqual(['t_read']) // 台账=活批
+    expect(calls.executor).toEqual([['execReadOnlyTools', 'read']])
+    expect(calls.batches).toBe(1)
+    expect(raw.continueLoop).toHaveBeenCalledTimes(1) // 恰一次续环
+  })
+
   it('纯超大批：全部被拒时也打点一次', async () => {
     const { raw, flow, calls } = makeCore()
     const big = toolUse('t_big', 'write', { content: 'x'.repeat(1_050_000) })

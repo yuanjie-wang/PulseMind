@@ -268,6 +268,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // （死锁修复 2026-09-29，用户报告：一个 plan 波次把全会话锁死）：持槽的
     // dispatch 若还能等槽位，「持槽者等子代理完成、子代理等嵌套槽位」就成环。
     // 顶层派生（主代理 / 调度器，自身零持槽）维持 FIFO 排队不变。
+    // 这条路径日常由 spawnedToolset 门先行拦截（所有 spawn 都带 true），到达
+    // 这里的是将来放宽 SUB_AGENT_DENY_TOOLS 后的嵌套派发——纪律由
+    // tests/nested-spawn-fail-fast.test.ts 钉死：满员 fail-fast、不排队、
+    // 不死锁；它不是死代码，是预留路径的现行契约。
     const budgetKey = subAgentBudgetKey(ex.opts)
     const busy = activeSubAgentCount(budgetKey)
     const queued = queuedSubAgentCount(budgetKey)

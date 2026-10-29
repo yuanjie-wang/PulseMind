@@ -147,20 +147,30 @@ export const MEM_SALVAGE_CONTEXT_RATIO = 0.9
 // renderer was already shown (the wire caps the same way), and the frozen head
 // also freezes the tool_status diff signature, so per-tick wire updates stop.
 // The FULL stream still lands in the proc-log (main/services/terminal.ts,
-// 8MB/file) and the settled result still goes through addToolResult's 4K
-// budget + tmp/trunc offload — what the cap bounds is only the live in-memory
-// copy (and with it, the trunc offload for >200K outputs: head-200K instead of
-// the whole stream).
+// 8MB/file) and the settled result still goes through addToolResult's budget
+// (4K normal / MAX_ERROR_RESULT_TOKENS for errors) + tmp/trunc offload — what
+// the cap bounds is only the live in-memory copy (and with it, the trunc
+// offload for >200K outputs: head-200K instead of the whole stream).
 export const MAX_LIVE_OUTPUT_CHARS = 200_000
 
 // ── Tool-result / spawn-envelope context guardrails ─────────────────────
-// Per-tool-result token budget enforced by the engine's addToolResult (errors
-// pass whole; anything over is head+tail truncated with the full text offloaded
+// Per-tool-result token budget enforced by the engine's addToolResult (anything
+// over the caller's budget is head+tail truncated with the full text offloaded
 // to ~/.pulsemind/tmp/trunc/ for the model to read back). Lives here — not on
 // AgentEngine — because spawn-tool sizes the batch-split envelope budget from
 // it, and importing AgentEngine from an executor would close a cycle
 // (AgentEngine → tool-executors → executors/spawn-tool → AgentEngine).
 export const MAX_TOOL_RESULT_TOKENS = 4_000
+
+// Errors get a WIDER but FINITE budget (review_20261028 中1): the old
+// "errors pass whole" short-circuit let one failed build ride its full stack
+// — or a 200K-char exec transcript — into the context ungated, and the
+// collector message it lands in sits inside every compaction layer's
+// protection window. 4× the normal line is generous headroom for stack
+// traces and rejection envelopes while still capping the blast radius;
+// the overflow tail gets the standard head+tail + tmp/trunc offload. A
+// caller that grants MORE than this line (read's 30K) keeps its grant.
+export const MAX_ERROR_RESULT_TOKENS = 4 * MAX_TOOL_RESULT_TOKENS
 
 // read's dedicated budget (every read branch passes it as addToolResult's
 // maxTokens): read pages are line-bounded (500/call) but NOT byte-bounded, and
@@ -172,6 +182,21 @@ export const MAX_TOOL_RESULT_TOKENS = 4_000
 // standard head+tail truncation + tmp/trunc/ offload applies, same as any
 // other tool result.
 export const MAX_READ_RESULT_TOKENS = 30_000
+
+// ── read paging (2026-10-29: one source of truth) ──────────────────────
+// These two numbers used to live on BOTH sides of the read seam —
+// tool-executors held {default 500, cap 1000}, command-builder independently
+// clamped every page to 500 — and the executor's metadata header computed
+// `Range:` from the REQUESTED limit. So `read limit:1000` on a long file
+// returned 500 lines under a header claiming "lines 1-1000": the model
+// resumed at 1001 and lines 501-1000 vanished with no error anywhere. The
+// 500 in command-builder traced back to "read bypasses the token guardrail",
+// a premise 9d93caf retired when read got its own MAX_READ_RESULT_TOKENS —
+// the command's own comment already said overflow was that budget's job.
+// Both sides import from here now; the header derives its range from the
+// content actually delivered, so the two can never disagree again.
+export const READ_DEFAULT_LINE_LIMIT = 500
+export const READ_MAX_LINE_LIMIT = 1000
 
 // spawn_agent envelopes share ONE budget per assistant round: 11 parallel
 // experts each returning up to 4k tokens would append ~44k tokens in a single

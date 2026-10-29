@@ -32,7 +32,7 @@ import { SessionFileLedger } from '../../../shared/agent-session/file-changes'
 
 
 import { execRecallTool, execMemoryTool, execContextCompactTool, execToolResultSearchTool, execSkillCommand } from './executors/domain-tools'
-import { MAX_READ_RESULT_TOKENS } from './engine/engine-constants'
+import { MAX_READ_RESULT_TOKENS, READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
 import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
@@ -49,9 +49,9 @@ export { UI_PREVIEW_MAX } from './executors/context'
 // the 4K default, since reading a file IS the task. These limits stay only
 // where they serve a non-context purpose: UI previews (see
 // executors/context.ts) and the read tool's paging (an intrinsic part of how
-// the model reads large files).
-const READ_DEFAULT_LINE_LIMIT = 500        // read: default lines per page (2026-10-28: 200 → 500 — fewer round-trips on the files models actually face; the token-level net is MAX_READ_RESULT_TOKENS)
-const READ_MAX_LINE_LIMIT = 1000           // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
+// the model reads large files). The two paging numbers live in
+// engine-constants (2026-10-29): command-builder clamps the SAME page with
+// them, and one source of truth is what keeps that seam honest.
 
 /** webfetch 的结果信封（PLAN-tool-issues #2，2026-10-28）。默认套 `--- WebFetch ---`
  *  元数据头；`raw: true` 直出 body——元数据头曾让 JSON/API 调用方的 parse 必崩
@@ -76,9 +76,19 @@ export function buildWebFetchDisplay(
  *  跨回合共享的坐标系——「改 350 行附近」成为合法表达，重读定位也少一次
  *  offset 试错。前缀是坐标不是内容：手册教模型 edit 的 old_str/new_str 与
  *  write 的 content 一律不带前缀（read/edit 两本手册各有一句回声）。 */
+/** Split page content into lines, where ONE trailing newline is a line
+ *  TERMINATOR, not a new blank line (2026-10-29). `head`, PowerShell and the
+ *  markdown converters all end their output with `\n`; a bare `split('\n')`
+ *  counted that as an extra empty line, so a 600-line page numbered 601 lines
+ *  and its metadata header claimed 601. Numbering, the converted-format line
+ *  count and the header's delivered-line count all ride this one shape. */
+function splitReadLines(content: string): string[] {
+  if (!content) return []
+  return (content.endsWith('\n') ? content.slice(0, -1) : content).split('\n')
+}
 export function numberReadLines(content: string, startLine: number): string {
   if (!content) return content
-  return content.split('\n').map((line, i) => `${String(startLine + i).padStart(6)}\t${line}`).join('\n')
+  return splitReadLines(content).map((line, i) => `${String(startLine + i).padStart(6)}\t${line}`).join('\n')
 }
 /** write's soft size gate (2026-10-27): the manual's ≤5KB advice, echoed in
  *  the result past this mark — a hint, never a rejection. */
@@ -521,10 +531,17 @@ export class ToolExecutor implements ToolExecContext {
   ])
 
   /** Format `read` tool output with file metadata header. `fileSize` undefined
-   *  = the stat failed — shown as `?` so it can never read as an empty file. */
+   *  = the stat failed — shown as `?` so it can never read as an empty file.
+   *
+   *  `rawContent` is the page as it came off disk; NUMBERING HAPPENS HERE, last
+   *  (2026-10-29). Presentation used to be applied by the callers, so this
+   *  header measured an already-numbered string — and numbering turns one
+   *  trailing newline into a phantom last line (600 delivered claimed 601).
+   *  Owner of the boundary is now this function: every count reads raw bytes,
+   *  the prefix is added only as the body is appended. */
   private formatReadOutput(
     filePath: string, fileSize: number | undefined, totalLines: number,
-    offset: number, limit: number, content: string,
+    offset: number, limit: number, rawContent: string,
     extraNote?: string,
   ): string {
     const sizeStr = fileSize === undefined
@@ -534,7 +551,13 @@ export class ToolExecutor implements ToolExecContext {
         : fileSize > 1024
           ? `${(fileSize / 1024).toFixed(1)} KB`
           : `${fileSize} B`
-    const readLen = totalLines ? Math.min(limit, Math.max(0, totalLines - offset + 1)) : limit
+    // Deliver-side truth (2026-10-29): a header may never claim more lines
+    // than the page actually carries. `Range:` is the model's only input for
+    // the NEXT offset — over-reporting made it resume past lines that had
+    // already been dropped, with no error anywhere in the turn.
+    const delivered = splitReadLines(rawContent).length
+    const pageCap = delivered > 0 ? Math.min(limit, delivered) : limit
+    const readLen = totalLines ? Math.min(pageCap, Math.max(0, totalLines - offset + 1)) : pageCap
     const lines: string[] = [
       '--- File Metadata ---',
       `  Path: ${filePath}`,
@@ -543,7 +566,8 @@ export class ToolExecutor implements ToolExecContext {
       `  Numbering: each content line is prefixed with its absolute line number ("N\\t", cat -n style) — a coordinate for referencing (e.g. "edit around line 350"), NOT part of the file. Strip the prefixes when passing text to edit old_str/new_str or write.`,
     ]
     if (extraNote) lines.push(`  Note: ${extraNote}`)
-    lines.push('--- End File Metadata ---', '', content)
+    // Presentation applied LAST, on the way out — never before a count above.
+    lines.push('--- End File Metadata ---', '', numberReadLines(rawContent, offset))
     return lines.join('\n')
   }
 
@@ -622,10 +646,12 @@ export class ToolExecutor implements ToolExecContext {
           if (ToolExecutor.CONVERTIBLE_EXTS.has(ext)) {
             const result = await getHost().convertFileToMarkdown(filePath)
             if (result !== null) {
-              const lines = result.content.split('\n')
+              const lines = splitReadLines(result.content)
               totalLines = lines.length
-              content = numberReadLines(lines.slice(offset - 1, offset - 1 + limit).join('\n'), offset)
-              t.status = 'completed'; t.exitCode = 0; t.output = content
+              // `content` stays RAW: it is what the header measures. The
+              // numbered form is presentation and rides t.output to the pane.
+              content = lines.slice(offset - 1, offset - 1 + limit).join('\n')
+              t.status = 'completed'; t.exitCode = 0; t.output = numberReadLines(content, offset)
               // Convertible formats record too — deliberately. They can never
               // be edited by text write/edit (main-side officeBinaryReject),
               // but WITHOUT an entry the gate would loop the model on "read it
@@ -666,12 +692,12 @@ export class ToolExecutor implements ToolExecContext {
             // The ledger's main entry point: text bytes the model has just
             // seen (the stat was taken at this branch's head).
             this.readFilePaths.set(filePath, { mtime: stat?.mtime ?? '', size: stat?.size ?? 0 })
-            // Line numbers ride AFTER the ledger entry and only on success —
-            // they are presentation over the same bytes the model just read.
-            content = numberReadLines(content, offset)
           }
 
-          t.status = 'completed'; t.exitCode = result.code; t.output = content
+          // `content` stays RAW — formatReadOutput measures these bytes and
+          // applies numbering itself; t.output carries the numbered form.
+          t.status = 'completed'; t.exitCode = result.code
+          t.output = isError ? content : numberReadLines(content, offset)
           this.addToolResult(t.id, isError
             ? (content || `Command failed (exit: ${result.code})`)
             : this.formatReadOutput(filePath, fileSize, totalLines, offset, limit, content),

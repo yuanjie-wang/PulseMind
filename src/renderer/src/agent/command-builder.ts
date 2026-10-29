@@ -1,4 +1,5 @@
 import { shEscape, shSingleQuote, psEscape } from './agent-utils'
+import { READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT } from './engine/engine-constants'
 
 /** search/find 的 search_dir 缺省与相对解析（audit 2026-10-10 #5）：执行器
  *  的 shell 以 $HOME 兜底 cwd，search_dir 省略时曾等于全 home 扫描。缺省回
@@ -118,12 +119,14 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       const filePath = String(input.file_path || '')
       // Floor at 1 (2026-10-24 harness review): a negative offset/limit passed
       // straight through — `head -n -5` is "all but the last 5 lines" on GNU
-      // and a hard error on BSD/macOS, `tail -n +-3` likewise. Cap stays 500.
+      // and a hard error on BSD/macOS, `tail -n +-3` likewise. The floor stays 1.
       const offset = Math.max(1, Number(input.offset) || 1)
-      // Hard cap: a page is bounded at 500 lines — the structural bound;
-      // token-level overflow is read's dedicated budget's job
-      // (MAX_READ_RESULT_TOKENS in engine-constants).
-      const limit = Math.max(1, Math.min(Number(input.limit) || 500, 500))
+      // Page bounds are engine-constants' (2026-10-29): this command and the
+      // executor used to clamp the same page with DIFFERENT numbers (500 vs
+      // 1000) while the metadata header reported the REQUESTED limit — a
+      // `limit:1000` read delivered 500 lines under a "lines 1-1000" header,
+      // so the model resumed at 1001 and 501-1000 vanished silently.
+      const limit = Math.max(1, Math.min(Number(input.limit) || READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT))
       // ~ 路径在引号里不展开（audit 2026-10-10 #6）。Windows 的单引号内一切
       // 字面，$env:USERPROFILE 拼进 '…' 曾永远读不到（full_20261011 M2-P1-3）
       // ——变量必须在引号外：Join-Path 展开变量、路径本体仍单引号免注入。

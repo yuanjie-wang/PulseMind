@@ -55,8 +55,9 @@ function makeMockHost(): PulseHost {
   } as unknown as PulseHost
 }
 
-/** apiKey must be non-empty: kick()'s key gate defers the whole scheduler to
- *  continueLoop (which would raise the error) when no key is configured. */
+/** apiKey kept non-empty as a realistic profile; kick() no longer gates on it
+ *  (review_20261028 高1 removed the gate — an empty key is the legitimate
+ *  local-provider shape, and gating on it deadlocked delegated plans). */
 function makeEngine(conversationId: string): AgentEngine {
   return new AgentEngine({
     apiKey: 'test-key', baseURL: 'https://example.invalid', model: 'test-model', maxTokens: 512,
