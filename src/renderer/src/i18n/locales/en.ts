@@ -633,6 +633,13 @@ const en: TranslationDict = {
     renameBaseTitle: 'Rename Knowledge Base',
     baseNamePlaceholder: 'Base name (max 40 chars)',
   },
+  // ── Project (immersive) window ── (2026-10-30)
+  projectWindow: {
+    newConversation: 'New Conversation',
+    switchConversation: 'Switch conversation',
+    draftTitle: 'Start a new task in "{{name}}"',
+    draftSubtitle: 'Conversations and files live in this project\'s workspace',
+  },
   appLayout: {
     dataRuntime: "Advanced",
     newChat: 'New Chat',
@@ -643,6 +650,8 @@ const en: TranslationDict = {
     noProjectConversations: 'No conversations yet',
     deleteProject: 'Delete Project',
     editProject: 'Edit Project',
+    enterImmersive: 'Open Immersive Mode',
+    moreProjectActions: 'More actions',
     noConversations: 'No conversations yet',
     knowledgeManagement: 'Knowledge',
     functionSettings: 'Settings',
@@ -882,6 +891,7 @@ const en: TranslationDict = {
     unpin: 'Unpin',
     delete: 'Delete',
     rename: 'Rename',
+    popOut: 'Open in New Window',
     renameTitle: 'Rename conversation',
     renamePlaceholder: 'Enter new name',
     groupPinned: 'Pinned',

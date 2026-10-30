@@ -210,6 +210,30 @@ export const IPC_CHANNELS = {
   AGENT_SESSION_SNAPSHOT: 'agent-session:snapshot',
   AGENT_SESSION_ENGINE_CALL: 'agent-session:engine-call',
   AGENT_SESSION_REFRESH_OPTIONS: 'agent-session:refresh-options',
+  // ── Conversation popout (PLAN-conversation-popout 2026-10-30) ──
+  /** Renderer → main: pop a conversation out into its own BrowserWindow. */
+  POPOUT_OPEN: 'popout:open',
+  /** Renderer → main: the conversations currently popped out (the main window
+   *  re-syncs its registry on mount — a renderer reload rebuilds it empty). */
+  POPOUT_LIST: 'popout:list',
+  /** Main → every window: a popout opened/closed a conversation. The MAIN
+   *  window consumes this (adopt the conversation for single-writer saves,
+   *  clear its unread light); popout windows ignore it. */
+  POPOUT_EVENT: 'popout:event',
+  /** Main → every window: a conversation's title changed in the DB, so the
+   *  other windows' in-memory sidebar lists can follow (title generation
+   *  happens in whichever window drove the turn). */
+  CONVERSATION_TITLE_CHANGED: 'conversation:title-changed',
+  // ── Project (immersive) window (2026-10-30) ──
+  /** Renderer → main: open the immersive window for a project (idempotent —
+   *  focuses the existing one). Project windows REUSE the popout window module
+   *  and the POPOUT_EVENT channel; this invoke is the only new wire. */
+  PROJECT_WINDOW_OPEN: 'project-window:open',
+  /** Renderer → main: the conversation a secondary window is currently
+   *  driving (null = none / a draft). Main resolves the sender window, records
+   *  the watch and rebroadcasts POPOUT_EVENT itself, so the renderer never has
+   *  to emit popout events. */
+  SECONDARY_WATCH: 'secondary:watch',
   // ── Hosted (reverse-RPC) page tools (PLAN-browser-extension M0.2) ──
   HOSTED_TOOL_CALL: 'hosted:tool-call',
 

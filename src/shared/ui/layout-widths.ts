@@ -42,3 +42,25 @@ export function clampTreeWidth(desired: number, rowWidth: number): number {
  *  gesture thickness across all three, three definitions because the
  *  browser-pane one lives in a file the main process also reads. */
 export const COLUMN_DRAG_HANDLE_WIDTH = 6
+
+// ── Project window (immersive) explorer ↔ chat divider ──
+// The project window's left region is a whole WorkspacePane (tree + preview),
+// so its floor is far above a single tree column's — it must fit both columns
+// at their own minimums plus the divider. The chat column keeps the same 360
+// floor the workbench pane reserve uses, so a project window that is dragged
+// narrow degrades by squeezing the explorer, never the conversation.
+
+/** Explorer region (tree | preview) default + floor. */
+export const EXPLORER_DEFAULT_WIDTH = 760
+export const EXPLORER_MIN_WIDTH = 480
+/** The chat column's floor in the project window. */
+export const PROJECT_CHAT_MIN_WIDTH = 360
+
+export function clampExplorerWidth(desired: number, totalWidth: number): number {
+  const width = Math.max(EXPLORER_MIN_WIDTH, Math.round(desired))
+  // Unmeasured row (first paint, before the ResizeObserver lands): floor
+  // only — the render clamp corrects it the moment the observation fires.
+  if (totalWidth <= 0) return width
+  const max = Math.max(EXPLORER_MIN_WIDTH, totalWidth - PROJECT_CHAT_MIN_WIDTH)
+  return Math.min(width, max)
+}

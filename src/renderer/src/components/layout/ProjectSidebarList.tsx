@@ -13,8 +13,17 @@
 // default project) are not listed here — they have no workspace of their own.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { App as AntdApp, Button, Tooltip } from 'antd'
-import { DeleteOutlined, EditOutlined, FolderOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons'
+import { App as AntdApp, Button, Dropdown, Tooltip } from 'antd'
+import type { MenuProps } from 'antd'
+import {
+  DeleteOutlined,
+  EditOutlined,
+  EllipsisOutlined,
+  FolderOutlined,
+  FullscreenOutlined,
+  PlusOutlined,
+  RightOutlined,
+} from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { useProjectStore } from '../../stores/projectStore'
@@ -38,10 +47,16 @@ interface ProjectSidebarListProps {
   onCreateTask?: (projectId: string) => void
   /** Open the project's edit modal (AppLayout owns the ProjectModal). */
   onEditProject?: (project: Project) => void
+  /** Open the project's immersive window (tree | preview | chat in its own
+   *  window). Absent hides the menu item. */
+  onEnterImmersive?: (project: Project) => void
   onOpenConversation: (key: string) => void
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
   onTogglePin: (key: string, pinned: boolean) => void
+  /** Pop out into its own window (PLAN-conversation-popout); absent hides the
+   *  menu item. */
+  onPopout?: (key: string, label: string) => void
 }
 
 function ProjectSidebarList({
@@ -52,10 +67,12 @@ function ProjectSidebarList({
   onManualOrder,
   onCreateTask,
   onEditProject,
+  onEnterImmersive,
   onOpenConversation,
   onDelete,
   onRename,
-  onTogglePin
+  onTogglePin,
+  onPopout
 }: ProjectSidebarListProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
@@ -66,6 +83,13 @@ function ProjectSidebarList({
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set())
   // The hovered group header — its hover actions swap in for the conv count.
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+  // The project whose ⋯ menu is open. Controlled (like ConversationRows'
+  // openMenuKey) for two reasons: hover-trigger + controlled open is the
+  // conversation row's exact idiom, and the reveal condition below must keep
+  // the trigger MOUNTED while the menu is open — an unmount mid-hover kills
+  // the overlay, which is what a click-trigger + hover-only reveal used to do
+  // (the pointer leaves the row on its way to the menu).
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   // HTML5 drag state: which header is being dragged, and where it would land.
   // The half-of-the-row the pointer is over picks before/after; the indicator
   // is an inset box-shadow so the insertion line never shifts the row 2px.
@@ -146,6 +170,29 @@ function ProjectSidebarList({
     })
   }
 
+  // The row's ⋯ menu (2026-10-30): 沉浸模式 leads (it is the reason the row
+  // grew a menu), then a divider, then the two bookkeeping actions — delete
+  // last and marked danger, matching every other 更多 menu in the app. Each
+  // item closes the menu FIRST (setOpenMenuId(null)): with a controlled `open`
+  // antd does not auto-close on item click — the same contract as
+  // ConversationRows' menuFor.
+  const projectMenu = (project: Project, convs: ConversationListItem[]): MenuProps => ({
+    items: [
+      ...(onEnterImmersive
+        ? [{ key: 'immersive', label: t('appLayout.enterImmersive'), icon: <FullscreenOutlined /> }]
+        : []),
+      { type: 'divider' as const },
+      { key: 'edit', label: t('appLayout.editProject'), icon: <EditOutlined /> },
+      { key: 'delete', label: t('appLayout.deleteProject'), icon: <DeleteOutlined />, danger: true },
+    ],
+    onClick: ({ key }) => {
+      setOpenMenuId(null)
+      if (key === 'immersive') onEnterImmersive?.(project)
+      else if (key === 'edit') onEditProject?.(project)
+      else if (key === 'delete') removeProject(project, convs)
+    },
+  })
+
   const sorted = sortProjectGroups(
     projects
       .filter((p) => p.id !== DEFAULT_PROJECT_ID)
@@ -219,9 +266,14 @@ function ProjectSidebarList({
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {project.name}
               </span>
-              {/* Hover: the row actions (新建任务 / 编辑 / 删除项目). The cluster
-                  stops propagation so the row click stays collapse-only. */}
-              {hoveredId === project.id && (
+              {/* Hover: 新建任务 stays a direct button (the frequent action);
+                  everything else folds into ⋯ (2026-10-30) — the row's three
+                  inline icons made the 20px line box busy, and 沉浸模式 needs a
+                  home. The cluster stops propagation so the row click stays
+                  collapse-only, and it stays mounted while the menu is open
+                  (reveal = hovered || menuOpen — the conversation row's exact
+                  contract), so reaching for the menu cannot unmount it. */}
+              {(hoveredId === project.id || openMenuId === project.id) && (
                 <span
                   onClick={(e) => e.stopPropagation()}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}
@@ -235,22 +287,25 @@ function ProjectSidebarList({
                       onClick={() => onCreateTask?.(project.id)}
                     />
                   </Tooltip>
-                  <Tooltip title={t('appLayout.editProject')}>
+                  <Dropdown
+                    menu={projectMenu(project, convs)}
+                    open={openMenuId === project.id}
+                    onOpenChange={(open) => setOpenMenuId(open ? project.id : null)}
+                    // No placement: antd's default bottomLeft, exactly what the
+                    // conversation row uses (it passes none either) — a
+                    // bottomRight here opened the menu toward the row's left
+                    // while the conversation menu grew rightward (2026-10-30
+                    // 「一个向左下、一个向右下」).
+                    trigger={['hover']}
+                  >
                     <Button
                       type="text"
                       className="project-row-action"
-                      icon={<EditOutlined style={{ fontSize: 13 }} />}
-                      onClick={() => onEditProject?.(project)}
+                      data-project-more={project.id}
+                      icon={<EllipsisOutlined style={{ fontSize: 14 }} />}
+                      aria-label={t('appLayout.moreProjectActions')}
                     />
-                  </Tooltip>
-                  <Tooltip title={t('appLayout.deleteProject')}>
-                    <Button
-                      type="text"
-                      className="project-row-action project-row-action-danger"
-                      icon={<DeleteOutlined style={{ fontSize: 13 }} />}
-                      onClick={() => removeProject(project, convs)}
-                    />
-                  </Tooltip>
+                  </Dropdown>
                 </span>
               )}
             </div>
@@ -267,6 +322,7 @@ function ProjectSidebarList({
                 onDelete={onDelete}
                 onRename={onRename}
                 onTogglePin={onTogglePin}
+                onPopout={onPopout}
               />
             ))}
           </div>

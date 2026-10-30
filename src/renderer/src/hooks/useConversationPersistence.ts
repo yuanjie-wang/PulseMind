@@ -65,6 +65,14 @@ export async function evictMirrorCandidates(candidates: string[], io: MirrorEvic
 
 interface UseConversationPersistenceOptions {
   autoCleanup?: boolean
+  /** Single-writer gate (PLAN-conversation-popout 2026-10-30): false in the
+   *  popout window — it drives turns but never writes the transcript. The
+   *  MAIN window is the one writer for every conversation, including ones it
+   *  only mirrors via adoptConversation (a popped conversation's saves ride
+   *  the main window's 10s sweep). Full-save runs deleteMessagesNotIn, so two
+   *  writers with diverging mirrors could DELETE each other's rows — the
+   *  gate exists so that can never happen. */
+  savesEnabled?: boolean
   messages: AgentMessage[]
   agentStatus: AgentStatus
   // Engine integration
@@ -79,6 +87,17 @@ interface UseConversationPersistenceOptions {
   setAgentStatus: React.Dispatch<React.SetStateAction<AgentStatus>>
   setStreamingBlocks: React.Dispatch<React.SetStateAction<any[]>>
   setPlan: React.Dispatch<React.SetStateAction<any>>
+  // Popout adoption (PLAN-conversation-popout): seed this window's mirror for
+  // a conversation a popout opened, without touching React state or the
+  // engine's live transcript.
+  seedSessionSnapshot: (key: string, snapshot: {
+    messages: unknown[]
+    status: { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string }
+    streamingBlocks: unknown[]
+    plan: unknown
+    fileChanges?: unknown
+  }) => void
+  seedSessionHistory: (key: string, msgs: AgentMessage[], summary?: { text: string; firstKeptId: string } | null) => void
   // Mirror eviction (MAX_CACHED_CONVERSATIONS, 12h-run memory bound): the
   // engine hook owns the mechanism (candidate list by recency+status, mirror
   // drop), this hook owns the policy gate — nothing leaves the cache until a
@@ -92,8 +111,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     autoCleanup, messages, agentStatus,
     enginesRef, activeEngineIdRef, getOrCreateEngine, markConversationRead,
     setMessages, setAgentStatus, setStreamingBlocks, setPlan,
-    listEvictionCandidates, evictEngine
+    listEvictionCandidates, evictEngine,
+    seedSessionSnapshot, seedSessionHistory
   } = options
+  const savesEnabled = options.savesEnabled !== false
 
   // ── Conversation list management (useXConversations) ──
   const {
@@ -166,7 +187,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // Returns success so the sweep's clean-key bookkeeping only marks verified
   // saves (a failed write must retry on the next tick, review 2026-09-18 M2).
   const saveConversationById = useCallback(async (convId: string, full = false): Promise<boolean> => {
-    if (!convId) return false
+    if (!convId || !savesEnabled) return false
     try {
       await saveQueueRef.current.save(convId, () => snapshotConversation(convId), async (snapshot, plan) => {
         if (plan.mode === 'full') {
@@ -184,7 +205,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       console.error('[Chat] conversation save failed:', err)
       return false
     }
-  }, [snapshotConversation])
+  }, [snapshotConversation, savesEnabled])
 
   const saveCurrentConversation = useCallback(
     () => saveConversationById(convIdRef.current, true), [saveConversationById]
@@ -194,7 +215,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   saveNewRef.current = () => saveConversationById(convIdRef.current)
 
   const saveConversationByIdSync = useCallback((convId: string) => {
-    if (!convId) return
+    if (!convId || !savesEnabled) return
     const snapshot = snapshotConversation(convId)
     if (!snapshot) return
     try {
@@ -202,7 +223,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     } catch (err) {
       console.error('[Chat] synchronous conversation save failed:', err)
     }
-  }, [snapshotConversation])
+  }, [snapshotConversation, savesEnabled])
 
   const saveConversationSync = useCallback(() => {
     saveConversationByIdSync(convIdRef.current)
@@ -219,10 +240,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // saveNewRef bridges the latest callback without causing effect re-run.
   useEffect(() => {
     if (!activeConversationKey || agentStatus.status === 'streaming') return
+    if (!savesEnabled) return
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => { saveNewRef.current() }, 1000)
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
-  }, [messages, agentStatus.status])
+  }, [messages, agentStatus.status, savesEnabled])
 
   // Active renders are not a notification source for background conversations.
   // A cheap no-op content comparison gives every cached engine crash recovery,
@@ -253,6 +275,12 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => {
     const timer = setInterval(() => {
       void (async () => {
+        // Single-writer: the popout window skips the whole tick — saves AND
+        // eviction (its only engine is the active one, never a candidate, so
+        // nothing of value is skipped). Its conversation is saved by the main
+        // window's own sweep — adoption guarantees the main window holds the
+        // mirror.
+        if (!savesEnabled) return
         const now = Date.now()
         for (const [id, engine] of enginesRef.current.entries()) {
           // 流式会话走粗粒度检查点（窗口见 streamingCheckpointAtRef）；防抖路径
@@ -296,7 +324,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       })()
     }, 10000)
     return () => clearInterval(timer)
-  }, [enginesRef, saveConversationById, listEvictionCandidates, evictEngine, isEvictable])
+  }, [enginesRef, saveConversationById, listEvictionCandidates, evictEngine, isEvictable, savesEnabled])
 
   // ── Save immediately when streaming ends ──
   const prevAgentStatusRef = useRef(agentStatus.status)
@@ -305,7 +333,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     prevAgentStatusRef.current = agentStatus.status
     if ((prev === 'streaming' && agentStatus.status === 'completed') ||
         (prev === 'streaming' && agentStatus.status === 'error')) {
-      saveCurrentConversation()
+      if (savesEnabled) saveCurrentConversation()
       // Move active conversation to top of list
       if (activeConversationKey) {
         const convId = String(activeConversationKey)
@@ -316,7 +344,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       bumpConversation(convId)
       }
     }
-  }, [agentStatus, saveCurrentConversation])
+  }, [agentStatus, saveCurrentConversation, savesEnabled])
 
   // ── Load conversations from disk on mount (and re-list on demand) ──
   // reloadConversations re-reads the DB — used after the settings page's 数据清理
@@ -437,6 +465,61 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     convIdRef.current = key
   }, [saveConversationById, setActiveConversationKey, getOrCreateEngine, markConversationRead,
       enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
+
+  // ── Popout adoption (PLAN-conversation-popout, single-writer) ──
+  // The MAIN window is the only transcript writer. When a popout opens a
+  // conversation, this gives the main window a mirror of it (enginesRef
+  // entry + save baseline) WITHOUT switching the view onto it — from then on
+  // the ordinary 10s sweep and the beforeunload flush persist the
+  // conversation exactly like any other cached engine. Already-mirrored
+  // conversations adopt as a no-op.
+  const adoptConversation = useCallback(async (key: string): Promise<void> => {
+    if (!key || enginesRef.current.has(key)) return
+    loadingIdsRef.current.add(key)
+    try {
+      // Idempotent main-side create: whether the popout's own createSession
+      // won the race or this call did, both land on the same session.
+      getOrCreateEngine(key)
+      const [snap, conv] = await Promise.all([
+        window.electronAPI.agentSessionSnapshot(key).catch(() => null),
+        window.electronAPI.hydrateConversation(key).catch(() => null),
+      ])
+      const engine = enginesRef.current.get(key)
+      if (!engine) return
+      const dbMsgs = conv?.messages?.length ? storedMessagesToAgentMessages(conv.messages) : []
+      const snapMsgs = Array.isArray(snap?.messages) ? (snap!.messages as AgentMessage[]) : []
+      if (engine.messages.length === 0 && snapMsgs.length === 0 && dbMsgs.length > 0) {
+        // Cold boot: nobody hydrated the engine yet, and there is no live
+        // content to clobber — the ordinary cold-open path, minus the view.
+        engine.loadConversation(dbMsgs)
+        engine.seedHistorySummary(conv!.historySummary, conv!.historySummaryFrontier)
+        engine.loadPlan(key)
+        seedSessionHistory(key, dbMsgs,
+          conv!.historySummary ? { text: conv!.historySummary, firstKeptId: conv!.historySummaryFrontier ?? '' } : null)
+      } else if (snapMsgs.length >= dbMsgs.length && snapMsgs.length > 0) {
+        // Live engine (the popout hydrated it, maybe already streaming):
+        // NEVER write the engine — mirror only, straight from the manager's
+        // own snapshot. The snapshot length IS where future appends expect
+        // the mirror to be.
+        seedSessionSnapshot(key, snap!)
+      } else if (dbMsgs.length > 0) {
+        // Snapshot raced the popout's hydrate and came back empty: the DB
+        // rows are still an exact prefix of the manager's history.
+        seedSessionHistory(key, dbMsgs,
+          conv?.historySummary ? { text: conv.historySummary, firstKeptId: conv.historySummaryFrontier ?? '' } : null)
+      }
+      // The save baseline is ALWAYS the DB truth (what appendConversationMessages
+      // already persisted): the sweep appends the mirror's unsaved tail.
+      if (conv) {
+        const baseline = agentMessagesToConversation(dbMsgs, key, conv.title)
+        baseline.historySummary = conv.historySummary
+        baseline.historySummaryFrontier = conv.historySummaryFrontier
+        saveQueueRef.current.seed(key, baseline)
+      }
+    } finally {
+      loadingIdsRef.current.delete(key)
+    }
+  }, [enginesRef, getOrCreateEngine, seedSessionSnapshot, seedSessionHistory])
 
   // ── Helper: update title in list ──
   // Existence is read from the store's LIVE list (getConversation), never from
@@ -673,6 +756,22 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     convIdRef.current = key
   }, [setActiveConversationKey])
 
+  // ── Cross-window title sync (PLAN-conversation-popout) ──
+  // Title generation/rename happens in whichever window drove it; main fans
+  // the DB write out as CONVERSATION_TITLE_CHANGED, so this window's sidebar
+  // list follows without a reload. The popout window also receives its own
+  // write's echo — harmless (it updates the same single entry its local
+  // generateTitle already updated).
+  const titleInListRef = useRef(updateConversationTitleInList)
+  // eslint-disable-next-line react-hooks/refs -- latest mirror; the subscription below is mount-only
+  titleInListRef.current = updateConversationTitleInList
+  useEffect(() => {
+    const unsub = window.electronAPI.onConversationTitleChanged(({ id, title }) => {
+      titleInListRef.current(id, title)
+    })
+    return unsub
+  }, [])
+
   return {
     // Conversation list
     conversations,
@@ -694,6 +793,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     convIdRef,
     // CRUD
     handleSelectConversation,
+    adoptConversation,
     updateConversationTitleInList,
     createNewConversation,
     deleteConversation,

@@ -1,5 +1,6 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { ipcMain, BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import { setPopoutTitle } from '../popout-window'
 import type { Conversation, Message, TokenStats } from '../../shared/types/conversation'
 import {
   listConversations,
@@ -160,7 +161,19 @@ export function registerConversationHandlers(): void {
       deleteConversation(id)
     } catch (e) { console.error(`[DB] error ${IPC_CHANNELS.CONVERSATION_DELETE}:`, e) }
   })
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, updateConversationTitle))
+  // Title writes fan out: the OS title of a popped-out window follows the DB
+  // rename/generation, and every window's in-memory sidebar list gets a push
+  // (title generation happens in whichever window drove the turn — without
+  // the broadcast the other window's sidebar stays stale until a full reload).
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, (_event, id: string, title: string) => {
+    updateConversationTitle(id, title)
+    setPopoutTitle(id, title)
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        try { win.webContents.send(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, { id, title }) } catch { /* window closing */ }
+      }
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, updateConversationSummary))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, updateConversationKeywords))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_EXTRACTED_MSG_COUNT, passThrough(IPC_CHANNELS.CONVERSATION_GET_EXTRACTED_MSG_COUNT, getConversationExtractedMsgCount, 0))

@@ -627,6 +627,13 @@ const zh = {
     renameBaseTitle: '重命名知识库',
     baseNamePlaceholder: '知识库名称（最多 40 字）',
   },
+  // ── Project (immersive) window ── (2026-10-30)
+  projectWindow: {
+    newConversation: '新建会话',
+    switchConversation: '切换会话',
+    draftTitle: '在「{{name}}」中开始新任务',
+    draftSubtitle: '对话与文件都落在这个项目的工作区里，随时回来继续',
+  },
   appLayout: {
     dataRuntime: "高级",
     newChat: '新建对话',
@@ -637,6 +644,8 @@ const zh = {
     noProjectConversations: '暂无会话',
     deleteProject: '删除项目',
     editProject: '编辑项目',
+    enterImmersive: '进入沉浸模式',
+    moreProjectActions: '更多操作',
     noConversations: '暂无对话',
     knowledgeManagement: '知识管理',
     functionSettings: '功能设置',
@@ -876,6 +885,7 @@ const zh = {
     unpin: '取消置顶',
     delete: '删除',
     rename: '重命名',
+    popOut: '弹出为独立窗口',
     renameTitle: '重命名会话',
     renamePlaceholder: '输入新名称',
     groupPinned: '置顶',

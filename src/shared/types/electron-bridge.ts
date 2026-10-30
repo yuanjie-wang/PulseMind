@@ -594,6 +594,32 @@ export interface ElectronAPI {
   extensionExportZip: () => Promise<{ ok: boolean; path?: string; canceled?: boolean; message?: string }>
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
 
+  // ── Conversation popout (PLAN-conversation-popout 2026-10-30) ──
+  /** Pop a conversation into its own window (focus the existing popout when
+   *  the conversation is already popped). Resolves once the request is
+   *  handed to main — the window's appearance is not awaited. */
+  popoutOpen: (convId: string, title?: string) => Promise<void>
+  /** The conversations currently popped out — the main window re-syncs its
+   *  registry from this on mount (a renderer reload rebuilds it empty). */
+  popoutList: () => Promise<string[]>
+  /** Popout lifecycle: a conversation was popped out ('opened') or its popout
+   *  window closed ('closed'). The main window consumes both (adoption +
+   *  read receipt + eviction/unread bookkeeping); popout windows ignore it. */
+  onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void) => () => void
+  /** A conversation's title changed in the DB (rename or title generation in
+   *  another window): update this window's in-memory sidebar list. */
+  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void) => () => void
+
+  // ── Project (immersive) window (2026-10-30) ──
+  /** Open the immersive window for a project — a project-scoped secondary
+   *  window carrying tree | preview | chat. Idempotent: an already-open window
+   *  is focused. Resolves once the request is handed to main. */
+  projectWindowOpen: (projectId: string, name?: string) => Promise<void>
+  /** A project window reports the conversation it is currently driving (null
+   *  when it has none yet). Main rebroadcasts it on POPOUT_EVENT, so the main
+   *  window adopts/saves it exactly as it does a popped-out conversation. */
+  secondaryWatch: (sessionId: string | null) => Promise<void>
+
   // SubAgent
   expertList: () => Promise<ExpertProfile[]>
   expertCreate: (profile: ExpertProfile) => Promise<ExpertProfile[]>

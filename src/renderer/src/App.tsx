@@ -44,6 +44,7 @@ import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { usePendingProfileStore } from './stores/pendingProfileStore'
+import { usePopoutWatchStore, isPoppedOut } from './stores/popoutWatchStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { resolvePreviewPath } from '../../shared/preview/file-kind'
 import { NotifyBridge } from './utils/notify'
@@ -234,7 +235,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     updateConversationProfile,
     plan,
     stopExecution,
-    resumeExecution
+    resumeExecution,
+    adoptConversation,
+    markConversationRead
   } = useChatController({
     apiKey,
     baseURL,
@@ -272,6 +275,52 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     memoryManager.setPreferences({ autoCaptureEnabled: memoryOn, autoInjectEnabled: memoryOn })
     experienceManager.setEnabled(settings.experienceEnabled ?? true)
   }, [memoryManager, experienceManager, settings.memoryEnabled, settings.experienceEnabled])
+
+  // ── Popout lifecycle (PLAN-conversation-popout) ──
+  // The MAIN window is the single transcript writer: a conversation a popout
+  // opens is ADOPTED here (mirror + save baseline) so the ordinary 10s sweep
+  // persists it even though the main window never switched onto it. Opening a
+  // popout is also the read receipt for that conversation (watching it there
+  // counts as watching it — ruling 2026-10-30), and the popped registry feeds
+  // the unread light's isRead judgement + the mirror-eviction exclusion.
+  // Popping the ACTIVE conversation also returns this window to the welcome
+  // page (user ruling 2026-10-30): the same conversation must not be shown in
+  // two windows. The main-hosted session and this window's mirror survive the
+  // switch (createNewConversation clears the view, never the engines map), so
+  // the popout keeps working and the sweep keeps saving.
+  const activeConvKeyRef = useRef<string | undefined>(undefined)
+  // eslint-disable-next-line react-hooks/refs -- latest mirror for the mount-only popout subscription below
+  activeConvKeyRef.current = conversationKeyOf(activeConversationKey)
+  const createNewConversationRef = useRef(createNewConversation)
+  // eslint-disable-next-line react-hooks/refs -- latest mirror for the mount-only popout subscription below
+  createNewConversationRef.current = createNewConversation
+  useEffect(() => {
+    const unsub = window.electronAPI.onPopoutEvent(({ type, sessionId }) => {
+      if (type === 'opened') {
+        usePopoutWatchStore.getState().add(sessionId)
+        markConversationRead(sessionId)
+        if (activeConvKeyRef.current === sessionId) void createNewConversationRef.current()
+        void adoptConversation(sessionId)
+      } else {
+        usePopoutWatchStore.getState().remove(sessionId)
+      }
+    })
+    return unsub
+  }, [adoptConversation, markConversationRead])
+
+  // A renderer reload (HMR, the unresponsive-recovery reload) rebuilds the
+  // popout registry EMPTY while the popout windows themselves survive — the
+  // guard, the unread semantics and the adoption all hang off it, so re-sync
+  // from main on mount. Without this a reloaded main window would re-open a
+  // popped conversation in-window and stop saving it.
+  useEffect(() => {
+    void window.electronAPI.popoutList().then((ids) => {
+      for (const id of ids) {
+        usePopoutWatchStore.getState().add(id)
+        void adoptConversation(id)
+      }
+    }).catch((err: unknown) => reportSilentFailure('popout-list-sync', err))
+  }, [adoptConversation])
 
   // Keep conversationId ref in sync for the afterSession hook
   // eslint-disable-next-line react-hooks/refs -- afterSession reads the live conversation id; mirrored fresh each render
@@ -655,6 +704,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onRenameConversation={renameConversation}
             onSelectConversation={setActiveConversationKey}
             onTogglePinConversation={togglePin}
+            onPopoutConversation={(key, label) => { void window.electronAPI.popoutOpen(key, label) }}
+            onFocusPoppedConversation={(key) => { void window.electronAPI.popoutOpen(key) }}
+            // The project's immersive window reuses the popout machinery end to
+            // end; `popoutOpen` is also what raises a conversation that window
+            // is driving, so no extra focus path is needed here.
+            onEnterProjectWindow={(projectId, name) => { void window.electronAPI.projectWindowOpen(projectId, name) }}
             onReloadConversations={reloadConversations}
             skills={skills}
             onToggleSkill={toggleSkill}
@@ -732,7 +787,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 expertId: c.expertId
               }))}
               convLights={convLights}
-              onOpenConversation={setActiveConversationKey}
+              onOpenConversation={(key) => {
+                // Welcome quick entries: a popped conversation is raised, never
+                // reopened in this window (ruling 2026-10-30).
+                if (isPoppedOut(key)) { void window.electronAPI.popoutOpen(key); return }
+                setActiveConversationKey(key)
+              }}
               activeExpertId={
                 activeConvKey
                   ? conversations.find((c: any) => c.key === activeConvKey)?.expertId

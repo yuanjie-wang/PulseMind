@@ -535,6 +535,31 @@ const electronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)
     }
   },
+
+  // ── Conversation popout ──
+  popoutOpen: (convId: string, title?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.POPOUT_OPEN, convId, title),
+  popoutList: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.POPOUT_LIST),
+  onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { type: 'opened' | 'closed'; sessionId: string }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.POPOUT_EVENT, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.POPOUT_EVENT, listener)
+    }
+  },
+  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { id: string; title: string }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
+    }
+  },
+
+  // ── Project (immersive) window ──
+  projectWindowOpen: (projectId: string, name?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),
+  secondaryWatch: (sessionId: string | null): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SECONDARY_WATCH, sessionId),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

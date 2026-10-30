@@ -134,6 +134,24 @@ interface ChatViewProps {
    *  overlay's tail — the streaming cursor. display:none via InputArea, never
    *  a conditional render: the draft lives inside the component. */
   hideComposer?: boolean
+  /** The project (immersive) window renders the file surface ITSELF (a
+   *  WorkspacePane to the left), so this column must not also dock the
+   *  workbench: WorkbenchPane is absolutely positioned inside this root and
+   *  would paint over the conversation. Hides the pane, its paddingRight
+   *  reserve, and the slim plan strip (its click would open a pane nobody can
+   *  see). The browser/plan surfaces stay reachable in the main window — the
+   *  honest gap recorded in AGENTS.md. */
+  hideWorkbench?: boolean
+  /** The project window is bound to a project: the welcome form's 对话/项目
+   *  switcher would let a task escape into a chat-mode conversation, so it is
+   *  hidden there (the host has already pinned the project). */
+  hideTaskSwitcher?: boolean
+  /** Compact draft surface (project window, 2026-10-30 用户裁定「新建会话不引入
+   *  welcome 页面」): replaces the whole WelcomeContent (logo / greeting /
+   *  suggestions / project cards) with the host's own hint block — the project
+   *  window knows the name and the hue, and none of the welcome machinery
+   *  means anything inside a pinned project. The composer below stays as-is. */
+  welcomeHint?: React.ReactNode
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
@@ -193,6 +211,9 @@ function ChatView({
   approvalMode,
   onChangeApprovalMode,
   hideComposer,
+  hideWorkbench,
+  hideTaskSwitcher,
+  welcomeHint,
   plan,
   onPlanJump,
   onOpenPlanNode,
@@ -359,7 +380,13 @@ function ChatView({
   // preview, the browser and the plan DAG behind tool tabs. Open state is per
   // conversation — this one's flag, with the draft key for a not-yet-created row.
   const wbKey = conversationId ?? DRAFT_CONVERSATION_KEY
-  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
+  const workbenchOpenRaw = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
+  // hideWorkbench (project window): the file surface lives in the host's own
+  // explorer column, so this column has no pane to open. Folding it into the
+  // effective flag keeps ONE source of truth for the reserve, the strip and
+  // the auto-open effects below (the store read stays unconditional — rules of
+  // hooks; the flag is static per window either way).
+  const workbenchOpen = workbenchOpenRaw && !hideWorkbench
   const workbenchWidth = useWorkbenchStore((s) => s.width)
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   useEffect(() => {
@@ -408,7 +435,9 @@ function ChatView({
   const planSettled = plan ? plan.nodes.filter((n) => n.status !== 'pending').length : 0
   const planTotal = plan?.nodes.length ?? 0
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定。
-  const planStrip = useMemo(() => plan && !plan.completed && planTotal > 0 && !workbenchOpen ? (
+  // The strip is a POINTER to the workbench's 计划 tab, so it only exists
+  // where that pane can show (hideWorkbench would make its click a no-op).
+  const planStrip = useMemo(() => plan && !plan.completed && planTotal > 0 && !workbenchOpen && !hideWorkbench ? (
     <div
       onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
       style={{
@@ -422,7 +451,7 @@ function ChatView({
       <span>{plan?.mode === 'direct' ? '清单进行中' : '计划进行中'} · {planSettled}/{planTotal}</span>
       <span style={{ color: 'var(--pm-link)' }}>查看</span>
     </div>
-  ) : null, [plan, planTotal, planSettled, workbenchOpen, wbKey])
+  ) : null, [plan, planTotal, planSettled, workbenchOpen, wbKey, hideWorkbench])
   // 回到底部：平滑滚回尾部（用户裁定：点击后要有滚动动画），并重新接上
   // 跟随。动画期间挂 suppress 守卫（与跳转 effect 同款）——handleScroll 的
   // 早退防住 extraTop 塌缩与懒加载抢跑；isNearBottomRef 由动画自身的滚动
@@ -899,19 +928,24 @@ function ChatView({
             Bottom padding stays SMALL: the switcher-to-logo breathing room is
             an elastic spacer inside WelcomeContent (flex-grow, capped), not a
             fixed band — a fixed 144px here sat outside the scroll region and
-            squeezed the logo on short windows. */}
-        <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
-          <Segmented
-            className="task-switch"
-            size="large"
-            value={taskMode}
-            onChange={(v) => setTaskMode(v as NewTaskMode)}
-            options={[
-              { label: t('welcome.modeChat'), value: 'chat' },
-              { label: t('welcome.modeProject'), value: 'project' },
-            ]}
-          />
-        </div>
+            squeezed the logo on short windows.
+            Hidden in the project window (hideTaskSwitcher): the host already
+            pinned the project, and the switcher would let a task escape into a
+            chat-mode conversation outside it. */}
+        {!hideTaskSwitcher && (
+          <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
+            <Segmented
+              className="task-switch"
+              size="large"
+              value={taskMode}
+              onChange={(v) => setTaskMode(v as NewTaskMode)}
+              options={[
+                { label: t('welcome.modeChat'), value: 'chat' },
+                { label: t('welcome.modeProject'), value: 'project' },
+              ]}
+            />
+          </div>
+        )}
 
         {/* Welcome content: auto-margin centering that degrades to scrolling
             when the window is too short (alignItems:center would clip the top
@@ -921,14 +955,19 @@ function ChatView({
           data-welcome-region
           style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', marginRight: CHAT_SCROLLER_EDGE_GAP }}
         >
-          <WelcomeContent
-            greeting={greeting}
-            hasApiKey={hasApiKey}
-            animName={animName}
-            conversations={conversations}
-            convLights={convLights}
-            onOpenConversation={onOpenConversation}
-          />
+          {/* The compact draft surface (welcomeHint) fills the region itself —
+              the host centers its own copy, and none of the welcome machinery
+              (logo / greeting / suggestions / project cards) mounts. */}
+          {welcomeHint ?? (
+            <WelcomeContent
+              greeting={greeting}
+              hasApiKey={hasApiKey}
+              animName={animName}
+              conversations={conversations}
+              convLights={convLights}
+              onOpenConversation={onOpenConversation}
+            />
+          )}
         </div>
 
         <div
@@ -1122,19 +1161,21 @@ function ChatView({
         </div>
       </div>
 
-      <WorkbenchPane
-        conversationId={conversationId}
-        chatAreaWidth={browserPaneBinding.chatAreaWidth}
-        plan={plan ?? null}
-        onPlanJump={onPlanJump}
-        onOpenPlanNode={onOpenPlanNode}
-        canOpenNode={canOpenNode}
-        onOpenNodeReport={onOpenNodeReport}
-        highlightPlanNodeId={highlightPlanNodeId}
-        browserPane={browserPane}
-        onBrowserAction={browserPaneBinding.action}
-        onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}
-      />
+      {!hideWorkbench && (
+        <WorkbenchPane
+          conversationId={conversationId}
+          chatAreaWidth={browserPaneBinding.chatAreaWidth}
+          plan={plan ?? null}
+          onPlanJump={onPlanJump}
+          onOpenPlanNode={onOpenPlanNode}
+          canOpenNode={canOpenNode}
+          onOpenNodeReport={onOpenNodeReport}
+          highlightPlanNodeId={highlightPlanNodeId}
+          browserPane={browserPane}
+          onBrowserAction={browserPaneBinding.action}
+          onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}
+        />
+      )}
 
       <InputArea
         key={conversationId ?? 'new'}

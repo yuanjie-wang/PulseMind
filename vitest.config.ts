@@ -46,6 +46,8 @@ export default defineConfig({
         'src/renderer/src/components/**',
         'src/renderer/src/App.tsx',
         'src/renderer/src/main.tsx',
+        // 弹出窗口的渲染宿主（PLAN-conversation-popout）：与 App.tsx 同类的 UI 装配面，探针 territory
+        'src/renderer/src/popout/PopoutApp.tsx',
         // Electron 宿主面：contextBridge / 窗口与生命周期 / IPC 薄注册层。
         // main/ipc 不整体排除：api-proxy.handler 装着真逻辑（SSE 代理 /
         // env 占位符 / hook / 请求转储），由 oneshot-proxy-funnel 式本地
@@ -54,6 +56,9 @@ export default defineConfig({
         // 薄注册层默认排除；装了真逻辑就照 api-proxy 的先例在这里加 ! 例外。
         'src/preload/**',
         'src/main/index.ts',
+        // 弹出窗口的创建/生命周期宿主面（PLAN-conversation-popout）：BrowserWindow 构造 +
+        // appViewDock/motion-guard 依赖，node 环境无布局/无 Electron 真身；wiring 由 popout-window.test 钉
+        'src/main/popout-window.ts',
         'src/main/menu.ts',
         'src/main/tray.ts',
         'src/main/service-runtime.ts',

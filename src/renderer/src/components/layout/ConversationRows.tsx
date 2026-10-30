@@ -22,6 +22,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   EllipsisOutlined,
+  ExportOutlined,
   PushpinOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -91,6 +92,10 @@ interface ConversationRowsProps {
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
   onTogglePin: (key: string, pinned: boolean) => void
+  /** Pop this conversation out into its own window (PLAN-conversation-popout).
+   *  Optional: absent = the menu item is hidden (surfaces that predate the
+   *  feature keep their three-item menu). */
+  onPopout?: (key: string, label: string) => void
 }
 
 /** Pinned first, then most recently updated — the order both history tabs share
@@ -255,7 +260,8 @@ function ConversationRows({
   onSelect,
   onDelete,
   onRename,
-  onTogglePin
+  onTogglePin,
+  onPopout
 }: ConversationRowsProps): React.ReactElement {
   const { t } = useTranslation()
   // "Now" is an input to the rendered times, so tick it to keep them current.
@@ -281,6 +287,12 @@ function ConversationRows({
 
   const menuFor = (conv: ConversationListItem): MenuProps => ({
     items: [
+      ...(onPopout ? [{
+        label: t('conversationSidebar.popOut'),
+        icon: <ExportOutlined />,
+        key: 'popout',
+        onClick: () => { setOpenMenuKey(null); onPopout(conv.key, conv.label) }
+      }] : []),
       {
         label: t(conv.pinned ? 'conversationSidebar.unpin' : 'conversationSidebar.pin'),
         icon: <PushpinOutlined />,

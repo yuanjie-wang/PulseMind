@@ -7,7 +7,8 @@ import {
   MenuUnfoldOutlined,
   BarChartOutlined,
   PlusOutlined,
-  SortAscendingOutlined
+  SortAscendingOutlined,
+  ExportOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
 import ProjectSidebarList from './ProjectSidebarList'
@@ -16,7 +17,7 @@ import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { ViewHost } from './ViewHost'
 import { ProjectModal } from '../project/ProjectModal'
 import CommandPalette from './CommandPalette'
-import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
+import { TITLE_BAR_HEIGHT, titleBarRightInset, captionButtonVars } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import type { AppView, AppViewKind } from '../../navigation/types'
@@ -25,6 +26,7 @@ import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { useSidebarStore } from '../../stores/sidebarStore'
+import { isPoppedOut } from '../../stores/popoutWatchStore'
 import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
 import { clampSidebarWidth, COLUMN_DRAG_HANDLE_WIDTH } from '../../../../shared/ui/layout-widths'
 import { useColumnDrag } from '../../hooks/useColumnDrag'
@@ -49,12 +51,18 @@ const MAX_SESSIONS = 100
 // dockable side panel): an outlined window split by a divider, the right
 // section filling solid while the pane is open. Hand-drawn rather than antd's
 // border/pic families, which read as static shapes, not as a panel toggle.
+/** The side-window toggle glyph, hand-drawn in the same stroke idiom as the
+ *  theme icons. Its viewBox is TIGHT to the drawn ink (2..22 × 3..21, stroke
+ *  included) rather than the drawn-at 0..24 canvas: a padded viewBox made the
+ *  glyph render visibly smaller than the antd icon beside it in the header's
+ *  action pair (measured 2026-10-30: ink 11.7×10.5px vs ExportOutlined's
+ *  12.5×12.5px at the same 14px box — 「两个按钮不一样大」). */
 function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }): React.ReactElement {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 24 24"
+      viewBox="2 3 20 18"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
@@ -101,7 +109,16 @@ function MoonIcon({ size = 16 }: { size?: number }): React.ReactElement {
 // blank the window.
 const windowControls = window.electronAPI.getWindowControls?.() ?? { side: 'right' as const, inset: 0 }
 const CONTROLS_ON_LEFT = windowControls.side === 'left'
-
+// Where the OS draws the window controls (macOS left, Windows/Linux right) and
+// how far the app's own corner clusters must stay clear of them. The right
+// value is what keeps the chat header's action buttons (side-pane toggle +
+// popout) out from under the Windows/Linux caption buttons.
+const TITLE_BAR_RIGHT_INSET = titleBarRightInset(windowControls)
+/** Windows/Linux: the top-right actions wear the caption-button look (they sit
+ *  right beside the native min/max/close). macOS keeps the app's rounded icon
+ *  button — its traffic lights are on the other side, so there is no neighbour
+ *  to match. */
+const CAPTION_STYLE_ACTIONS = !CONTROLS_ON_LEFT
 // Space reserved at the top of the sidebar for the macOS traffic lights, which the OS
 // draws over the app's top-left corner. Zero on Windows/Linux: their window controls sit
 // on the right, so reserving anything here would only push the sidebar down.
@@ -134,6 +151,16 @@ interface AppLayoutProps {
   onRenameConversation: (key: string, newLabel: string) => void
   onSelectConversation: (key: string) => void
   onTogglePinConversation: (key: string, pinned: boolean) => void
+  /** Pop a conversation out into its own window (PLAN-conversation-popout).
+   *  Optional: absent hides the sidebar menu item. */
+  onPopoutConversation?: (key: string, label: string) => void
+  /** Clicking a conversation that lives in a popout window RAISES that window
+   *  instead of opening it in this one (user ruling 2026-10-30: the same
+   *  conversation must not be shown in two windows). */
+  onFocusPoppedConversation?: (key: string) => void
+  /** Open a project's immersive window (tree | preview | chat). Optional:
+   *  absent hides the sidebar's ⋯ menu item. */
+  onEnterProjectWindow?: (projectId: string, name: string) => void
   /** M4 (review 2026-09-18): SETTINGS_SET prunes expired conversations main-side;
    *  the settings page's 数据清理 (常规 tab) calls this afterwards so the sidebar drops them. */
   onReloadConversations?: () => void
@@ -162,6 +189,9 @@ function AppLayout({
   onRenameConversation,
   onSelectConversation,
   onTogglePinConversation,
+  onPopoutConversation,
+  onFocusPoppedConversation,
+  onEnterProjectWindow,
   onReloadConversations,
   skills,
   onToggleSkill,
@@ -597,10 +627,16 @@ function AppLayout({
                 <ConversationSidebar
                   conversations={looseConversations}
                   activeKey={activeChatKey}
-                  onSelect={(key: string) => { void navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                  onSelect={(key: string) => {
+                    // A popped conversation lives in its own window — raise it
+                    // rather than mirroring it here (ruling 2026-10-30).
+                    if (isPoppedOut(key)) { onFocusPoppedConversation?.(key); return }
+                    void navigate({ kind: 'chat' }); onSelectConversation(key)
+                  }}
                   onDelete={onDeleteConversation}
                   onRename={onRenameConversation}
                   onTogglePin={onTogglePinConversation}
+                  onPopout={onPopoutConversation}
                   convLights={convLights}
                 />
               )
@@ -613,10 +649,15 @@ function AppLayout({
                 onManualOrder={() => changeProjectSort('manual')}
                 onCreateTask={handleProjectNewTask}
                 onEditProject={setProjectEditTarget}
-                onOpenConversation={(key: string) => { void navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                onEnterImmersive={(project) => onEnterProjectWindow?.(project.id, project.name)}
+                onOpenConversation={(key: string) => {
+                  if (isPoppedOut(key)) { onFocusPoppedConversation?.(key); return }
+                  void navigate({ kind: 'chat' }); onSelectConversation(key)
+                }}
                 onDelete={onDeleteConversation}
                 onRename={onRenameConversation}
                 onTogglePin={onTogglePinConversation}
+                onPopout={onPopoutConversation}
               />
             )}
           </div>
@@ -722,25 +763,56 @@ function AppLayout({
               >
                 {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
               </span>
+            </div>
+          )}
+          {/* The chat view's own actions live at the TOP-RIGHT corner, clear of
+              the OS caption buttons on Windows/Linux (TITLE_BAR_RIGHT_INSET) —
+              the OS draws those over the web content, so a button in their
+              strip would be both hidden and unclickable. Order left→right:
+              side-pane toggle, then 弹出为独立窗口. */}
+          {view.kind === 'chat' && activeConvKey && (
+            <div
+              data-pm-header-actions
+              style={{
+                position: 'absolute',
+                right: 24 + TITLE_BAR_RIGHT_INSET,
+                top: 0,
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: CAPTION_STYLE_ACTIONS ? 0 : 8,
+                WebkitAppRegion: 'no-drag',
+                ...(CAPTION_STYLE_ACTIONS ? captionButtonVars(themeMode) : {})
+              } as React.CSSProperties}
+            >
               {/* The workbench pane only renders for an open conversation in the
                   chat view — hide the toggle when there is nothing to show.
                   Manual opens land on 工作区 (not the last-active tab); the
                   auto-open funnel (plan/browser/files) keeps its own tab. */}
-              {view.kind === 'chat' && activeConvKey && (
-                <Tooltip
-                  title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
-                >
+              <Tooltip
+                title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
+              >
+                <Button
+                  type="text"
+                  className={`${CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}${workbenchOpen ? ' on' : ''}`}
+                  aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
+                  icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
+                  onClick={() =>
+                    workbenchOpen
+                      ? useWorkbenchStore.getState().setOpen(wbKey, false)
+                      : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                  }
+                />
+              </Tooltip>
+              {/* Pop the active conversation out into its own window. */}
+              {onPopoutConversation && (
+                <Tooltip title={t('conversationSidebar.popOut')}>
                   <Button
                     type="text"
-                    className={`header-pane-btn${workbenchOpen ? ' on' : ''}`}
-                    aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
-                    icon={<PanelRightIcon size={16} filled={workbenchOpen} />}
-                    onClick={() =>
-                      workbenchOpen
-                        ? useWorkbenchStore.getState().setOpen(wbKey, false)
-                        : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
-                    }
-                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    className={CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}
+                    aria-label={t('conversationSidebar.popOut')}
+                    icon={<ExportOutlined style={{ fontSize: 14 }} />}
+                    onClick={() => onPopoutConversation(activeConvKey, activeConvTitle || '')}
                   />
                 </Tooltip>
               )}
@@ -949,31 +1021,10 @@ function AppLayout({
           color: var(--pm-text-disabled) !important;
         }
 
-        /* Title bar's side-window toggle: a borderless icon right of the title.
-           No background in any state (base, hover, open) — the open state reads
-           from the darker icon colour alone. */
-        .header-pane-btn {
-          background: transparent !important;
-          border: none !important;
-          box-shadow: none !important;
-          color: var(--pm-text-muted) !important;
-          width: 28px !important;
-          height: 28px !important;
-          padding: 0 !important;
-          border-radius: 6px !important;
-        }
-        .header-pane-btn .ant-btn-icon {
-          margin-inline-end: 0 !important;
-        }
-        .header-pane-btn:hover {
-          background: transparent !important;
-          color: var(--pm-ink) !important;
-        }
-        .header-pane-btn.on,
-        .header-pane-btn.on:hover {
-          background: transparent !important;
-          color: var(--pm-ink) !important;
-        }
+        /* Title bar action buttons (.header-pane-btn / .pm-caption-btn) live in
+           the GLOBAL stylesheet (src/renderer/index.html) now: the popout
+           window renders PopoutApp without AppLayout and needs the same classes
+           (probe-popout-boot caught the popout's button unstyled). */
 
         .settings-scroll::-webkit-scrollbar {
           width: 6px;

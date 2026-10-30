@@ -15,6 +15,7 @@ import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
 import { useWorkbenchStore } from '../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
+import { IS_POPOUT, IS_PROJECT_WINDOW } from '../popout/boot'
 import { clampPaneWidth, type BrowserPaneAction } from '../../../shared/browser/pane'
 
 export function useBrowserPaneBinding(
@@ -56,7 +57,15 @@ export function useBrowserPaneBinding(
   // switch, and report whether the browser tab is frontmost (W3). Runs again
   // whenever any input changes (view switch back to chat included) — this is
   // the fold/restore path, not an unmount cleanup.
+  // The push is what registers this window as BrowserService's dock target
+  // (a per-sender subscription). A secondary window NEVER pushes: the native
+  // WebContentsView is parented by appViewDock to the MAIN window (a
+  // singleton slot), so a popout- or project-window-driven state would
+  // composite the live browser over the wrong window. Secondary workbenches
+  // therefore never show the browser tab (tabs only arrive via this
+  // subscription) — the honest gap recorded in AGENTS.md.
   useEffect(() => {
+    if (IS_POPOUT || IS_PROJECT_WINDOW) return
     void window.electronAPI.browserPaneSetState({
       viewKind,
       conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,

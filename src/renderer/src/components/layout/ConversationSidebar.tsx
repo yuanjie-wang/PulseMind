@@ -17,6 +17,9 @@ interface ConversationSidebarProps {
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
   onTogglePin: (key: string, pinned: boolean) => void
+  /** Pop out into its own window (PLAN-conversation-popout); absent hides the
+   *  menu item. */
+  onPopout?: (key: string, label: string) => void
   convLights?: Record<string, ConversationLight>
 }
 
@@ -27,6 +30,7 @@ function ConversationSidebar({
   onDelete,
   onRename,
   onTogglePin,
+  onPopout,
   convLights
 }: ConversationSidebarProps): React.ReactElement {
   const { t } = useTranslation()
@@ -50,6 +54,7 @@ function ConversationSidebar({
         onDelete={onDelete}
         onRename={onRename}
         onTogglePin={onTogglePin}
+        onPopout={onPopout}
       />
     </div>
   )

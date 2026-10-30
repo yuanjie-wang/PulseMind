@@ -10,8 +10,9 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
-import { applySessionEvent, freshSessionState, type SessionState } from '../../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, seedSessionState, type SessionState } from '../../../shared/agent-session/mirror'
 import { useSessionFileChangesStore } from '../stores/sessionFileChangesStore'
+import { usePopoutWatchStore, isPoppedOut } from '../stores/popoutWatchStore'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
 import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
@@ -174,13 +175,17 @@ export const TERMINAL_EVICTABLE_STATUSES: AgentStatus['status'][] = ['idle', 'co
 /** Pure candidate policy (tests drive this directly): non-active conversations
  *  whose mirrored status can no longer move, oldest-touch first. Live statuses
  *  are never candidates — their events must keep flowing for the sidebar
- *  lights, the background-completion callbacks and the approval cards. */
+ *  lights, the background-completion callbacks and the approval cards.
+ *  `poppedOut` (optional) excludes conversations with a popout window attached:
+ *  the popout is a live client of the mirror — evicting (disposing the
+ *  main-hosted engine) under it would kill the view the user is looking at. */
 export function selectEvictionCandidates(
   entries: Array<{ id: string; status: AgentStatus['status']; touchedAt: number }>,
   activeId: string,
+  poppedOut?: ReadonlySet<string>,
 ): string[] {
   return entries
-    .filter((e) => e.id !== activeId && TERMINAL_EVICTABLE_STATUSES.includes(e.status))
+    .filter((e) => e.id !== activeId && !(poppedOut?.has(e.id)) && TERMINAL_EVICTABLE_STATUSES.includes(e.status))
     .sort((a, b) => a.touchedAt - b.touchedAt)
     .map((e) => e.id)
 }
@@ -388,8 +393,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
         // judged AT EVENT TIME — watching the conversation when the status
         // lands — never "opened it once" (that marking ate every background
         // completion: a conversation you had sent a message in and left stayed
-        // read forever, so its green dot could never light).
-        const isRead = activeEngineIdRef.current === sessionId
+        // read forever, so its green dot could never light). Watching through
+        // a popout window counts as watching too (ruling 2026-10-30): the
+        // popout registry reports it here, so a turn finished in front of the
+        // popout never lights the main window's sidebar green.
+        const isRead = activeEngineIdRef.current === sessionId || isPoppedOut(sessionId)
         const light = statusToLight(st.agentStatus.status, isRead)
         setConvLights((prev) => foldConvLight(prev, sessionId, light))
         if (st.agentStatus.status === 'completed' && activeEngineIdRef.current !== sessionId) {
@@ -464,6 +472,38 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setLastCompaction(null)
     }
   }, [markConversationRead])
+
+  /** Seed a mirror from a main-side snapshot WITHOUT touching React state —
+   *  the caller orders this before activateEngine (whose rehydrate pushes the
+   *  seeded slices into React). Two consumers:
+   *  • the popout window attaching to a LIVE session (snapshot has content);
+   *  • the main window ADOPTING a conversation a popout opened (single-writer
+   *    saves: the main window needs the mirror so its 10s sweep persists the
+   *    conversation, without switching its own view onto it).
+   *  ensureSession also fires the idempotent createSession, so a seed alone
+   *  is enough to have both the session and the mirror exist. */
+  const seedSessionSnapshot = useCallback((key: string, snapshot: {
+    messages: unknown[]
+    status: { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string }
+    streamingBlocks: unknown[]
+    plan: unknown
+    fileChanges?: unknown
+  }) => {
+    const st = ensureSession(key)
+    seedSessionState(st, snapshot)
+    useSessionFileChangesStore.getState().set(key, st.fileChanges)
+  }, [ensureSession])
+
+  /** Seed a mirror from DB rows (the snapshot came back empty — no live
+   *  session content). Same consumers, cold branch. Never touches the
+   *  main-hosted engine: hydrating THAT is the engine handle's loadConversation
+   *  job, which the caller drives explicitly. */
+  const seedSessionHistory = useCallback((key: string, msgs: AgentMessage[], summary?: { text: string; firstKeptId: string } | null) => {
+    const st = ensureSession(key)
+    st.messages = msgs
+    st.agentStatus = { status: 'idle' }
+    if (summary) st.historySummary = summary
+  }, [ensureSession])
 
   // ── Signal option changes to the main-hosted engines ──
   const prevOptionsRef = useRef<Partial<typeof options>>({})
@@ -557,7 +597,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     for (const [id, st] of statesRef.current) {
       entries.push({ id, status: st.agentStatus.status, touchedAt: touchTimesRef.current.get(id) ?? 0 })
     }
-    return selectEvictionCandidates(entries, activeEngineIdRef.current)
+    const popped = usePopoutWatchStore.getState().byConversation
+    return selectEvictionCandidates(entries, activeEngineIdRef.current, new Set(Object.keys(popped)))
   }, [])
 
   return {
@@ -571,6 +612,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     markConversationRead,
     getOrCreateEngine,
     activateEngine,
+    seedSessionSnapshot,
+    seedSessionHistory,
     getWorkspaceDir,
     evictEngine,
     listEvictionCandidates,

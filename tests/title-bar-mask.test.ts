@@ -14,8 +14,12 @@ import { join } from 'node:path'
 import { describe, expect, it, afterEach } from 'vitest'
 import { BrowserWindow } from 'electron'
 import {
+  captionButtonVars,
   dimTitleBarOverlayColors,
+  resolveCaptionButtonStyle,
   resolveTitleBarOverlayColors,
+  resolveWindowControlsLayout,
+  titleBarRightInset,
   TITLE_BAR_HEIGHT,
 } from '../src/shared/window-chrome'
 import { resolveTitleBarOptions, setTitleBarMaskAlpha, setTitleBarTheme } from '../src/main/window-chrome'
@@ -40,8 +44,58 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', platformDesc)
 })
 
-describe('dimTitleBarOverlayColors — the blend', () => {
-  it('alpha 0 returns the colours untouched (identity, not a re-derivation)', () => {
+describe('titleBarRightInset — the top-right cluster clears the OS controls', () => {
+  it('Windows/Linux reserve the caption-button strip (inset > 0)', () => {
+    const win = resolveWindowControlsLayout('win32')
+    expect(win.side).toBe('right')
+    expect(titleBarRightInset(win)).toBe(win.inset)
+    expect(titleBarRightInset(win)).toBeGreaterThan(0)
+  })
+
+  it('macOS keeps the right edge free (traffic lights are on the left)', () => {
+    const mac = resolveWindowControlsLayout('darwin')
+    expect(mac.side).toBe('left')
+    expect(titleBarRightInset(mac)).toBe(0)
+  })
+})
+
+describe('resolveCaptionButtonStyle — the app buttons copy the native ones', () => {
+  it('footprint matches the OS overlay strip (46 wide, bar height)', () => {
+    for (const theme of ['light', 'dark']) {
+      const s = resolveCaptionButtonStyle(theme)
+      expect(s.width).toBe(46)
+      expect(s.height).toBe(TITLE_BAR_HEIGHT)
+    }
+  })
+
+  it('glyph colour IS the value the OS draws with (no drift by construction)', () => {
+    for (const theme of ['light', 'dark']) {
+      expect(resolveCaptionButtonStyle(theme).symbolColor).toBe(resolveTitleBarOverlayColors(theme).symbolColor)
+    }
+    expect(resolveCaptionButtonStyle('light').symbolColor).toBe('#333333')
+    expect(resolveCaptionButtonStyle('dark').symbolColor).toBe('#CCCCCC')
+  })
+
+  it('hover and press differ (a press must read as a press)', () => {
+    const s = resolveCaptionButtonStyle('light')
+    expect(s.hoverBg).not.toBe(s.activeBg)
+    // Neutral greys, not an accent — the native buttons light up grey.
+    expect(s.hoverBg).toMatch(/^#[0-9A-Fa-f]{6}$/)
+    expect(s.activeBg).toMatch(/^#[0-9A-Fa-f]{6}$/)
+  })
+
+  it('captionButtonVars projects the spec onto the CSS custom properties', () => {
+    const vars = captionButtonVars('light')
+    const s = resolveCaptionButtonStyle('light')
+    expect(vars['--pm-caption-btn-width']).toBe(`${s.width}px`)
+    expect(vars['--pm-caption-btn-height']).toBe(`${s.height}px`)
+    expect(vars['--pm-caption-hover']).toBe(s.hoverBg)
+    expect(vars['--pm-caption-active']).toBe(s.activeBg)
+    expect(vars['--pm-caption-symbol']).toBe(s.symbolColor)
+  })
+})
+
+describe('dimTitleBarOverlayColors — the blend', () => {  it('alpha 0 returns the colours untouched (identity, not a re-derivation)', () => {
     const colors = resolveTitleBarOverlayColors('light')
     expect(dimTitleBarOverlayColors(colors, 0)).toBe(colors)
   })

@@ -31,11 +31,23 @@ export function resolveWindowControlsLayout(platform: string): WindowControlsLay
     : { side: 'right', inset: CAPTION_BUTTONS_INSET }
 }
 
+/**
+ * Pixels the app's own TOP-RIGHT cluster must reserve so it never sits under
+ * the OS window controls. The OS draws the controls ON TOP of the web content,
+ * so an app button placed in their strip is both hidden and dead (clicks land
+ * on the caption buttons) — the chat header's action buttons (side-pane toggle
+ * + popout) inset past them instead of hugging the corner. macOS puts its
+ * traffic lights on the LEFT, so the right edge is free there; Windows/Linux
+ * overlay the caption buttons on the right.
+ */
+export function titleBarRightInset(controls: WindowControlsLayout): number {
+  return controls.side === 'right' ? controls.inset : 0
+}
+
 export interface TitleBarOverlayColors {
   color: string
   symbolColor: string
 }
-
 /**
  * Colours for the caption button overlay, which has to match the header it is drawn
  * over. Those are antd's colorBgContainer values: #ffffff for the light theme,
@@ -59,8 +71,7 @@ export function resolveTitleBarOverlayColors(theme: string): TitleBarOverlayColo
  * overlays like the image viewer's 0.85), so one alpha is the whole story.
  * `alpha` is clamped to [0, 1]; 0 returns the input colours unchanged.
  */
-export function dimTitleBarOverlayColors(
-  colors: TitleBarOverlayColors,
+export function dimTitleBarOverlayColors(  colors: TitleBarOverlayColors,
   alpha: number,
 ): TitleBarOverlayColors {
   // Non-finite alpha (a bridge carrying garbage) must read as "no mask", not
@@ -75,4 +86,52 @@ export function dimTitleBarOverlayColors(
     return `#${ch(1)}${ch(3)}${ch(5)}`
   }
   return { color: dim(colors.color), symbolColor: dim(colors.symbolColor) }
+}
+
+/** Width of one Windows caption button at 100% scale — the footprint the
+ *  app's own top-right actions copy so the two clusters read as one row. */
+const CAPTION_BUTTON_WIDTH = 46
+
+export interface CaptionButtonStyle {
+  /** Button footprint. The height matches the OS overlay strip
+   *  (titleBarOverlay.height = TITLE_BAR_HEIGHT), so the app's buttons are the
+   *  same size as the OS-drawn min/max/close next to them. */
+  width: number
+  height: number
+  /** Fill on hover / press — Windows' caption buttons light up under the
+   *  pointer; theirs is a neutral grey, and close's red is not applicable. */
+  hoverBg: string
+  activeBg: string
+  /** Glyph colour: the very value the OS draws with
+   *  (resolveTitleBarOverlayColors), so the symbols match, not merely rhyme. */
+  symbolColor: string
+}
+
+/**
+ * The visual spec for the header's top-right actions on Windows/Linux, where
+ * they sit directly beside the native caption buttons (user ruling 2026-10-30:
+ * 风格尽量贴近 windows/linux 的窗口按钮). Consumed as CSS custom properties by
+ * the `.pm-caption-btn` class in src/renderer/index.html; macOS keeps the
+ * app's own rounded icon-button look (its traffic lights are elsewhere, so
+ * there is no neighbour idiom to match).
+ */
+export function resolveCaptionButtonStyle(theme: string): CaptionButtonStyle {
+  const { symbolColor } = resolveTitleBarOverlayColors(theme)
+  return theme === 'dark'
+    ? { width: CAPTION_BUTTON_WIDTH, height: TITLE_BAR_HEIGHT, hoverBg: '#3A3A3A', activeBg: '#4A4A4A', symbolColor }
+    : { width: CAPTION_BUTTON_WIDTH, height: TITLE_BAR_HEIGHT, hoverBg: '#E5E5E5', activeBg: '#D6D6D6', symbolColor }
+}
+
+/** The spec above as CSS custom properties, ready to spread onto the header
+ *  actions cluster (`.pm-caption-btn` reads them; see src/renderer/index.html).
+ *  Kept here so the main window and the popout window cannot drift. */
+export function captionButtonVars(theme: string): Record<string, string> {
+  const s = resolveCaptionButtonStyle(theme)
+  return {
+    '--pm-caption-btn-width': `${s.width}px`,
+    '--pm-caption-btn-height': `${s.height}px`,
+    '--pm-caption-hover': s.hoverBg,
+    '--pm-caption-active': s.activeBg,
+    '--pm-caption-symbol': s.symbolColor,
+  }
 }

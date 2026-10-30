@@ -125,6 +125,9 @@ describe('the spawn card opens the one sub-agent session view', () => {
       'renderer/src/components/chat/MessageGroup.tsx',
       'renderer/src/components/chat/SegmentView.tsx',
       'renderer/src/components/layout/ChatView.tsx',
+      // The popout window hosts the same drill-in overlay (PLAN-conversation-
+      // popout): it is the second caller of onOpenSubAgent, deliberately.
+      'renderer/src/popout/PopoutApp.tsx',
     ])
   })
 

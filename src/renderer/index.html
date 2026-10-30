@@ -84,6 +84,76 @@
       .auto-hide-scroll:hover::-webkit-scrollbar-thumb:hover {
         background: rgba(128, 128, 128, 0.6);
       }
+
+      /* Header icon button (the app's own idiom; macOS keeps it): a borderless
+         28px icon, no background in any state — the open state reads from the
+         darker icon colour alone. Lives here rather than in AppLayout's inline
+         <style> because the popout window renders PopoutApp, NOT AppLayout, and
+         still needs this class for its header (found by probe-popout-boot:
+         the popout's button was unstyled on macOS). */
+      .header-pane-btn {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: var(--pm-text-muted) !important;
+        width: 28px !important;
+        height: 28px !important;
+        padding: 0 !important;
+        border-radius: 6px !important;
+      }
+      .header-pane-btn .ant-btn-icon {
+        margin-inline-end: 0 !important;
+      }
+      .header-pane-btn:hover {
+        background: transparent !important;
+        color: var(--pm-ink) !important;
+      }
+      .header-pane-btn.on,
+      .header-pane-btn.on:hover {
+        background: transparent !important;
+        color: var(--pm-ink) !important;
+      }
+
+      /* Top-right header actions, styled as Windows/Linux caption buttons
+         (user ruling 2026-10-30: 风格尽量贴近 windows/linux 的窗口按钮). They sit
+         directly beside the OS-drawn min/max/close, which occupy the same 56px
+         strip (titleBarOverlay.height = TITLE_BAR_HEIGHT), so matching footprint
+         and hover makes the two clusters read as one row. Values come from
+         shared/window-chrome's resolveCaptionButtonStyle via the --pm-caption-*
+         custom properties the component sets on the cluster — the symbol colour
+         in particular is the SAME value the OS draws with, so the glyphs match
+         rather than merely rhyme. macOS never gets this class (its traffic
+         lights are on the left; the app's rounded icon button is the right
+         idiom there). */
+      .pm-caption-btn {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        width: var(--pm-caption-btn-width, 46px) !important;
+        height: var(--pm-caption-btn-height, 56px) !important;
+        padding: 0 !important;
+        color: var(--pm-caption-symbol, #333333) !important;
+      }
+      .pm-caption-btn .ant-btn-icon {
+        margin-inline-end: 0 !important;
+      }
+      /* Double-class stacking, the house remedy for antd's runtime-injected
+         cssinjs: `.ant-btn:hover` is (0,2,0) and lands LATER in <head>, so an
+         equal-specificity rule loses the tie whatever the !important — the
+         doubled class takes the hover/active/on states to (0,3,0). */
+      .pm-caption-btn.pm-caption-btn:hover {
+        background: var(--pm-caption-hover, #e5e5e5) !important;
+        color: var(--pm-caption-symbol, #333333) !important;
+      }
+      .pm-caption-btn.pm-caption-btn:active {
+        background: var(--pm-caption-active, #d6d6d6) !important;
+      }
+      .pm-caption-btn.pm-caption-btn.on,
+      .pm-caption-btn.pm-caption-btn.on:hover {
+        background: var(--pm-caption-hover, #e5e5e5) !important;
+        color: var(--pm-caption-symbol, #333333) !important;
+      }
     </style>
   </head>
   <body>

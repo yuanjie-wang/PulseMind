@@ -14,6 +14,7 @@ import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } f
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
 import { shouldDrainOnStatusChange } from '../utils/staged-drain'
+import { isPoppedOut } from '../stores/popoutWatchStore'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage } from '../types/agent'
@@ -43,6 +44,10 @@ interface UseChatControllerOptions {
    *  —— 在 startLoop 之前，且与 welcome composer 的显示读同一份快照。 */
   lastUsedApprovalMode?: SandboxApprovalMode
   lastUsedProfileId?: string
+  /** Single-writer gate (PLAN-conversation-popout): false in the popout
+   *  window — it drives turns but the MAIN window owns every transcript
+   *  write (adoption + its own sweep). */
+  savesEnabled?: boolean
   hooks?: HooksConfig
   locale?: 'zh' | 'en'
 }
@@ -97,6 +102,7 @@ export function useChatController(options: UseChatControllerOptions) {
   // ── 4. Persistence (save/load conversations) ──
   const persistence = useConversationPersistence({
     autoCleanup,
+    savesEnabled: options.savesEnabled,
     messages: engine.messages,
     agentStatus: engine.agentStatus,
     enginesRef: engine.enginesRef,
@@ -107,6 +113,9 @@ export function useChatController(options: UseChatControllerOptions) {
     setAgentStatus: engine.setAgentStatus,
     setStreamingBlocks: engine.setStreamingBlocks,
     setPlan: engine.setPlan,
+    // Popout adoption mirrors (seed without touching React state / engine).
+    seedSessionSnapshot: engine.seedSessionSnapshot,
+    seedSessionHistory: engine.seedSessionHistory,
     // Mirror eviction (MAX_CACHED_CONVERSATIONS): the engine owns the
     // mechanism, the persistence sweep owns the policy (verified-save gate).
     listEvictionCandidates: engine.listEvictionCandidates,
@@ -120,6 +129,11 @@ export function useChatController(options: UseChatControllerOptions) {
     messages: { role: string; contentBlocks?: { type: string; text?: string }[] }[],
     opts: { llmFallback: string; stripFileMarkers?: boolean; refine?: boolean }
   ): Promise<void> => {
+    // A conversation with a popout attached is titled by ITS window (the
+    // popout's own controller runs the same effect); the main window writing
+    // over it would race the popout's generation with an LLM call. The
+    // popout's own store is empty, so this gate is a no-op there.
+    if (isPoppedOut(convId)) return
     // Skip if conversation already has a meaningful title stored
     // (prevents re-triggering title generation after app restart).
     // The 3rd-message refinement passes refine:true — its whole point is to
@@ -498,6 +512,19 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     clearError: engine.clearError,
     retryLast: engine.retryLast,
     extendLoop: engine.extendLoop,
+    /** Popout adoption (main window): mirror a conversation a popout opened
+     *  so the single-writer sweep persists it. */
+    adoptConversation: persistence.adoptConversation,
+    /** Popout boot primitives (PLAN-conversation-popout): the popout window
+     *  binds its fixed conversation directly — create (idempotent), seed the
+     *  mirror (snapshot or DB), then activate BOTH sides without the switch
+     *  path's flush/cold-open semantics (a live session must not be
+     *  hydrated over). The main window's own paths never call these. */
+    getOrCreateEngine: engine.getOrCreateEngine,
+    activateEngine: engine.activateEngine,
+    activateConversation: persistence.activateConversation,
+    seedSessionSnapshot: engine.seedSessionSnapshot,
+    seedSessionHistory: engine.seedSessionHistory,
     /** 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）：resolve 引擎的结构化
      *  outcome，false = 调用方回落暂存/发送，文本不许丢。 */
     steer: engine.steer,
@@ -515,6 +542,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     knowledgeManager: managers.knowledgeManager,
     experienceManager: managers.experienceManager,
     convLights: engine.convLights,
+    markConversationRead: engine.markConversationRead,
     togglePin: persistence.togglePin,
     bumpConversation: persistence.bumpConversation,
     updateConversationExpert: persistence.updateConversationExpert,

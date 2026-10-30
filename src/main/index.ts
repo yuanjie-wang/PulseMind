@@ -19,6 +19,7 @@ import { beginGateEscape, cancelGateEscape } from './gate-escape'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { installPopupMotionGuard } from './motion-guard'
+import { closeAllPopouts, refreshPopoutTitleBarTheme } from './popout-window'
 import { resolveThemePreference } from '../shared/theme'
 import { installApplicationMenu, attachShortcutFallback } from './menu'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
@@ -70,6 +71,8 @@ function applyNativeThemeChange(): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setBackgroundColor(WINDOW_BACKGROUND[bootThemeMode])
       }
+      // Popped-out windows follow the main window's own refresh.
+      refreshPopoutTitleBarTheme()
     })
     .catch(() => {})
 }
@@ -464,6 +467,12 @@ function createWindow(): void {
     }
   })
   appViewDock.attach(mainWindow)
+  // Popouts die with the main window (user ruling 2026-10-30): the registry
+  // destroy runs on 'closed' — after this, window count reaches 0, so the
+  // win/linux quit path and the mac activate-recreate path both behave as if
+  // only the main window ever existed. Re-attached per createWindow (the
+  // tray relaunch path) — by then the previous popouts are long gone.
+  mainWindow.on('closed', closeAllPopouts)
   // Pin prefers-reduced-motion to no-preference for this target (see the
   // module header): a mid-session Windows reduce flip parks every antd popup
   // off-screen — rendered, animating, permanently invisible.
