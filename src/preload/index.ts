@@ -176,6 +176,13 @@ const electronAPI = {
   // Settings
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   setSettings: (settings: AppSettings): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, settings),
+  onSettingsChanged: (callback: (settings: AppSettings) => void): (() => void) => {
+    const listener = (_e: unknown, settings: AppSettings): void => callback(settings)
+    ipcRenderer.on(IPC_CHANNELS.SETTINGS_CHANGED, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SETTINGS_CHANGED, listener)
+    }
+  },
 
   // Tools
   getToolPreferences: (): Promise<ToolPreferences> => ipcRenderer.invoke(IPC_CHANNELS.TOOLS_GET_PREFERENCES),

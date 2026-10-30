@@ -57,6 +57,18 @@ export function useAppSettings(): UseAppSettingsReturn {
     load()
   }, [])
 
+  // Cross-window sync: any window's save is broadcast to all windows by the
+  // main process (settings:changed). Adopt the store's view so surfaces the
+  // popout derives from settings — theme, locale — follow the main window
+  // immediately instead of waiting for a reload. The saver's own window gets
+  // the same (idempotent) payload; no write is triggered, so no loop.
+  useEffect(() => {
+    const unsub = window.electronAPI?.onSettingsChanged?.((next) => {
+      setSettings(next)
+    })
+    return unsub
+  }, [])
+
   // settings.profiles is the store's MERGED view (one entry per model,
   // connection fields materialized from its provider) — the credentials the
   // welcome composer and MCP summaries read live here. `?? []` keeps fixtures

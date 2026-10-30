@@ -105,6 +105,10 @@ export const IPC_CHANNELS = {
   // ── Settings ──
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  // Push to every window after a save: settings are per-process state (the
+  // popout resolves its theme/locale from the same file), so a save in one
+  // window must reach the others or their surfaces stay stale until reload.
+  SETTINGS_CHANGED: 'settings:changed',
 
   // ── Shell ──
   SHELL_OPEN_FOLDER: 'shell:open-folder',

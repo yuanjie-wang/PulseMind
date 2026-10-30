@@ -69,5 +69,20 @@ export function registerSettingsHandlers(): void {
     try { await cleanupExpiredConversations() } catch (err) {
       console.warn('[settings] conversation retention failed:', err)
     }
+    // Push the saved settings to every window. Settings are per-process state
+    // (the popout resolves its theme/locale from the same file); without this
+    // a theme/locale switch in one window leaves the others stale until reload.
+    // Broadcast the STORE's view, not the payload: `set()` re-derives the merged
+    // `profiles` (the caller's snapshot carries a stale copy).
+    try {
+      const fresh = await settingsStore.get()
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          try { win.webContents.send(IPC_CHANNELS.SETTINGS_CHANGED, fresh) } catch { /* window closing */ }
+        }
+      }
+    } catch (err) {
+      console.warn('[settings] failed to broadcast settings change:', err)
+    }
   })
 }

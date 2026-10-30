@@ -203,6 +203,9 @@ export interface ElectronAPI {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: AppSettings) => Promise<void>
+  /** Fires in every window after any window saves settings (cross-window
+   *  consistency: the popout follows the main window's theme/locale switch). */
+  onSettingsChanged: (callback: (settings: AppSettings) => void) => () => void
 
   // Tools
   getToolPreferences: () => Promise<ToolPreferences>
