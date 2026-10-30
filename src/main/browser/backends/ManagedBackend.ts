@@ -52,8 +52,9 @@ export class ManagedBackend implements BackendAdapter {
       headless = settings.browser?.headless ?? true
       // 抓包面（2026-10-27）：托管浏览器跟主进程 fetch 一样走用户代理。
       // Chromium 走系统证书库，Fiddler/Charles 的根证书装进系统链即可
-      // 解密 HTTPS，不需要 proxyStrictSSL。
-      proxyUrl = parseProxyUrl(settings.proxyUrl)
+      // 解密 HTTPS，不需要 proxyStrictSSL。开关关时跳过解析——关着的
+      // 开关不该让一个坏地址把浏览器 launch 打炸（fetch 链同款）。
+      proxyUrl = settings.proxyEnabled !== false ? parseProxyUrl(settings.proxyUrl) : null
     } catch (err) {
       // 代理配置无效必须响亮地失败——用户刚填的坏地址静默直连，抓包就
       // 抓了个寂寞；settings 本身读不出来才回落默认（headless 同款容错）。

@@ -129,14 +129,19 @@ export interface AppSettings {
   /** 调试用：主线程关键路径计时（src/main/perf/perf-log.ts 的 [perf] 行，
    *  现覆盖 emitMessages 与 saveConversation）。开关语义与 debugLlmRequests 相同。 */
   debugPerfLogs?: boolean
-  /** 用户级 HTTP 代理（抓包调试，2026-10-27）：设置后主进程全部对外 HTTP 都走
-   *  它 —— LLM 流/一次性调用与简单 fetch（api-proxy 的唯一 fetch 点）、连接
-   *  探针、webfetch（ipc 与 tool-runtime 两路）、MCP HTTP transport、例行
-   *  webhook，以及托管浏览器的启动参数（ManagedBackend 的 Playwright proxy）。
-   *  undici ProxyAgent 按 (proxyUrl, proxyStrictSSL) 缓存复用；读取走 mtime
-   *  缓存的 store，改完对下一次请求生效，无需重启。仅支持 http/https 代理
-   *  （Fiddler/Charles/mitmproxy 都是），socks 不支持。空 = 直连。 */
+  /** 用户级 HTTP 代理地址（抓包调试，2026-10-27）：proxyEnabled 开启时主进程
+   *  全部对外 HTTP 都走它 —— LLM 流/一次性调用与简单 fetch（api-proxy 的唯一
+   *  fetch 点）、连接探针、webfetch（ipc 与 tool-runtime 两路）、MCP HTTP
+   *  transport、例行 webhook，以及托管浏览器的启动参数（ManagedBackend 的
+   *  Playwright proxy）。undici ProxyAgent 按 (proxyUrl, proxyStrictSSL) 缓存
+   *  复用；读取走 mtime 缓存的 store，改完对下一次请求生效，无需重启。仅支持
+   *  http/https 代理（Fiddler/Charles/mitmproxy 都是），socks 不支持。
+   *  开关关闭或地址为空 = 直连。 */
   proxyUrl?: string
+  /** 代理总开关（2026-10-30）：是否走代理由它决定，不再由「地址是否填写」
+   *  推断——地址可以保留着随时重开。缺省 = 开（与 proxyStrictSSL 同款
+   *  「只有显式 false 才关」），升级安装里已填地址的用户行为不变。 */
+  proxyEnabled?: boolean
   /** 代理开启时的 HTTPS 证书校验开关（默认 true）：抓包工具解密 HTTPS 是用
    *  自签根证书重签目标站点的证书，而 undici 走 Node 内置 CA（不读系统
    *  钥匙串），不关它抓到的只有 CONNECT 隧道；关闭即跳过校验（requestTls/

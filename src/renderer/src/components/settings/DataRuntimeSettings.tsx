@@ -224,18 +224,32 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
             onBlur={commitRetryCodes}
           />
         </div>
+        {/* 代理走不走由开关决定（2026-10-30），不再由「地址是否填写」推断：
+            地址可以保留着随时重开。关着时输入框灰显但不清空。 */}
         <div style={{ marginBottom: 16 }}>
-          <Text strong style={{ display: 'block', fontSize: 13 }}>
-            {t('dataRuntime.proxyUrl')}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-            {t('dataRuntime.proxyUrlHelp')}
-          </Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+            <div>
+              <Text strong style={{ display: 'block', fontSize: 13 }}>
+                {t('dataRuntime.proxyUrl')}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                {t('dataRuntime.proxyUrlHelp')}
+              </Text>
+            </div>
+            <Switch
+              aria-label={t('dataRuntime.proxyUrl')}
+              checked={settings.proxyEnabled !== false}
+              disabled={disabled}
+              onChange={(value) => {
+                void save({ proxyEnabled: value })
+              }}
+            />
+          </div>
           <Input
             size="small"
             placeholder={PROXY_URL_EXAMPLE}
             value={proxyUrlText}
-            disabled={disabled}
+            disabled={disabled || settings.proxyEnabled === false}
             onChange={(e) => setProxyUrlText(e.target.value)}
             onBlur={commitProxy}
           />

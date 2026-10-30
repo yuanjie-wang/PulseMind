@@ -89,6 +89,42 @@ describe('resolveProxyDispatcher — 按 (proxyUrl, strictSSL) 缓存', () => {
   })
 })
 
+describe('resolveProxyDispatcher — proxyEnabled 总开关（2026-10-30）', () => {
+  beforeEach(() => {
+    resetProxyDispatcherCache()
+    state.ctor.mockClear()
+    state.instances.length = 0
+  })
+
+  it('开关关 = 直连，地址里有东西也不构造 ProxyAgent', async () => {
+    state.settingsGet.mockResolvedValue({ proxyEnabled: false, proxyUrl: 'http://a:1' })
+    await expect(resolveProxyDispatcher()).resolves.toBeUndefined()
+    expect(state.ctor).not.toHaveBeenCalled()
+  })
+
+  it('关着的开关不炸坏地址——开关判定在 parse 之前，坏配置 + 关 = 静默直连', async () => {
+    state.settingsGet.mockResolvedValue({ proxyEnabled: false, proxyUrl: 'this is not a proxy' })
+    await expect(resolveProxyDispatcher()).resolves.toBeUndefined()
+  })
+
+  it('缺省 = 开：没写 proxyEnabled 的老配置照常走代理（升级安装行为不变）', async () => {
+    state.settingsGet.mockResolvedValue({ proxyUrl: 'http://a:1' })
+    const dispatcher = await resolveProxyDispatcher()
+    expect(dispatcher).toBeDefined()
+    expect(state.ctor).toHaveBeenCalledTimes(1)
+  })
+
+  it('关→开同配置：直连期缓存不动，重开直接复用旧连接池（不重建不换实例）', async () => {
+    state.settingsGet.mockResolvedValue({ proxyUrl: 'http://a:1' })
+    const before = await resolveProxyDispatcher()
+    state.settingsGet.mockResolvedValue({ proxyEnabled: false, proxyUrl: 'http://a:1' })
+    await expect(resolveProxyDispatcher()).resolves.toBeUndefined()
+    state.settingsGet.mockResolvedValue({ proxyEnabled: true, proxyUrl: 'http://a:1' })
+    await expect(resolveProxyDispatcher()).resolves.toBe(before)
+    expect(state.ctor).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('withProxyDispatcher — fetch init 增强', () => {
   beforeEach(() => {
     resetProxyDispatcherCache()

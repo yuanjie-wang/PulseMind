@@ -1,13 +1,14 @@
 // ── 用户级 HTTP 代理（抓包调试，2026-10-27）────────────────────────────────
-// settings.proxyUrl 设置后，主进程的全部对外 HTTP 都挂 undici ProxyAgent：
-// LLM 流/一次性调用与简单 fetch（api-proxy 的唯一 fetch 点）、连接探针、
-// webfetch（ipc 与 tool-runtime 两路）、MCP HTTP transport、例行 webhook，
-// 外加托管浏览器的启动参数（ManagedBackend 的 Playwright proxy）。
+// proxyEnabled 开且 settings.proxyUrl 有值时，主进程的全部对外 HTTP 都挂
+// undici ProxyAgent：LLM 流/一次性调用与简单 fetch（api-proxy 的唯一 fetch
+// 点）、连接探针、webfetch（ipc 与 tool-runtime 两路）、MCP HTTP transport、
+// 例行 webhook，外加托管浏览器的启动参数（ManagedBackend 的 Playwright proxy）。
 //
 // 两个纪律：
 //  • 读取走 mtime 缓存的 settingsStore，dispatcher 按 (proxyUrl, strictSSL)
 //    缓存复用——改完设置对下一次请求生效，无需重启（与 debugLlmRequests /
-//    llmRetryStatusCodes 同款语义）；换配置时旧连接池 close 排空。
+//    llmRetryStatusCodes 同款语义）；换配置时旧连接池 close 排空。开关关闭
+//    的请求早退直连、不碰缓存，重开时同配置直接复用旧池。
 //  • undici 必须钉在 v6：Electron 33 = Node 20.18，全局 fetch 是 Node 内置
 //    undici 6.x，npm undici 6 的 ProxyAgent 与之同大版本兼容；v7 改了
 //    handler 回调面，跨实例混用没有兼容承诺。
@@ -42,10 +43,13 @@ export function buildProxyAgent(proxyUrl: string, strictSSL: boolean): ProxyAgen
   })
 }
 
-/** 配置 → 缓存的 dispatcher。无配置 = undefined（直连）；配置非法抛
- *  ProxyConfigError（调用方各自收进自己的错误通道，fetch 链不重试它）。 */
+/** 配置 → 缓存的 dispatcher。开关关（proxyEnabled === false，缺省开）或无
+ *  配置 = undefined（直连）；配置非法抛 ProxyConfigError（调用方各自收进
+ *  自己的错误通道，fetch 链不重试它）。开关判定在 parse 之前——关着的开关
+ *  不该让一个坏地址把请求打炸。 */
 export async function resolveProxyDispatcher(): Promise<Dispatcher | undefined> {
   const settings = await settingsStore.get()
+  if (settings.proxyEnabled === false) return undefined
   const proxyUrl = parseProxyUrl(settings.proxyUrl)
   if (!proxyUrl) return undefined
   const strictSSL = settings.proxyStrictSSL !== false

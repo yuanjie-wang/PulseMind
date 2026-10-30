@@ -561,7 +561,9 @@ const FALLBACK_SETTINGS: AppSettings = {
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
   debugPerfLogs: false,
-  // 网络代理（抓包调试）：默认直连 + 严格校验证书。
+  // 网络代理（抓包调试）：开关缺省开（走不走由开关决定，地址只管填哪），
+  // 地址为空 + 严格校验证书 = 默认直连。
+  proxyEnabled: true,
   proxyUrl: '',
   proxyStrictSSL: true
 }
@@ -643,7 +645,9 @@ export class SettingsStore {
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
           // 网络代理（抓包调试，2026-10-27）：URL 原样保留（归一化与校验在
-          // 消费点 shared/proxy.parseProxyUrl，读时即最新），证书校验缺省开。
+          // 消费点 shared/proxy.parseProxyUrl，读时即最新），开关与证书校验
+          // 都缺省开（只有显式 false 才关）。
+          proxyEnabled: parsed.proxyEnabled !== false,
           proxyUrl: typeof parsed.proxyUrl === 'string' ? parsed.proxyUrl : '',
           proxyStrictSSL: parsed.proxyStrictSSL !== false,
           llmRetryStatusCodes: readRetryStatusCodes(parsed.llmRetryStatusCodes),

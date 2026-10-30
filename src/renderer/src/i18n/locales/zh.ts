@@ -694,7 +694,7 @@ const zh = {
     llmRetryCodes: '自动重试的附加状态码',
     llmRetryCodesHelp: 'LLM 请求默认已对 429 与 5xx 自动重试；填入服务端会返回的额外 HTTP 状态码（逗号分隔，如 408, 409），命中时同样走重试退避。保存后对下一次请求生效。',
     proxyUrl: '网络代理',
-    proxyUrlHelp: '设置后应用的所有对外 HTTP 都走这个代理——模型请求、网页抓取、MCP、Webhook 与托管浏览器。适合用 Fiddler / Charles 等工具抓包；只支持 http/https 代理，留空 = 直连。对下一次请求生效。',
+    proxyUrlHelp: '开启后应用的所有对外 HTTP 都走下方地址的代理——模型请求、网页抓取、MCP、Webhook 与托管浏览器。适合用 Fiddler / Charles 等工具抓包；只支持 http/https 代理，地址为空时等于直连。对下一次请求生效。',
     proxyStrictSSL: '校验 HTTPS 证书',
     proxyStrictSSLHelp: '开启 = 正常校验目标站点证书。抓包工具解密 HTTPS 时用自签根证书重签，不在本应用信任链内，需临时关闭此项才能看到明文内容；仅调试时关闭。',
   },

@@ -700,7 +700,7 @@ const en: TranslationDict = {
     llmRetryCodes: "Extra auto-retry status codes",
     llmRetryCodesHelp: "LLM requests already retry 429 and 5xx automatically; list additional HTTP status codes your server returns (comma-separated, e.g. 408, 409) and they get the same retry backoff. Applies from the next request after saving.",
     proxyUrl: "Network proxy",
-    proxyUrlHelp: "Route every outbound HTTP request — model calls, web fetches, MCP, webhooks and the managed browser — through this proxy, e.g. Fiddler/Charles for packet capture. http/https proxies only; empty = direct connection. Applies from the next request.",
+    proxyUrlHelp: "When enabled, every outbound HTTP request — model calls, web fetches, MCP, webhooks and the managed browser — goes through the proxy address below, e.g. Fiddler/Charles for packet capture. http/https proxies only; an empty address behaves as a direct connection. Applies from the next request.",
     proxyStrictSSL: "Verify HTTPS certificates",
     proxyStrictSSLHelp: "On = verify target certificates normally. Capturing tools re-sign HTTPS with their own root CA, which this app does not trust — turn this off temporarily to see decrypted content. Debug use only.",
   },

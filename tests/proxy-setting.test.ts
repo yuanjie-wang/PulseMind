@@ -1,10 +1,10 @@
-// ── 网络代理（抓包调试，settings.proxyUrl / proxyStrictSSL，2026-10-27）──
+// ── 网络代理（抓包调试，settings.proxyEnabled / proxyUrl / proxyStrictSSL）──
 // 四层钉子，与功能的四段管线一一对应：
 //   1. shared/proxy.parseProxyUrl —— 解析矩阵（空白=直连、裸 host:port 补
 //      http://、socks 拒收、话术自带示例）
-//   2. settings-store —— get() 逐字段重建必须带上 proxyUrl/proxyStrictSSL
-//      （H1/H2 病的反面钉子：漏了就是写进去读不出来 + 下次整存抹掉），
-//      且整存往返不丢
+//   2. settings-store —— get() 逐字段重建必须带上 proxyEnabled/proxyUrl/
+//      proxyStrictSSL（H1/H2 病的反面钉子：漏了就是写进去读不出来 + 下次
+//      整存抹掉），且整存往返不丢
 //   3. 端到端 —— 本地 CONNECT 隧道代理 + 本地目标服务器直驱真传输层（retry-
 //      status-codes 先例）：undici ProxyAgent 对所有目标先发 CONNECT（实测，
 //      纯 http 也不豁免），请求真的穿过隧道到达目标（npm undici 6 与 Node
@@ -84,28 +84,33 @@ const BASE_PROVIDER = {
   models: [{ id: 'model_x', model: 'm' }],
 }
 
-describe('settings-store 归一化（proxyUrl / proxyStrictSSL）', () => {
-  it('proxyUrl 原样读回（归一化在消费点）；proxyStrictSSL 缺省开、只有显式 false 才关', async () => {
+describe('settings-store 归一化（proxyEnabled / proxyUrl / proxyStrictSSL）', () => {
+  it('proxyUrl 原样读回（归一化在消费点）；proxyEnabled 与 proxyStrictSSL 缺省开、只有显式 false 才关', async () => {
     writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x', proxyUrl: 'http://127.0.0.1:8888' })
     const s = await (await freshStore()).get()
     expect(s.proxyUrl).toBe('http://127.0.0.1:8888')
+    expect(s.proxyEnabled).toBe(true)
     expect(s.proxyStrictSSL).toBe(true)
 
-    writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x', proxyUrl: 'http://127.0.0.1:8888', proxyStrictSSL: false })
-    expect((await (await freshStore()).get()).proxyStrictSSL).toBe(false)
+    writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x', proxyUrl: 'http://127.0.0.1:8888', proxyEnabled: false, proxyStrictSSL: false })
+    const s2 = await (await freshStore()).get()
+    expect(s2.proxyEnabled).toBe(false)
+    expect(s2.proxyStrictSSL).toBe(false)
 
     writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x' })
     const s3 = await (await freshStore()).get()
+    expect(s3.proxyEnabled).toBe(true)
     expect(s3.proxyUrl).toBe('')
     expect(s3.proxyStrictSSL).toBe(true)
   })
 
   it('整存往返不丢（H1/H2 的反面钉子：get() 重建漏字段 = 下次整存抹掉）', async () => {
-    writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x', proxyUrl: 'http://127.0.0.1:8888', proxyStrictSSL: false })
+    writeRaw({ providers: [BASE_PROVIDER], activeProfileId: 'model_x', proxyEnabled: false, proxyUrl: 'http://127.0.0.1:8888', proxyStrictSSL: false })
     const store = await freshStore()
     const settings = await store.get()
     await store.set(settings)
     const raw = JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8')) as Record<string, unknown>
+    expect(raw.proxyEnabled).toBe(false)
     expect(raw.proxyUrl).toBe('http://127.0.0.1:8888')
     expect(raw.proxyStrictSSL).toBe(false)
   })
@@ -237,6 +242,15 @@ describe('端到端：请求真的穿过代理', () => {
     expect(targetSeen).toEqual(['/chat/completions'])
   })
 
+  it('开关关 = 直连，即使地址还在（2026-10-30：走不走由开关决定，不再由地址推断）', { timeout: 20_000 }, async () => {
+    responses = [{ status: 200, body: SSE_OK }]
+    writeFixture({ proxyEnabled: false, proxyUrl: proxyOrigin })
+    const result = await runStream('proxy-e2e-switch-off')
+    expect(result.done).toBe(true)
+    expect(proxySeen).toHaveLength(0)
+    expect(targetSeen).toEqual(['/chat/completions'])
+  })
+
   it('坏代理配置快速失败：错误直出、零次重试退避（20 次退避是几分钟，这里必须毫秒级）', { timeout: 20_000 }, async () => {
     writeFixture({ proxyUrl: 'this is not a proxy' })
     const t0 = Date.now()
@@ -286,9 +300,11 @@ describe('接线：六个 fetch 站点 + 浏览器 + 面板 + i18n', () => {
     expect(webhook).toContain('proxy misconfigured, giving up')
   })
 
-  it('托管浏览器把代理带进真实 launch（探测不背它），坏配置响亮失败', () => {
+  it('托管浏览器把代理带进真实 launch（探测不背它），坏配置响亮失败，开关关时跳过解析', () => {
     const src = read('src', 'main', 'browser', 'backends', 'ManagedBackend.ts')
-    expect(src).toContain('parseProxyUrl(settings.proxyUrl)')
+    // 开关判定与 parse 同一表达式：删掉 `settings.proxyEnabled !== false ?` 半边，
+    // 关着的开关又会开始替一个没人用的坏地址炸浏览器 launch（这条即红）。
+    expect(src).toContain('settings.proxyEnabled !== false ? parseProxyUrl(settings.proxyUrl) : null')
     expect(src).toContain('.proxy = { server: proxyUrl }')
     expect(src).toContain('err instanceof ProxyConfigError')
     // 非空洞：resolveLaunchOptions（可执行文件探测）里出现 proxy 就是把
@@ -297,11 +313,17 @@ describe('接线：六个 fetch 站点 + 浏览器 + 面板 + i18n', () => {
     expect(src.indexOf('.proxy =', resolveIdx)).toBe(-1)
   })
 
-  it('面板提交走主进程同一解析器就地校验，i18n 两语言都有键', () => {
+  it('面板提交走主进程同一解析器就地校验，开关与输入框联动，i18n 两语言都有键', () => {
     const ui = read('src', 'renderer', 'src', 'components', 'settings', 'DataRuntimeSettings.tsx')
     expect(ui).toContain("from '../../../../shared/proxy'")
     expect(ui).toContain('parseProxyUrl(trimmed)')
     expect(ui).toContain('proxyStrictSSL')
+    // 开关块（2026-10-30）：checked 读开关（缺省开），关着时输入框灰显不清空——
+    // 摘掉 `settings.proxyEnabled === false` 半边，开关关了输入框照常可编辑，
+    // 「走不走由开关决定」在 UI 上只剩一半。
+    expect(ui).toContain('save({ proxyEnabled: value })')
+    expect(ui).toContain('checked={settings.proxyEnabled !== false}')
+    expect(ui).toContain('disabled={disabled || settings.proxyEnabled === false}')
     for (const locale of ['zh', 'en']) {
       const table = read('src', 'renderer', 'src', 'i18n', 'locales', `${locale}.ts`)
       expect(table).toContain('proxyUrl:')
@@ -309,10 +331,11 @@ describe('接线：六个 fetch 站点 + 浏览器 + 面板 + i18n', () => {
     }
   })
 
-  it('settings-store 的重建行与 FALLBACK 都有这两个字段（写进去读不出来即红）', () => {
+  it('settings-store 的重建行与 FALLBACK 都有这三个字段（写进去读不出来即红）', () => {
     const src = read('src', 'main', 'storage', 'settings-store.ts')
+    expect(src).toContain('proxyEnabled: parsed.proxyEnabled !== false')
     expect(src).toContain("proxyUrl: typeof parsed.proxyUrl === 'string'")
     expect(src).toContain('proxyStrictSSL: parsed.proxyStrictSSL !== false')
-    expect(src).toMatch(/proxyUrl: '',\s*\n\s*proxyStrictSSL: true/)
+    expect(src).toMatch(/proxyEnabled: true,\s*\n\s*proxyUrl: '',\s*\n\s*proxyStrictSSL: true/)
   })
 })
