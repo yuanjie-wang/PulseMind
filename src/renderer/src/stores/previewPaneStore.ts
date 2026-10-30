@@ -14,6 +14,7 @@ import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 import { useWorkbenchStore } from './workbenchStore'
 import type { DraftEntry } from './preview-edit'
 import { useHtmlEditStore } from './htmlEditStore'
+import type { EditRevealTarget } from '../../../shared/tool-display/edit-reveal'
 
 /** Pane display mode per path (PLAN-html-element-edit M3): html carries all
  *  three — preview / element editing / the advanced source editor (D2 of the
@@ -48,6 +49,15 @@ interface PreviewPaneState {
   /** path → the loaded text exceeds the edit size gate (D8); the toolbar's
    *  edit toggle disables on it. */
   oversized: Record<string, true>
+  /** path → pending reveal (PLAN-ide-linkage 1b): the scroll + flash
+   *  PreviewContent performs once the file text is ready. Producers are the
+   *  agent sync (a completed edit lands where the change did) and chat tool
+   *  cards (a read card's range start, an edit card's path click). The tick
+   *  keeps a second reveal from being consumed by the first one's expiry
+   *  timer. */
+  revealTargets: Record<string, { tick: number; target: EditRevealTarget }>
+  requestReveal: (path: string, target: EditRevealTarget) => void
+  consumeReveal: (path: string) => void
   setDraft: (path: string, entry: DraftEntry) => void
   clearDraft: (path: string) => void
   setPreviewMode: (path: string, mode: PreviewMode) => void
@@ -75,6 +85,13 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
   previewModes: {},
   externalChanges: {},
   oversized: {},
+  revealTargets: {},
+
+  requestReveal: (path, target) =>
+    set((s) => ({
+      revealTargets: { ...s.revealTargets, [path]: { tick: (s.revealTargets[path]?.tick ?? 0) + 1, target } },
+    })),
+  consumeReveal: (path) => set((s) => ({ revealTargets: omitKey(s.revealTargets, path) })),
 
   setDraft: (path, entry) => set((s) => ({ drafts: { ...s.drafts, [path]: entry } })),
   clearDraft: (path) =>
@@ -136,6 +153,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       previewModes: omitKey(s.previewModes, path),
       externalChanges: omitKey(s.externalChanges, path),
       oversized: omitKey(s.oversized, path),
+      revealTargets: omitKey(s.revealTargets, path),
     }))
     // No fold-back when the strip empties: the preview lives beside the 工作区
     // tree now, and closing the last tab just returns the tree to full width —
@@ -176,6 +194,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
         previewModes: omitKeys(s.previewModes, paths),
         externalChanges: omitKeys(s.externalChanges, paths),
         oversized: omitKeys(s.oversized, paths),
+        revealTargets: omitKeys(s.revealTargets, paths),
       }
     })
   },
@@ -205,8 +224,12 @@ function touch(map: Record<string, PreviewTab[]>, key: string, tabs: PreviewTab[
 
 /** Entry point for chat-side previews (tool cards, file chips): resolves
  *  tool-relative paths against the on-screen conversation's workspace and
- *  opens in the active conversation's tab strip. */
-export function openInPreviewPane(rawPath: string): void {
+ *  opens in the active conversation's tab strip. An optional reveal target
+ *  (PLAN-ide-linkage 1c) rides the same resolution — the store keys reveals
+ *  by the RESOLVED path, so both producers must resolve identically. */
+export function openInPreviewPane(rawPath: string, reveal?: EditRevealTarget): void {
   const s = usePreviewPaneStore.getState()
-  s.openFile(s.activeConversationId, resolvePreviewPath(rawPath, s.workspaceDir))
+  const abs = resolvePreviewPath(rawPath, s.workspaceDir)
+  s.openFile(s.activeConversationId, abs)
+  if (reveal) s.requestReveal(abs, reveal)
 }

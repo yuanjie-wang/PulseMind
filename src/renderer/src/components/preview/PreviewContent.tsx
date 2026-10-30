@@ -11,6 +11,7 @@ import React, { Suspense, useCallback, useEffect, useState } from 'react'
 import { Button, message } from 'antd'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
 import { detectFileKind, isPreviewable, extensionOf, type FileKind } from '../../../../shared/preview/file-kind'
+import { capPreviewText, previewLimitLabel } from '../../../../shared/preview/view-cap'
 import { MarkdownPreview } from './MarkdownPreview'
 import { TextPreview } from './TextPreview'
 import { CsvPreview } from './CsvPreview'
@@ -41,9 +42,13 @@ import {
 // the entry chunk of a launch that may never open a .docx.
 const LazyDocxPreview = React.lazy(async () => ({ default: (await import('./DocxPreview')).DocxPreview }))
 
+/** How long the reveal flash stays before the target is consumed and the
+ *  highlight drops (PLAN-ide-linkage 1b). */
+const REVEAL_FLASH_MS = 1800
+
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; text: string }
+  | { status: 'ready'; text: string; truncated: boolean }
   | { status: 'missing' }
   | { status: 'error' }
 
@@ -57,7 +62,11 @@ function isEditableKind(kind: FileKind): boolean {
 /** Read a text file through the util bridge. Images skip the read — the
  *  <img> streams bytes straight from local-file://. Office kinds skip too:
  *  their rich renderers re-read the bytes themselves (readFileBinary), so a
- *  utf-8 read here was a guaranteed-mangled full copy nobody consumed (M11). */
+ *  utf-8 read here was a guaranteed-mangled full copy nobody consumed (M11).
+ *  The text is capped at MAX_PREVIEW_CHARS (view-cap.ts): the pane renders
+ *  spans per line, so a multi-megabyte read was a renderer freeze — the cap
+ *  and its honest notice apply to VIEW only; the editor keeps its own gate
+ *  (MAX_EDITABLE_BYTES), and reveal still anchors against the capped text. */
 function usePreviewFile(
   path: string,
   kind: FileKind,
@@ -67,13 +76,19 @@ function usePreviewFile(
 
   const load = useCallback(() => {
     if (kind === 'image' || kind === 'office') {
-      setState({ status: 'ready', text: '' })
+      setState({ status: 'ready', text: '', truncated: false })
       return
     }
     setState({ status: 'loading' })
     window.electronAPI
       .readFile(path)
-      .then((text) => setState(text === null ? { status: 'missing' } : { status: 'ready', text }))
+      .then((text) => {
+        if (text === null) setState({ status: 'missing' })
+        else {
+          const capped = capPreviewText(text)
+          setState({ status: 'ready', text: capped.text, truncated: capped.truncated })
+        }
+      })
       .catch(() => setState({ status: 'error' }))
   }, [path, kind])
 
@@ -94,6 +109,40 @@ function ErrorCard({ missing, onRetry }: { missing: boolean; onRetry: () => void
         {t('previewPane.retry')}
       </Button>
     </div>
+  )
+}
+
+/** The view-cap notice (view-cap.ts): the text was truncated at read time.
+ *  Sticky so the reason a file is cut stays visible while scrolling the part
+ *  that did render. The i18n key is static — the cap constant and the label
+ *  derive from the same module. */
+function TruncationNotice({ show, children }: { show: boolean; children: React.ReactNode }): React.ReactElement {
+  const { t } = useTranslation()
+  if (!show) return <>{children}</>
+  return (
+    <>
+      <div
+        data-pm-preview-truncated
+        style={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '5px 12px',
+          background: 'var(--pm-warn-bg)',
+          borderBottom: '1px solid var(--pm-warn-border)',
+          fontSize: 11,
+          color: 'var(--pm-warn)',
+          flexShrink: 0,
+        }}
+      >
+        <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+        <span style={{ flex: 1, minWidth: 0 }}>{t('previewPane.viewTruncated', { limit: previewLimitLabel() })}</span>
+      </div>
+      {children}
+    </>
   )
 }
 
@@ -187,6 +236,45 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   const elementMode = mode === 'element' && kind === 'html' && !oversized
   const draft = usePreviewPaneStore((s) => s.drafts[path])
   const externalChange = usePreviewPaneStore((s) => !!s.externalChanges[path])
+  const reveal = usePreviewPaneStore((s) => s.revealTargets[path])
+  const [revealLine, setRevealLine] = useState<number | null>(null)
+
+  // ── Reveal (PLAN-ide-linkage 1b): a completed edit (agent sync) or a tool
+  // card click anchored this path — locate the target line in the fresh text
+  // and hand it to TextPreview, then consume the target after the flash. The
+  // tick guard keeps a second reveal from being cancelled by the first one's
+  // expiry timer. Only the code view has a coordinate system to land on; every
+  // other kind consumes-and-drops. A text anchor that no longer matches (the
+  // disk moved on) is consumed immediately — no scroll is better than a wrong
+  // scroll. ──
+  useEffect(() => {
+    if (!reveal) return
+    if (state.status !== 'ready' || kind !== 'text') return
+    const target = reveal.target
+    let line: number | null = null
+    if (target.mode === 'line') {
+      line = target.line
+    } else {
+      const lines = state.text.split('\n')
+      const idx = lines.findIndex((l) => l.trim().startsWith(target.text))
+      if (idx >= 0) line = idx + 1
+    }
+    if (line == null) {
+      usePreviewPaneStore.getState().consumeReveal(path)
+      return
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- derived state of the loaded text, the same shape as the conflict decision above
+    setRevealLine(line)
+    const capturedTick = reveal.tick
+    const timer = window.setTimeout(() => {
+      const st = usePreviewPaneStore.getState()
+      if (st.revealTargets[path]?.tick === capturedTick) {
+        st.consumeReveal(path)
+        setRevealLine(null)
+      }
+    }, REVEAL_FLASH_MS)
+    return () => window.clearTimeout(timer)
+  }, [reveal, state, kind, path])
 
   // Every freshly-read disk text funnels through the conflict decision
   // (PLAN-preview-edit T3/D7). The initial load has no decision to make
@@ -307,9 +395,9 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     )
   }
 
-  if (kind === 'markdown') return <MarkdownPreview text={state.text} />
-  if (kind === 'text') return <TextPreview text={state.text} path={path} />
-  if (kind === 'csv') return <CsvPreview text={state.text} path={path} />
+  if (kind === 'markdown') return <TruncationNotice show={state.truncated}><MarkdownPreview text={state.text} /></TruncationNotice>
+  if (kind === 'text') return <TruncationNotice show={state.truncated}><TextPreview text={state.text} path={path} revealLine={revealLine ?? undefined} /></TruncationNotice>
+  if (kind === 'csv') return <TruncationNotice show={state.truncated}><CsvPreview text={state.text} path={path} /></TruncationNotice>
   if (kind === 'html') return <HtmlPreview path={path} reloadTick={reloadTick} />
   return <FallbackCard path={path} kind={kind} />
 }

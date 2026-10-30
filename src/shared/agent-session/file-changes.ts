@@ -97,3 +97,80 @@ export function fileChangeMarks(
   }
   return marks
 }
+
+/**
+ * The 「只看本会话改动」 filter's synthetic tree (PLAN-ide-linkage 刀二, 2026-10-30).
+ * Built from the ledger ALONE, deliberately not from the live tree: the tree is
+ * lazy, so after a restart or tab switch a changed file's ancestors may not be
+ * listed at all — a filter over loaded levels would silently miss them. The
+ * synthetic tree is self-contained at any moment and its paths are real, so the
+ * rows keep every live-tree affordance (selection, click to preview, hover
+ * actions, the marks' ink — the keys here are the same normalizeChangePath
+ * spellings the paint map uses).
+ *
+ * Directories sort before files, each alphabetically; a directory's kind
+ * follows the paint map's subtree rule (any modified inside → modified, else
+ * created); entries outside the workspace are not the tree's to show. All
+ * directory paths come back in `expanded` — the view opens fully, it is by
+ * definition small.
+ */
+export interface ChangedFileNode {
+  name: string
+  /** Normalized absolute path — row key, marks key, openFile argument. */
+  path: string
+  kind: SessionFileChangeKind
+  children?: ChangedFileNode[]
+}
+
+export function buildChangedFilesTree(
+  changes: readonly SessionFileChange[],
+  workspaceDir: string | null | undefined,
+): { nodes: ChangedFileNode[]; expanded: string[] } {
+  if (!workspaceDir || changes.length === 0) return { nodes: [], expanded: [] }
+  const root = normalizeChangePath(workspaceDir)
+  interface Dir {
+    path: string
+    dirs: Map<string, Dir>
+    files: ChangedFileNode[]
+    kinds: Set<SessionFileChangeKind>
+  }
+  const top: Dir = { path: root, dirs: new Map(), files: [], kinds: new Set() }
+  for (const change of changes) {
+    const path = normalizeChangePath(change.path)
+    if (!path.startsWith(`${root}/`) && !path.startsWith(`${root}\\`)) continue
+    const sep = path.charAt(root.length)
+    const segs = path.slice(root.length + 1).split(/[/\\]/)
+    let dir = top
+    for (let i = 0; i < segs.length - 1; i++) {
+      let child = dir.dirs.get(segs[i])
+      if (!child) {
+        child = { path: `${dir.path}${sep}${segs[i]}`, dirs: new Map(), files: [], kinds: new Set() }
+        dir.dirs.set(segs[i], child)
+      }
+      child.kinds.add(change.kind)
+      dir = child
+    }
+    const name = segs[segs.length - 1]
+    // Ledger keys are unique; the guard only keeps a malformed duplicate from
+    // producing two rows with one antd key.
+    if (!dir.files.some((f) => f.path === path)) dir.files.push({ name, path, kind: change.kind })
+  }
+  const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+  const expanded: string[] = []
+  const convert = (dir: Dir): ChangedFileNode[] => {
+    const nodes: ChangedFileNode[] = []
+    for (const name of [...dir.dirs.keys()].sort(byName)) {
+      const child = dir.dirs.get(name)!
+      expanded.push(child.path)
+      nodes.push({
+        name,
+        path: child.path,
+        kind: child.kinds.has('modified') ? 'modified' : 'created',
+        children: convert(child),
+      })
+    }
+    for (const file of [...dir.files].sort((a, b) => byName(a.name, b.name))) nodes.push(file)
+    return nodes
+  }
+  return { nodes: convert(top), expanded }
+}

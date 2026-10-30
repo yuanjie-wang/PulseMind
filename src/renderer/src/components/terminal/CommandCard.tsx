@@ -6,6 +6,8 @@ import type { ToolUseBlock } from '../../types/agent'
 import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
 import { resultSummary } from '../../../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffModel, type EditDiffLine } from '../../../../shared/tool-display/edit-diff'
+import { deriveEditReveal, deriveReadReveal, type EditRevealTarget } from '../../../../shared/tool-display/edit-reveal'
+import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Keyframe animation for skeleton pulse effect (injected once)
 const pulseKeyframe = `@keyframes pulsemind-skeleton-pulse {
@@ -19,6 +21,39 @@ if (typeof document !== 'undefined' && !keyframesInjected) {
   el.textContent = pulseKeyframe
   document.head.appendChild(el)
   keyframesInjected = true
+}
+
+// The clickable object path (PLAN-ide-linkage 1c): hover-only underline keeps
+// the verbatim-object red line (paths are never restyled into buttons at
+// rest); the hover tint reuses the card's add-color. Click = preview pane
+// (the FileRefChip pathway, resolved against the on-screen workspace).
+const pathLinkSheet = `.pm-card-pathlink { cursor: pointer; }
+.pm-card-pathlink:hover { text-decoration: underline; text-underline-offset: 3px; color: #4ec9b0; }`
+let pathSheetInjected = false
+if (typeof document !== 'undefined' && !pathSheetInjected) {
+  const el = document.createElement('style')
+  el.textContent = pathLinkSheet
+  document.head.appendChild(el)
+  pathSheetInjected = true
+}
+
+/** Tools whose object line is (or begins with) the verbatim `file_path` —
+ *  that prefix becomes the jump. export_document is excluded: its object line
+ *  leads with the format, and the deliverable force-opens itself on completion. */
+const OBJECT_PATH_TOOLS = new Set([
+  'read', 'write', 'edit',
+  'office_edit', 'office_read', 'office_search',
+  // Retired names riding persisted transcripts — history keeps its jumps.
+  'docx_edit', 'xlsx_edit', 'pptx_edit',
+])
+
+/** The reveal a card click carries: read jumps to its range start, a
+ *  COMPLETED edit to its change anchor (a failed edit's input describes a
+ *  change that never landed — no anchor). */
+function cardReveal(block: ToolUseBlock): EditRevealTarget | undefined {
+  if (block.name === 'read') return deriveReadReveal(block.input) ?? undefined
+  if (block.name === 'edit' && block.status === 'completed') return deriveEditReveal(block.input) ?? undefined
+  return undefined
 }
 
 const { Text } = Typography
@@ -620,6 +655,14 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
   // 对象行（T3）: the parsed object half of the input, one mono line.
   const objectLine = toolObjectSummary(block)
 
+  // The jump prefix (PLAN-ide-linkage 1c): the verbatim path when the tool's
+  // object line leads with it and the card has settled (a streaming path is
+  // still growing — clicking half a path opens the wrong file).
+  const inputFilePath = typeof block.input?.file_path === 'string' ? block.input.file_path : ''
+  const clickablePath = !isStreaming && inputFilePath && OBJECT_PATH_TOOLS.has(block.name) && objectLine.startsWith(inputFilePath)
+    ? inputFilePath
+    : null
+
   // 结果摘要（T3/D3-B）+ 折叠状态。流式/运行中永远展开（跟随滚动就是进度）。
   const summaryLine = resultSummary(block.name, block.output)?.line ?? null
   const [showFullOutput, setShowFullOutput] = useState(false)
@@ -710,7 +753,10 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
       {/* Object line for non-exec tools (PLAN-tool-ux T3, D3 content layer): the
           parsed object — path / query / host — instead of the raw JSON dump.
           While streaming it still shows (animated), because the dump's growth IS
-          the live progress; once settled, one mono line. */}
+          the live progress; once settled, one mono line. File-path tools
+          (PLAN-ide-linkage 1c) render the verbatim path as a jump into the
+          preview pane — read lands on its range, a completed edit on its
+          change; the text after the path (write's size suffix) rides verbatim. */}
       {!isAskUser && hasPartialInput && (
         <pre style={{
           color: '#d4d4d4',
@@ -728,7 +774,20 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         }}>
           {isStreaming
             ? JSON.stringify(block.input, null, 2)
-            : (objectLine || JSON.stringify(block.input, null, 2))}
+            : clickablePath
+              ? (
+                <span>
+                  <span
+                    className="pm-card-pathlink"
+                    title="在预览中打开"
+                    onClick={() => openInPreviewPane(clickablePath, cardReveal(block))}
+                  >
+                    {clickablePath}
+                  </span>
+                  {objectLine.slice(clickablePath.length)}
+                </span>
+              )
+              : (objectLine || JSON.stringify(block.input, null, 2))}
         </pre>
       )}
 

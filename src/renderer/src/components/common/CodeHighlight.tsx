@@ -110,6 +110,26 @@ interface CodeHighlightProps {
   lang: string
   /** Code font size; the chat markdown theme uses 14, the skill preview 12. */
   fontSize?: number
+  /** Visible line numbers. Preview-only (PLAN-ide-linkage 1a): read prints
+   *  absolute line numbers and edit errors cite them, so the preview must
+   *  speak the same coordinate system; chat code fences never promised
+   *  coordinates, so they stay numberless. Note that wrapLongLines already
+   *  renders one span per line — the library forces wrapLines on with it —
+   *  so turning numbers on adds the gutter spans, not the per-line wrapping. */
+  lineNumbers?: boolean
+  /** 1-based line to scroll into view + flash (PLAN-ide-linkage 1b reveal).
+   *  The per-line spans carry `data-reveal-line` attrs for the reveal window
+   *  only — PreviewContent consumes the target after the flash. */
+  revealLine?: number
+}
+
+/** The library's line-number box is `minWidth: <digits>.25em` + `paddingRight:
+ *  1em` (assembleLineNumberStyles), sized from the LARGEST number it will
+ *  print — the same arithmetic here, so the hanging indent below is exactly one
+ *  gutter wide. */
+function gutterEm(code: string): number {
+  const largest = 1 + (code.match(/\n/g)?.length ?? 0)
+  return String(largest).length + 1.25
 }
 
 /** Prism-highlighted code. `PreTag="div"` keeps it valid inside x-markdown's
@@ -131,8 +151,9 @@ interface CodeHighlightProps {
  *  re-tokenized the WHOLE file per 40ms width tick (probe-preview-drag.mjs
  *  measured a 1350ms frame gap on a ~1500-line python file; the memo drops it
  *  to the re-wrap floor). */
-export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12 }: CodeHighlightProps): React.ReactElement {
+export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12, lineNumbers = false, revealLine }: CodeHighlightProps): React.ReactElement {
   const mode = useThemeMode()
+  const containerRef = React.useRef<HTMLDivElement | null>(null)
   const customStyle = React.useMemo(
     () => ({ margin: 0, padding: 12, background: 'var(--pm-code-bg)', borderRadius: 8, fontSize }),
     [fontSize],
@@ -141,17 +162,55 @@ export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fon
     () => ({ style: { fontFamily: FONT_STACK, fontSize, lineHeight: 1.6 } }),
     [fontSize],
   )
+  // The reveal render commits synchronously with this effect — DOM geometry is
+  // measurable, scrollIntoView needs no paint wait. wrapLongLines is on, so the
+  // target line may occupy several visual rows; the span handles that itself.
+  React.useEffect(() => {
+    if (revealLine == null || !containerRef.current) return
+    const el = containerRef.current.querySelector(`[data-reveal-line="${revealLine}"]`)
+    el?.scrollIntoView({ block: 'center' })
+  }, [revealLine])
+  const reveal = revealLine != null
+  // Numbered lines are BLOCK rows with a hanging indent one gutter wide. The
+  // library's own shape for wrapLongLines + showLineNumbers is `display: flex`
+  // per line, which blockifies every token into its own flex item: in a narrow
+  // preview column the items shrink and wrap one by one (whitespace between
+  // them collapses, the comment overflows to the right, a line grows to 150px of
+  // mostly empty rows), and the 800 overflowing flex rows turned every chat
+  // scroll into a ~260ms PaintArtifactCompositor::Update (2026-10-30, measured by
+  // probe-chat-scroll-pane.mjs: 10 long tasks per burst → 0 with block rows).
+  // lineProps spreads after the library's style, so `display` here wins.
+  const lineStyle = React.useMemo<React.CSSProperties | undefined>(() => {
+    if (!lineNumbers) return undefined
+    const em = `${gutterEm(code)}em`
+    return { display: 'block', paddingLeft: em, textIndent: `-${em}` }
+  }, [lineNumbers, code])
+  const lineProps = React.useMemo(() => {
+    if (!reveal) return lineStyle ? { style: lineStyle } : undefined
+    return (n: number) => ({
+      // String value: hast properties drop non-string attribute values.
+      'data-reveal-line': String(n),
+      style: {
+        ...lineStyle,
+        ...(n === revealLine ? { background: 'var(--pm-warn-bg)', borderRadius: 4, transition: 'background 0.4s' } : {}),
+      },
+    })
+  }, [reveal, revealLine, lineStyle])
   return (
-    <SyntaxHighlighter
-      language={lang}
-      style={mode === 'dark' ? oneDark : oneLight}
-      PreTag="div"
-      wrapLongLines
-      customStyle={customStyle}
-      codeTagProps={codeTagProps}
-    >
-      {code}
-    </SyntaxHighlighter>
+    <div ref={containerRef}>
+      <SyntaxHighlighter
+        language={lang}
+        style={mode === 'dark' ? oneDark : oneLight}
+        PreTag="div"
+        wrapLongLines
+        showLineNumbers={lineNumbers}
+        lineProps={lineProps}
+        customStyle={customStyle}
+        codeTagProps={codeTagProps}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
   )
 })
 

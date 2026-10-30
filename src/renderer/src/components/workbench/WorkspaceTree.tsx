@@ -2,22 +2,25 @@
 // One lazy DirectoryTree over the workspace dir: each expansion lists one
 // level through util:list-dir, and clicking a file previews it beside this
 // tree (previewPaneStore.openFile also brings the workbench up on this tab).
-// The header carries the search box and 刷新 — the root path moved to the
-// address bar above (WorkspacePane, 2026-10-25 layout ruling).
+// The header carries the search box and 刷新 — the path lives in the address
+// bar inside the preview column (WorkspacePane, 2026-10-30 layout ruling).
 //
 // Three things this view owes the user:
 //   * the expansion state is cached per workspace dir in workspaceTreeStore —
 //     WorkbenchPane unmounts this component on every tab switch, so anything
 //     held in component state is gone by the time the user comes back;
-//   * every row reveals 复制路径 / 删除 on hover. Those clicks must not also
-//     select or expand the row (DirectoryTree's expandAction is 'click'), hence
-//     the stopPropagation on both buttons — and 删除 asks first, being the one
-//     action here that clicking again cannot undo;
+//   * every row reveals 在系统中打开 / 复制路径 / 删除 on hover. Those clicks
+//     must not also select or expand the row (DirectoryTree's expandAction is
+//     'click'), hence the stopPropagation on every button — and 删除 asks
+//     first, being the one action here that clicking again cannot undo.
+//     「在系统中打开」 is the folder's Finder entry point, added 2026-10-30: the
+//     address bar now speaks for the previewed file only, so a folder that is
+//     merely selected would otherwise have no way out of the app;
 //   * 搜索 walks the whole workspace recursively (not just the loaded levels —
 //     a filter over lazy levels would only ever search what happens to be
 //     open), debounced, with the matched paths and their ancestors materialized
 //     as a flat-by-comparison result tree, all levels expanded.
-// Selection is controlled by the parent (WorkspacePane) so the address bar and
+// Selection is controlled by the parent (WorkspacePane) so the tree rows and
 // an agent-opened preview can highlight the same file.
 // Rows the SESSION touched are painted (2026-10-28, user: 用不同颜色区分由本轮
 // 会话新增或改变的文件): a file the conversation's tools created reads in
@@ -33,13 +36,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tree, Tooltip, Button, Input, Spin, Modal, message } from 'antd'
 import type { DataNode, EventDataNode } from 'antd/es/tree'
-import { CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { CopyOutlined, DeleteOutlined, DiffOutlined, FolderOpenOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { isDirty } from '../../stores/preview-edit'
 import { useWorkspaceTreeStore, NO_EXPANDED_KEYS } from '../../stores/workspaceTreeStore'
 import { loadedAncestor, parentDir, removeNode } from '../../stores/workspace-tree'
 import { NO_FILE_CHANGES, useSessionFileChangesStore } from '../../stores/sessionFileChangesStore'
-import { fileChangeMarks, normalizeChangePath } from '../../../../shared/agent-session/file-changes'
+import { buildChangedFilesTree, fileChangeMarks, normalizeChangePath, type ChangedFileNode } from '../../../../shared/agent-session/file-changes'
 import type { SessionFileChange, SessionFileChangeKind } from '../../../../shared/agent-protocol'
 
 const { DirectoryTree } = Tree
@@ -111,6 +114,16 @@ function entryToNode(entry: WorkspaceEntry): WorkspaceNode {
     : { title: entry.name, key: entry.path, entry, isLeaf: true }
 }
 
+/** A 「只看本会话改动」 synthetic row keeps the live tree's affordances by
+ *  carrying a fabricated entry — same shape, real path (the hover actions and
+ *  the marks ink all read it). */
+function changedNode(node: ChangedFileNode): WorkspaceNode {
+  const entry: WorkspaceEntry = { name: node.name, path: node.path, isDir: node.children != null }
+  return entry.isDir
+    ? { title: node.name, key: node.path, entry, children: node.children!.map(changedNode) }
+    : { title: node.name, key: node.path, entry, isLeaf: true }
+}
+
 /** Replace one node's children (matched by key) anywhere in the loaded tree.
  *  A child that already had a loaded subtree KEEPS it: this is called both by
  *  the restore below and by rc-tree's `loadData`, and re-reading a level must
@@ -148,6 +161,65 @@ function Hint({ text }: { text: string }): React.ReactElement {
   )
 }
 
+/** Scroll shell that measures itself and hands the content the inner viewport
+ *  height (2026-10-30 perf: 大项目目录树卡顿). rc-tree only virtualizes when
+ *  `height` is set — without it EVERY expanded row is a real DOM node and every
+ *  expand/select/ledger repaint walks them all. The tree renders only after
+ *  the first measurement (a blank frame beats an unvirtualized first paint of
+ *  a few thousand rows); the 12px is the wrapper's own vertical padding. */
+function TreeScrollShell({ children }: { children: (viewportH: number) => React.ReactNode }): React.ReactElement {
+  const shellRef = useRef<HTMLDivElement | null>(null)
+  const [h, setH] = useState(0)
+  useEffect(() => {
+    const el = shellRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setH(el.clientHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return (
+    <div ref={shellRef} className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '6px 4px' }}>
+      {children(Math.max(0, h - 12))}
+    </div>
+  )
+}
+
+/** git diff 文本的逐行着色（刀三）：+绿 −红 @@蓝，头行弱化。git 的 -U80 上下文
+ *  原样展示，不做二次 diff 解析——行首前缀就是 git 自己的标记。 */
+function DiffLines({ text }: { text: string }): React.ReactElement {
+  return (
+    <>
+      {text.split('\n').map((line, i) => {
+        const color =
+          line.startsWith('+++') || line.startsWith('---')
+            ? 'var(--pm-text-faint)'
+            : line.startsWith('@@')
+              ? 'var(--pm-link)'
+              : line.startsWith('+')
+                ? 'var(--pm-success)'
+                : line.startsWith('-')
+                  ? 'var(--pm-error)'
+                  : undefined
+        return (
+          <div
+            key={i}
+            style={{
+              color,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              fontSize: 11,
+              lineHeight: 1.6,
+              fontFamily: 'Menlo, Consolas, monospace',
+            }}
+          >
+            {line || ' '}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 /** Is `filePath` reachable in the loaded tree: every ancestor dir present AND
  *  expanded, the file itself among the last ancestor's loaded children. */
 function rowVisible(entries: WorkspaceNode[], ancestors: string[], filePath: string, expanded: ReadonlySet<string>): boolean {
@@ -167,6 +239,14 @@ interface RowProps {
   mark?: SessionFileChangeKind
   onCopy: (entry: WorkspaceEntry) => void
   onDelete: (entry: WorkspaceEntry) => void
+  /** Shell-open the row's path — files in their default app, folders in
+   *  Finder (2026-10-30: the address bar's 📂 speaks for the previewed file
+   *  alone, so this row button is a folder's way out of the app). */
+  onOpenOs: (entry: WorkspaceEntry) => void
+  /** The session-diff action (PLAN-ide-linkage 刀三): only handed down in
+   *  「只看改动」 mode, and the button only renders on modified files — a
+   *  created file has no git past to diff against. */
+  onDiff?: (entry: WorkspaceEntry) => void
 }
 
 /** The name with every case-insensitive hit of `highlight` painted; an empty
@@ -190,16 +270,42 @@ function HighlightedName({ name, highlight }: { name: string; highlight?: string
   return <>{parts}</>
 }
 
-/** One row's title: the name, then the two hover actions. Rendered through
+/** One row's title: the name, then the hover actions. Rendered through
  *  `titleRender` so the handlers are always the current ones while the tree
  *  data stays plain data. */
-function TreeRow({ entry, highlight, mark, onCopy, onDelete }: RowProps): React.ReactElement {
+function TreeRow({ entry, highlight, mark, onCopy, onDelete, onOpenOs, onDiff }: RowProps): React.ReactElement {
   return (
     <span className="pm-ws-row" data-ws-path={entry.path}>
       <span className={mark ? `pm-ws-name pm-ws-${mark}` : 'pm-ws-name'} data-ws-mark={mark}>
         <HighlightedName name={entry.name} highlight={highlight} />
       </span>
       <span className="pm-ws-actions">
+        {onDiff && mark === 'modified' && (
+          <button
+            type="button"
+            className="pm-ws-btn"
+            title="查看本次改动 diff"
+            aria-label={`查看 diff ${entry.name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onDiff(entry)
+            }}
+          >
+            <DiffOutlined />
+          </button>
+        )}
+        <button
+          type="button"
+          className="pm-ws-btn"
+          title="在系统中打开"
+          aria-label={`在系统中打开 ${entry.name}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenOs(entry)
+          }}
+        >
+          <FolderOpenOutlined />
+        </button>
         <button
           type="button"
           className="pm-ws-btn"
@@ -462,6 +568,48 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   const changes = useSessionFileChangesStore((s) => (conversationId ? s.byConversation[conversationId] : undefined)) ?? NO_FILE_CHANGES
   const marks = useMemo(() => fileChangeMarks(changes, workspaceDir), [changes, workspaceDir])
 
+  // ── 只看本会话改动 (PLAN-ide-linkage 刀二) ──
+  // A toggle, not a live-tree filter: the tree is lazy, so after a restart or
+  // tab switch a changed file's ancestors may not be listed at all — filtering
+  // loaded levels would silently miss rows. The synthetic tree is built from
+  // the ledger alone (self-contained at any moment) and re-derives live as the
+  // ledger grows. Enabling it clears the search: one view at a time, and the
+  // search box is hidden in this mode (nothing left to search — the view IS
+  // the filter).
+  const [onlyChanges, setOnlyChanges] = useState(false)
+  const changed = useMemo(() => buildChangedFilesTree(changes, workspaceDir), [changes, workspaceDir])
+  const [filterExpanded, setFilterExpanded] = useState<string[] | null>(null)
+  const changedNodes = useMemo(() => changed.nodes.map(changedNode), [changed])
+
+  // ── 改动 diff (PLAN-ide-linkage 刀三) ──
+  // A modified row's 「查看 diff」: one read-only git action, pathspec limited
+  // to that file, cwd = the workspace. The ledger does not depend on git, so a
+  // non-repo workspace keeps its list and says so honestly instead of faking a
+  // diff; an empty diff means the change is staged (or the disk moved back).
+  const [diffTarget, setDiffTarget] = useState<string | null>(null)
+  const [diffState, setDiffState] = useState<{ kind: 'loading' | 'repo' | 'norepo' | 'empty' | 'error'; text: string } | null>(null)
+  const showDiff = async (entry: WorkspaceEntry): Promise<void> => {
+    if (!workspaceDir) return
+    setDiffTarget(entry.path)
+    setDiffState({ kind: 'loading', text: '' })
+    try {
+      const res = await window.electronAPI.gitInvoke({ action: 'diff', cwd: workspaceDir, files: [entry.path] })
+      if (!res.ok) {
+        setDiffState({ kind: 'error', text: res.error?.message ?? 'git diff 执行失败' })
+        return
+      }
+      const data = res.data as { isRepo?: boolean; diff?: string } | undefined
+      if (!data?.isRepo) {
+        setDiffState({ kind: 'norepo', text: '' })
+        return
+      }
+      const diff = data.diff ?? ''
+      setDiffState(diff ? { kind: 'repo', text: diff } : { kind: 'empty', text: '' })
+    } catch (err) {
+      setDiffState({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
   // Initial pull: the desktop mirror is built from events alone (it never
   // snapshots), so a tree mounted AFTER the writes — tab switch, window reload
   // — would start blank without asking main for the ledger. Re-runs on 刷新 so
@@ -553,6 +701,14 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     }
   }
 
+  /** The same executable-gated IPC the address bar's 📂 rides. That button
+   *  only ever opens the previewed file now — a folder needs this row action. */
+  const openInOs = (entry: WorkspaceEntry): void => {
+    void window.electronAPI.openFolder(entry.path).catch((err: unknown) => {
+      void message.error(err instanceof Error ? err.message : '无法在系统中打开')
+    })
+  }
+
   const deleteEntry = async (entry: WorkspaceEntry): Promise<void> => {
     try {
       const res = await window.electronAPI.deletePath(entry.path)
@@ -599,7 +755,17 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   const titleRender = (node: DataNode): React.ReactNode => {
     const entry = (node as WorkspaceNode).entry
     if (!entry) return node.title as React.ReactNode
-    return <TreeRow entry={entry} highlight={searching ? debounced : undefined} mark={marks.get(entry.path)} onCopy={copyPath} onDelete={requestDelete} />
+    return (
+      <TreeRow
+        entry={entry}
+        highlight={searching ? debounced : undefined}
+        mark={marks.get(entry.path)}
+        onCopy={copyPath}
+        onDelete={requestDelete}
+        onOpenOs={openInOs}
+        onDiff={onlyChanges ? showDiff : undefined}
+      />
+    )
   }
 
   const refresh = () => {
@@ -612,7 +778,9 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <style>{TREE_CSS}</style>
-      {/* Tree header: search + 刷新. The root path lives in the address bar. */}
+      {/* Tree header: search + 只看改动 + 刷新. The root path lives in the
+          address bar. In 改动 mode the search box is hidden — the view is
+          already the filter. */}
       <div
         style={{
           flexShrink: 0,
@@ -623,17 +791,42 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
           borderBottom: '1px solid var(--pm-separator-faint)',
         }}
       >
-        <Input
-          size="small"
-          aria-label="搜索文件"
-          placeholder="搜索"
-          prefix={<SearchOutlined style={{ fontSize: 11, color: 'var(--pm-text-quiet)' }} />}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          allowClear
-          disabled={!workspaceDir}
-          style={{ flex: 1, minWidth: 0 }}
-        />
+        {!onlyChanges && (
+          <Input
+            size="small"
+            aria-label="搜索文件"
+            placeholder="搜索"
+            prefix={<SearchOutlined style={{ fontSize: 11, color: 'var(--pm-text-quiet)' }} />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            allowClear
+            disabled={!workspaceDir}
+            style={{ flex: 1, minWidth: 0 }}
+          />
+        )}
+        {onlyChanges && <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', paddingLeft: 2 }}>{`本会话改动 · ${changed.nodes.length} 个文件`}</div>}
+        <Tooltip title={changes.length > 0 ? `只看本会话改动（${changes.length} 个文件）` : '本会话暂无文件改动'}>
+          <Button
+            type="text"
+            size="small"
+            aria-label="只看本会话改动"
+            icon={<DiffOutlined style={{ fontSize: 12, color: onlyChanges ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
+            disabled={!workspaceDir || changes.length === 0}
+            onClick={() => {
+              const next = !onlyChanges
+              setOnlyChanges(next)
+              setFilterExpanded(null)
+              if (next) {
+                setQuery('')
+                setSearch(null)
+              } else {
+                setDiffTarget(null)
+                setDiffState(null)
+              }
+            }}
+            style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+          />
+        </Tooltip>
         <Tooltip title="刷新">
           <Button
             type="text"
@@ -649,6 +842,75 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
 
       {!workspaceDir ? (
         <Hint text="当前会话暂无工作目录" />
+      ) : onlyChanges ? (
+        changed.nodes.length === 0 ? (
+          <Hint text="本会话暂无文件改动" />
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '6px 4px' }}>
+              <DirectoryTree
+                className="pm-ws-tree"
+                treeData={changedNodes}
+                expandedKeys={filterExpanded ?? changed.expanded}
+                onExpand={(keys) => setFilterExpanded(keys.map(String))}
+                onSelect={onSelect}
+                selectedKeys={selectedPath ? [selectedPath] : []}
+                titleRender={titleRender}
+                style={{ fontSize: 12 }}
+              />
+            </div>
+            {/* The diff strip (刀三): a modified row's 查看 diff lands here —
+                the tree keeps its height, the diff takes up to ~half below. */}
+            {diffTarget && (
+              <div
+                data-ws-diff-panel
+                style={{
+                  flexShrink: 0,
+                  maxHeight: '48%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  borderTop: '1px solid var(--pm-separator-faint)',
+                  background: 'var(--pm-bg)',
+                }}
+              >
+                <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderBottom: '1px solid var(--pm-separator-faint)' }}>
+                  <DiffOutlined style={{ fontSize: 11, color: 'var(--pm-text-quiet)', flexShrink: 0 }} />
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
+                    <span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{diffTarget}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="pm-ws-btn"
+                    title="关闭 diff"
+                    aria-label="关闭 diff"
+                    onClick={() => {
+                      setDiffTarget(null)
+                      setDiffState(null)
+                    }}
+                  >
+                    <DeleteOutlined style={{ transform: 'rotate(45deg)' }} />
+                  </button>
+                </div>
+                <div className="auto-hide-scroll" style={{ overflow: 'auto', minHeight: 0, padding: '6px 10px' }}>
+                  {!diffState || diffState.kind === 'loading' ? (
+                    <div style={{ padding: '8px 0', textAlign: 'center' }}>
+                      <Spin size="small" />
+                    </div>
+                  ) : diffState.kind === 'norepo' ? (
+                    <div style={{ fontSize: 12, color: 'var(--pm-text-muted)', padding: '4px 0' }}>非 git 仓库——列表照常可用，但没有 diff 可看</div>
+                  ) : diffState.kind === 'empty' ? (
+                    <div style={{ fontSize: 12, color: 'var(--pm-text-muted)', padding: '4px 0' }}>无未暂存改动（可能已暂存，或文件已还原）</div>
+                  ) : diffState.kind === 'error' ? (
+                    <div style={{ fontSize: 12, color: 'var(--pm-error)', padding: '4px 0', whiteSpace: 'pre-wrap' }}>{diffState.text}</div>
+                  ) : (
+                    <DiffLines text={diffState.text} />
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )
       ) : searching ? (
         !searchCurrent ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -683,20 +945,25 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
       ) : current.entries.length === 0 ? (
         <Hint text="工作目录为空" />
       ) : (
-        <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '6px 4px' }}>
-          <DirectoryTree
-            key={reqKey}
-            className="pm-ws-tree"
-            treeData={current.entries}
-            expandedKeys={expandedKeys}
-            onExpand={onExpand}
-            loadData={loadData}
-            onSelect={onSelect}
-            selectedKeys={selectedPath ? [selectedPath] : []}
-            titleRender={titleRender}
-            style={{ fontSize: 12 }}
-          />
-        </div>
+        <TreeScrollShell>
+          {(viewportH) =>
+            viewportH > 0 ? (
+              <DirectoryTree
+                key={reqKey}
+                className="pm-ws-tree"
+                treeData={current.entries}
+                height={viewportH}
+                expandedKeys={expandedKeys}
+                onExpand={onExpand}
+                loadData={loadData}
+                onSelect={onSelect}
+                selectedKeys={selectedPath ? [selectedPath] : []}
+                titleRender={titleRender}
+                style={{ fontSize: 12 }}
+              />
+            ) : null
+          }
+        </TreeScrollShell>
       )}
     </div>
   )
