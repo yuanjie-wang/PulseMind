@@ -347,9 +347,12 @@ const strip = () => page.evaluate(() => {
   const el = document.querySelector('.pm-pane-tabstrip')
   if (!el) return null
   const r = el.getBoundingClientRect()
-  // The 32px contract lives on the strip ROW (the scroller's parent); the
-  // scroller itself is content-height inside it.
-  const row = el.parentElement.getBoundingClientRect()
+  // The 32px contract lives on the strip ROW, which is the closest ancestor
+  // carrying the border-bottom — NOT the scroller's parent any more: since
+  // 2026-10-30 the scroller sits inside a `position: relative` wrapper that
+  // holds the two edge-fade masks (StripEdgeFades), and that wrapper is
+  // content-height. Measured by the same rule the address row above uses.
+  const row = el.closest('div[style*="border-bottom"]').getBoundingClientRect()
   return {
     scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
     scrollLeft: el.scrollLeft, top: r.top, height: r.height,
@@ -856,6 +859,50 @@ await page.waitForTimeout(60)
 await page.mouse.up()
 check('a real drag works again after the phantom states', (await paneWidth()) - wF > 10, `${wF} → ${await paneWidth()}`)
 await shot('pane-drag-handle.png')
+
+/* ── N. 两端渐隐（2026-10-30 用户裁定）：两条页签条共用同一份提示，浏览器条也
+        要真的画出来、且不能吃点击。少页签时一个遮罩都不该有。 ───────────── */
+const manyTabs = Array.from({ length: 12 }, (_, i) => ({
+  id: `tab_wide_${i}`,
+  url: `https://example.com/${i}`,
+  title: `很长的标签页标题 ${i}`,
+  active: i === 11,
+}))
+await page.evaluate((tabs) => window.__mount({ tabs }), manyTabs)
+await page.waitForFunction(() => document.querySelectorAll('[data-tab-id]').length === 12)
+const fadeEdges = () =>
+  page.evaluate(() => Array.from(document.querySelectorAll('[data-strip-fade]')).map((el) => el.getAttribute('data-strip-fade')).sort())
+const paneStrip = () => page.locator('.pm-pane-tabstrip')
+await paneStrip().evaluate((el) => { el.scrollLeft = 0 })
+await page.waitForTimeout(150)
+check('12 tabs: the browser strip fades its RIGHT edge (the same hint the file strip carries)', JSON.stringify(await fadeEdges()) === '["right"]', JSON.stringify(await fadeEdges()))
+await paneStrip().evaluate((el) => { el.scrollLeft = el.scrollWidth })
+await page.waitForTimeout(150)
+check('…and its LEFT edge at the far end', JSON.stringify(await fadeEdges()) === '["left"]', JSON.stringify(await fadeEdges()))
+const stripBox = await paneStrip().boundingBox()
+const titlePoint = await page.evaluate(
+  ({ x0, y }) => {
+    for (let dx = 2; dx <= 14; dx += 2) {
+      const el = document.elementFromPoint(x0 + dx, y)
+      const mask = el?.closest?.('[data-strip-fade]')
+      const chip = el?.closest?.('[data-tab-id]')
+      if (mask || !chip) continue
+      const close = chip.querySelector('svg')?.getBoundingClientRect()
+      if (!close || close.left > x0 + dx + 2) return { dx, id: chip.getAttribute('data-tab-id') }
+    }
+    return null
+  },
+  { x0: stripBox.x, y: stripBox.y + stripBox.height / 2 },
+)
+check('a tab title sits under the left mask here too (mask not hit-testable, tab found)', !!titlePoint, JSON.stringify(titlePoint))
+await page.evaluate(() => { window.__actions = [] })
+await page.mouse.click(stripBox.x + titlePoint.dx, stripBox.y + stripBox.height / 2)
+await page.waitForTimeout(200)
+const picked = await page.evaluate(() => window.__actions.filter((a) => a.op === 'selectTab').map((a) => a.tabId))
+check('…and clicking under the mask reaches the tab (one selectTab action, not swallowed)', JSON.stringify(picked) === JSON.stringify([titlePoint.id]), JSON.stringify(picked))
+await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
+await page.waitForTimeout(150)
+check('…and a strip with two tabs fades nothing (nothing is hidden)', JSON.stringify(await fadeEdges()) === '[]', JSON.stringify(await fadeEdges()))
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

@@ -4,10 +4,13 @@
 // WebContentsView positioned by the main-process dock BELOW this chrome —
 // heights must stay in sync via PANE_CHROME_HEIGHT (which includes the
 // workbench's own tool-tab strip). Positioning and the width drag handle
-// belong to WorkbenchPane; this component fills its parent.
+// belong to WorkbenchPane; this component fills its parent. The tab strip's two
+// edges fade while a tab sits beyond them — the same affordance the file tab
+// strip carries (common/StripEdgeFades, 2026-10-30 用户裁定).
 
 import React, { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff } from 'lucide-react'
+import { StripEdgeFades, useStripFades } from '../common/StripEdgeFades'
 import {
   hostLabel,
   isFreshTabUrl,
@@ -257,6 +260,10 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // buttons (裁定 L5). Heights stay exactly 32/36 — PANE_CHROME_HEIGHT is a
   // pixel contract with the main-process dock.
   const stripRef = useRef<HTMLDivElement | null>(null)
+  // Both edges fade while a tab sits beyond them — the visible half of "a mouse
+  // can scroll this strip too" (see StripEdgeFades; the file tab strip in the
+  // 工作区 pane carries the same affordance, 2026-10-30 用户裁定).
+  const fades = useStripFades(stripRef, pane.tabs.map((t) => t.id).join('|') + (activeId ?? ''))
 
   // 滚轮横滑：竖向滚轮手势换算成横向滚动。passive: false 才能 preventDefault，
   // 否则外层滚动容器（工作台）会跟着滚。
@@ -313,52 +320,55 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           overflow: 'hidden',
         }}
       >
-        <div
-          ref={stripRef}
-          className="pm-pane-tabstrip"
-          style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden' }}
-        >
-          {pane.tabs.map((tab) => (
-            <div
-              key={tab.id}
-              data-tab-id={tab.id}
-              onClick={() => {
-                if (tab.id === activeId) return
-                setOptimisticActive(tab.id)
-                onAction({ op: 'selectTab', tabId: tab.id })
-              }}
-              title={tab.title || tab.url}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                maxWidth: 140,
-                minWidth: 64,
-                padding: '3px 8px',
-                borderRadius: 6,
-                fontSize: 11,
-                fontWeight: tab.id === activeId ? 600 : 400,
-                cursor: 'pointer',
-                background: tab.id === activeId ? 'var(--pm-tile-soft)' : 'transparent',
-                boxShadow: tab.id === activeId ? 'var(--pm-shadow-chip)' : 'none',
-                color: tab.id === activeId ? 'var(--pm-text-strong)' : 'var(--pm-text-quiet)',
-                flexShrink: 1,
-                flexBasis: 'auto',
-                overflow: 'hidden',
-              }}
-            >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.title || tab.url || '新标签页'}</span>
-              <X
-                size={11}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (tab.id === activeId) setOptimisticActive(null)
-                  onAction({ op: 'closeTab', tabId: tab.id })
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          <div
+            ref={stripRef}
+            className="pm-pane-tabstrip"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden' }}
+          >
+            {pane.tabs.map((tab) => (
+              <div
+                key={tab.id}
+                data-tab-id={tab.id}
+                onClick={() => {
+                  if (tab.id === activeId) return
+                  setOptimisticActive(tab.id)
+                  onAction({ op: 'selectTab', tabId: tab.id })
                 }}
-                style={{ flexShrink: 0, opacity: 0.6 }}
-              />
-            </div>
-          ))}
+                title={tab.title || tab.url}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  maxWidth: 140,
+                  minWidth: 64,
+                  padding: '3px 8px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: tab.id === activeId ? 600 : 400,
+                  cursor: 'pointer',
+                  background: tab.id === activeId ? 'var(--pm-tile-soft)' : 'transparent',
+                  boxShadow: tab.id === activeId ? 'var(--pm-shadow-chip)' : 'none',
+                  color: tab.id === activeId ? 'var(--pm-text-strong)' : 'var(--pm-text-quiet)',
+                  flexShrink: 1,
+                  flexBasis: 'auto',
+                  overflow: 'hidden',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.title || tab.url || '新标签页'}</span>
+                <X
+                  size={11}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (tab.id === activeId) setOptimisticActive(null)
+                    onAction({ op: 'closeTab', tabId: tab.id })
+                  }}
+                  style={{ flexShrink: 0, opacity: 0.6 }}
+                />
+              </div>
+            ))}
+          </div>
+        <StripEdgeFades fades={fades} />
         </div>
         <div style={{ ...ICON_BUTTON }} onClick={() => onAction({ op: 'newTab' })} title="新建标签页">
           <Plus size={13} />

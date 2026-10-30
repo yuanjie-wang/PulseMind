@@ -1,12 +1,18 @@
-// ── 工作区地址栏 (2026-10-25, 用户裁定的新布局) ──
-// The merged 工作区 view's top strip: the selected file/folder's absolute
-// path on the left (the workspace root when nothing is selected), and on the
-// right 打开 (shell-open the selected path — folders land in Finder, files in
-// their default app, both through the same executable-gated IPC) plus a ⋯
-// 更多 dropdown holding the preview actions the old toolbar row carried:
-// 编辑 / 元素编辑 / 保存 / 刷新. Those act on the ACTIVE PREVIEW FILE, not on
-// the selection — navigating the tree over a folder must not grey out the
-// actions for the file still on screen.
+// ── 工作区地址栏 (2026-10-25; 2026-10-30 移入预览列并改语义) ──
+// The preview COLUMN's top strip (2026-10-30, 用户裁定: it moved down out of the
+// pane's top row — the file tab strip lives there now): the ACTIVE PREVIEW
+// FILE's absolute path on the left (the workspace root when nothing is open),
+// and on the right 打开 (shell-open that file — folders land in Finder, files
+// in their default app, both through the same executable-gated IPC) plus a ⋯
+// 更多 dropdown holding the preview actions: 编辑 / 元素编辑 / 保存 / 刷新.
+// It names the file ON SCREEN, not the tree selection (the ruling that moved
+// it): the tree's own rows paint what is selected, and a folder opened in
+// Finder now rides the row's hover action (WorkspaceTree) — the bar no longer
+// speaks for a folder the preview is not showing.
+// No change/dirty dots (2026-10-30 用户裁定): the session-change inks live on
+// the tree rows and the tab TEXT, and the dirty state is the ⋯ menu's 保存
+// enablement — the bar is a nameplate, not a status row. Height is the tree
+// toolbar's 32px (4 + 24 + 4), so the two columns' first strips line up.
 
 import React from 'react'
 import { Dropdown, message } from 'antd'
@@ -31,11 +37,9 @@ const ICON_BUTTON: React.CSSProperties = {
 
 interface Props {
   conversationId: string | undefined
-  /** The tree's selected path (file or folder); null = nothing selected. */
-  selectedPath: string | null
 }
 
-export function WorkspaceAddressBar({ conversationId, selectedPath }: Props): React.ReactElement {
+export function WorkspaceAddressBar({ conversationId }: Props): React.ReactElement {
   const { t } = useTranslation()
   const key = conversationId ?? DRAFT_CONVERSATION_KEY
   const workspaceDir = usePreviewPaneStore((s) => s.workspaceDir)
@@ -44,9 +48,10 @@ export function WorkspaceAddressBar({ conversationId, selectedPath }: Props): Re
   const previewModes = usePreviewPaneStore((s) => s.previewModes)
   const oversized = usePreviewPaneStore((s) => s.oversized)
 
-  const displayPath = selectedPath ?? workspaceDir
-  // Everything in the menu targets the file ON SCREEN (the old toolbar's
-  // `active.path` semantics), independent of what the tree highlights.
+  // The file on screen — and only it (2026-10-30 裁定). Nothing open = the
+  // workspace root, so the row still says where this conversation lives.
+  const displayPath = activePath ?? workspaceDir
+  // The menu targets the file ON SCREEN, like the path beside it.
   const activeKind = activePath ? detectFileKind(activePath) : null
   const editableKind = activeKind === 'markdown' || activeKind === 'text' || activeKind === 'csv' || activeKind === 'html'
   const mode = activePath ? (previewModes[activePath] ?? 'view') : 'view'
@@ -116,7 +121,7 @@ export function WorkspaceAddressBar({ conversationId, selectedPath }: Props): Re
     <div
       data-ws-address
       style={{
-        height: 36,
+        height: 32,
         flexShrink: 0,
         display: 'flex',
         alignItems: 'center',
@@ -149,11 +154,6 @@ export function WorkspaceAddressBar({ conversationId, selectedPath }: Props): Re
           {displayPath ?? '当前会话暂无工作目录'}
         </span>
       </div>
-      {/* The dirty dot keeps its literal orange: a status hue (antd orange-6),
-          the same literal the old tab strip carried. */}
-      {dirty && (
-        <span title={t('previewPane.dirtyDot')} style={{ width: 6, height: 6, borderRadius: '50%', background: '#fa8c16', flexShrink: 0 }} />
-      )}
       <div
         data-ws-open
         style={{ ...ICON_BUTTON, opacity: displayPath ? 1 : 0.35, cursor: displayPath ? 'pointer' : 'default' }}

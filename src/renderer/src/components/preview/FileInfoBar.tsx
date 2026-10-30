@@ -3,9 +3,11 @@
 //  that action, so the bottom strip carries information instead.
 //
 // The file's NAME is deliberately absent even though the tooltip keeps the full
-// path: the tab strip sits directly above this strip with the same name in it,
-// and the user read the repetition as noise — what the footer can say that the
-// tab cannot is how big the file is and when it changed.
+// path: the pane's file tab strip carries the same name and the address bar
+// directly above this strip carries the whole path (2026-10-30 layout: the strip
+// is up at the pane's top, the path bar sits between it and this footer), and
+// the user read the repetition as noise — what the footer can say that neither
+// can is how big the file is and when it changed.
 //
 // Shared by the docx, image and markitdown office footers so all three carry
 // identical information.

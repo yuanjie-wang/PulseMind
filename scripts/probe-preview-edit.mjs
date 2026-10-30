@@ -1,13 +1,15 @@
 /**
  * Preview pane editing probe (PLAN-preview-edit T4; real Chromium, real mouse).
  *
- * Mounts the production WorkspacePane (address bar + tree + PreviewPane) over a
+ * Mounts the production WorkspacePane (tab strip + tree | address bar + PreviewPane)
+ * over a
  * stubbed electronAPI that serves fixture files and records writeFile calls,
  * then drives the whole edit story the way a user now would (2026-10-25
  * layout: the preview's own toolbar is gone — 编辑/保存 ride the address bar's
  * 更多 menu, the dirty dot sits next to the address path):
  *
- *   1. typing makes the file dirty (the orange dot beside the address path);
+ *   1. typing makes the file dirty (the orange dot beside the address path —
+ *      and on the file's tab chip, 2026-10-30);
  *   2. menu-save and ⌘S both write — with the CRLF line endings and BOM
  *      restored from the ORIGINAL file, not the textarea's LF;
  *   3. switching files and back keeps the draft;
@@ -146,19 +148,30 @@ await openFile('/w/a.md')
 
 /* ── 0. The address bar names the selection; the preview shows the file. ── */
 check('the address bar shows the selected file’s absolute path', (await addressPath()) === '/w/a.md', await addressPath())
-check('…and the preview renders the file (no tab strip anywhere)', (await page.locator('.pm-preview-tabstrip').count()) === 0 && (await page.getByText('标题').first().isVisible()))
+check(
+  '…and the preview renders the file (the preview body itself carries no strip — the tab strip lives up in WorkspacePane)',
+  (await page.locator('.pm-preview-tabstrip').count()) === 0 &&
+    (await page.locator('[data-ws-tabstrip]').count()) === 1 &&
+    (await page.getByText('标题').first().isVisible()),
+)
 
 /* ── 1. Typing makes the file dirty; the textarea shows the file text. ── */
 await menuClick('编辑')
 await textarea().waitFor()
 const initial = await textarea().inputValue()
 check('edit mode shows the file source (CRLF normalized to LF for the textarea)', initial === '# 标题\n正文\n', JSON.stringify(initial))
-const dotBefore = await page.locator('span[title="未保存的修改"]').count()
+// Scoped to the address bar: since 2026-10-30 the tab chip carries its own
+// unsaved dot too, so a page-wide count would read 2 (asserted separately in
+// probe-workspace-tree §19).
+// 2026-10-30 用户裁定：地址栏不带脏点——脏态由 ⋯ 菜单的 保存 项表达
+// （disabled: !dirty）。打字前保存置灰，打字后可用。
+const addrDots = () => page.locator('[data-ws-address] span[title="未保存的修改"]').count()
+check('the address bar carries no dirty dot (2026-10-30 裁定，脏态归 ⋯ 菜单)', (await addrDots()) === 0)
+check('…and 保存 is disabled while clean', (await menuDisabled('保存')) === true)
 await textarea().click()
 await textarea().press('End')
 await page.keyboard.type('# 尾注')
-const dotAfter = await page.locator('span[title="未保存的修改"]').count()
-check('typing flips the dirty dot beside the address path', dotBefore === 0 && dotAfter === 1, `dots ${dotBefore}→${dotAfter}`)
+check('typing enables 保存 (the dirty state lives in the ⋯ menu now)', (await menuDisabled('保存')) === false)
 
 /* ── 2. Menu save writes with CRLF restored. ── */
 await menuClick('保存')
@@ -169,7 +182,7 @@ check(
   calls.length === 1 && calls[0].filePath === '/w/a.md' && calls[0].content === '# 标题\r\n正文\r\n# 尾注',
   JSON.stringify(calls[0]),
 )
-check('…and the save clears the dirty dot', (await page.locator('span[title="未保存的修改"]').count()) === 0)
+check('…and the save disables 保存 again', (await menuDisabled('保存')) === true)
 
 /* ── 3. ⌘S saves too (the editor's own keyboard path). ── */
 await textarea().click()

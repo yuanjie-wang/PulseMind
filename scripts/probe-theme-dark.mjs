@@ -2498,6 +2498,12 @@ window.__wbVector = () => {
   const addr = document.querySelector('#wb-shell [data-ws-address]')
   v.wsAddrBorder = pick(addr, ['borderBottomColor'])
   v.wsAddrInk = pick(addr && addr.querySelector('[data-ws-address-path]'), ['color'])
+  // The file tab strip (2026-10-30, 用户裁定 — it took the row the address bar
+  // used to hold, and the address bar moved in above the preview): the chips
+  // must keep the house pair in both columns, same as the tool tabs above them.
+  const fileStrip = document.querySelector('#wb-shell [data-ws-tabstrip]')
+  v.wsTabActive = pick(fileStrip && fileStrip.querySelector('.pm-ws-tab[data-active="true"]'), ['backgroundColor', 'boxShadow', 'color'])
+  v.wsTabIdle = pick(fileStrip && fileStrip.querySelector('.pm-ws-tab:not([data-active="true"])'), ['color'])
 
   v.editorInk = pick(document.querySelector('#wb-editor textarea'), ['color', 'backgroundColor'])
   return v
@@ -5092,6 +5098,8 @@ const WB_TABLE = {
   wsAddrBorder: { borderBottomColor: '--pm-separator-faint' },
   wsAddrInk: { color: '--pm-text-muted' },
   wsBtnInk: { color: '--pm-graph-ink-dim' },
+  wsTabActive: { backgroundColor: '--pm-tile-soft', boxShadow: '--pm-shadow-chip', color: '--pm-text-strong' },
+  wsTabIdle: { color: '--pm-text-quiet' },
   editorInk: { color: '--pm-text-strong', backgroundColor: '--pm-bg' },
 }
 

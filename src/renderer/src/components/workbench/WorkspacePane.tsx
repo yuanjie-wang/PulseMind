@@ -1,11 +1,15 @@
-// ── 工作区 merged view (2026-10-25, 用户裁定「工作区和文件预览合并」) ──
-// Top-bottom, then left-right: the address bar spans the pane (selected
-// file/folder's absolute path + 打开 + a 更多 menu holding the preview
-// actions), below it the tree (left, with its own search + refresh) sits
-// beside the preview area (right), which is ALWAYS visible — the empty hint
-// when no file is open. Selection lives here: the tree writes it, the address
-// bar mirrors it, and an agent-opened preview (openFile without a click)
-// highlights itself through the same state.
+// ── 工作区 merged view (2026-10-25 「工作区和文件预览合并」; 2026-10-30 布局二次裁定) ──
+// Top-bottom, then left-right: the FILE TAB STRIP spans the pane (2026-10-30,
+// 用户裁定 — it took the row the address bar used to occupy), below it the
+// tree (left, with its own search + refresh) sits beside the preview column
+// (right) = the address bar (the on-screen file's absolute path + 打开 + a
+// 更多 menu holding the preview actions) directly above the preview body,
+// which is ALWAYS visible — the empty hint when no file is open. The address
+// bar follows the ACTIVE PREVIEW FILE, not the tree selection (the tab strip
+// names the open files; the bar names the one on screen).
+// Selection lives here: the tree writes it, the tree rows paint it, and an
+// agent-opened preview (openFile without a click) highlights itself through
+// the same state.
 //
 // The tree↔preview divider is draggable (2026-10-26): the tree column used
 // to be a fixed 40% share of the row; it is now a persisted px width
@@ -21,6 +25,7 @@ import { clampTreeWidth, COLUMN_DRAG_HANDLE_WIDTH } from '../../../../shared/ui/
 import { useColumnDrag } from '../../hooks/useColumnDrag'
 import { PreviewPane } from '../preview/PreviewPane'
 import { WorkspaceAddressBar } from './WorkspaceAddressBar'
+import { WorkspaceTabStrip } from './WorkspaceTabStrip'
 import { WorkspaceTree } from './WorkspaceTree'
 
 interface Props {
@@ -58,15 +63,15 @@ export function WorkspacePane({ conversationId }: Props): React.ReactElement {
   const effTreeWidth = clampTreeWidth(rawTreeWidth, rowWidth)
 
   // A preview opened without a click (agent write auto-preview, chat file
-  // chips) must still name itself in the address bar and highlight its row.
+  // chips) must still highlight its row in the tree.
   useEffect(() => {
     if (activePath) setSelectedPath(activePath)
   }, [activePath])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <WorkspaceAddressBar conversationId={conversationId} selectedPath={selectedPath} />
-      <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'stretch', position: 'relative' }}>
+      <WorkspaceTabStrip conversationId={conversationId} />
+      <div ref={rowRef} data-pm-workspace-row style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'stretch', position: 'relative' }}>
         <div
           data-pm-tree-column
           style={{
@@ -81,6 +86,7 @@ export function WorkspacePane({ conversationId }: Props): React.ReactElement {
           <WorkspaceTree conversationId={conversationId} selectedPath={selectedPath} onSelectPath={setSelectedPath} />
         </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <WorkspaceAddressBar conversationId={conversationId} />
           <PreviewPane conversationId={conversationId} />
         </div>
         {/* Drag handle, straddling the separator between the two columns —

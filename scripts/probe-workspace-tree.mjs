@@ -16,11 +16,11 @@
  *   4. 复制路径 puts the absolute path on the clipboard for a file and a folder,
  *      without expanding the folder or opening a preview tab;
  *   5. clicking a file name previews it BESIDE the tree in the same 工作区
- *      view (the standalone 文件预览 tab and the preview's own tab strip are
- *      gone, 2026-10-25): the address bar above names the selection (file or
- *      folder; the workspace root when nothing is) and carries 打开 + a 更多
- *      menu holding 编辑/保存/刷新; the tree shrinks to make room and the
- *      preview area is always on screen;
+ *      view (the standalone 文件预览 tab is gone, 2026-10-25): the address bar
+ *      sits INSIDE the preview column, directly above the preview, and names
+ *      the FILE ON SCREEN — not the tree selection (2026-10-30 裁定) — while
+ *      carrying 打开 + a 更多 menu holding 编辑/保存/刷新; the tree shrinks to
+ *      make room and the preview area is always on screen;
  *   6. the selected row (file AND folder) paints the app's grey-on-ink pair —
  *      灰底黑字, not the black-on-white DirectoryTree defaults derive;
  *   7. 搜索 walks the whole workspace recursively (a depth-3 hit needs no
@@ -34,7 +34,17 @@
  *      row: the lazy tree fetches the unlisted folder, expands the chain to it
  *      and the controlled selection paints it;
  *   10. collapsing a folder under an active selection re-expands the chain —
- *       the selected file never stays folded away.
+ *       the selected file never stays folded away;
+ *   11. 「在系统中打开」 is the row's Finder exit (files in their default app,
+ *       folders in Finder) — added 2026-10-30, when the address bar stopped
+ *       speaking for the tree selection; the click must not select/expand the
+ *       row and must not disturb the previewed file;
+ *   12. the FILE TAB STRIP (2026-10-30 裁定: it took the row the address bar
+ *       used to hold): one chip per open preview, spanning the WHOLE pane
+ *       above the tree column and above the address bar, click-to-front (the
+ *       address bar follows), unsaved dot, session-change dot from the same
+ *       ledger, closing a dirty chip asks first, the 32px row survives the
+ *       empty set, and beyond the cap the chips scroll rather than squash.
  *
  * Why a browser: vitest here is node-env — no layout, no hover, no clipboard,
  * no antd. Every fact above is a fact about what is on screen.
@@ -57,18 +67,29 @@ import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { buildAntdTheme } from './src/renderer/src/theme/tokens'
+import { buildThemeCss } from './src/renderer/src/theme/palette'
 import { WorkbenchPane } from './src/renderer/src/components/workbench/WorkbenchPane'
 import { useWorkbenchStore } from './src/renderer/src/stores/workbenchStore'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { useWorkspaceTreeStore } from './src/renderer/src/stores/workspaceTreeStore'
+import { useSessionFileChangesStore } from './src/renderer/src/stores/sessionFileChangesStore'
 import { makeDraftFromDisk } from './src/renderer/src/stores/preview-edit'
 
 const CONV = ${JSON.stringify(CONV)}
 let root = null
-window.__stores = { workbench: useWorkbenchStore, preview: usePreviewPaneStore, tree: useWorkspaceTreeStore }
+window.__stores = { workbench: useWorkbenchStore, preview: usePreviewPaneStore, tree: useWorkspaceTreeStore, changes: useSessionFileChangesStore }
 window.__makeDraft = makeDraftFromDisk
 window.__mount = () => {
   if (root) root.unmount()
+  // The app's own \`--pm-*\` variables (the tree/city inks, the tab chip's wash):
+  // the harness page has no palette of its own, and a var that resolves to
+  // nothing would make every ink check read transparent.
+  if (!document.getElementById('pm-theme-vars')) {
+    const style = document.createElement('style')
+    style.id = 'pm-theme-vars'
+    style.textContent = buildThemeCss()
+    document.head.appendChild(style)
+  }
   useWorkbenchStore.setState({ openByConversation: { [CONV]: true }, activeTab: 'workspace' })
   usePreviewPaneStore.getState().setWorkspaceDir(${JSON.stringify(ROOT)})
   root = createRoot(document.getElementById('root'))
@@ -136,6 +157,7 @@ await page.addScriptTag({
   };
   window.__listed = [];
   window.__deleteCalls = [];
+  window.__openOsCalls = [];
   window.__denyDelete = {};
   window.electronAPI = new Proxy({}, { get: (_t, key) =>
     key === 'listDir' ? (p) => {
@@ -163,6 +185,10 @@ await page.addScriptTag({
     }
     : key === 'readFile' ? () => Promise.resolve(null)
     : key === 'getFileStat' ? () => Promise.resolve(null)
+    : key === 'openFolder' ? (p) => {
+      window.__openOsCalls.push(p);
+      return Promise.resolve(undefined);
+    }
     : /[Ll]ist$/.test(key) ? () => Promise.resolve([])
     : /^on[A-Z]/.test(key) ? () => () => {}
     : () => Promise.resolve(undefined) })`,
@@ -232,18 +258,23 @@ check('both expansions are cached under this workspace dir', JSON.stringify(awai
 
 /* ── 2b. The selected folder is grey-on-ink, not the 黑底白字 the DirectoryTree
           defaults derive from colorPrimary + colorTextLightSolid; the address
-          bar above names the selection. ── */
+          bar inside the preview column names the on-screen FILE, not this
+          selection (2026-10-30 裁定). ── */
 const folderSel = await selectedRowStyle()
 check(
   'the selected folder is grey-on-ink (灰底黑字)',
   folderSel.bg === 'rgb(245, 245, 245)' && folderSel.ink === 'rgba(0, 0, 0, 0.88)',
   JSON.stringify(folderSel),
 )
-check('the address bar shows the selected folder’s path', (await addressPath()) === '/w/a/sub', await addressPath())
+// Nothing is previewed yet, so the bar falls back to the workspace root: the
+// selected folder must NOT walk into it any more (that entry point is the row's
+// 在系统中打开 hover action now — §18).
 check(
-  'the address bar carries 打开 and 更多',
-  (await page.locator('[data-ws-open]').count()) === 1 && (await page.locator('[data-ws-more]').count()) === 1,
+  'the address bar does NOT follow the folder selection (it names the on-screen file)',
+  (await addressPath()) === '/w',
+  await addressPath(),
 )
+check('…and still carries 打开 and 更多', (await page.locator('[data-ws-open]').count()) === 1 && (await page.locator('[data-ws-more]').count()) === 1)
 
 /* ── 3. Leaving the tab unmounts the tree; coming back restores it. ── */
 await tab('浏览器').click()
@@ -309,7 +340,10 @@ check('clicking a file name registers its preview tab', JSON.stringify(await tab
 check('…and the workbench stays on 工作区 (no separate 文件预览 tab exists)', (await activeTab()) === 'workspace')
 check('…and the address bar shows the file’s path', (await addressPath()) === '/w/b.txt')
 check('…and the tree stays mounted beside the preview', (await page.locator('.pm-ws-tree').count()) === 1)
-check('…and the preview area carries no tab strip any more', (await page.locator('.pm-preview-tabstrip').count()) === 0)
+// The file tab strip is back (2026-10-30 裁定) — as the pane's top row, NOT
+// inside the preview body (the shape 0e3cd23 deleted).
+check('…and the pane’s top row is the file tab strip', (await page.locator('[data-ws-tabstrip]').count()) === 1)
+check('…with one chip for the open file', (await page.locator('.pm-ws-tab').count()) === 1)
 const treeBoxSplit = await page.locator('.pm-ws-tree').boundingBox()
 check(
   '…and the split is steady: the tree holds its ~40% column before and after a preview opens',
@@ -388,13 +422,16 @@ check('…and the preview keeps showing the file (address bar too)', (await addr
 /* ── 13. 搜索 walks the whole workspace recursively; a hit previews; clearing
           restores. The query 'deep' hits a depth-3 file no expansion has been
           paid for in this state (x.txt's row is gone, /w/a/sub is collapsed in
-          the search tree). ── */
+          the search tree). Click the NAME, never the row's centre: hovering a
+          row reveals its reserved action cluster, and with three buttons
+          (在系统中打开 / 复制路径 / 删除, 2026-10-30) the centre of a deep row
+          now lands on a button — which deliberately swallows the event. ── */
 const searchBox = page.locator('input[aria-label="搜索文件"]')
 await searchBox.fill('deep')
 await page.waitForFunction(() => document.querySelectorAll('.pm-ws-hit').length > 0)
 check('a nested hit surfaces without any expansion (recursive walk)', await row('/w/a/sub/deep.txt').isVisible())
 check('…with the matched substring painted', (await page.locator('.pm-ws-hit').count()) >= 1 && (await page.locator('.pm-ws-hit').first().innerText()) === 'deep')
-await row('/w/a/sub/deep.txt').click()
+await nameOf('/w/a/sub/deep.txt').click()
 await page.waitForFunction((k) => (window.__stores.preview.getState().tabsByConversation[k] ?? []).some((t) => t.path === '/w/a/sub/deep.txt'), CONV)
 check('clicking the search hit previews it', JSON.stringify(await tabs()).includes('/w/a/sub/deep.txt'), JSON.stringify(await tabs()))
 check('…and the address bar names it', (await addressPath()) === '/w/a/sub/deep.txt', await addressPath())
@@ -470,7 +507,12 @@ console.log('\n§16 目录树 ↔ 预览分隔条可拖拽')
   await page.waitForTimeout(80)
   box = await columnBox()
   check('dragging the handle right widens the tree (border follows pointer)', Math.abs(box.width - 230) <= 1.5, `w=${box.width}`)
-  check('…and the width persisted to the store', (await storedTreeWidth()) === Math.round(box.width), `store=${await storedTreeWidth()}`)
+  // The measured box includes the column's 1px right border (nothing in this
+  // app sets box-sizing: border-box globally — not in the harness page either),
+  // so the store never equals the box to the pixel. Pre-existing off-by-one
+  // border slip, found 2026-10-30 while re-running after the tab-strip change
+  // (the stashed baseline fails it identically).
+  check('…and the width persisted to the store', Math.abs((await storedTreeWidth()) - box.width) <= 1, `store=${await storedTreeWidth()} box=${box.width}`)
   // The regression assert for the reversed-direction cut: the dragged border
   // must still sit under the pointer when the drag ends.
   const h1 = await handleBox()
@@ -514,7 +556,7 @@ console.log('\n§16 目录树 ↔ 预览分隔条可拖拽')
   // /w/a was deleted in §14 — the survivor /w/d (revealed in §15) is the prop.
   await nameOf('/w/d').click()
   await row('/w/d/z.txt').waitFor()
-  await row('/w/d/z.txt').click()
+  await nameOf('/w/d/z.txt').click()
   await page.waitForFunction(() => document.querySelector('[data-ws-address-path]')?.textContent === '/w/d/z.txt')
   // Widen the fold window: the reveal's refetch of /w/d stalls 400ms, so the
   // collapsed frame really paints and the fold assertion is not a race.
@@ -529,6 +571,283 @@ console.log('\n§16 目录树 ↔ 预览分隔条可拖拽')
   check('…and the row is still the selected one', reSel.bg === 'rgb(245, 245, 245)' && reSel.ink === 'rgba(0, 0, 0, 0.88)', JSON.stringify(reSel))
   check('…and the address bar never blinked', (await addressPath()) === '/w/d/z.txt', await addressPath())
 }
+
+/* ── 18. 在系统中打开：树行的 Finder 出口（2026-10-30 裁定——地址栏只认屏上
+          文件，被选中的文件夹就没了出口，出口搬到树行；同一颗按钮对文件也可
+          用）。点击不得选中/展开该行，也不得打扰正在预览的文件。 ── */
+await page.evaluate(() => {
+  window.__openOsCalls = []
+})
+const listedBeforeOs = JSON.stringify(await listed())
+await hover('/w/d')
+await page.locator('.pm-ws-row[data-ws-path="/w/d"] button[title="在系统中打开"]').click()
+await page.waitForTimeout(120)
+const osCalls = await page.evaluate(() => window.__openOsCalls.slice())
+check('在系统中打开 sends one openFolder for the folder’s path', JSON.stringify(osCalls) === '["/w/d"]', JSON.stringify(osCalls))
+check('…without listing anything (the click does not select/expand the row)', JSON.stringify(await listed()) === listedBeforeOs, `${listedBeforeOs} → ${JSON.stringify(await listed())}`)
+check('…and the previewed file is untouched', (await addressPath()) === '/w/d/z.txt', await addressPath())
+
+/* ── 19. 文件页签条（2026-10-30 裁定）：跨整面板宽、在树列与地址栏之上、切页签
+          联动地址栏、脏点、改动点、脏页签关闭先问、空态不塌、溢出横滑。 ── */
+const stripRowBox = () => page.locator('[data-ws-tabstrip-row]').boundingBox()
+const chip = (p) => page.locator(`.pm-ws-tab[data-tab-path="${p}"]`)
+const closeAllTabs = () =>
+  page.evaluate((k) => {
+    const p = window.__stores.preview.getState()
+    for (const t of p.tabsByConversation[k] ?? []) p.closeTab(k, t.path)
+  }, CONV)
+
+// Reset to a known set (z.txt is the chip §17 left behind).
+await closeAllTabs()
+await page.waitForTimeout(120)
+const emptyStrip = await stripRowBox()
+check('the empty strip keeps its 32px row (opening the first file cannot shift the tree)', Math.abs(emptyStrip.height - 32) <= 1, `${emptyStrip.height}px`)
+check('…with the empty hint inside it', await page.getByText('未打开文件').first().isVisible())
+
+// 19a. One file → one chip; the strip spans the pane and sits above both columns.
+await nameOf('/w/c.md').click()
+await chip('/w/c.md').waitFor()
+const stripBox = await stripRowBox()
+const paneRow = await page.locator('[data-pm-workspace-row]').boundingBox()
+const treeCol = await page.locator('[data-pm-tree-column]').boundingBox()
+const addrBox = await page.locator('[data-ws-address]').boundingBox()
+const searchRowBox = await page.locator('input[aria-label="搜索文件"]').boundingBox()
+check(
+  'the strip spans the whole pane (same left/right edge as the tree+preview row)',
+  Math.abs(stripBox.x - paneRow.x) <= 1 && Math.abs(stripBox.x + stripBox.width - (paneRow.x + paneRow.width)) <= 1,
+  `${Math.round(stripBox.x)}..${Math.round(stripBox.x + stripBox.width)} vs ${Math.round(paneRow.x)}..${Math.round(paneRow.x + paneRow.width)}`,
+)
+check('…so it is wider than the tree column beside the preview', stripBox.width > treeCol.width + 20, `${Math.round(stripBox.width)}px > ${Math.round(treeCol.width)}px`)
+check('…and the tree column starts below it (its search row too)', treeCol.y >= stripBox.y + stripBox.height - 1 && searchRowBox.y >= stripBox.y + stripBox.height - 1)
+check('…and the address bar starts below it (inside the preview column)', addrBox.y >= stripBox.y + stripBox.height - 1 && addrBox.x >= treeCol.x + treeCol.width - 1, `addr y=${Math.round(addrBox.y)} x=${Math.round(addrBox.x)}`)
+// 地址栏与目录树工具栏同高（2026-10-30 用户裁定「高度不一致」）：
+// 工具栏没有锚点属性；antd Input 的 DOM 是 affix-wrapper 包 input，所以要上跳
+// 两级（input → wrapper → 工具栏条）。
+const treeToolbarHeight = await page.locator('input[aria-label="搜索文件"]').locator('xpath=../..').evaluate((el) => el.getBoundingClientRect().height)
+check('…and matches the tree toolbar’s height', Math.abs(addrBox.height - treeToolbarHeight) <= 1, `addr=${Math.round(addrBox.height)} tree-toolbar=${Math.round(treeToolbarHeight)}`)
+
+// 19b. A second file → second chip, newest active, house tab styling.
+await nameOf('/w/d/z.txt').click()
+await chip('/w/d/z.txt').waitFor()
+check('a second open file adds a second chip, in open order', JSON.stringify(await tabs()) === '["/w/c.md","/w/d/z.txt"]', JSON.stringify(await tabs()))
+check('…and the newest chip is the active one', (await chip('/w/d/z.txt').getAttribute('data-active')) === 'true' && (await chip('/w/c.md').getAttribute('data-active')) === 'false')
+check(
+  '…wearing the house tab pair (600 + tile wash on the active chip, 400 on the other)',
+  (await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).fontWeight)) === '600' &&
+    (await chip('/w/c.md').evaluate((el) => getComputedStyle(el).fontWeight)) === '400' &&
+    (await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).backgroundColor)) === 'rgb(240, 241, 244)',
+  await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).backgroundColor),
+)
+
+// 19c. Clicking the other chip brings it to the front — bar included.
+await chip('/w/c.md').click()
+await page.waitForFunction(() => document.querySelector('[data-ws-address-path]')?.textContent === '/w/c.md')
+check('clicking a chip brings that file to the front', (await page.evaluate((k) => window.__stores.preview.getState().activeByConversation[k], CONV)) === '/w/c.md')
+check('…and the address bar follows it (it names the on-screen file)', (await addressPath()) === '/w/c.md', await addressPath())
+check('…and the chip roles swapped', (await chip('/w/c.md').getAttribute('data-active')) === 'true' && (await chip('/w/d/z.txt').getAttribute('data-active')) === 'false')
+
+// 19d. Unsaved ink on the tab TEXT + the dirty-close confirm (D10).
+// (2026-10-30 用户裁定「页签不要圆点，直接改文字颜色」— the state reads from
+// the chip's computed color now, not from a dot's background.)
+await page.evaluate(() => {
+  window.__stores.preview.getState().setDraft('/w/c.md', { ...window.__makeDraft('orig'), content: 'edited' })
+})
+await page.waitForTimeout(120) // store 写入是同步的，React 提交不是
+check('a draft turns the chip’s text the unsaved orange', (await chip('/w/c.md').evaluate((el) => getComputedStyle(el).color)) === 'rgb(250, 140, 22)',
+  await chip('/w/c.md').evaluate((el) => getComputedStyle(el).color))
+check('…and no dot remains anywhere on the strip', (await page.locator('[data-ws-tab-dot], [data-ws-change-dot]').count()) === 0)
+await chip('/w/c.md').locator('.pm-ws-tab-close').click()
+await page.locator('.ant-modal-confirm').waitFor()
+check('closing a dirty chip asks first (edits are never dropped silently)', (await page.locator('.ant-modal-confirm').count()) === 1)
+await cancelBtn().click()
+await page.waitForTimeout(200)
+check('…cancelling keeps the chip and its draft', (await page.locator('.pm-ws-tab').count()) === 2 && JSON.stringify(await drafts()) === '["/w/c.md"]', `${await page.locator('.pm-ws-tab').count()} chips, drafts ${JSON.stringify(await drafts())}`)
+await chip('/w/c.md').locator('.pm-ws-tab-close').click()
+await page.locator('.ant-modal-confirm').waitFor()
+await okBtn().click()
+await page.waitForTimeout(200)
+check('…confirming closes it and drops the draft', JSON.stringify(await tabs()) === '["/w/d/z.txt"]' && JSON.stringify(await drafts()) === '[]', `${JSON.stringify(await tabs())} / ${JSON.stringify(await drafts())}`)
+check('…and the remaining chip is the active one again', (await chip('/w/d/z.txt').getAttribute('data-active')) === 'true')
+
+// 19e. Session-change ink on the tab TEXT — the tree rows' ledger, read once
+// for the strip. (Dot removed 2026-10-30; the ink is the text color now.)
+await page.evaluate((k) => window.__stores.changes.getState().set(k, [{ path: '/w/d/z.txt', kind: 'created' }]), CONV)
+await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-tab-path="/w/d/z.txt"]')).color === 'rgb(88, 124, 12)')
+check('the chip wears the session-change ink from the same ledger', (await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).color)) === 'rgb(88, 124, 12)',
+  await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).color))
+await page.evaluate((k) => window.__stores.changes.getState().drop(k), CONV)
+await page.waitForTimeout(120)
+check('…and drops it when the ledger does', (await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).color)) !== 'rgb(88, 124, 12)',
+  await chip('/w/d/z.txt').evaluate((el) => getComputedStyle(el).color))
+
+// 19f. Empty set again: same row, no collapse; the pane stays open.
+await closeAllTabs()
+await page.waitForTimeout(150)
+const emptyAgain = await stripRowBox()
+check('closing the last chip leaves the same 32px row (the pane does not collapse)', Math.abs(emptyAgain.height - 32) <= 1 && (await page.locator('[data-ws-tabstrip]').count()) === 1, `${emptyAgain.height}px`)
+check('…and the empty hint is back', await page.getByText('未打开文件').first().isVisible())
+check('…and the preview falls back to its own empty state', await page.getByText('在左侧目录树中点击文件预览').isVisible())
+check('…and the address bar falls back to the workspace root', (await addressPath()) === '/w', await addressPath())
+
+// 19g. Overflow: beyond MAX_OPEN_TABS the chips scroll, active one revealed.
+await page.evaluate((k) => {
+  const p = window.__stores.preview.getState()
+  for (let i = 0; i < 14; i++) p.openFile(k, `/w/wide-${i}.md`)
+}, CONV)
+await page.waitForFunction(() => document.querySelectorAll('.pm-ws-tab').length === 12)
+check('beyond the cap the oldest chips are evicted (12 chips)', (await page.locator('.pm-ws-tab').count()) === 12, `${await page.locator('.pm-ws-tab').count()} chips`)
+const overflow = await page.locator('[data-ws-tabstrip]').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }))
+check('…and the strip scrolls instead of squashing the chips', overflow.sw > overflow.cw, `scrollWidth ${overflow.sw} > clientWidth ${overflow.cw}`)
+const lastChip = await chip('/w/wide-13.md').boundingBox()
+const stripScroll = await page.locator('[data-ws-tabstrip]').boundingBox()
+check(
+  '…with the newly opened (active) chip scrolled into view',
+  lastChip.x >= stripScroll.x - 1 && lastChip.x + lastChip.width <= stripScroll.x + stripScroll.width + 1,
+  `${Math.round(lastChip.x)}..${Math.round(lastChip.x + lastChip.width)} in ${Math.round(stripScroll.x)}..${Math.round(stripScroll.x + stripScroll.width)}`,
+)
+
+// 19h. MOUSE WHEEL over the strip = horizontal scroll (the trackpad's two-finger
+//      swipe is native deltaX; a mouse only has deltaY, so the component converts
+//      it). User question 2026-10-30: 「触控板能滑，鼠标怎么操作」 — this is the
+//      measurement that answers it, and the negative control is the empty set:
+//      with nothing to scroll the wheel must be left to the pane.
+const wheelScrollLeft = () => page.locator('[data-ws-tabstrip]').evaluate((el) => el.scrollLeft)
+await page.evaluate(() => { document.querySelector('[data-ws-tabstrip]').scrollLeft = 0 })
+const wheelSpot = await page.locator('[data-ws-tabstrip]').boundingBox()
+await page.mouse.move(wheelSpot.x + wheelSpot.width / 2, wheelSpot.y + wheelSpot.height / 2)
+await page.mouse.wheel(0, 200)
+await page.waitForTimeout(150)
+const afterDown = await wheelScrollLeft()
+check('a MOUSE WHEEL over the strip scrolls it horizontally (vertical delta → scrollLeft)', afterDown > 0, `scrollLeft ${afterDown}`)
+await page.mouse.wheel(0, -400)
+await page.waitForTimeout(150)
+check('…and back (the gesture is symmetric, no rubber-banding left over)', (await wheelScrollLeft()) === 0, `scrollLeft ${await wheelScrollLeft()}`)
+
+// …and the OS-standard gesture a mouse user reaches for: Shift + wheel. That is
+// the browser's own horizontal mapping (`overflow-x: auto`), so it must work
+// WITHOUT any code of ours — measured, not assumed.
+await page.evaluate(() => { document.querySelector('[data-ws-tabstrip]').scrollLeft = 0 })
+await page.mouse.move(wheelSpot.x + wheelSpot.width / 2, wheelSpot.y + wheelSpot.height / 2)
+await page.keyboard.down('Shift')
+await page.mouse.wheel(0, 200)
+await page.keyboard.up('Shift')
+await page.waitForTimeout(150)
+check('Shift + wheel works natively (the OS-standard horizontal gesture, no code of ours)', (await wheelScrollLeft()) > 0, `scrollLeft ${await wheelScrollLeft()}`)
+await page.evaluate(() => { document.querySelector('[data-ws-tabstrip]').scrollLeft = 0 })
+
+// 19i. 两端渐隐（2026-10-30 用户裁定「两端渐隐提示」）：端头各去一边、中段两边
+//      都在，而且遮罩绝不能吃点击（它盖在页签之上）。点击落点取「左端遮罩」而
+//      非右端：页签的右缘是 ✕ 关闭钮（首次实测就点中了它，页签被关掉），而左缘
+//      永远是标题区——那才是「点击应该穿过遮罩」的干净样本。
+const fadeEdges = () =>
+  page.evaluate(() => Array.from(document.querySelectorAll('[data-strip-fade]')).map((el) => el.getAttribute('data-strip-fade')).sort())
+const setScrollLeft = async (v) => {
+  await page.evaluate((x) => { const el = document.querySelector('[data-ws-tabstrip]'); el.scrollLeft = x === -1 ? el.scrollWidth : x }, v)
+  await page.waitForTimeout(120)
+}
+await setScrollLeft(0)
+check('at the left end only the RIGHT edge fades', JSON.stringify(await fadeEdges()) === '["right"]', JSON.stringify(await fadeEdges()))
+await setScrollLeft(-1)
+check('at the far right end only the LEFT edge fades', JSON.stringify(await fadeEdges()) === '["left"]', JSON.stringify(await fadeEdges()))
+await page.evaluate(() => { const el = document.querySelector('[data-ws-tabstrip]'); el.scrollLeft = Math.round((el.scrollWidth - el.clientWidth) / 2) })
+await page.waitForTimeout(120)
+check('mid-strip BOTH edges fade', JSON.stringify(await fadeEdges()) === '["left","right"]', JSON.stringify(await fadeEdges()))
+
+await setScrollLeft(-1)
+const fadeBox = await page.locator('[data-ws-tabstrip]').boundingBox()
+const fadeY = fadeBox.y + fadeBox.height / 2
+// (a) the strict property: no point inside the mask's zone hit-tests to the mask.
+const maskHits = await page.evaluate(
+  ({ x0, y }) => {
+    const out = []
+    for (let dx = 2; dx <= 14; dx += 3) {
+      const el = document.elementFromPoint(x0 + dx, y)
+      out.push({ dx, mask: !!el?.closest?.('[data-strip-fade]'), chip: el?.closest?.('[data-tab-path]')?.getAttribute('data-tab-path') ?? null })
+    }
+    return out
+  },
+  { x0: fadeBox.x, y: fadeY },
+)
+check(
+  'no point inside the left mask hit-tests to the mask itself (pointer-events: none)',
+  maskHits.length === 5 && maskHits.every((h) => !h.mask),
+  JSON.stringify(maskHits.map((h) => h.mask)),
+)
+// (b) end to end: a click inside the mask, on a chip's TITLE, activates that chip.
+const titleUnderMask = await page.evaluate(
+  ({ x0, y }) => {
+    for (let dx = 2; dx <= 14; dx += 2) {
+      const el = document.elementFromPoint(x0 + dx, y)
+      const chip = el?.closest?.('[data-tab-path]')
+      if (!chip) continue
+      const close = chip.querySelector('.pm-ws-tab-close')?.getBoundingClientRect()
+      if (!close || close.left > x0 + dx + 2) return { dx, path: chip.getAttribute('data-tab-path') }
+    }
+    return null
+  },
+  { x0: fadeBox.x, y: fadeY },
+)
+check('a chip TITLE really sits under the left mask at this scroll position', !!titleUnderMask, JSON.stringify(titleUnderMask))
+const activeBefore = await page.evaluate((k) => window.__stores.preview.getState().activeByConversation[k], CONV)
+await page.mouse.click(fadeBox.x + titleUnderMask.dx, fadeY)
+await page.waitForTimeout(150)
+const activeAfter = await page.evaluate((k) => window.__stores.preview.getState().activeByConversation[k], CONV)
+check(
+  '…and clicking there activates that chip (the mask does not eat clicks)',
+  activeAfter === titleUnderMask.path && activeAfter !== activeBefore,
+  `${activeBefore} → ${activeAfter} (under=${titleUnderMask.path})`,
+)
+check('…with the chip count untouched (the click was not on a close button)', (await page.locator('.pm-ws-tab').count()) === 12, `${await page.locator('.pm-ws-tab').count()} chips`)
+
+// 19k. ▾ 快速切换（2026-10-30 用户裁定）：条最左侧的下拉列出全部已打开文件，
+//      溢出/滚动到任何位置都能直达；空态置灰且弹不出空菜单。
+const menuBtn = () => page.locator('[data-ws-tabstrip-menu]')
+const btnBox0 = await menuBtn().boundingBox()
+const stripBox0 = await page.locator('[data-ws-tabstrip]').boundingBox()
+check('the strip carries the ▾ quick-switcher', (await menuBtn().count()) === 1)
+check('…sitting LEFT of the chips (before the scroller)', btnBox0.x + btnBox0.width <= stripBox0.x + 1, `btn ${Math.round(btnBox0.x)}..${Math.round(btnBox0.x + btnBox0.width)} vs chips from ${Math.round(stripBox0.x)}`)
+check('…as a real button with the i18n label', (await menuBtn().getAttribute('aria-label')) === '全部打开的文件', await menuBtn().getAttribute('aria-label'))
+await setScrollLeft(0)
+await menuBtn().click()
+await page.getByRole('menuitem').first().waitFor()
+check('the dropdown lists EVERY open file (12, not the visible few)', (await page.getByRole('menuitem').count()) === 12, `${await page.getByRole('menuitem').count()} items`)
+// 点选一个没激活的项 → 它上屏（地址栏跟随），菜单收起。
+await page.getByRole('menuitem', { name: 'wide-3.md' }).click()
+// The dropdown's exit animation keeps the items in the a11y tree for a beat —
+// wait it out before counting (180ms was mid-animation and counted ghosts).
+await page.waitForTimeout(400)
+check(
+  'picking from the list brings that file to the front (address bar follows)',
+  (await page.evaluate((k) => window.__stores.preview.getState().activeByConversation[k], CONV)) === '/w/wide-3.md' && (await addressPath()) === '/w/wide-3.md',
+  await addressPath(),
+)
+check('…and the menu closed after the pick', (await page.getByRole('menuitem').count()) === 0)
+// 空态：置灰且弹不出空菜单。
+await closeAllTabs()
+await page.waitForTimeout(150)
+check('with no open file the switcher is disabled (native disabled antd clones onto the trigger)', (await menuBtn().getAttribute('disabled')) !== null)
+// antd's disabled Dropdown gives the trigger a NATIVE disabled attribute, so
+// Playwright's .click() would refuse it — click by coordinates, the way a user's
+// dead click lands, and assert nothing opens.
+const deadBox = await menuBtn().boundingBox()
+await page.mouse.click(deadBox.x + deadBox.width / 2, deadBox.y + deadBox.height / 2)
+await page.waitForTimeout(300)
+check('…and clicking it opens no menu', (await page.getByRole('menuitem').count()) === 0, `${await page.getByRole('menuitem').count()} items`)
+// The empty-state probe closed every chip — restore the overflow set the
+// round-trip check below counts on.
+await page.evaluate((k) => {
+  const p = window.__stores.preview.getState()
+  for (let i = 0; i < 14; i++) p.openFile(k, `/w/wide-${i}.md`)
+}, CONV)
+await page.waitForFunction(() => document.querySelectorAll('.pm-ws-tab').length === 12)
+
+// 19j. The store is the only truth: a workbench tab round-trip keeps the chips.
+await tab('浏览器').click()
+await page.waitForFunction(() => !document.querySelector('[data-ws-tabstrip]'))
+await tab('工作区').click()
+await page.waitForFunction(() => document.querySelector('[data-ws-tabstrip]'))
+check('the chips survive a workbench tab round-trip', (await page.locator('.pm-ws-tab').count()) === 12, `${await page.locator('.pm-ws-tab').count()} chips`)
+await closeAllTabs()
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

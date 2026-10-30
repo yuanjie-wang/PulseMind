@@ -1,13 +1,15 @@
 // ── Preview pane body (PLAN-preview-pane §设计3; PLAN-workbench W1;
 //    PLAN-preview-edit T2/T3) ──
 // The preview area of the merged 工作区 view: the active file's per-kind
-// content, or the empty hint. There is no tab strip and no toolbar here any
-// more (2026-10-25, 用户裁定「去掉预览区的顶部文件页签」) — the file's path
-// lives in the address bar above (WorkspacePane) and 编辑/保存/刷新 ride its
-// 更多 menu, which drives the same store fields this component reads.
+// content, or the empty hint. The file's tab strip lives one level up in
+// WorkspacePane (2026-10-30, 用户裁定: 页签条跨整面板宽) and its path + 编辑/
+// 保存/刷新 ride the WorkspaceAddressBar directly above this component (both
+// drive the same store fields this component reads) — so this body stays a
+// bare content box, as it has been since 2026-10-25 (用户裁定「去掉预览区的
+// 顶部文件页签」, superseded 2026-10-30 for the strip's POSITION, not its home).
 // Editing state (drafts / edit modes / dirty dots) lives in previewPaneStore;
-// the save path is owned HERE so ⌘S inside the editor and the menu item share
-// one write+refresh sequence (they meet at the `pulsemind-preview-save`
+// the save path is owned HERE so ⌘S inside the editor and the bar's menu item
+// share one write+refresh sequence (they meet at the `pulsemind-preview-save`
 // event).
 
 import React, { useEffect } from 'react'
@@ -75,7 +77,20 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
 
   if (!activePath) {
     return (
-      <div style={{ padding: 24, fontSize: 12, color: 'var(--pm-text-muted)', textAlign: 'center' }}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          fontSize: 12,
+          color: 'var(--pm-text-muted)',
+          textAlign: 'center',
+        }}
+      >
         {/* The decorative icon keeps its literal grey: a hue-neutral ink that
             reads on both grounds, like the status dots below. */}
         <FileText size={20} style={{ display: 'block', margin: '0 auto 8px', color: '#d9d9d9' }} />
@@ -90,7 +105,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const mode = previewModes[activePath] ?? 'view'
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)' }}>
       <div style={{ flex: 1, minHeight: 0, overflow: mode === 'view' ? 'auto' : 'hidden' }}>
         <PreviewContent key={activePath} path={activePath} reloadTick={reloadTicks[activePath] ?? 0} />
       </div>
