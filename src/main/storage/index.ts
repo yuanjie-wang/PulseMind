@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, copyFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, copyFileSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { app } from 'electron'
@@ -46,9 +46,28 @@ export function getBundlePresetsDir(): string {
   return join(getTemplatesDir(), 'tools', 'presets')
 }
 
+/** Local-date stamp (yyyyMMdd) for the hooks template backup files —
+ *  app-start.js.20261030.bak. Exported for the tests to pin the format. */
+export function backupDateStamp(now: Date = new Date()): string {
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}`
+}
+
 /**
  * Recursively copy template files to DATA_DIR, but only for files
  * that don't already exist (never overwrite user data).
+ *
+ * The one exception is the hooks/ subtree (user ruling 2026-10-30): template
+ * files under hooks/ REPLACE their on-disk copies on every launch, so a
+ * version upgrade ships the improved hook script to existing installs — the
+ * plain !existsSync guard froze the first-ever seed on upgraded machines
+ * forever. Identical bytes are skipped (no mtime churn); files no template
+ * carries — llm-request.js is purely user-created, never seeded — and any
+ * other disk-only extra are never deleted. A replaced file is backed up to
+ * <name>.<yyyyMMdd>.bak next to itself first (second ruling the same day),
+ * and the FIRST backup of a day is never overwritten: backups are sacred,
+ * and a same-day second update must not replace the user's real content
+ * with an earlier template state.
  */
 function copyTemplatesToDataDir(templatesDir: string): void {
   function walk(dir: string): void {
@@ -69,12 +88,27 @@ function copyTemplatesToDataDir(templatesDir: string): void {
           try { mkdirSync(destPath, { recursive: true }) } catch { /* ignore */ }
         }
         walk(srcPath)
-      } else if (entry.isFile() && !existsSync(destPath)) {
-        try {
-          copyFileSync(srcPath, destPath)
-          console.log(`[init] Created ${destPath} from template`)
-        } catch (e) {
-          console.error(`[init] Failed to copy template ${srcPath}:`, e)
+      } else if (entry.isFile()) {
+        const followTemplate = segs[0] === 'hooks'
+        const existed = existsSync(destPath)
+        if (!existed || followTemplate) {
+          try {
+            if (existed) {
+              if (readFileSync(srcPath).equals(readFileSync(destPath))) continue
+              // The replaced bytes stay recoverable: <name>.<yyyyMMdd>.bak
+              // next to the file. The day's first backup is kept — a second
+              // update the same day must not overwrite it (see doc above).
+              const bakPath = `${destPath}.${backupDateStamp()}.bak`
+              if (!existsSync(bakPath)) {
+                copyFileSync(destPath, bakPath)
+                console.log(`[init] Backed up ${destPath} -> ${bakPath}`)
+              }
+            }
+            copyFileSync(srcPath, destPath)
+            console.log(`[init] ${existed ? 'Updated' : 'Created'} ${destPath} from template`)
+          } catch (e) {
+            console.error(`[init] Failed to copy template ${srcPath}:`, e)
+          }
         }
       }
     }
