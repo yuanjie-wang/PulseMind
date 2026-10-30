@@ -228,7 +228,14 @@ function ExtensionSettings({ open, onClose, inline }: ExtensionSettingsProps): R
               {t('extensionSettings.download')}
             </Button>
             {service?.extensionDir && (
-              <Button icon={<FolderOpenOutlined />} onClick={() => window.electronAPI.openFolder(service.extensionDir!)}>
+              <Button
+                icon={<FolderOpenOutlined />}
+                onClick={() =>
+                  window.electronAPI.openFolder(service.extensionDir!).catch((err: unknown) => {
+                    notify.error(err instanceof Error ? err.message : String(err))
+                  })
+                }
+              >
                 {t('extensionSettings.openDir')}
               </Button>
             )}

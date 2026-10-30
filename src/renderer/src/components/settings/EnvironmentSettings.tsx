@@ -244,7 +244,11 @@ function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: E
               style={{ marginLeft: 8, marginTop: 4 }}
               onClick={() => {
                 const dir = localWorkspaceDir || dataPaths?.workspaceDir
-                if (dir) window.electronAPI.openFolder(dir)
+                if (dir) {
+                  window.electronAPI.openFolder(dir).catch((err: unknown) => {
+                    notify.error(err instanceof Error ? err.message : String(err))
+                  })
+                }
               }}
             />
           </Space.Compact>

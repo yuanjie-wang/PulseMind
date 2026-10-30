@@ -13,6 +13,7 @@ import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/Kno
 import KnowledgeBaseList from '../knowledge/KnowledgeBaseList'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
+import { notify } from '../../utils/notify'
 import type { SkillState } from '../../skills/types'
 import type { ToolState } from '../../tools/types'
 import CapabilityCenter from '../capability/CapabilityCenter'
@@ -120,8 +121,12 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
                     icon: <FolderOpenOutlined />,
                     label: '打开知识库目录',
                     onClick: async () => {
-                      const { knowledgeDir } = await window.electronAPI.getDataPaths()
-                      await window.electronAPI.openFolder(knowledgeDir)
+                      try {
+                        const { knowledgeDir } = await window.electronAPI.getDataPaths()
+                        await window.electronAPI.openFolder(knowledgeDir)
+                      } catch (err) {
+                        notify.error(err instanceof Error ? err.message : String(err))
+                      }
                     },
                   },
                   { type: 'divider' as const },

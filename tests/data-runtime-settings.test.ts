@@ -138,6 +138,37 @@ describe('the settings sections are wired end to end', () => {
     expect(COMPONENT).toContain('dataRuntime.openLogDir')
   })
 
+  it('the log-dir button stats first and greets a missing directory with a hint (2026-10-30)', () => {
+    // The dump directory is created lazily by the first dumped request, so a
+    // packaged install that never flipped the switch has no logs/llm-requests
+    // and the button used to fail (OS error dialog or silence). The click must
+    // stat, show the friendly hint on null, and only then openFolder.
+    // Non-vacuous: deleting the stat call fails the ordering scan; swapping the
+    // hint back to openFolder fails the notify.info scan; dropping either
+    // locale's key fails the locale scan.
+    const openLogDir = /const openLogDir = async[\s\S]*?\n\s{2}\}/.exec(COMPONENT)
+    expect(openLogDir).not.toBeNull()
+    const body = openLogDir![0]
+    expect(body).toContain('getFileStat(')
+    expect(body.indexOf('getFileStat(')).toBeLessThan(body.indexOf('openFolder('))
+    expect(body).toContain("notify.info(t('dataRuntime.openLogDirMissing'))")
+    expect(body).not.toContain('notify.error(t(')
+    for (const locale of ['zh', 'en']) {
+      expect(read('src', 'renderer', 'src', 'i18n', 'locales', `${locale}.ts`)).toContain('openLogDirMissing:')
+    }
+  })
+
+  it('SHELL_OPEN_FOLDER surfaces openPath failures instead of swallowing them', () => {
+    // openPath resolves with an error DESCRIPTION string; returning it as void
+    // made every failed open a silent no-op. Non-vacuous: reverting to a bare
+    // `await shell.openPath(safe)` fails the throw scan.
+    const APP_HANDLER = read('src', 'main', 'ipc', 'app.handler.ts')
+    const handler = /SHELL_OPEN_FOLDER[\s\S]*?\n\s{2}\}\)/.exec(APP_HANDLER)
+    expect(handler).not.toBeNull()
+    expect(handler![0]).toContain('const failure = await shell.openPath(safe)')
+    expect(handler![0]).toContain('if (failure) throw new Error(failure)')
+  })
+
   it('one Switch click writes exactly one field through the live object', () => {
     // 启动/数据清理 toggles write on 常规; the power-user toggles stay on 高级.
     expect(ENVIRONMENT).toContain('launchAtLogin: value')

@@ -688,6 +688,7 @@ const en: TranslationDict = {
     debugLlmRequests: "Log LLM request & response payloads",
     debugLlmRequestsHelp: "Full request and response payloads may contain conversations and sensitive data and are written to logs/llm-requests/. Dev defaults on, packaged builds default off; flipping the switch applies from the next request, in dev builds too.",
     openLogDir: "Open log directory",
+    openLogDirMissing: "No logs to view yet. The log directory is created automatically once \"Log LLM request & response payloads\" is on and a conversation has run.",
     gitContextInjection: "Inject Git status",
     gitContextInjectionHelp: "Inject the current workspace repository Git status into each turn. Off by default.",
     projectCommandsInjection: "Inject project commands",

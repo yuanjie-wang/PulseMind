@@ -109,7 +109,11 @@ export function registerAppHandlers(): void {
     // dataDir 包含判定（这些按钮也要打开用户自选的任意位置附件）。
     const safe = safeOpenPath(folderPath)
     if (!safe) throw new Error(`blocked openPath (executable or malformed path): ${String(folderPath).slice(0, 120)}`)
-    await shell.openPath(safe)
+    // openPath resolves '' on success and with an error DESCRIPTION on failure —
+    // dropping the string turned every failed open (missing dir, permission) into
+    // a silent no-op; the renderer's catch has a toast waiting for it.
+    const failure = await shell.openPath(safe)
+    if (failure) throw new Error(failure)
   })
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, async (_event, url: string): Promise<void> => {

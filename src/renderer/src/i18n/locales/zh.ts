@@ -682,6 +682,7 @@ const zh = {
     debugLlmRequests: "记录 LLM 请求与响应报文",
     debugLlmRequestsHelp: "完整请求与响应报文可能包含对话和敏感数据，将写入 logs/llm-requests/。开发版默认开启、打包版默认关闭；开关拨动后对下一次请求生效，开发版同样受它控制。",
     openLogDir: "打开日志目录",
+    openLogDirMissing: "暂无日志可查看。开启「记录 LLM 请求与响应报文」并完成一次对话后，日志目录会自动生成。",
     gitContextInjection: "注入 Git 状态",
     gitContextInjectionHelp: "把当前工作区仓库的 Git 状态注入每轮上下文。默认关闭。",
     projectCommandsInjection: "注入项目命令",

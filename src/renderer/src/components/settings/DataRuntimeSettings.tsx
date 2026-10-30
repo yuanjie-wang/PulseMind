@@ -67,6 +67,26 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
     }
   }
 
+  // The dump directory is created lazily by the first dumped request, so with
+  // the log switch never flipped it does not exist and openFolder would fail
+  // (an OS-level error or, worse, silence). Stat first: missing → a hint that
+  // names the switch; present → open as usual (also covers leftovers after the
+  // switch was turned off — old dumps stay readable within their prune window).
+  const openLogDir = async (): Promise<void> => {
+    if (!paths) return
+    const dir = `${paths.dataDir}/logs/llm-requests`
+    try {
+      const stat = await window.electronAPI.getFileStat(dir)
+      if (!stat) {
+        notify.info(t('dataRuntime.openLogDirMissing'))
+        return
+      }
+      await openFolder(dir)
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   // The webhook fields are text, so they commit on blur — a save per keystroke
   // would write the whole settings file per character (the toggles above flip
   // once; text does not).
@@ -160,7 +180,7 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
           disabled={!paths?.dataDir}
           style={{ marginBottom: 16 }}
           onClick={() => {
-            if (paths) void openFolder(`${paths.dataDir}/logs/llm-requests`)
+            void openLogDir()
           }}
         >
           {t('dataRuntime.openLogDir')}
