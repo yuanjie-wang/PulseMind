@@ -3,8 +3,9 @@
 // (native WebContentsView bounds) — both must agree on every pixel, so the
 // rules live here and are unit-tested. Decisions (2026-09-13): strict 16:9
 // WebView, vertically centered below the chrome; pane width default 30% of
-// the chat area, draggable, clamped to [320, 60% of chat area], remembered
-// globally in settings.
+// the chat area, draggable, remembered globally in settings. Ceiling
+// (2026-10-30, user ruling): the chat column keeps a FIXED 320px floor
+// instead of the old 60%-ratio share.
 
 /** Chrome rows above the WebView, measured from the pane's top: the
  *  workbench's tool-tab strip (32px, PLAN-workbench W4) + the browser pane's
@@ -12,8 +13,11 @@
  *  and the main-process dock — both must agree on every pixel. */
 export const PANE_CHROME_HEIGHT = 100
 export const PANE_MIN_WIDTH = 320
-/** Drag ceiling: the chat area always keeps at least 40% of its width. */
-export const PANE_MAX_CHAT_RATIO = 0.6
+/** Drag ceiling input: the chat column keeps this fixed floor (2026-10-30,
+ *  replacing the old PANE_MAX_CHAT_RATIO=0.6 percentage ceiling — the floor
+ *  is deliberately its own constant even though the value matches
+ *  PANE_MIN_WIDTH today, so tuning one never silently moves the other). */
+export const CHAT_AREA_MIN_WIDTH = 320
 /** First-open default before the user drags. */
 export const PANE_DEFAULT_CHAT_RATIO = 0.3
 /** Left-edge drag handle thickness (renderer DOM). */
@@ -175,9 +179,11 @@ export function routeWindowOpen(
 
 /** Clamp a desired pane width against the chat area. `chatAreaWidth` is the
  *  width of the chat column (window content minus sidebar), as measured by
- *  the renderer. */
+ *  the renderer. The pane may grow until the chat column is down to its
+ *  fixed CHAT_AREA_MIN_WIDTH floor; below a chat area of 640 the floor and
+ *  the pane's own minimum collide and the pane pins at PANE_MIN_WIDTH. */
 export function clampPaneWidth(desired: number, chatAreaWidth: number): number {
-  const max = Math.max(PANE_MIN_WIDTH, Math.floor(chatAreaWidth * PANE_MAX_CHAT_RATIO))
+  const max = Math.max(PANE_MIN_WIDTH, chatAreaWidth - CHAT_AREA_MIN_WIDTH)
   return Math.min(Math.max(Math.round(desired), PANE_MIN_WIDTH), max)
 }
 

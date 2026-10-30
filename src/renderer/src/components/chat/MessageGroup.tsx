@@ -607,7 +607,14 @@ export const MessageGroup = React.memo(function MessageGroup({
         <div
           style={{
             display: 'flex',
+            // Responsive (2026-10-30): the chat column's floor is a real 320px
+            // now (the workbench pane's ceiling became chat − 320), and the
+            // widest row — five buttons (~160px) plus the token stats
+            // (~260px) — needs ~420px. The stats group wraps to a second line
+            // instead of clipping; rowGap keeps the wrapped line off the icons.
+            flexWrap: 'wrap',
             gap: 2,
+            rowGap: 4,
             marginTop: 6,
             marginBottom: 16,
             paddingLeft: 0,
@@ -692,7 +699,12 @@ export const MessageGroup = React.memo(function MessageGroup({
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
+                // Wraps internally as a second safety net: a column narrower
+                // than the stats' own min-content (a hand-shrunk main window)
+                // breaks the segments across lines instead of clipping them.
+                flexWrap: 'wrap',
                 gap: 12,
+                rowGap: 4,
                 marginLeft: 6,
                 color: 'var(--pm-text-faint)',
                 fontSize: 12,

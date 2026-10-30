@@ -13,10 +13,14 @@ describe('pane width clamp', () => {
   it('defaults to 30% of the chat area', () => {
     expect(defaultPaneWidth(1300)).toBe(390)
   })
-  it('clamps to [320, 60% of chat area]', () => {
+  it('clamps to [320, chat area − 320] (fixed chat floor, 2026-10-30)', () => {
     expect(clampPaneWidth(100, 1300)).toBe(320)
-    expect(clampPaneWidth(5000, 1300)).toBe(780)
+    expect(clampPaneWidth(5000, 1300)).toBe(980)
     expect(clampPaneWidth(520, 1300)).toBe(520)
+  })
+  it('chat floor is a fixed 320px, not a ratio — wide windows give the pane the whole delta', () => {
+    // 60% of 2000 would be 1200; the fixed floor hands the pane 1680.
+    expect(clampPaneWidth(5000, 2000)).toBe(1680)
   })
   it('never clamps below the minimum even on a tiny chat area', () => {
     expect(clampPaneWidth(280, 400)).toBe(320)
