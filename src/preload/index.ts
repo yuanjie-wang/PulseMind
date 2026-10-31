@@ -49,13 +49,14 @@ const electronAPI = {
   projectCreate: (input: ProjectCreateInput) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
   projectUpdate: (id: string, patch: ProjectUpdateInput) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
-  projectValidateDir: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_VALIDATE_DIR, workspaceDir),
+  projectValidateDir: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_VALIDATE_DIR, workspaceDir),
   projectReorder: (orderedIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_REORDER, orderedIds),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
-  setConversationApprovalMode: (id: string, mode: unknown, source?: 'user' | 'derived') => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode, source),
-  setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROFILE, id, profileId, source),
+  setConversationApprovalMode: (id: string, mode: unknown, source?: 'user' | 'derived') =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode, source),
+  setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROFILE, id, profileId, source),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
   routineCreate: (input: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CREATE, input),
@@ -120,7 +121,8 @@ const electronAPI = {
   // Conversations
   listConversations: (): Promise<ConversationIndexEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LIST),
   getConversation: (id: string): Promise<Conversation | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET, id),
-  hydrateConversation: (id: string, maxContentLength?: number): Promise<Conversation | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_HYDRATE, id, maxContentLength),
+  hydrateConversation: (id: string, maxContentLength?: number): Promise<Conversation | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_HYDRATE, id, maxContentLength),
   saveConversation: (conv: Conversation): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SAVE, conv),
   saveConversationSync: (conv: Conversation): void => {
     ipcRenderer.sendSync(IPC_CHANNELS.CONVERSATION_SAVE_SYNC, conv)
@@ -129,8 +131,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_APPEND_MESSAGES, convId, title, messages),
   updateMessageMetadata: (msgId: string, data: { liked?: boolean; favorited?: boolean }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_MESSAGE_METADATA, msgId, data),
-  deleteConversation: (id: string, opts?: { deleteWorkspace?: boolean }): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_DELETE, id, opts),
+  deleteConversation: (id: string, opts?: { deleteWorkspace?: boolean }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_DELETE, id, opts),
   updateConversationTitle: (id: string, title: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, id, title),
   updateConversationSummary: (id: string, summary: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, id, summary),
   updateConversationKeywords: (id: string, keywords: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, id, keywords),
@@ -168,8 +169,7 @@ const electronAPI = {
     limit?: number,
   ): Promise<Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, query, limit),
-  getConversationLastUserMessage: (id: string): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LAST_USER_MESSAGE, id),
+  getConversationLastUserMessage: (id: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LAST_USER_MESSAGE, id),
 
   // Token Statistics
   getTokenStats: (): Promise<TokenStats> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_TOKEN_STATS),
@@ -205,8 +205,7 @@ const electronAPI = {
   writeSkillSource: (content: string, expectedName?: string): Promise<{ ok: true; skill: SkillDefinition } | { ok: false; error: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.SKILLS_WRITE_SOURCE, content, expectedName),
   listSkillFiles: (name: string): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_FILES, name),
-  readSkillFile: (name: string, relPath: string): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_FILE, name, relPath),
+  readSkillFile: (name: string, relPath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_FILE, name, relPath),
   // 技能使用计数（2026-10-27）
   recordSkillUse: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILL_USE_RECORD, name),
   listSkillUses: (): Promise<Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }>> =>
@@ -235,10 +234,8 @@ const electronAPI = {
   killCommand: (processId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_KILL, processId),
   // Background process mode (P0-3) + session exec allowlist (P0-2) — see the
   // channel comments in ipc-channels.ts.
-  executeBackground: (command: string, cwd?: string): Promise<{ pid: number }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, command, cwd),
-  execLogs: (pid: number, tailBytes?: number): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_LOGS, pid, tailBytes),
+  executeBackground: (command: string, cwd?: string): Promise<{ pid: number }> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, command, cwd),
+  execLogs: (pid: number, tailBytes?: number): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_LOGS, pid, tailBytes),
   execKill: (pid: number): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_KILL, pid),
   getExecAllowlist: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_GET),
   addExecAllowlist: (prefix: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_ADD, prefix),
@@ -319,8 +316,14 @@ const electronAPI = {
   },
 
   // 设置页「测试连接」：main 侧对 provider 发一次最小非流式探测
-  testLlmConnection: (input: { provider?: 'anthropic' | 'openai'; baseURL?: string; apiKey?: string; model?: string; headers?: Record<string, string>; profileId?: string }) =>
-    ipcRenderer.invoke(IPC_CHANNELS.LLM_TEST_CONNECTION, input),
+  testLlmConnection: (input: {
+    provider?: 'anthropic' | 'openai'
+    baseURL?: string
+    apiKey?: string
+    model?: string
+    headers?: Record<string, string>
+    profileId?: string
+  }) => ipcRenderer.invoke(IPC_CHANNELS.LLM_TEST_CONNECTION, input),
 
   // Non-streaming fetch via main process (avoids CORS)
   apiFetch: (
@@ -333,7 +336,8 @@ const electronAPI = {
   getDataPaths: (): Promise<DataPaths> => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_DATA_PATHS),
   openFolder: (folderPath: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_FOLDER, folderPath),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, url),
-  getFileStat: (filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> => ipcRenderer.invoke(IPC_CHANNELS.FILE_STAT, filePath),
+  getFileStat: (filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FILE_STAT, filePath),
   // Synchronous, no IPC: the disk path behind a pasted/dropped File. Electron
   // 33 removed the runtime `File.path` (the ambient `interface File { path }`
   // in electron.d.ts still declares it, so the renderer's read typechecks and
@@ -390,28 +394,35 @@ const electronAPI = {
   }): Promise<{ success: boolean; replacements: number; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_FILE, input),
   patchFile: (input: { filePath: string; diff: string }): Promise<{ success: boolean; replacements: number; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILE, input),
-  patchFiles: (input: { entries: Array<{ filePath: string; diff: string; isNew?: boolean }> }): Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }> =>
+  patchFiles: (input: {
+    entries: Array<{ filePath: string; diff: string; isNew?: boolean }>
+  }): Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILES, input),
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
-  editDocx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),
-  editPptx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_PPTX, input),
-  editXlsx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
-  inspectOffice: (input: { filePath: string }): Promise<unknown> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
-  readOffice: (input: { filePath: string; offset?: number; limit?: number; tables?: boolean; sheet?: string; range?: string; slide?: number; outline?: boolean }): Promise<unknown> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_OFFICE, input),
+  editDocx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),
+  editPptx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_PPTX, input),
+  editXlsx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
+  inspectOffice: (input: { filePath: string }): Promise<unknown> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
+  readOffice: (input: {
+    filePath: string
+    offset?: number
+    limit?: number
+    tables?: boolean
+    sheet?: string
+    range?: string
+    slide?: number
+    outline?: boolean
+  }): Promise<unknown> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_OFFICE, input),
   searchOffice: (input: { filePath: string; query: string; regex?: boolean; caseSensitive?: boolean; sheet?: string; slide?: number }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_SEARCH_OFFICE, input),
+  // 钉子要求单行形状（office-export-service.test.ts 的 /exportDocument: \(input: \{ format: string…/ 正则逐字匹配，多行即红）
+  // prettier-ignore
   exportDocument: (input: { format: string; content?: string; sourcePath?: string; htmlPath?: string; fontSize?: number; filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
-  registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
+  registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),
   saveBase64Image: (data: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE, data),
@@ -435,16 +446,13 @@ const electronAPI = {
   // Memory pages（PLAN-memory-wiki，2026-10-25）
   listMemoryPages: (type?: MemoryPageType) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_LIST, type),
   getMemoryPage: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_GET, id),
-  searchMemoryPages: (data: { query: string; type?: MemoryPageType; limit?: number }) =>
-    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SEARCH, data),
+  searchMemoryPages: (data: { query: string; type?: MemoryPageType; limit?: number }) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SEARCH, data),
   applyMemoryPageOps: (ops: PageOp[]) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_APPLY_OPS, ops),
   touchMemoryPage: (pageId: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_TOUCH, pageId),
-  setMemoryPageEnabled: (pageId: string, enabled: boolean) =>
-    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SET_ENABLED, pageId, enabled),
+  setMemoryPageEnabled: (pageId: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SET_ENABLED, pageId, enabled),
   setMemoryPageRetired: (pageId: string, retired: boolean, reason?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SET_RETIRED, pageId, retired, reason),
-  distillSop: (pageId: string): Promise<{ conversationId?: string; error?: string }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_DISTILL_SOP, pageId),
+  distillSop: (pageId: string): Promise<{ conversationId?: string; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_DISTILL_SOP, pageId),
   deleteMemoryPage: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_DELETE, id),
   countMemoryPages: (type?: MemoryPageType) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_COUNT, type),
   memoryPageCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_CATALOG),
@@ -478,11 +486,11 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER, folderPath),
   knowledgeAddFolder: (folderPath: string, baseId?: string): Promise<KnowledgeImportResult[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, folderPath, baseId),
-  knowledgeAddUrl: (url: string, baseId?: string): Promise<KnowledgeImportResult> =>
-    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_URL, url, baseId),
+  knowledgeAddUrl: (url: string, baseId?: string): Promise<KnowledgeImportResult> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_URL, url, baseId),
   knowledgeDelete: (id: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_DELETE, id),
   knowledgeGetRaw: (relativePath: string, baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW, relativePath, baseId),
-  knowledgeGetRawPath: (relativePath: string, baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, relativePath, baseId),
+  knowledgeGetRawPath: (relativePath: string, baseId?: string): Promise<string> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, relativePath, baseId),
   knowledgeReadWiki: (relativePath?: string, baseId?: string): Promise<{ content: string | null; files: string[] | null }> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, relativePath, baseId),
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }): Promise<KnowledgeFile> =>
@@ -498,14 +506,18 @@ const electronAPI = {
   }): Promise<{ written: number; logAppended: boolean; markedCompiled: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_APPLY_WIKI_CHANGES, data),
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, data),
   knowledgeClearAll: (): Promise<{ deletedRaw: number; deletedWiki: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL),
-  knowledgeSearchContent: (query: string, baseId?: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> =>
+  knowledgeSearchContent: (
+    query: string,
+    baseId?: string,
+  ): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, query, baseId),
   knowledgeSearchWiki: (query: string, baseId?: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, query, baseId),
   knowledgeRebuildIndex: (baseId?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX, baseId),
   knowledgeGetSchema: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA),
   knowledgeGetWikiDir: (baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, baseId),
-  knowledgeRebuildWiki: (baseId?: string): Promise<{ clearedPages: number; resetSources: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_WIKI, baseId),
+  knowledgeRebuildWiki: (baseId?: string): Promise<{ clearedPages: number; resetSources: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_WIKI, baseId),
   knowledgeListBases: (): Promise<KnowledgeBase[]> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_LIST),
   knowledgeCreateBase: (name: string): Promise<KnowledgeBase> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_CREATE, name),
   knowledgeRenameBase: (id: string, name: string): Promise<KnowledgeBase> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_RENAME, id, name),
@@ -532,7 +544,9 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HYDRATE, sessionId, messages, historySummary),
-  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown; fileChanges: unknown[] } | null> =>
+  agentSessionSnapshot: (
+    sessionId: string,
+  ): Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown; fileChanges: unknown[] } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_SNAPSHOT, sessionId),
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),
@@ -571,10 +585,8 @@ const electronAPI = {
   },
 
   // ── Project (immersive) window ──
-  projectWindowOpen: (projectId: string, name?: string): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),
-  secondaryWatch: (sessionId: string | null): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.SECONDARY_WATCH, sessionId),
+  projectWindowOpen: (projectId: string, name?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),
+  secondaryWatch: (sessionId: string | null): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SECONDARY_WATCH, sessionId),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
