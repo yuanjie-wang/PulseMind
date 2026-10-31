@@ -4,6 +4,7 @@ import { App as AntdApp } from 'antd'
 import App from './App'
 import { PopoutApp } from './popout/PopoutApp'
 import { parsePopoutParam, parseProjectParam } from './popout/boot'
+import { loadAndApplyPopoutSeed } from './popout/seed'
 import { applyThemePreference, installThemeVars, readThemeMirror } from './theme/dom'
 import { setThemeMode } from './theme/mode'
 import { resolveThemePreference } from './theme/palette'
@@ -31,16 +32,30 @@ if (bootThemePref) {
 const popout = parsePopoutParam()
 const project = parseProjectParam()
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    {/* App's body hooks call AntdApp.useApp() (useChatController toasts), but the
-        <AntdApp> App renders in its own JSX is a DESCENDANT of those call sites —
-        context lookup never sees it. This root provider is the one they resolve;
-        component={false} keeps the DOM byte-identical (Fragment, no wrapper div). */}
-    <AntdApp component={false}>
-      {project ? (
-        <PopoutApp projectId={project.projectId} />
-      ) : popout ? <PopoutApp convId={popout.convId} /> : <App />}
-    </AntdApp>
-  </React.StrictMode>
-)
+function renderRoot(): void {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      {/* App's body hooks call AntdApp.useApp() (useChatController toasts), but the
+          <AntdApp> App renders in its own JSX is a DESCENDANT of those call sites —
+          context lookup never sees it. This root provider is the one they resolve;
+          component={false} keeps the DOM byte-identical (Fragment, no wrapper div). */}
+      <AntdApp component={false}>
+        {project ? (
+          <PopoutApp projectId={project.projectId} />
+        ) : popout ? <PopoutApp convId={popout.convId} /> : <App />}
+      </AntdApp>
+    </React.StrictMode>,
+  )
+}
+
+if (popout) {
+  // 2026-10-31 裁定「弹出携带侧边窗口的打开状态」：donor 在 popoutOpen 时把
+  // 工作台开态 + 预览文件页签交给主进程的内存登记表，这里在 React 挂载之前
+  // 取回播种——WorkbenchPane/页签条首帧即复原，useBrowserPaneBinding 的首次
+  // pane-state 推送就带正确的 browserActive。窗口本身 show:false 到
+  // ready-to-show，这段取种等待用户不可见；取种失败照常渲染（关态启动 =
+  // 旧行为）。种子只走这条链，不落任何持久化。
+  loadAndApplyPopoutSeed(popout.convId).then(renderRoot)
+} else {
+  renderRoot()
+}

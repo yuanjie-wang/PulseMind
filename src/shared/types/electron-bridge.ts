@@ -25,6 +25,20 @@ import type { CsvPreviewResult } from '../routine/batch'
 import type { UserTool } from './user-tool'
 import type { AgentSessionCreateOptions, StatusSnapshot } from '../agent-protocol'
 
+/** The donor window's side-window state handed to a popout at open time
+ *  (2026-10-31 ruling: 弹出携带侧边窗口的打开状态). In-memory only — main
+ *  keeps it in a registry that dies with the popout window; nothing here is
+ *  ever persisted. */
+export interface PopoutWorkbenchSeed {
+  /** The donor's frontmost workbench tab; present only when the pane was open. */
+  workbenchTab?: 'workspace' | 'browser' | 'plan'
+  /** The donor's open preview file tabs (paths, verbatim order). Carried even
+   *  when the pane was closed — opening the workbench later restores them. */
+  previewPaths?: string[]
+  /** The donor's active preview tab; applied only if it is one of previewPaths. */
+  activePreviewPath?: string | null
+}
+
 // --- Platform Info ---
 
 export interface PlatformInfo {
@@ -600,8 +614,13 @@ export interface ElectronAPI {
   // ── Conversation popout (PLAN-conversation-popout 2026-10-30) ──
   /** Pop a conversation into its own window (focus the existing popout when
    *  the conversation is already popped). Resolves once the request is
-   *  handed to main — the window's appearance is not awaited. */
-  popoutOpen: (convId: string, title?: string) => Promise<void>
+   *  handed to main — the window's appearance is not awaited. `seed` carries
+   *  the side-window open state (see PopoutWorkbenchSeed). */
+  popoutOpen: (convId: string, title?: string, seed?: PopoutWorkbenchSeed) => Promise<void>
+  /** The donor seed for this popout conversation, or null. The popout renderer
+   *  calls this once at boot, BEFORE rendering, so the workbench and the
+   *  preview tab strip are restored on the first frame. */
+  popoutSeed: (convId: string) => Promise<PopoutWorkbenchSeed | null>
   /** The conversations currently popped out — the main window re-syncs its
    *  registry from this on mount (a renderer reload rebuilds it empty). */
   popoutList: () => Promise<string[]>

@@ -521,9 +521,16 @@ function ChatView({
   // lazy-load or collapse the window during that window — the pin's own writes
   // move scrollTop, and reacting to them would fight the landing.
   const landingRef = useRef(false)
+  // 从未落过底的首水合也按切换处理（2026-10-31 弹窗裁定「会话区滚动条滚动到
+  // 底部」）：弹窗的 conversationId 首帧即到位（activeConvKey 回退 convId），
+  // prevConvIdRef 看不到切换，消息水合走的是无 pin 的一次性 rAF——内容在
+  // 之后几帧持续长高（XMarkdown 首帧 null、代码块/图片更晚），最终停在半途。
+  // 首次消息落地走 switch 路径 = 同步落底 + bottom-pin 到高度稳定，与主窗
+  // 打开会话同一条路。只影响「本挂载的第一次」，此后一切照旧。
+  const landedOnceRef = useRef(false)
 
   useEffect(() => {
-    const isConvSwitch = prevConvIdRef.current !== conversationId
+    const isConvSwitch = prevConvIdRef.current !== conversationId || !landedOnceRef.current
     if (isConvSwitch) {
       pendingScrollRef.current = true
       prevConvIdRef.current = conversationId
@@ -556,6 +563,7 @@ function ChatView({
       // reads it) never reacts to the landing's own scroll writes.
       // eslint-disable-next-line react-hooks/immutability
       landingRef.current = true
+      landedOnceRef.current = true
       cancelPinRef.current = startBottomPin(() => scrollRef.current, {
         onStop: () => {
           landingRef.current = false
@@ -1038,6 +1046,7 @@ function ChatView({
     >
       <div
         ref={scrollRef}
+        data-pm-chat-scroll
         onScroll={handleScroll}
         // overflowAnchor: none — when content above the viewport grows after a
         // conversation opens (markdown bodies, images, tool blocks), Chrome's

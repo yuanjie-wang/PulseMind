@@ -36,12 +36,33 @@ const HARNESS = `
 import { createRoot } from 'react-dom/client'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import { PopoutApp } from './src/renderer/src/popout/PopoutApp'
+import { applyPopoutSeed } from './src/renderer/src/popout/seed'
 import AppLayout from './src/renderer/src/components/layout/AppLayout'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 
 const root = createRoot(document.getElementById('root'))
 const which = window.__HARNESS__ || 'popout'
+
+// 2026-10-31 裁定「弹出携带侧边窗口的打开状态」: 种子 harness 复刻 main.tsx
+// 的契约 — 在 React 挂载之前把 donor seed 播种进本窗口的两个 store。
+if (which === 'popout-seed') applyPopoutSeed('${CONV_ID}', window.__SEED__ || null)
+
+if (which !== 'applayout') {
+  // 会话区落底（2026-10-31 裁定）的诚实断言需要「落底之后内容继续长高」：
+  // 静态内容下一次性 rAF 与落底+bottom-pin 都停在同一处。在 ready 后 150ms
+  // 注入 1500px —— 落在 pin 窗口（500ms 静默 / 3s 帽）内，落底路径会被钉在
+  // 底，无 pin 路径停在半途。
+  setTimeout(() => {
+    const el = document.querySelector('[data-pm-chat-scroll]')
+    if (el) {
+      const late = document.createElement('div')
+      late.style.height = '1500px'
+      late.textContent = '晚到内容'
+      el.appendChild(late)
+    }
+  }, 150)
+}
 
 if (which === 'applayout') {
   // The MAIN window's header (AppLayout) — mounted to compare the action pair
@@ -115,6 +136,21 @@ window.__popoutProbe = () => {
     headerTitle,
     hasWorkbenchToggle: Array.from(document.querySelectorAll('button[aria-label]')).some((b) =>
       /侧边窗口|side pane/i.test(b.getAttribute('aria-label') || '')),
+    // 工作台打开 = 收起按钮（title="收起工作台"）在 DOM 里；关着的
+    // WorkbenchPane 返回 <></>，什么都不渲染。
+    hasWorkbenchOpen: !!document.querySelector('[title="收起工作台"]'),
+    // 文件页签条（工作区 tab 内）：页签文本 + 活动页签（aria-selected）。
+    tabTitles: [...document.querySelectorAll('[role="tab"]')].map((t) => (t.textContent || '').trim()),
+    activeTabTitle: (document.querySelector('[role="tab"][aria-selected="true"]')?.textContent || '').trim(),
+    panePushes: (window.__panePushes || []).filter((p) => p.conversationId === '${CONV_ID}')
+      .map((p) => ({ browserActive: p.browserActive, viewKind: p.viewKind })),
+    // 会话区滚动位置（2026-10-31 裁定「会话区滚动条滚动到底部」）：距底
+    // < 100px 视为在底部（与 ChatView 的 nearBottom 阈值同口径）。
+    chatAtBottom: (() => {
+      const el = document.querySelector('[data-pm-chat-scroll]')
+      if (!el || !el.scrollHeight) return null
+      return el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    })(),
     headerActionsGap: rect ? Math.round(window.innerWidth - rect.right) : null,
     innerWidth: window.innerWidth,
   }
@@ -167,6 +203,8 @@ const PAGE_HTML = `<!doctype html><html><head><style>
     const MESSAGES = ${JSON.stringify(MESSAGES)}
     const CONVS = [{ id: '${CONV_ID}', title: '${CONV_TITLE}', pinned: false, updatedAt: '2026-10-30T12:00:01.000Z' }]
     window.electronAPI = new Proxy({
+      browserPaneSetState: (state) => { (window.__panePushes = window.__panePushes || []).push(state) },
+      popoutSeed: () => Promise.resolve(window.__SEED__ || null),
       getSettings: () => Promise.resolve({
         activeProfileId: 'p1',
         profiles: [{ id: 'p1', name: '探针模型', provider: 'anthropic', model: 'probe-model', maxTokens: 8192, baseURL: '', apiKey: 'sk-probe' }],
@@ -198,15 +236,15 @@ const PAGE_HTML = `<!doctype html><html><head><style>
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
 
 /** Fresh page per OS-controls layout (getWindowControls is read at load). */
-async function loadAndBoot(controls, harness = 'popout') {
+async function loadAndBoot(controls, harness = 'popout', search = '?popout=' + CONV_ID, seed = null) {
   const page = await browser.newPage({ viewport: { width: 640, height: 820 } })
   page.on('pageerror', (err) => console.log('  [page error]', err.message))
-  await page.addInitScript(([c, h]) => { window.__CONTROLS__ = c; window.__HARNESS__ = h }, [controls, harness])
+  await page.addInitScript(([c, h, s]) => { window.__CONTROLS__ = c; window.__HARNESS__ = h; window.__SEED__ = s }, [controls, harness, seed])
   await page.route('http://pm-popout.local/**', (route) => route.fulfill({
     contentType: 'text/html; charset=utf-8',
     body: PAGE_HTML,
   }))
-  await page.goto('http://pm-popout.local/?popout=' + CONV_ID)
+  await page.goto('http://pm-popout.local/' + search)
   await page.addScriptTag({ path: OUT })
   await page.waitForFunction(() => window.__ready)
   await page.waitForTimeout(1200) // let the snapshot→mirror→activate boot settle
@@ -262,6 +300,44 @@ const macBtn = await measureActionButton(page)
 check('macOS：保持应用自身的圆角图标按钮（28×28, r6）',
   macBtn.width === 28 && macBtn.height === 28 && macBtn.radius === '6px',
   JSON.stringify(macBtn))
+
+// ── 侧边窗口打开态种子（2026-10-31 裁定「弹出携带侧边窗口的打开状态」）──
+// 种子组 A（工作区 + 文件页签）：工作台首帧即开、页签条复原、活动页签命中、
+// 本会话 pane 推送 browserActive:false（工作区 tab 本来就不激活原生视图）。
+// 种子组 B（浏览器）：pane 推送 browserActive:true — 主进程据此把原生视图
+// 跨 dock re-parent 到弹窗。对照组：无种子维持关 — 默认行为不回归。
+const seedPage = await loadAndBoot(DARWIN_CONTROLS, 'popout-seed', '?popout=' + CONV_ID, {
+  workbenchTab: 'workspace',
+  previewPaths: ['/pm-probe-ws/notes.md', '/pm-probe-ws/report.md'],
+  activePreviewPath: '/pm-probe-ws/report.md',
+})
+const seedState = await seedPage.evaluate(() => window.__popoutProbe())
+console.log('  seed state:', JSON.stringify({ open: seedState.hasWorkbenchOpen, tabs: seedState.tabTitles, active: seedState.activeTabTitle }))
+await seedPage.screenshot({ path: join(SHOTS, 'popout-seeded.png') })
+check('种子组A：工作台首帧即开（收起按钮在场）', seedState.hasWorkbenchOpen)
+check('种子组A：预览文件页签条复原（两个页签都在）',
+  seedState.tabTitles.includes('notes.md') && seedState.tabTitles.includes('report.md'),
+  JSON.stringify(seedState.tabTitles))
+check('种子组A：活动页签 = donor 的选中文件（report.md）', seedState.activeTabTitle === 'report.md', `active=${seedState.activeTabTitle}`)
+check('种子组A：本会话 pane 推送 browserActive:false（工作区 tab）',
+  seedState.panePushes.length > 0 && seedState.panePushes.every((p) => p.browserActive === false && p.viewKind === 'chat'),
+  JSON.stringify(seedState.panePushes))
+
+const browserSeedPage = await loadAndBoot(DARWIN_CONTROLS, 'popout-seed', '?popout=' + CONV_ID, { workbenchTab: 'browser' })
+const browserSeedState = await browserSeedPage.evaluate(() => window.__popoutProbe())
+check('种子组B：工作台开在浏览器 tab 且推送 browserActive:true',
+  browserSeedState.hasWorkbenchOpen && browserSeedState.panePushes.length > 0
+    && browserSeedState.panePushes.every((p) => p.browserActive === true && p.viewKind === 'chat'),
+  JSON.stringify(browserSeedState.panePushes))
+
+check('种子组：会话区滚动条在底部（首水合走 switch 落底 + bottom-pin）',
+  seedState.chatAtBottom === true, `atBottom=${seedState.chatAtBottom}`)
+check('对照组：会话区滚动条同样在底部', state.chatAtBottom === true, `atBottom=${state.chatAtBottom}`)
+
+check('对照组：无种子时工作台保持关（默认行为不变）', !state.hasWorkbenchOpen)
+check('对照组：无种子时本会话推送 browserActive:false',
+  state.panePushes.length > 0 && state.panePushes.every((p) => p.browserActive === false),
+  JSON.stringify(state.panePushes))
 
 // ── Windows/Linux: the action cluster must clear the caption-button strip ──
 const winPage = await loadAndBoot(WINDOWS_CONTROLS)

@@ -704,7 +704,20 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onRenameConversation={renameConversation}
             onSelectConversation={setActiveConversationKey}
             onTogglePinConversation={togglePin}
-            onPopoutConversation={(key, label) => { void window.electronAPI.popoutOpen(key, label) }}
+            onPopoutConversation={(key, label) => {
+              // 2026-10-31 裁定：弹出携带侧边窗口的打开状态——工作台开/前置
+              // tab + 预览文件页签/活动文件一起作为 seed 递给弹窗（in-memory，
+              // 只走这次 IPC + 弹窗启动时的一次取回，两个 store 都不持久化）。
+              // 页签即使在工作台关着时也携带：弹窗里后开工作台照样复原。
+              const wb = useWorkbenchStore.getState()
+              const pp = usePreviewPaneStore.getState()
+              const seed = {
+                workbenchTab: wb.openByConversation[key] ? wb.activeTab : undefined,
+                previewPaths: pp.tabsByConversation[key]?.map((t) => t.path),
+                activePreviewPath: pp.activeByConversation[key] ?? null,
+              }
+              void window.electronAPI.popoutOpen(key, label, seed)
+            }}
             onFocusPoppedConversation={(key) => { void window.electronAPI.popoutOpen(key) }}
             // The project's immersive window reuses the popout machinery end to
             // end; `popoutOpen` is also what raises a conversation that window

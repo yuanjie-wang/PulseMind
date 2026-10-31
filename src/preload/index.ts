@@ -15,6 +15,7 @@ import type {
   PlatformInfo,
   DataPaths,
   ServiceStatus,
+  PopoutWorkbenchSeed,
 } from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
@@ -544,8 +545,8 @@ const electronAPI = {
   },
 
   // ── Conversation popout ──
-  popoutOpen: (convId: string, title?: string): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.POPOUT_OPEN, convId, title),
+  popoutOpen: (convId: string, title?: string, seed?: PopoutWorkbenchSeed): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.POPOUT_OPEN, convId, title, seed),
+  popoutSeed: (convId: string): Promise<PopoutWorkbenchSeed | null> => ipcRenderer.invoke(IPC_CHANNELS.POPOUT_SEED, convId),
   popoutList: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.POPOUT_LIST),
   onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void): (() => void) => {
     const listener = (_e: unknown, event: { type: 'opened' | 'closed'; sessionId: string }): void => callback(event)

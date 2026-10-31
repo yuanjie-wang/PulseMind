@@ -35,10 +35,19 @@ import { installPopupMotionGuard } from './motion-guard'
 import { safeExternalUrl } from './utils/external-url'
 import { DATA_DIR } from './storage/index'
 import { settingsStore } from './storage/settings-store'
+import type { PopoutWorkbenchSeed } from '../shared/types/electron-bridge'
 
 /** One conversation, at most one popout: opening an already-popped
  *  conversation focuses the existing window instead of stacking mirrors. */
 const popouts = new Map<string, BrowserWindow>()
+
+/** convId → the donor window's side-window state (2026-10-31 ruling: 弹出携带
+ *  侧边窗口的打开状态 — workbench open tab + preview file tabs). The popout
+ *  renderer fetches it via POPOUT_SEED before its first render and applies it
+ *  to its own stores. Purely in-memory: the entry is overwritten by the next
+ *  popout of the same conversation and deleted when the window closes —
+ *  nothing here is ever persisted. */
+const popoutSeeds = new Map<string, PopoutWorkbenchSeed>()
 
 /** One project, at most one project window (idempotent focus, same rule). */
 const projectWindows = new Map<string, BrowserWindow>()
@@ -79,13 +88,18 @@ async function popoutBackground(): Promise<string> {
   }
 }
 
-/** Cascade origin for the next secondary window, centered on the work area. */
+/** Cascade origin for the next secondary window, centered on the work area.
+ *  Final x/y are clamped INTO the work area — a donor-width popout (2026-10-31
+ *  同宽裁定) leaves no room for the cascade nudge, which would otherwise push
+ *  it partly off-screen. */
 function cascadeOrigin(width: number, height: number): { x: number; y: number } {
   const workArea = screen.getPrimaryDisplay().workArea
   const cascade = (cascadeCount++ % CASCADE_WRAP) * CASCADE_STEP
+  const x = workArea.x + Math.max(0, Math.round((workArea.width - width) / 2)) + cascade
+  const y = workArea.y + Math.max(0, Math.round((workArea.height - height) / 2)) + cascade
   return {
-    x: workArea.x + Math.max(0, Math.round((workArea.width - width) / 2)) + cascade,
-    y: workArea.y + Math.max(0, Math.round((workArea.height - height) / 2)) + cascade,
+    x: Math.max(workArea.x, Math.min(x, workArea.x + Math.max(0, workArea.width - width))),
+    y: Math.max(workArea.y, Math.min(y, workArea.y + Math.max(0, workArea.height - height))),
   }
 }
 
@@ -170,6 +184,15 @@ export function popoutWindowCount(): number {
   return popouts.size + projectWindows.size
 }
 
+/** The donor's side-window seed for a popout conversation, or null. The
+ *  popout renderer calls this once at boot (POPOUT_SEED), BEFORE rendering —
+ *  the workbench and the preview tab strip are restored on the first frame.
+ *  The entry survives renderer reloads (a reload re-fetches and re-restores);
+ *  it dies with the window. */
+export function getPopoutSeed(convId: string): PopoutWorkbenchSeed | null {
+  return popoutSeeds.get(convId) ?? null
+}
+
 /** The conversations currently carried by a secondary window — the main window
  *  re-syncs its popout registry from this on mount. A renderer reload (HMR,
  *  the unresponsive-recovery reload) rebuilds that registry empty, and an empty
@@ -229,8 +252,25 @@ export function recordSecondaryWatchFromSender(sender: WebContents, sessionId: s
  * Pop `convId` out into its own window (focus the existing one if already
  * popped). Fire-and-forget from the IPC handler's perspective: window
  * creation problems are logged, never thrown into the renderer's send path.
+ *
+ * `seed` is the donor window's side-window state (2026-10-31 ruling: 弹出携带
+ * 侧边窗口的打开状态) — stashed in `popoutSeeds` for the popout renderer to
+ * fetch via POPOUT_SEED before its first render. Omit when there is nothing
+ * to carry; absent seed = the previous behavior.
+ *
+ * `donorWidth`/`donorHeight` size the popout to 90% of the donor window's
+ * dimensions (2026-10-31 裁定「初始高度和宽度都修改为主窗的90%」) — clamped
+ * into the work area; the workbench pane width itself is already shared via
+ * workbenchStore's localStorage persist. Absent → the historical
+ * 42%×78%-of-work-area sizing.
  */
-export async function openPopoutWindow(convId: string, title?: string): Promise<void> {
+export async function openPopoutWindow(
+  convId: string,
+  title?: string,
+  seed?: PopoutWorkbenchSeed,
+  donorWidth?: number,
+  donorHeight?: number,
+): Promise<void> {
   if (!convId) return
   await app.whenReady()
   // The conversation may already be living in a PROJECT window (its switcher
@@ -251,8 +291,14 @@ export async function openPopoutWindow(convId: string, title?: string): Promise<
 
   const background = await popoutBackground()
   const workArea = screen.getPrimaryDisplay().workArea
-  const width = Math.max(480, Math.min(720, Math.round(workArea.width * 0.42)))
-  const height = Math.max(480, Math.min(workArea.height, Math.round(workArea.height * 0.78)))
+  // 尺寸裁定（2026-10-31）：弹窗 = 主窗的 90%（宽高同口径，夹进工作区）；
+  // donor 缺席回落历史形态。
+  const width = donorWidth
+    ? Math.max(420, Math.min(workArea.width, Math.round(donorWidth * 0.9)))
+    : Math.max(480, Math.min(720, Math.round(workArea.width * 0.42)))
+  const height = donorHeight
+    ? Math.max(360, Math.min(workArea.height, Math.round(donorHeight * 0.9)))
+    : Math.max(480, Math.min(workArea.height, Math.round(workArea.height * 0.78)))
   const win = createSecondaryWindow({
     width,
     height,
@@ -263,6 +309,7 @@ export async function openPopoutWindow(convId: string, title?: string): Promise<
   })
 
   popouts.set(convId, win)
+  if (seed) popoutSeeds.set(convId, seed)
   // Announce IMMEDIATELY (synchronously): the main window's reaction is
   // load-bearing and must not wait on the popout's own renderer boot — it
   // adopts the conversation (single-writer saves), clears the unread light,
@@ -273,6 +320,7 @@ export async function openPopoutWindow(convId: string, title?: string): Promise<
   broadcastPopoutEvent('opened', convId)
   win.once('closed', () => {
     popouts.delete(convId)
+    popoutSeeds.delete(convId)
     // Ruling: closing the popout only closes the window — the main-hosted
     // session is untouched; this event just tells the main window to stop
     // treating the conversation as popped out (eviction/unread semantics).

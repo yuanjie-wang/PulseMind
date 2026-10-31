@@ -12,20 +12,36 @@
 // which is how a project window's moving 「当前会话」 reaches main so it can
 // rebroadcast POPOUT_EVENT and keep the main window's adoption (and read
 // receipt) in step with the in-window switcher.
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import {
   openPopoutWindow,
   listPopoutConversations,
+  getPopoutSeed,
   openProjectWindow,
   recordSecondaryWatchFromSender,
 } from '../popout-window'
+import type { PopoutWorkbenchSeed } from '../../shared/types/electron-bridge'
 
 export function registerPopoutHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.POPOUT_OPEN, (_event, convId: string, title?: string) => {
-    void openPopoutWindow(convId, title)
-  })
+  ipcMain.handle(
+    IPC_CHANNELS.POPOUT_OPEN,
+    (event, convId: string, title?: string, seed?: PopoutWorkbenchSeed) => {
+      // 2026-10-31 追加裁定「窗口宽度，包括侧边窗口宽度，要保持一致」+ 追加
+      // 「高度也一致」：弹窗与发起窗口同宽同高（侧边窗格宽度本就经
+      // workbenchStore 的 localStorage 共享，窗宽对齐后整列布局才真正一致）。
+      // donor 缺席/已销毁（异常发送方）→ undefined，openPopoutWindow 回落
+      // 默认 42%×78% 尺寸。
+      const donor = BrowserWindow.fromWebContents(event.sender)
+      const donorBounds = donor && !donor.isDestroyed() ? donor.getBounds() : undefined
+      void openPopoutWindow(convId, title, seed, donorBounds?.width, donorBounds?.height)
+    },
+  )
   ipcMain.handle(IPC_CHANNELS.POPOUT_LIST, () => listPopoutConversations())
+  // The popout renderer's boot fetch (before its first render): the donor's
+  // side-window open state — workbench tab + preview file tabs. In-memory
+  // registry in popout-window.ts; null when there is nothing to carry.
+  ipcMain.handle(IPC_CHANNELS.POPOUT_SEED, (_event, convId: string) => getPopoutSeed(convId))
   ipcMain.handle(IPC_CHANNELS.PROJECT_WINDOW_OPEN, (_event, projectId: string, name?: string) => {
     void openProjectWindow(projectId, name)
   })

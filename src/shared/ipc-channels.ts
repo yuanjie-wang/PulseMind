@@ -220,6 +220,10 @@ export const IPC_CHANNELS = {
   /** Renderer → main: the conversations currently popped out (the main window
    *  re-syncs its registry on mount — a renderer reload rebuilds it empty). */
   POPOUT_LIST: 'popout:list',
+  /** Renderer (popout boot) → main: fetch the donor's side-window seed (workbench
+   *  open tab + preview file tabs) stashed at popoutOpen time. In-memory only —
+   *  the entry dies with the popout window; nothing is persisted. */
+  POPOUT_SEED: 'popout:seed',
   /** Main → every window: a popout opened/closed a conversation. The MAIN
    *  window consumes this (adopt the conversation for single-writer saves,
    *  clear its unread light); popout windows ignore it. */

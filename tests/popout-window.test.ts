@@ -106,14 +106,17 @@ describe('popout IPC: channels → preload → bridge', () => {
     const ch = read('shared/ipc-channels.ts')
     expect(ch).toContain("POPOUT_OPEN: 'popout:open'")
     expect(ch).toContain("POPOUT_LIST: 'popout:list'")
+    expect(ch).toContain("POPOUT_SEED: 'popout:seed'")
     expect(ch).toContain("POPOUT_EVENT: 'popout:event'")
     expect(ch).toContain("CONVERSATION_TITLE_CHANGED: 'conversation:title-changed'")
   })
 
-  it('preload exposes popoutOpen / popoutList / onPopoutEvent / onConversationTitleChanged', () => {
+  it('preload exposes popoutOpen / popoutSeed / popoutList / onPopoutEvent / onConversationTitleChanged', () => {
     const pre = read('preload/index.ts')
-    expect(pre).toContain('popoutOpen: (convId: string, title?: string)')
-    expect(pre).toContain('ipcRenderer.invoke(IPC_CHANNELS.POPOUT_OPEN, convId, title)')
+    expect(pre).toContain('popoutOpen: (convId: string, title?: string, seed?: PopoutWorkbenchSeed)')
+    expect(pre).toContain('ipcRenderer.invoke(IPC_CHANNELS.POPOUT_OPEN, convId, title, seed)')
+    expect(pre).toContain('popoutSeed: (convId: string)')
+    expect(pre).toContain('ipcRenderer.invoke(IPC_CHANNELS.POPOUT_SEED, convId)')
     expect(pre).toContain('popoutList: (): Promise<string[]>')
     expect(pre).toContain('ipcRenderer.invoke(IPC_CHANNELS.POPOUT_LIST)')
     expect(pre).toContain('onPopoutEvent:')
@@ -124,7 +127,11 @@ describe('popout IPC: channels → preload → bridge', () => {
 
   it('the bridge types declare the same methods', () => {
     const b = read('shared/types/electron-bridge.ts')
-    expect(b).toContain('popoutOpen: (convId: string, title?: string) => Promise<void>')
+    expect(b).toContain('popoutOpen: (convId: string, title?: string, seed?: PopoutWorkbenchSeed) => Promise<void>')
+    expect(b).toContain('popoutSeed: (convId: string) => Promise<PopoutWorkbenchSeed | null>')
+    expect(b).toContain('workbenchTab')
+    expect(b).toContain('previewPaths')
+    expect(b).toContain('activePreviewPath')
     expect(b).toContain('popoutList: () => Promise<string[]>')
     expect(b).toContain("onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void) => () => void")
     expect(b).toContain('onConversationTitleChanged:')
@@ -140,6 +147,16 @@ describe('main: popout window module', () => {
     expect(pop).toContain("preload: join(__dirname, '../preload/index.js')")
     // A hidden popout still streams a live turn.
     expect(pop).toContain('backgroundThrottling: false')
+  })
+
+  it('stashes the donor seed in an in-memory registry (2026-10-31 ruling)', () => {
+    // 弹出携带侧边窗口的打开状态：popoutOpen 收 seed → popoutSeeds.set；弹窗
+    // 经 POPOUT_SEED 取回；窗口关闭即删——纯内存，不落任何持久化。
+    expect(pop).toContain('const popoutSeeds = new Map<string, PopoutWorkbenchSeed>()')
+    expect(pop).toContain('if (seed) popoutSeeds.set(convId, seed)')
+    expect(pop).toContain('popoutSeeds.delete(convId)')
+    expect(pop).toContain('export function getPopoutSeed(convId: string): PopoutWorkbenchSeed | null')
+    expect(pop).toContain('return popoutSeeds.get(convId) ?? null')
   })
 
   it('carries the main window navigation gates and a sticky title', () => {
@@ -190,7 +207,10 @@ describe('main: lifecycle + handler registration', () => {
     const h = read('main/ipc/popout.handler.ts')
     expect(h).toContain('IPC_CHANNELS.POPOUT_OPEN')
     expect(h).toContain('IPC_CHANNELS.POPOUT_LIST')
+    // The seed fetch: popout boot pulls the donor state before rendering.
+    expect(h).toContain('IPC_CHANNELS.POPOUT_SEED')
     expect(h).toContain('listPopoutConversations')
+    expect(h).toContain('getPopoutSeed(convId)')
   })
   it('the title write fans out (OS title + sidebar list broadcast)', () => {
     const ch = read('main/ipc/conversation.handler.ts')
@@ -281,14 +301,26 @@ describe('renderer: main entry + App wiring', () => {
     expect(app).toContain('usePopoutWatchStore.getState().remove(sessionId)')
     expect(app).toContain('markConversationRead(sessionId)')
     expect(app).toContain('void adoptConversation(sessionId)')
-    expect(app).toContain('window.electronAPI.popoutOpen(key, label)')
+    // Seed object: workbench open tab + preview file tabs + active file.
+    expect(app).toContain('window.electronAPI.popoutOpen(key, label, seed)')
+    expect(app).toContain('wb.openByConversation[key] ? wb.activeTab : undefined')
+    expect(app).toContain('pp.tabsByConversation[key]?.map((t) => t.path)')
+    expect(app).toContain('pp.activeByConversation[key] ?? null')
     expect(app).toContain('onPopoutConversation=')
     // A renderer reload rebuilds the registry empty — re-sync from main.
     expect(app).toContain('window.electronAPI.popoutList()')
   })
 
-  it('the browser pane never registers a secondary window as its dock target', () => {
-    expect(read('renderer/src/hooks/useBrowserPane.ts')).toContain('if (IS_POPOUT || IS_PROJECT_WINDOW) return')
+  it('the browser pane: project windows are pane TARGETS now (2026-10-31 三面板) — the old early-return is gone', () => {
+    // 2026-10-31 the dock registry became per-window — a conversation popout
+    // pushes its own pane state; since the same day's 三面板 ruling the
+    // project window does too (its `IS_PROJECT_WINDOW` branch is a PUSH with
+    // rightPanel-driven browserActive, not an early return anymore).
+    const pane = read('renderer/src/hooks/useBrowserPane.ts')
+    expect(pane).not.toContain('if (IS_PROJECT_WINDOW) return')
+    expect(pane).toContain('if (IS_PROJECT_WINDOW) {')
+    expect(pane).toContain("browserActive: rightPanel === 'browser'")
+    expect(pane).not.toContain('IS_POPOUT || IS_PROJECT_WINDOW')
   })
 
   it('the sidebar row menu offers 弹出为独立窗口 (optional prop → hideable)', () => {
@@ -323,8 +355,105 @@ describe('renderer: PopoutApp', () => {
 
   it('keeps the boot flag module as the single per-window mode detector', () => {
     const boot = read('renderer/src/popout/boot.ts')
-    expect(boot).toContain("new URLSearchParams(window.location.search).get('popout')")
+    expect(boot).toContain('new URLSearchParams(window.location.search).get')
     expect(boot).toContain('export const IS_POPOUT')
+    // The seed does NOT ride the URL — it lives in popout/seed.ts.
+    expect(boot).not.toContain('wb')
+  })
+
+  it('fetches the donor seed BEFORE the first render (main.tsx)', () => {
+    const main = read('renderer/src/main.tsx')
+    expect(main).toContain('loadAndApplyPopoutSeed')
+    expect(main).toContain('loadAndApplyPopoutSeed(popout.convId).then(renderRoot)')
+    // Failure still boots the popout (closed = the previous behavior).
+    expect(main).not.toContain('catch(() => renderRoot())')
+  })
+
+  it('sizes the popout to the donor window dimensions (2026-10-31 追加裁定)', () => {
+    // 「窗口宽度，包括侧边窗口宽度，要保持一致」+「高度也改一致」：handler 读
+    // 发送方 bounds，openPopoutWindow 用 donor 宽高（夹进工作区）；缺席回落
+    // 42%×78% 形态。侧边窗格宽度不需要传递——workbenchStore.width 走
+    // localStorage persist，两个窗口本来就读同一份。
+    const h = read('main/ipc/popout.handler.ts')
+    expect(h).toContain('BrowserWindow.fromWebContents(event.sender)')
+    expect(h).toContain('donor.getBounds()')
+    expect(h).toContain('void openPopoutWindow(convId, title, seed, donorBounds?.width, donorBounds?.height)')
+    const win = read('main/popout-window.ts')
+    expect(win).toContain('? Math.max(420, Math.min(workArea.width, Math.round(donorWidth * 0.9)))')
+    expect(win).toContain('? Math.max(360, Math.min(workArea.height, Math.round(donorHeight * 0.9)))')
+    expect(win).toContain(': Math.max(480, Math.min(720, Math.round(workArea.width * 0.42)))')
+    expect(win).toContain(': Math.max(480, Math.min(workArea.height, Math.round(workArea.height * 0.78)))')
+  })
+
+  it('lands the first hydration at the tail (chat scroll-to-bottom on popout)', () => {
+    // 「会话区滚动条滚动到底部」：弹窗的 conversationId 首帧即 convId（回退），
+    // prevConvIdRef 看不到切换——首水合必须也走 switch 落底路径（同步落底 +
+    // bottom-pin），否则内容在一次性 rAF 之后继续长高、停在半途。
+    const chat = read('renderer/src/components/layout/ChatView.tsx')
+    expect(chat).toContain('const isConvSwitch = prevConvIdRef.current !== conversationId || !landedOnceRef.current')
+    expect(chat).toContain('landedOnceRef.current = true')
+    // 探针锚点：滚动容器的稳定选择器。
+    expect(chat).toContain('data-pm-chat-scroll')
+  })
+})
+
+describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
+  const importFresh = async (): Promise<typeof import('../src/renderer/src/popout/seed')> => {
+    vi.resetModules() // both stores are module-level singletons
+    return import('../src/renderer/src/popout/seed')
+  }
+
+  it('opens the workbench on the seeded tab', async () => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    seed.applyPopoutSeed('conv_seed', { workbenchTab: 'browser' })
+    expect(useWorkbenchStore.getState().openByConversation['conv_seed']).toBe(true)
+    expect(useWorkbenchStore.getState().activeTab).toBe('browser')
+  })
+
+  it('restores the preview tab strip and the active file', async () => {
+    const seed = await importFresh()
+    const { usePreviewPaneStore } = await import('../src/renderer/src/stores/previewPaneStore')
+    seed.applyPopoutSeed('conv_seed', {
+      workbenchTab: 'workspace',
+      previewPaths: ['/ws/a.md', '/ws/b.md'],
+      activePreviewPath: '/ws/b.md',
+    })
+    const s = usePreviewPaneStore.getState()
+    expect(s.tabsByConversation['conv_seed'].map((t) => t.path)).toEqual(['/ws/a.md', '/ws/b.md'])
+    expect(s.tabsByConversation['conv_seed'][0].kind).toBe('markdown')
+    expect(s.activeByConversation['conv_seed']).toBe('/ws/b.md')
+  })
+
+  it('an active path outside the carried tabs is dropped (fail-closed)', async () => {
+    const seed = await importFresh()
+    const { usePreviewPaneStore } = await import('../src/renderer/src/stores/previewPaneStore')
+    seed.applyPopoutSeed('conv_seed', { previewPaths: ['/ws/a.md'], activePreviewPath: '/ws/ghost.md' })
+    expect(usePreviewPaneStore.getState().activeByConversation['conv_seed']).toBeNull()
+  })
+
+  it('no seed / empty seed = no seeding (closed stays closed)', async () => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    const { usePreviewPaneStore } = await import('../src/renderer/src/stores/previewPaneStore')
+    seed.applyPopoutSeed('conv_plain', null)
+    seed.applyPopoutSeed('conv_plain', {})
+    expect(useWorkbenchStore.getState().openByConversation['conv_plain']).toBeUndefined()
+    expect(usePreviewPaneStore.getState().tabsByConversation['conv_plain']).toBeUndefined()
+  })
+
+  it('loadAndApplyPopoutSeed fetches over IPC and never rejects', async () => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    const electron = (globalThis as unknown as { window: { electronAPI?: unknown } }).window
+    electron.electronAPI = {
+      popoutSeed: (id: string) => Promise.resolve({ workbenchTab: 'plan', previewPaths: [] }),
+    }
+    await expect(seed.loadAndApplyPopoutSeed('conv_ipc')).resolves.toBeUndefined()
+    expect(useWorkbenchStore.getState().openByConversation['conv_ipc']).toBe(true)
+    // A rejecting invoke must NOT bubble — the popout boots closed instead.
+    electron.electronAPI = { popoutSeed: () => Promise.reject(new Error('ipc down')) }
+    await expect(seed.loadAndApplyPopoutSeed('conv_ipc')).resolves.toBeUndefined()
   })
 })
 
