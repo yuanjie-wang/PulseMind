@@ -46,7 +46,9 @@ describe('PALETTE', () => {
     // The code card's wash (M2/T5) — the value is x-markdown's own `--light-bg`,
     // which is what paints the inner `<code>` inside the chat's markdown (the §8
     // probe measures both), so the standalone card and the chat's block agree.
-    expect(PALETTE.light['--pm-code-bg']).toBe('rgba(0, 0, 0, 0.04)')
+    // Lifted to 2% (user 2026-10-31: 都统一为 2%) — light and dark now share the
+    // same alpha over their respective base colors.
+    expect(PALETTE.light['--pm-code-bg']).toBe('rgba(0, 0, 0, 0.02)')
     // The shell interior's own literals (M3/T0) — the same pin, for the same
     // reason: every one of these was carried inline by a component before the
     // migration, and a "tidier" value here would be a light-mode change.

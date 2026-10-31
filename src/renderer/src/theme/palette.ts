@@ -212,7 +212,7 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
      *  token colours cannot be a variable (they are a JS object), so the card is
      *  the half of a code block the sheet can carry; the tokens ride
      *  CodeHighlight's own subscription. */
-    '--pm-code-bg': 'rgba(0, 0, 0, 0.04)',
+    '--pm-code-bg': 'rgba(0, 0, 0, 0.02)',
     '--pm-sidebar': 'linear-gradient(180deg, #f5f7fa 0%, #f0f0f0 100%)',
     '--pm-scrollbar': '#d0d0d0',
     '--pm-scrollbar-active': '#b0b0b0',
@@ -447,7 +447,7 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-prompt-pill-border': '#424242',
     '--pm-hover-faint': 'rgba(255, 255, 255, 0.05)',
     '--pm-logo-filter': 'invert(1)',
-    '--pm-code-bg': 'rgba(255, 255, 255, 0.1)',
+    '--pm-code-bg': 'rgba(255, 255, 255, 0.02)',
     // Lifted 2026-09-20 (user: 深色侧边栏要浅一些) — the sider now reads as a
     // distinct, slightly elevated surface instead of melting into the #141414
     // content ground. Top stays the lighter end (same shape as light).
