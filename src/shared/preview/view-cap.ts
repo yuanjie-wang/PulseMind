@@ -11,9 +11,9 @@
 //     text is truncated and an honest notice points at the full file. This is
 //     the DOM/memory guard (every rendered line is a span).
 //   * HIGHLIGHT_MAX_CHARS caps what gets TOKENIZED. Below it CodeHighlight
-//     colors the file; above it TextPreview falls back to plain <pre>
-//     rendering — the tokenizer is the multi-second cost, the DOM is not, and
-//     a 500KB file in a plain pre scrolls fine.
+//     colors the file; above it TextPreview falls back to PlainCode — the
+//     highlighted mount costs ~4ms/KB of blocking (2026-10-31, measured), and
+//     PlainCode's chunked blocks mount any size in ~tens of ms.
 //
 // Both are measured in UTF-16 code units (string .length), not bytes: a byte
 // measure would need TextEncoder on every load for a distinction (multibyte
@@ -26,7 +26,15 @@
  *  truncated with a notice. */
 export const MAX_PREVIEW_CHARS = 2_000_000
 
-/** Above this, text previews skip syntax highlighting and render plain. */
+/** Above this, text previews skip syntax highlighting and render plain.
+ *  2026-10-31: the cap's rationale moved twice in one day. Against the old
+ *  per-token React pipeline the mount cost ~4ms/KB (579ms at 150K); the
+ *  fast-code.ts string builder brought that to ~35ms at 200K (tokenize +
+ *  string build; node-side bench 122KB→28ms, 330KB→42ms), so the cap keeps
+ *  its 200K value — its job now is only to bound the builder's tokenize
+ *  (~linear) and keep the line-row DOM sane. Beyond it PlainCode's chunked
+ *  blocks mount any size in ~tens of ms. Line numbers/reveal end there
+ *  (honest gap). */
 export const HIGHLIGHT_MAX_CHARS = 200_000
 
 export interface CappedText {

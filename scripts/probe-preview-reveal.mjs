@@ -133,7 +133,7 @@ window.__revealProbe = () => {
     scrolled,
     highlighted,
     debug,
-    lineNumbers: document.querySelectorAll('.react-syntax-highlighter-line-number').length,
+    lineNumbers: document.querySelectorAll('.pm-code-linenumber').length,
   }
 }
 window.__ready = true

@@ -85,6 +85,11 @@ function usePreviewFile(
       .then((text) => {
         if (text === null) setState({ status: 'missing' })
         else {
+          // Deliberately NOT in a startTransition: the sync loading render
+          // would commit first (default lane beats the transition lane), so
+          // every reload visibly unmounted and remounted the editor (caught
+          // by probe-preview-edit's NOT-remounted check). The ready render is
+          // cheap since fast-code.ts — no transition needed.
           const capped = capPreviewText(text)
           setState({ status: 'ready', text: capped.text, truncated: capped.truncated })
         }
@@ -379,6 +384,7 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
         <div style={{ flex: 1, minHeight: 0 }}>
           <FileEditor
             value={value}
+            path={path}
             onChange={(next) => {
               const st = usePreviewPaneStore.getState()
               const entry = st.drafts[path] ?? makeDraftFromDisk(state.text)

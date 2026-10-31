@@ -20,11 +20,12 @@ import { shouldSkipHighlight } from '../../../../shared/preview/view-cap'
 
 export const TextPreview = React.memo(function TextPreview({ text, path, revealLine }: { text: string; path: string; revealLine?: number }): React.ReactElement {
   const lang = resolveCodeLang(extensionOf(path))
-  // Perf (2026-10-30): the tokenizer, not the DOM, is the multi-second cost —
-  // above HIGHLIGHT_MAX_CHARS the file renders as a plain <pre>, which scrolls
-  // fine at several times that size. Line numbers and reveal are lost there:
-  // the coordinate system matters for files small enough to edit, and a
-  // >200KB file landing mid-reveal is the rare shape this trades away.
+  // Perf (2026-10-30/31): the highlighted mount costs ~4ms/KB (probe-tree-
+  // click-jank) — above HIGHLIGHT_MAX_CHARS the file renders as CHUNKED plain
+  // <pre> blocks (PlainCode), which mounts any size in ~tens of ms. Line
+  // numbers and reveal are lost there: the coordinate system matters for files
+  // small enough to edit, and a >32KB file landing mid-reveal is the rare
+  // shape this trades away.
   if (!lang || shouldSkipHighlight(text)) return <PlainCode code={text} />
   return <CodeHighlight code={text} lang={lang} lineNumbers revealLine={revealLine} />
 })

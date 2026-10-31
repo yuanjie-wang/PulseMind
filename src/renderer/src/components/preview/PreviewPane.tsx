@@ -12,13 +12,63 @@
 // share one write+refresh sequence (they meet at the `pulsemind-preview-save`
 // event).
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { message } from 'antd'
 import { FileText } from 'lucide-react'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { useHtmlEditStore } from '../../stores/htmlEditStore'
 import { serializeDraft } from '../../stores/preview-edit'
 import { PreviewContent } from './PreviewContent'
+
+/** How quickly the user must click again for the switches to count as a BURST
+ *  (2026-10-31, user: 快速连续点击多个文件会卡顿，和文件大小无关). Each preview
+ *  swap mounts the new file's render — measured ~74ms for a 20KB highlighted
+ *  file, ~580ms at 150K — all inside the click dispatch, so a burst queues one
+ *  long task per click. The pane body follows the ACTIVE path immediately on a
+ *  quiet click (leading, unchanged single-click feel) and only when clicks
+ *  come faster than this window does it coalesce: intermediate files never
+ *  render, the last one renders once after the burst goes quiet. Reading
+ *  through intermediate files mid-burst is not a thing the eye can do anyway. */
+const BURST_QUIET_MS = 150
+
+/** The pane body's path trails the active path through bursts. Edit/element
+ *  intent bypasses the debounce entirely — an explicit 编辑 right after a
+ *  click must never show a stale file's editor. */
+function useDeferredPreviewPath(path: string | null, editIntent: boolean): string | null {
+  const [display, setDisplay] = useState<string | null>(path)
+  const lastSwapRef = useRef(0)
+  const timerRef = useRef<number | null>(null)
+  const latestRef = useRef(path)
+  latestRef.current = path
+  useEffect(() => {
+    if (path === null) {
+      // A closed tab empties the body at once — never debounce the empty state.
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+      timerRef.current = null
+      lastSwapRef.current = Date.now()
+      setDisplay(null)
+      return
+    }
+    if (path === display) return
+    const since = Date.now() - lastSwapRef.current
+    if (editIntent || since >= BURST_QUIET_MS) {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+      timerRef.current = null
+      lastSwapRef.current = Date.now()
+      setDisplay(path)
+    } else if (timerRef.current == null) {
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null
+        lastSwapRef.current = Date.now()
+        setDisplay(latestRef.current)
+      }, BURST_QUIET_MS - since)
+    }
+  }, [path, display, editIntent])
+  useEffect(() => () => {
+    if (timerRef.current != null) window.clearTimeout(timerRef.current)
+  }, [])
+  return display
+}
 
 interface Props {
   conversationId: string | undefined
@@ -29,6 +79,11 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const activePath = usePreviewPaneStore((s) => s.activeByConversation[key] ?? null)
   const reloadTicks = usePreviewPaneStore((s) => s.reloadTicks)
   const previewModes = usePreviewPaneStore((s) => s.previewModes)
+  // Edit/element intent on the ACTIVE path skips the burst debounce (see
+  // useDeferredPreviewPath) — the body must never trail into an editor.
+  const activeMode = activePath ? (previewModes[activePath] ?? 'view') : 'view'
+  const displayPath = useDeferredPreviewPath(activePath, activeMode !== 'view')
+  const displayMode = displayPath ? (previewModes[displayPath] ?? 'view') : 'view'
 
   // ── The one save path (D5): draft → serialize (EOL/BOM restored) →
   // writeFile → adopt as new baseline → bumpReload. The html iframe's
@@ -101,13 +156,13 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   }
 
   // The editor and the html iframe need a non-scrolling shell (they scroll
-  // internally); every view kind wants the page scroll back.
-  const mode = previewModes[activePath] ?? 'view'
-
+  // internally); every view kind wants the page scroll back. The body's
+  // geometry follows the DISPLAYED path — during a burst it may still be the
+  // previous file while the address bar already names the new one.
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)' }}>
-      <div style={{ flex: 1, minHeight: 0, overflow: mode === 'view' ? 'auto' : 'hidden' }}>
-        <PreviewContent key={activePath} path={activePath} reloadTick={reloadTicks[activePath] ?? 0} />
+      <div style={{ flex: 1, minHeight: 0, overflow: displayMode === 'view' ? 'auto' : 'hidden' }}>
+        {displayPath ? <PreviewContent key={displayPath} path={displayPath} reloadTick={reloadTicks[displayPath] ?? 0} /> : null}
       </div>
     </div>
   )

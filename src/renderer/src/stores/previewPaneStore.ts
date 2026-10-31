@@ -128,6 +128,10 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
   openFile: (conversationId, path) => {
     const key = convKey(conversationId)
     const tabs = openTabInList(get().tabsByConversation[key] ?? [], path)
+    // Plain synchronous write: the burst case is handled one level up
+    // (PreviewPane's useDeferredPreviewPath coalesces rapid clicks into one
+    // content render), and a transition here delayed every store update's
+    // commit — enough to race the probes' immediate assertions.
     set((s) => ({
       activeConversationId: key,
       tabsByConversation: touch(s.tabsByConversation, key, tabs),

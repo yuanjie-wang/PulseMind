@@ -262,30 +262,26 @@ describe('wiring 扫描', () => {
     expect(content).toContain('startsWith(target.text)')
   })
 
-  it('CodeHighlight：行号 prop + reveal 的 data 属性与滚动', () => {
+  it('CodeHighlight：行号 prop + reveal 的 data 属性与滚动（2026-10-31 快路径，属性产自 fast-code 构建器）', () => {
     const hl = src('src/renderer/src/components/common/CodeHighlight.tsx')
-    expect(hl).toContain('showLineNumbers={lineNumbers}')
-    expect(hl).toContain('lineProps={lineProps}')
-    // 值必须字符串化：hast properties 丢弃非字符串属性值（probe 实测）
-    expect(hl).toContain("'data-reveal-line': String(n)")
+    expect(hl).toContain('lineNumbers')
+    expect(hl).toContain('highlightToHtml(code, lang, theme, { lineNumbers, revealLine: revealLine ?? null })')
     expect(hl).toContain("querySelector(`[data-reveal-line=\"${revealLine}\"]`)")
     expect(hl).toContain("el?.scrollIntoView({ block: 'center' })")
+    // 值必须字符串化：hast 式属性写入丢弃非字符串属性值（probe 实测）——
+    // 构建器里是显式 String(n)。
+    expect(src('src/renderer/src/components/common/fast-code.ts')).toContain('data-reveal-line="${String(n)}"')
   })
 
-  it('CodeHighlight：带行号的行是 block 行 + 悬挂缩进，不是库默认的 display:flex（2026-10-30 滚动卡顿根因）', () => {
-    const hl = src('src/renderer/src/components/common/CodeHighlight.tsx')
-    // 库在 wrapLongLines + showLineNumbers 下给每行 span 加 display:flex，把每个
-    // token 块化成独立 flex item；窄列里 800 行溢出的 flex 行让每次会话滚动都付
-    // ~260ms 的 PaintArtifactCompositor::Update（probe-chat-scroll-pane.mjs）。
-    // lineProps 的 style 在库的 style 之后展开，这里的 display 才压得过去。
-    expect(hl).toContain("return { display: 'block', paddingLeft: em, textIndent: `-${em}` }")
-    // 悬挂缩进宽度 = 库自己的行号盒（<digits>.25em + paddingRight 1em），按最大行号算
-    expect(hl).toContain('return String(largest).length + 1.25')
-    // 行号关闭（聊天代码栅格）时不注入行样式——那条路本来就没有 flex
-    expect(hl).toContain('if (!lineNumbers) return undefined')
-    // reveal 态的 lineProps 函数必须继承 block 行样式，否则闪窗期间形态翻回 flex
-    expect(hl).toContain('...lineStyle,')
-    expect(hl).not.toContain('wrapLines={reveal}')
+  it('fast-code：带行号的行是 block 行 + 悬挂缩进（2026-10-30 滚动卡顿根因的延续钉）', () => {
+    const fc = src('src/renderer/src/components/common/fast-code.ts')
+    // 行号盒沿用库自己的算术：<digits>.25em（minWidth）+ paddingRight 1em，
+    // 行行 block + 负缩进一个 gutter——永不回到 display:flex（那是 2026-10-30
+    // 窄列滚动 ~260ms/帧的根因形态）。
+    expect(fc).toContain('String(largest).length + 1.25')
+    expect(fc).toContain("display:block;padding-left:${gutter};text-indent:-${gutter}")
+    expect(fc).not.toContain('display:flex')
+    expect(fc).toContain("display:inline-block;min-width:${String(largest).length + 1.25}em;padding-right:1em;text-align:right;user-select:none")
   })
 
   it('TextPreview 常通行号；CommandCard 路径点击 + completed 门 + reveal 随行', () => {

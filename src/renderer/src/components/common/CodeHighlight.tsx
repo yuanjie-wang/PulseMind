@@ -1,106 +1,21 @@
 import React from 'react'
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
-import c from 'react-syntax-highlighter/dist/esm/languages/prism/c'
-import cpp from 'react-syntax-highlighter/dist/esm/languages/prism/cpp'
-import css from 'react-syntax-highlighter/dist/esm/languages/prism/css'
-import go from 'react-syntax-highlighter/dist/esm/languages/prism/go'
-import java from 'react-syntax-highlighter/dist/esm/languages/prism/java'
-import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript'
-import json from 'react-syntax-highlighter/dist/esm/languages/prism/json'
-import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx'
-import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown'
-import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup'
-import php from 'react-syntax-highlighter/dist/esm/languages/prism/php'
-import python from 'react-syntax-highlighter/dist/esm/languages/prism/python'
-import ruby from 'react-syntax-highlighter/dist/esm/languages/prism/ruby'
-import rust from 'react-syntax-highlighter/dist/esm/languages/prism/rust'
-import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql'
-import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
-import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx'
-import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript'
-import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
+import { highlightToHtml, codeShellStyles, type ThemeObj } from './fast-code'
 import { useThemeMode } from '../../theme/mode'
+// The language table lives in shared/preview/code-lang.ts (the CM editor keys
+// its grammar mapping off the same ids) — re-exported here so every existing
+// consumer keeps importing from this module.
+export { LANG_LOOKUP, resolveCodeLang } from '../../../../shared/preview/code-lang'
 
-// Tree-shaken highlighter: PrismLight starts empty, so every language below
-// must be registered here.
-const LANGUAGES: Record<string, (syntax: unknown) => void> = {
-  bash,
-  c,
-  cpp,
-  css,
-  go,
-  java,
-  javascript,
-  json,
-  jsx,
-  markdown,
-  markup,
-  php,
-  python,
-  ruby,
-  rust,
-  sql,
-  toml,
-  tsx,
-  typescript,
-  yaml
-}
-for (const [name, lang] of Object.entries(LANGUAGES)) {
-  SyntaxHighlighter.registerLanguage(name, lang as never)
-}
-
-/** File extension or code-fence alias → registered Prism language. */
-const LANG_LOOKUP: Record<string, string> = {
-  md: 'markdown',
-  markdown: 'markdown',
-  js: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  jsx: 'jsx',
-  ts: 'typescript',
-  tsx: 'tsx',
-  json: 'json',
-  py: 'python',
-  sh: 'bash',
-  bash: 'bash',
-  zsh: 'bash',
-  shell: 'bash',
-  yml: 'yaml',
-  yaml: 'yaml',
-  html: 'markup',
-  htm: 'markup',
-  xml: 'markup',
-  svg: 'markup',
-  css: 'css',
-  sql: 'sql',
-  go: 'go',
-  golang: 'go',
-  rs: 'rust',
-  rust: 'rust',
-  java: 'java',
-  rb: 'ruby',
-  ruby: 'ruby',
-  php: 'php',
-  c: 'c',
-  h: 'c',
-  cpp: 'cpp',
-  cc: 'cpp',
-  cxx: 'cpp',
-  hpp: 'cpp',
-  'c++': 'cpp',
-  toml: 'toml'
-}
-
-/** Resolve a file extension, path, or fence info-string alias to a Prism
- *  language id. Accepts full paths (`scripts/run.py` → `py`) and ignores
- *  fence parameters (`js hl_lines=3` → `js`). */
-export function resolveCodeLang(extOrAlias: string): string | null {
-  let key = extOrAlias.trim().toLowerCase().split(/\s+/)[0]
-  if (key.includes('.')) key = key.split('.').pop() ?? ''
-  return LANG_LOOKUP[key] ?? null
-}
+// Tree-shaken highlighter, fast-path edition (2026-10-31): the language set
+// is LANG_LOOKUP (shared/preview/code-lang.ts); `fast-code.ts` registers the
+// same set into its own refractor core and renders tokens to an HTML string.
+// react-syntax-
+// highlighter's per-token React pipeline measured ~4ms/KB of blocking per
+// mount (probe-tree-click-jank.mjs — a 280-line file was one ~300-500ms frame
+// per preview switch, and rapid tree clicks queue one per click); the string
+// builder mounts the same DOM for a fraction of that and caches repeat mounts.
+// The library stays in the bundle for @ant-design/x's own highlighter.
 
 const FONT_STACK = 'Menlo, Consolas, monospace'
 
@@ -113,9 +28,7 @@ interface CodeHighlightProps {
   /** Visible line numbers. Preview-only (PLAN-ide-linkage 1a): read prints
    *  absolute line numbers and edit errors cite them, so the preview must
    *  speak the same coordinate system; chat code fences never promised
-   *  coordinates, so they stay numberless. Note that wrapLongLines already
-   *  renders one span per line — the library forces wrapLines on with it —
-   *  so turning numbers on adds the gutter spans, not the per-line wrapping. */
+   *  coordinates, so they stay numberless. */
   lineNumbers?: boolean
   /** 1-based line to scroll into view + flash (PLAN-ide-linkage 1b reveal).
    *  The per-line spans carry `data-reveal-line` attrs for the reveal window
@@ -123,116 +36,129 @@ interface CodeHighlightProps {
   revealLine?: number
 }
 
-/** The library's line-number box is `minWidth: <digits>.25em` + `paddingRight:
- *  1em` (assembleLineNumberStyles), sized from the LARGEST number it will
- *  print — the same arithmetic here, so the hanging indent below is exactly one
- *  gutter wide. */
-function gutterEm(code: string): number {
-  const largest = 1 + (code.match(/\n/g)?.length ?? 0)
-  return String(largest).length + 1.25
-}
-
-/** Prism-highlighted code. `PreTag="div"` keeps it valid inside x-markdown's
- *  own `<pre>` (no nested pre); there the theme CSS overrides background/radius,
- *  standalone callers get the mode-correct card look from the inline styles.
+/** Prism-highlighted code, rendered through the fast string builder
+ *  (fast-code.ts): one `dangerouslySetInnerHTML` on the code element — the
+ *  browser's HTML parser builds the token spans, React never sees a per-token
+ *  element tree. The shell keeps the captured production shape: the pre carries
+ *  the theme's base ink/metrics under the app's card look; every token span
+ *  carries the same inline style the library's `theme[className]` lookup
+ *  produced, so the visible result is unchanged.
  *
- *  The two halves of a code block flip by different means, and that split is the
- *  reason this file subscribes to the theme mode at all: the card (background,
- *  padding, radius) is CSS and rides `--pm-code-bg` like every other migrated
- *  surface, while the TOKENS are a JS object — Prism's theme is `{ '.token.keyword':
- *  { color } }`, unreachable from a custom property — so `oneDark`/`oneLight` must
- *  be chosen in JS. `useThemeMode` is the module store for exactly this shape of
- *  consumer (see `theme/mode.ts`); the subscription costs one re-render of the
- *  blocks on screen, and the new `style` object is also what re-tokenizes them.
+ *  The outer tag is a DIV, not a pre: x-markdown wraps code fences in its own
+ *  `<pre>` (no nesting); the code element's `white-space: pre-wrap` gives it
+ *  the pre behavior. Standalone callers (preview, skill browser) get the
+ *  mode-correct card look from the shell's inline styles.
  *
- *  Memoized with the object props built in a useMemo — this component used to
- *  hand SyntaxHighlighter fresh `customStyle`/`codeTagProps` literals every
- *  render, defeating its PureComponent guard, so a drag of the workbench pane
- *  re-tokenized the WHOLE file per 40ms width tick (probe-preview-drag.mjs
- *  measured a 1350ms frame gap on a ~1500-line python file; the memo drops it
- *  to the re-wrap floor). */
+ *  The two halves of a code block flip by different means, and that split is
+ *  the reason this file subscribes to the theme mode at all: the card
+ *  (background, padding, radius) is CSS and rides `--pm-code-bg` like every
+ *  other migrated surface, while the TOKENS are a JS object — Prism's theme
+ *  is `{ '.token.keyword': { color } }`, unreachable from a custom property —
+ *  so `oneDark`/`oneLight` must be chosen in JS. `useThemeMode` is the module
+ *  store for exactly this shape of consumer (see `theme/mode.ts`). */
 export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12, lineNumbers = false, revealLine }: CodeHighlightProps): React.ReactElement {
   const mode = useThemeMode()
   const containerRef = React.useRef<HTMLDivElement | null>(null)
-  const customStyle = React.useMemo(
-    () => ({ margin: 0, padding: 12, background: 'var(--pm-code-bg)', borderRadius: 8, fontSize }),
-    [fontSize],
-  )
-  const codeTagProps = React.useMemo(
-    () => ({ style: { fontFamily: FONT_STACK, fontSize, lineHeight: 1.6 } }),
-    [fontSize],
-  )
+  // The library's theme type gives each class a CSSProperties value without an
+  // index signature, so it never structurally matches a Record — the shape is
+  // exactly what fast-code's StyleObj reads, cast at the single selection point.
+  const theme = (mode === 'dark' ? oneDark : oneLight) as unknown as ThemeObj
   // The reveal render commits synchronously with this effect — DOM geometry is
-  // measurable, scrollIntoView needs no paint wait. wrapLongLines is on, so the
-  // target line may occupy several visual rows; the span handles that itself.
+  // measurable, scrollIntoView needs no paint wait. Long lines wrap (the code
+  // shell is pre-wrap), so the target line may occupy several visual rows; the
+  // span handles that itself.
   React.useEffect(() => {
     if (revealLine == null || !containerRef.current) return
     const el = containerRef.current.querySelector(`[data-reveal-line="${revealLine}"]`)
     el?.scrollIntoView({ block: 'center' })
   }, [revealLine])
-  const reveal = revealLine != null
-  // Numbered lines are BLOCK rows with a hanging indent one gutter wide. The
-  // library's own shape for wrapLongLines + showLineNumbers is `display: flex`
-  // per line, which blockifies every token into its own flex item: in a narrow
-  // preview column the items shrink and wrap one by one (whitespace between
-  // them collapses, the comment overflows to the right, a line grows to 150px of
-  // mostly empty rows), and the 800 overflowing flex rows turned every chat
-  // scroll into a ~260ms PaintArtifactCompositor::Update (2026-10-30, measured by
-  // probe-chat-scroll-pane.mjs: 10 long tasks per burst → 0 with block rows).
-  // lineProps spreads after the library's style, so `display` here wins.
-  const lineStyle = React.useMemo<React.CSSProperties | undefined>(() => {
-    if (!lineNumbers) return undefined
-    const em = `${gutterEm(code)}em`
-    return { display: 'block', paddingLeft: em, textIndent: `-${em}` }
-  }, [lineNumbers, code])
-  const lineProps = React.useMemo(() => {
-    if (!reveal) return lineStyle ? { style: lineStyle } : undefined
-    return (n: number) => ({
-      // String value: hast properties drop non-string attribute values.
-      'data-reveal-line': String(n),
-      style: {
-        ...lineStyle,
-        ...(n === revealLine ? { background: 'var(--pm-warn-bg)', borderRadius: 4, transition: 'background 0.4s' } : {}),
-      },
-    })
-  }, [reveal, revealLine, lineStyle])
+  // Reveal is part of the cache key: a flash rebuilds once (a string build is
+  // cheap), a revisit without it is a cache hit.
+  const html = React.useMemo(
+    () => highlightToHtml(code, lang, theme, { lineNumbers, revealLine: revealLine ?? null }),
+    [code, lang, theme, lineNumbers, revealLine],
+  )
+  const shell = React.useMemo(() => codeShellStyles(theme, fontSize, FONT_STACK), [theme, fontSize])
   return (
     <div ref={containerRef}>
-      <SyntaxHighlighter
-        language={lang}
-        style={mode === 'dark' ? oneDark : oneLight}
-        PreTag="div"
-        wrapLongLines
-        showLineNumbers={lineNumbers}
-        lineProps={lineProps}
-        customStyle={customStyle}
-        codeTagProps={codeTagProps}
-      >
-        {code}
-      </SyntaxHighlighter>
+      <div style={shell.pre}>
+        <code style={shell.code} dangerouslySetInnerHTML={{ __html: html }} />
+      </div>
     </div>
   )
 })
 
 /** Plain-text fallback for languages outside LANG_LOOKUP. Its card and its ink
- *  are both CSS, so it needs no mode subscription at all. */
+ *  are both CSS, so it needs no mode subscription at all.
+ *
+ *  Large code is CHUNKED into blocks each carrying `content-visibility: auto`:
+ *  element-level content-visibility cannot help the single-<pre> shape (the
+ *  pre is on-screen, so all N thousand wrapped lines lay out anyway — 1.6MB
+ *  measured 315ms of layout, still 207ms with the property on), but per-block
+ *  skipping lays out only the blocks near the viewport. Mount drops to
+ *  block-element cost; scrolling pays each block once, ~ms apiece.
+ *
+ *  Two size facts measured 2026-10-31 (wrap-bench, direct-DOM A/B on the
+ *  1.6MB/20K-line fixture):
+ *   * the placeholder height must MATCH the block: a fixed 'auto 100px'
+ *     against a real ~5760px block made every newly-rendered block shift the
+ *     whole page (mount 1.8s, scroll p95 ~170ms). Per-block
+ *     `lines × fontSize × 1.6` estimates fixed both.
+ *   * 60-line blocks scroll with ZERO stalls; 300-line blocks reliably
+ *     produced one ~133ms stall per run (the block is the paint granule —
+ *     scrolling into one rasterizes all of it). Block count is free (333
+ *     <div>s for 20K lines). */
+const PLAIN_CHUNK_CHARS = 100_000
+const PLAIN_BLOCK_LINES = 60
+
 export const PlainCode = React.memo(function PlainCode({ code, fontSize = 12 }: { code: string; fontSize?: number }): React.ReactElement {
+  const preStyle: React.CSSProperties = {
+    margin: 0,
+    padding: 12,
+    background: 'var(--pm-code-bg)',
+    fontSize,
+    lineHeight: 1.6,
+    fontFamily: FONT_STACK,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    color: 'var(--pm-text-strong)'
+  }
+  // The placeholder must match what the block will really be, or every
+  // newly-rendered block shifts the whole page (see the size-facts note
+  // above): lineHeight 1.6 × fontSize is the rendered row height.
+  const intrinsicSizeOf = (lineCount: number): string =>
+    `auto ${Math.round(lineCount * fontSize * 1.6)}px`
+  if (code.length <= PLAIN_CHUNK_CHARS) {
+    const lineCount = code.split('\n').length
+    return (
+      <pre style={{ ...preStyle, contentVisibility: 'auto', containIntrinsicSize: intrinsicSizeOf(lineCount) }}>
+        {code}
+      </pre>
+    )
+  }
+  const lines = code.split('\n')
+  const blocks: string[] = []
+  for (let at = 0; at < lines.length; at += PLAIN_BLOCK_LINES) {
+    blocks.push(lines.slice(at, at + PLAIN_BLOCK_LINES).join('\n'))
+  }
   return (
-    <pre
-      style={{
-        margin: 0,
-        padding: 12,
-        background: 'var(--pm-code-bg)',
-        borderRadius: 8,
-        fontSize,
-        lineHeight: 1.6,
-        fontFamily: FONT_STACK,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        color: 'var(--pm-text-strong)'
-      }}
-    >
-      {code}
-    </pre>
+    <div>
+      {blocks.map((block, i) => (
+        <pre
+          key={i}
+          style={{
+            ...preStyle,
+            // First block paints now; the rest are placeholders until scrolled
+            // near. padding-top drops on later blocks (the previous block's
+            // bottom padding already separates them).
+            paddingTop: i === 0 ? 12 : 0,
+            contentVisibility: 'auto',
+            containIntrinsicSize: intrinsicSizeOf(Math.min(PLAIN_BLOCK_LINES, lines.length - i * PLAIN_BLOCK_LINES))
+          }}
+        >
+          {block}
+        </pre>
+      ))}
+    </div>
   )
 })
