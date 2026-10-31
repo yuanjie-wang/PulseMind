@@ -185,6 +185,8 @@ const en: TranslationDict = {
     copy: 'Copy',
     download: 'Download',
     like: 'Like',
+    liked: 'Liked',
+    moreActions: 'More actions',
     favorite: 'Save to knowledge',
     favorited: 'Saved to knowledge',
     saveAsRoutine: 'Save as daily routine',

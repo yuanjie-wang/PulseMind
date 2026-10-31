@@ -154,6 +154,44 @@
         background: var(--pm-caption-hover, #e5e5e5) !important;
         color: var(--pm-caption-symbol, #333333) !important;
       }
+
+      /* Message action row (MessageGroup) responsive collapse — 2026-10-31 user
+         ruling: in narrow columns the token/duration stats stay fully visible;
+         the action buttons yield instead. The row is a size container; the
+         inline buttons and the ⋯ overflow trigger are BOTH always mounted and
+         these queries decide who is visible:
+           ≥440px   all five buttons inline, ⋯ hidden (the old row untouched)
+           360–439  下载/点赞/存为日常任务 → ⋯ (inline 复制+收藏)
+           <360px   收藏 also → ⋯ (inline 复制+⋯; the chat column's floor is 320px)
+         The Dropdown mounts its overlay INSIDE the row (getPopupContainer on the
+         trigger's parent) so the same container queries govern the menu items —
+         the 收藏 item exists only in the narrowest tier, where its inline
+         button is hidden. !important is required throughout: the buttons carry
+         inline display:inline-flex, which beats any plain stylesheet rule. */
+      .pm-msg-actions {
+        container-type: inline-size;
+      }
+      .pm-msg-overflow {
+        display: none !important;
+      }
+      @container (max-width: 439px) {
+        .pm-msg-actions .pm-msg-btn-collapse {
+          display: none !important;
+        }
+        .pm-msg-actions .pm-msg-overflow {
+          display: inline-flex !important;
+        }
+      }
+      @container (min-width: 360px) {
+        .pm-msg-actions .pm-msg-menu-fav {
+          display: none !important;
+        }
+      }
+      @container (max-width: 359px) {
+        .pm-msg-actions .pm-msg-btn-fav {
+          display: none !important;
+        }
+      }
     </style>
   </head>
   <body>

@@ -18,8 +18,11 @@ import {
   AimOutlined,
   EyeOutlined,
   ScheduleOutlined,
+  EllipsisOutlined,
   LoadingOutlined
 } from '@ant-design/icons'
+import { Dropdown } from 'antd'
+import type { MenuProps } from 'antd'
 
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
@@ -82,6 +85,9 @@ function hasDisplayableContent(msg: AgentMessage): boolean {
 }
 
 function formatDuration(ms: number): string {
+  // ≥2 分钟换算成分钟（2026-11-01 用户裁定）——长任务的「184.6s」读不出量级，
+  // 「3.1min」可以。秒档的 0.1s 精度只对短任务有意义，分钟档沿用同款一位小数。
+  if (ms >= 120_000) return `${(ms / 60_000).toFixed(1)}min`
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
 }
@@ -466,6 +472,60 @@ export const MessageGroup = React.memo(function MessageGroup({
     }
   }
 
+  // ── Narrow-column collapse (2026-10-31 user ruling) ──────────────────────
+  // The stats group always stays fully visible; the action buttons yield. The
+  // inline buttons and the ⋯ trigger below are both always mounted — the
+  // global @container rules in src/renderer/index.html (class .pm-msg-actions)
+  // decide who is visible, so there is no JS measurement and the like/favorite
+  // state can never desync between the inline button and the menu item. The
+  // overlay mounts INSIDE the row so the menu items obey the same queries —
+  // the 收藏 item is visible only in the narrowest tier, where its inline
+  // button is hidden. viewOnly hosts (two buttons, ~310px worst case) sit
+  // under the 320px column floor and never collapse: their row is byte-identical.
+  const overflowMenuItems: MenuProps['items'] = [
+    {
+      key: 'download',
+      label: t('chatView.download'),
+      onClick: () => { void handleDownload() }
+    },
+    {
+      key: 'like',
+      label: liked ? t('chatView.liked') : t('chatView.like'),
+      // Same toggle the inline button performs; the pop flag is skipped — the
+      // animated inline glyph is hidden in exactly the tiers where this menu
+      // can open.
+      onClick: () => {
+        const next = !liked
+        setLiked(next)
+        window.electronAPI.updateMessageMetadata(persistedMsgId, { liked: next })
+      }
+    },
+    {
+      key: 'favorite',
+      className: 'pm-msg-menu-fav',
+      label: favorited ? t('chatView.favorited') : t('chatView.favorite'),
+      disabled: favorited || savingFavorite,
+      onClick: () => {
+        void handleSaveToKnowledge({
+          content: assistantText,
+          messageId: persistedMsgId,
+          conversationId,
+          title: conversationTitle,
+          writable: actions === 'full',
+          favorited
+        })
+      }
+    },
+    ...(onExtractRoutine
+      ? [{
+          key: 'routine',
+          label: extractingRoutine ? t('chatView.routineExtracting') : t('chatView.saveAsRoutine'),
+          disabled: extractingRoutine,
+          onClick: () => { void handleExtractRoutine() }
+        }]
+      : [])
+  ]
+
   const btnBase: React.CSSProperties = {
     background: 'transparent',
     border: 'none',
@@ -601,12 +661,24 @@ export const MessageGroup = React.memo(function MessageGroup({
         })}
       </div>
 
-      {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages */}
+      {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages.
+          Narrow-column collapse (2026-10-31): the stats group always stays fully visible and the buttons
+          yield instead of wrapping — the ⋯ overflow trigger and the collapse classes are governed by the
+          global @container rules on .pm-msg-actions (src/renderer/index.html). flexWrap remains only as a
+          safety net for pathological stats (a six-digit token count); the tiers keep the row single-line
+          down to the chat column's 320px floor. */}
       {aboveActions}
       {!isUser && actions !== 'none' && !msg.contentBlocks.every(b => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') && (
         <div
+          className="pm-msg-actions"
           style={{
             display: 'flex',
+            // The row is a flex item of the message's column (alignItems:
+            // flex-start → shrink-to-fit). container-type: inline-size makes
+            // the content invisible to the container's own sizing, so the
+            // shrink-to-fit width collapses to 0 and every @container query
+            // reads the narrowest tier — stretch to the full column instead.
+            alignSelf: 'stretch',
             // Responsive (2026-10-30): the chat column's floor is a real 320px
             // now (the workbench pane's ceiling became chat − 320), and the
             // widest row — five buttons (~160px) plus the token stats
@@ -630,6 +702,7 @@ export const MessageGroup = React.memo(function MessageGroup({
             {copied ? <CheckOutlined style={{ animation: POP_ANIM }} /> : <CopyOutlined />}
           </button>
           <button
+            className={actions === 'full' ? 'pm-msg-btn-collapse' : undefined}
             style={{ ...btnBase, color: 'var(--pm-text-faint)' }}
             onClick={handleDownload}
             title={t('chatView.download')}
@@ -641,6 +714,7 @@ export const MessageGroup = React.memo(function MessageGroup({
           {actions === 'full' && (
             <>
               <button
+                className="pm-msg-btn-collapse"
                 style={{ ...btnBase, color: liked ? 'var(--pm-text-soft)' : 'var(--pm-text-faint)' }}
                 onClick={() => {
                   const next = !liked
@@ -655,6 +729,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 {liked ? <LikeFilled style={likedPop ? { animation: POP_ANIM } : undefined} /> : <LikeOutlined />}
               </button>
               <button
+                className="pm-msg-btn-fav"
                 data-testid="knowledge-save"
                 aria-label={favorited ? t('chatView.favorited') : t('chatView.favorite')}
                 style={{ ...btnBase, color: favorited ? 'var(--pm-text-soft)' : 'var(--pm-text-faint)', cursor: savingFavorite ? 'wait' : 'pointer', opacity: savingFavorite ? 0.6 : 1 }}
@@ -680,6 +755,7 @@ export const MessageGroup = React.memo(function MessageGroup({
               </button>
               {onExtractRoutine && (
                 <button
+                  className="pm-msg-btn-collapse"
                   data-testid="routine-extract"
                   aria-label={extractingRoutine ? t('chatView.routineExtracting') : t('chatView.saveAsRoutine')}
                   style={{ ...btnBase, color: 'var(--pm-text-faint)', cursor: extractingRoutine ? 'wait' : 'pointer', opacity: extractingRoutine ? 0.6 : 1 }}
@@ -691,6 +767,27 @@ export const MessageGroup = React.memo(function MessageGroup({
                   {extractingRoutine ? <LoadingOutlined /> : <ScheduleOutlined />}
                 </button>
               )}
+              {/* ⋯ overflow trigger — always mounted, visible only inside the
+                  collapse tiers (global .pm-msg-overflow rules). Its overlay
+                  mounts into the action row itself so the @container queries
+                  reach the menu items (the 收藏 item is tier-3 only). Hover
+                  opens it (2026-11-01 user ruling, the conversation-row
+                  menu's trigger); the horizontal ⋯ glyph, not the vertical ⋮. */}
+              <Dropdown
+                menu={{ items: overflowMenuItems }}
+                trigger={['hover']}
+                getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
+              >
+                <button
+                  className="pm-msg-overflow"
+                  data-testid="msg-actions-more"
+                  aria-label={t('chatView.moreActions')}
+                  style={{ ...btnBase, color: 'var(--pm-text-faint)' }}
+                  title={t('chatView.moreActions')}
+                >
+                  <EllipsisOutlined />
+                </button>
+              </Dropdown>
             </>
           )}
 

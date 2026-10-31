@@ -182,6 +182,8 @@ const zh = {
     copy: '复制',
     download: '下载',
     like: '点赞',
+    liked: '已点赞',
+    moreActions: '更多操作',
     favorite: '收藏至知识库',
     favorited: '已录入知识库',
     saveAsRoutine: '存为日常任务',
