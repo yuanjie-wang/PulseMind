@@ -14,6 +14,8 @@ import { openOptions } from '../content/bridge'
 import { Composer } from './Composer'
 import { Icon } from './icons'
 import { Logo } from './logo'
+import { SessionsMenu } from './SessionsMenu'
+import { StateStrip } from './StateStrip'
 import { Transcript } from './Transcript'
 import { useFabDrag } from './useFabDrag'
 import { usePanel } from './usePanel'
@@ -31,6 +33,24 @@ const STATUS_LABELS: Record<string, string> = {
   queued: '排队中',
   completed: '完成',
   error: '出错',
+}
+
+/** 重试横幅的计数与倒计时（2026-10-31 交付物2）——mirror 早就持有
+ *  attempt/maxRetries/delay（mirroredStatus 的成对重建纪律），此前只印裸词。
+ *  成对缺失时回落裸词：横幅宁可藏起括号，也不渲染 `(/)`。倒计时在 attempt
+ *  变化时重置——同一次退避里的秒针跳到 0 后由下一次 status 事件接管。 */
+function RetryStatusLabel({ attempt, maxRetries, delayMs }: { attempt: number; maxRetries: number; delayMs: number }): React.JSX.Element {
+  const [remaining, setRemaining] = useState(() => Math.max(1, Math.ceil(delayMs / 1000)))
+  useEffect(() => {
+    setRemaining(Math.max(1, Math.ceil(delayMs / 1000)))
+    const timer = window.setInterval(() => setRemaining((s) => Math.max(0, s - 1)), 1000)
+    return () => window.clearInterval(timer)
+  }, [attempt, maxRetries, delayMs])
+  return (
+    <>
+      重试中 ({attempt}/{maxRetries} · {remaining}s)
+    </>
+  )
 }
 
 function ConnectionChip({ state }: { state: ReturnType<typeof usePanel>['connection'] }): React.JSX.Element {
@@ -56,7 +76,13 @@ export function App(): React.JSX.Element {
   const [animating, setAnimating] = useState(false)
   const animTimer = useRef<number | undefined>(undefined)
   const { connection, session } = panel
-  const statusLabel = STATUS_LABELS[session.agentStatus.status] ?? session.agentStatus.status
+  const status = session.agentStatus
+  const statusLabel =
+    status.status === 'retrying' && typeof status.attempt === 'number' && typeof status.maxRetries === 'number' ? (
+      <RetryStatusLabel attempt={status.attempt} maxRetries={status.maxRetries} delayMs={status.delay ?? 0} />
+    ) : (
+      (STATUS_LABELS[status.status] ?? status.status)
+    )
 
   useEffect(() => () => window.clearTimeout(animTimer.current), [])
 
@@ -108,6 +134,12 @@ export function App(): React.JSX.Element {
         <ConnectionChip state={connection} />
         <span className="pm-status">{statusLabel}</span>
         <span className="pm-spacer" />
+        <SessionsMenu
+          sessions={panel.sessions}
+          currentId={panel.sessionId}
+          onResume={(id) => void panel.resumeSession(id)}
+          onDelete={(id) => void panel.deleteSession(id)}
+        />
         <button className="pm-icon-btn" title="新会话" onClick={() => void panel.newSession()}>
           <Icon name="plus" />
         </button>
@@ -170,6 +202,9 @@ export function App(): React.JSX.Element {
           </div>
         </div>
       )}
+      {/* mirror 早已折叠的三态（plan / file_changes / compaction）的渲染面
+          （2026-10-31 交付物3）——数据一直在，缺的只是这块展示面。 */}
+      <StateStrip plan={session.plan} fileChanges={session.fileChanges} lastCompaction={session.lastCompaction} />
       <Composer
         busy={panel.busy}
         disabled={!connection.connected}

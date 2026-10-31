@@ -186,6 +186,7 @@ function makeFakeSessions(): FakeSessions {
     },
     cancel: () => {},
     history: async () => ({ messages: [], agentId: 'default' }),
+    snapshot: async () => null,
     hasSession: (sessionId) => live.has(sessionId),
     hydrate: async () => {},
     engineCall: async (sessionId, method, args = []) => {

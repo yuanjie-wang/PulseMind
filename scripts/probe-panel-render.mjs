@@ -1655,8 +1655,8 @@ check(
   `${normal.rect.w}x${normal.rect.h}, right ${normal.right} / bottom ${normal.bottom}`,
 )
 check(
-  '头部三颗按钮：新会话 / 放大 / 收起（放大在收起之前）',
-  JSON.stringify(normal.headers) === JSON.stringify(['新会话', '放大', '收起']),
+  '头部四颗按钮：历史会话 / 新会话 / 放大 / 收起（2026-10-31 历史会话进场，排最前）',
+  JSON.stringify(normal.headers) === JSON.stringify(['历史会话', '新会话', '放大', '收起']),
   normal.headers.join(' | '),
 )
 check(

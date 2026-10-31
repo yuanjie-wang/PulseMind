@@ -441,6 +441,18 @@ export async function startAgentService(
               .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.sessionNotFound, errorMessage(err))))
             break
           }
+          case Methods.agentSnapshot: {
+            // The re-attach still-life (2026-10-31): everything the live event
+            // stream would have folded by now. A session the service does not
+            // hold answers sessionNotFound — the caller falls back to history.
+            void sessions.snapshot(String(params.sessionId ?? ''))
+              .then((r) => {
+                if (!r) return send(makeError(msg.id ?? null, ErrorCodes.sessionNotFound, 'session not found'))
+                send(makeResult(msg.id ?? null, r))
+              })
+              .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.sessionNotFound, errorMessage(err))))
+            break
+          }
           case Methods.toolResult: {
             hostedToolProxy.handleResult(params as unknown as ToolCallResultParams)
             break

@@ -7,11 +7,12 @@
  * The worker itself is assembly only (index.ts); all of this lives here so the
  * message surface has one home and is testable with a fake client. */
 
-import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState, type SessionState } from '../../shared/agent-session/mirror'
 import { Methods } from '../../shared/agent-protocol/methods'
 import type {
   AgentEventData,
   AgentHistoryResult,
+  AgentSnapshotResult,
   ModelState,
   PageContext,
   SessionCreateResult,
@@ -346,18 +347,28 @@ export class PanelBridge {
       if (connection.connected) {
         // First attach in this worker's life (cold start, page reload, desktop
         // restart): the service may not hold this session yet, so resume it
-        // before asking for history — `agent.history` alone would answer from a
-        // freshly created, empty engine. A stale id comes back as a new one.
+        // before asking for history — a snapshot request alone would answer
+        // sessionNotFound from a freshly created, empty engine. A stale id
+        // comes back as a new one.
         const resumedId = await this.ensureSession(tabId).catch(() => null)
         sessionId = resumedId ?? sessionId
         state = this.mirrors.get(sessionId) ?? state
         const client = this.deps.getClient()
         if (client) {
           try {
-            const history = (await client.request(Methods.agentHistory, { sessionId })) as AgentHistoryResult
-            state.messages = history.messages as SessionState['messages']
+            // The full still-life (2026-10-31): plan + ledger + last compaction
+            // + the retry carriers, which agent.history never carried. An older
+            // desktop rejects the unknown method → the history fallback below
+            // keeps the old (message-only, status-blind) behavior.
+            const snap = (await client.request(Methods.agentSnapshot, { sessionId })) as AgentSnapshotResult
+            seedSessionState(state, snap)
           } catch {
-            /* session not created service-side yet — the first ask creates it */
+            try {
+              const history = (await client.request(Methods.agentHistory, { sessionId })) as AgentHistoryResult
+              state.messages = history.messages as SessionState['messages']
+            } catch {
+              /* session not created service-side yet — the first ask creates it */
+            }
           }
         }
       }
@@ -379,6 +390,17 @@ export class PanelBridge {
       // session sits in `error` (worker restart, panel re-opened) has no other
       // carrier for the reason and would show 未知错误.
       statusError: 'error' in state.agentStatus ? state.agentStatus.error : undefined,
+      // Retry carriers (2026-10-31): present only mid-backoff, exactly like the
+      // live status event — an honest absence, the banner hides its (n/max).
+      attempt: 'attempt' in state.agentStatus ? state.agentStatus.attempt : undefined,
+      maxRetries: 'maxRetries' in state.agentStatus ? state.agentStatus.maxRetries : undefined,
+      delayMs: 'delay' in state.agentStatus ? state.agentStatus.delay : undefined,
+      // The three folded states' still-life (2026-10-31): undefined (not []) on
+      // the history fallback so the panel can tell "older service" apart from
+      // "known empty".
+      plan: state.plan ?? undefined,
+      fileChanges: state.fileChanges.length > 0 ? state.fileChanges : undefined,
+      lastCompaction: state.lastCompaction ?? undefined,
       sessions,
       model,
       // The desktop's stored mode wins (the tab value is only a pre-session

@@ -1054,7 +1054,7 @@ export class AgentSessionManagerImpl {
 
   /** UI snapshot for (re)activating a session. */
   async snapshot(sessionId: string): Promise<{
-    messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null; fileChanges: SessionFileChange[]
+    messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null; fileChanges: SessionFileChange[]; lastCompaction: CompactionEvent | null
   } | null> {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
@@ -1070,6 +1070,7 @@ export class AgentSessionManagerImpl {
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
       fileChanges: entry.engine.getFileChanges(),
+      lastCompaction: entry.engine.lastCompaction,
     }
   }
 

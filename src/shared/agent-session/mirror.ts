@@ -224,10 +224,15 @@ export function seedSessionState(state: SessionState, snapshot: {
   /** Optional on the type so an older main (or a test fixture) that omits the
    *  ledger seeds an empty one instead of `undefined`. */
   fileChanges?: unknown
+  /** Optional for the same reason (2026-10-31 扩展面板冷附着): a snapshot from
+   *  before the field existed seeds whatever the mirror already held — which
+   *  for a fresh mirror is null, the honest value. */
+  lastCompaction?: unknown
 }): void {
   state.messages = snapshot.messages as AgentMessage[]
   state.agentStatus = mirroredStatus(snapshot.status)
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
   state.fileChanges = Array.isArray(snapshot.fileChanges) ? (snapshot.fileChanges as SessionFileChange[]) : []
+  state.lastCompaction = (snapshot.lastCompaction as CompactionEvent | null | undefined) ?? null
 }

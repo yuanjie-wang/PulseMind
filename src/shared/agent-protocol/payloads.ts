@@ -182,6 +182,28 @@ export interface AgentHistoryResult {
   agentId: string
 }
 
+// ── agent.snapshot ───────────────────────────────────────────────────
+
+export interface AgentSnapshotParams {
+  sessionId: string
+}
+
+/** agent.snapshot — the full re-attach state for a remote client (2026-10-31
+ *  扩展面板冷附着): everything session-manager.snapshot() holds. `agent.history`
+ *  answers only with messages, so a panel that attaches after a worker restart
+ *  had no carrier for the plan / file-change ledger / 已压缩 chip / the retry
+ *  count — the live event stream carries all of them, only the re-attach
+ *  still-life was blind. Older services reject the unknown method; callers fall
+ *  back to agent.history. */
+export interface AgentSnapshotResult {
+  messages: unknown[]
+  status: StatusSnapshot
+  streamingBlocks: unknown[]
+  plan: PlanSnapshot | null
+  fileChanges: SessionFileChange[]
+  lastCompaction: CompactionEvent | null
+}
+
 // ── agent.event (notification) ───────────────────────────────────────
 
 export interface AgentEventParams {

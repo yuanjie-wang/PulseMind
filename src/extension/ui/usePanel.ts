@@ -53,6 +53,9 @@ export interface PanelApi {
 
 export function usePanel(): PanelApi {
   const mirror = useRef<SessionState>(freshSessionState())
+  /** Synchronous twin of the `sessionId` state: the event filter reads the ref
+   *  (seed() updates both; see the seed body for the resume race it closes). */
+  const sessionIdRef = useRef<string | null>(null)
   const [session, setSession] = useState<SessionState>(mirror.current)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [connection, setConnection] = useState<ConnectionState>(IDLE_CONNECTION)
@@ -68,12 +71,30 @@ export function usePanel(): PanelApi {
     const next = mirror.current
     next.messages = snapshot.messages as AgentMessage[]
     next.streamingBlocks = snapshot.streamingBlocks as SessionState['streamingBlocks']
-    // The panel's snapshot is flat (status + statusError, panel-bridge.ts) and
-    // only feeds the label 重试中 — no count — so it re-wraps into the carrier
-    // shape rather than widening PanelSnapshot.
-    next.agentStatus = mirroredStatus({ status: snapshot.status, error: snapshot.statusError })
+    // The re-attach still-life of the three folded states (2026-10-31): a
+    // snapshot from an older service (history fallback) omits them and the
+    // mirror keeps what its events already folded — for a fresh mirror that is
+    // the honest empty.
+    if (snapshot.plan !== undefined) next.plan = (snapshot.plan as SessionState['plan']) ?? null
+    if (snapshot.fileChanges !== undefined) next.fileChanges = snapshot.fileChanges as SessionState['fileChanges']
+    if (snapshot.lastCompaction !== undefined) next.lastCompaction = (snapshot.lastCompaction as SessionState['lastCompaction']) ?? null
+    // The retry carriers ride the snapshot since 2026-10-31 (the history
+    // fallback omits them): the same pair discipline mirroredStatus applies to
+    // the live event — only attempt AND maxRetries together rebuild the count.
+    next.agentStatus = mirroredStatus({
+      status: snapshot.status,
+      error: snapshot.statusError,
+      ...(snapshot.attempt !== undefined && snapshot.maxRetries !== undefined
+        ? { attempt: snapshot.attempt, maxRetries: snapshot.maxRetries, delayMs: snapshot.delayMs }
+        : {}),
+    })
     setSession({ ...next })
     setSessionId(snapshot.sessionId)
+    // Synchronous twin of the state below: the `panel/event` filter reads this,
+    // because a resume's in-flight old-session event can land between seed()
+    // and React's commit — the state would still name the previous session and
+    // its event would pollute the newly seeded mirror.
+    sessionIdRef.current = snapshot.sessionId
     setConnection(snapshot.connection)
     setOpenState(snapshot.panelOpen)
     setSessions(snapshot.sessions)
@@ -113,8 +134,10 @@ export function usePanel(): PanelApi {
           seed(msg.payload)
           break
         case 'panel/event': {
-          // Events for a session this panel is not showing (another tab's).
-          if (sessionId && msg.sessionId !== sessionId) return
+          // Events for a session this panel is not showing (another tab's, or a
+          // session this tab just resumed away from — the ref, not the state,
+          // because seed() and React's commit are not atomic, see seed).
+          if (sessionIdRef.current && msg.sessionId !== sessionIdRef.current) return
           applySessionEvent(mirror.current, msg.data)
           const next = mirror.current
           setSession({ ...next })
@@ -132,7 +155,9 @@ export function usePanel(): PanelApi {
         // (snapshot.model, session-scoped service-side) carries the truth.
       }
     })
-  }, [seed, sessionId])
+    // Deliberately NOT keyed on the sessionId state: the filter above reads the
+    // ref, and re-subscribing on every seed would drop in-flight notifications.
+  }, [seed])
 
   const ask = useCallback(
     async (content: string) => {

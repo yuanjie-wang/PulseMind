@@ -20,8 +20,10 @@
  * `local-file:` URL is the app's own protocol and does not exist in a web
  * page, so a page with a strict CSP will refuse the fragment's inline scripts
  * (preview goes static, height falls back to the default; the sandbox keeps
- * it contained either way). The toolbar carries 预览/源码 + 复制 only — 在浏览器
- * 打开 / 预览面板 are desktop capabilities (electronAPI), the same reason the
+ * it contained either way). The toolbar carries 预览/源码/在浏览器打开/复制
+ * (2026-10-31: the open button rides about:blank + document.write — see
+ * onOpenInBrowser for why blob:/data: are not viable); only 预览面板 stays
+ * desktop-only (electronAPI), the same reason the
  * action row here is the viewOnly variant. Strings are the desktop's own zh
  * values (i18n/locales/zh.ts htmlCard); the toolbar palette literals are the
  * light-theme resolutions of the desktop's vars (palette.ts: --pm-tile-bg
@@ -194,6 +196,20 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
     })
   }
 
+  // 在浏览器打开（2026-10-31 交付物5）。主路径 = about:blank + document.write:
+  // 顶层导航到 blob:/data: URL 都被 Chrome 拦死,SW 里的 blob URL 又有生命周期
+  // 撤销风险,只有「开空白窗再写入」在内容脚本里是可靠的。诚实边界:about:blank
+  // 继承 opener 页的 CSP——严格 CSP 页上新窗口的 inline 脚本可能被杀,与 srcdoc
+  // 静帧是同族限制(见文件头),按钮不承诺脚本可跑。写入的是完整帧文档
+  // (buildCardDocument),不是裸 fence 体,高度上报脚本在新窗口里无害。
+  const onOpenInBrowser = useCallback((): void => {
+    const win = window.open('about:blank', '_blank')
+    if (!win) return
+    win.document.open()
+    win.document.write(buildCardDocument(code))
+    win.document.close()
+  }, [code])
+
   return (
     <div
       ref={rootRef}
@@ -216,6 +232,9 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
             源码
           </button>
           <span className="pm-html-card-sep" />
+          <button className="pm-html-card-icon-btn" title="在浏览器打开" onClick={onOpenInBrowser}>
+            <Icon name="external" />
+          </button>
           <button className="pm-html-card-icon-btn" title={copied ? '已复制' : '复制源码'} onClick={onCopy}>
             <Icon name={copied ? 'check' : 'copy'} />
           </button>

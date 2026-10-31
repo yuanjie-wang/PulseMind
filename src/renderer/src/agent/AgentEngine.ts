@@ -216,6 +216,11 @@ export class AgentEngine implements EngineCore {
   messages: AgentMessage[] = []
   agentStatus: AgentStatus = { status: 'idle' }
   streamingBlocks: ContentBlock[] = []
+  /** Last compaction pass (2026-10-31 扩展面板冷附着): `onCompaction` is
+   *  fire-and-forget, so a remote client that re-attaches after a desktop
+   *  restart had no carrier for the 已压缩 chip. Retained next to the other
+   *  observable state and shipped in session-manager's snapshot. */
+  lastCompaction: CompactionEvent | null = null
 
   // ── Internal state (was useRef) ─────────────────────────────────
   /** @internal */
@@ -533,6 +538,14 @@ export class AgentEngine implements EngineCore {
   private manualCompactActive = false
   private postTurnPrewarmInFlight = false
 
+  /** The one emission path (2026-10-31): every compaction pass both fires the
+   *  callback AND retains itself — five call sites, one funnel, so the snapshot
+   *  carrier cannot drift from the live event. */
+  private emitCompaction(event: CompactionEvent): void {
+    this.lastCompaction = event
+    this.callbacks.onCompaction?.(event)
+  }
+
   /** Explicit /compact [指示词]: force-compact from the next request on, and
    *  prewarm the summary now (one LLM call at idle instead of blocking the
    *  next turn). Resolves with the compaction event for UI feedback, or null
@@ -553,7 +566,7 @@ export class AgentEngine implements EngineCore {
       source: 'manual',
       instruction: instruction || undefined,
     })
-    if (event) this.callbacks.onCompaction?.(event)
+    if (event) this.emitCompaction(event)
     return event
   }
 
@@ -573,7 +586,7 @@ export class AgentEngine implements EngineCore {
     if (this.compactor.contextTokens() < contextLength * POST_TURN_COMPACT_USED_RATIO) return
     this.postTurnPrewarmInFlight = true
     void this.compactor.prewarm({ contextLength, source: 'post-turn' })
-      .then((event) => { if (event) this.callbacks.onCompaction?.(event) })
+      .then((event) => { if (event) this.emitCompaction(event) })
       .catch((err) => console.warn('[AgentEngine] post-turn compaction prewarm failed:', err))
       .finally(() => { this.postTurnPrewarmInFlight = false })
   }
@@ -711,7 +724,7 @@ export class AgentEngine implements EngineCore {
     }
     this.pendingToolCompactForce = true
     this.toolCompactUsedThisTurn = true
-    this.callbacks.onCompaction?.(event)
+    this.emitCompaction(event)
     return {
       ok: true,
       freedResults,
@@ -1432,7 +1445,7 @@ export class AgentEngine implements EngineCore {
         `<${REFILL_TOOL_TURN_THRESHOLD} tool rounds of each compaction — a file or tool output is likely too large. ` +
         `Summary absorption suspended until the rhythm normalizes; nano/light/hard/emergency keep running.`
       )
-      this.callbacks.onCompaction?.({
+      this.emitCompaction({
         ts: Date.now(),
         source: 'request',
         strategies: ['refill_breaker'],
@@ -1458,7 +1471,7 @@ export class AgentEngine implements EngineCore {
         tokensAfter: contextTokensOf(finalMessages),
         summary: summaryChanged ? summaryAfter : undefined,
       }
-      this.callbacks.onCompaction?.(event)
+      this.emitCompaction(event)
     }
 
     // The state block is appended AFTER compaction: it is per-turn context, not
@@ -1760,6 +1773,9 @@ export class AgentEngine implements EngineCore {
     // A fresh conversation has changed no files yet: the ledger (and the tree
     // rows it paints) go with the history. Emits only if there was anything.
     this.toolExecutor.fileChanges.clear()
+    // The 已压缩 chip describes the old history's copy pressure — it does not
+    // survive the history it described (same discipline as the ledger above).
+    this.lastCompaction = null
     this.notify()
   }
 

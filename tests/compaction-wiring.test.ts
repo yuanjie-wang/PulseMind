@@ -79,7 +79,12 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
   it('the engine emits the request-time event and the post-turn hook fires at turn end', () => {
     expectLines(executionFlow, /this\.engine\.schedulePostTurnCompaction\(\)/, 'execution-flow.ts')
     expectLines(engine, /schedulePostTurnCompaction = \(\): void =>/, 'AgentEngine.ts')
-    expectLines(engine, /this\.callbacks\.onCompaction\?\.\(event\)/, 'AgentEngine.ts', 2) // request path + compactNow
+    // 2026-10-31 起五个发射点统一走 emitCompaction 漏斗（回调 + lastCompaction
+    // 留存一体，扩展面板冷附着快照的载体）——直呼恰好一处（漏斗体内），
+    // 旧钉「request + compactNow 两处直呼」随漏斗化作废。
+    expectLines(engine, /this\.callbacks\.onCompaction\?\.\(event\)/, 'AgentEngine.ts', 1)
+    expectLines(engine, /private emitCompaction\(event: CompactionEvent\): void/, 'AgentEngine.ts')
+    expectLines(engine, /this\.lastCompaction = event/, 'AgentEngine.ts')
     expectLines(engine, /onCompaction\?: \(event: CompactionEvent\) => void/, 'AgentEngine.ts')
     // The compactor owns the two P0 mechanisms themselves.
     expectLines(compactor, /export function collectUserReplays/, 'context-compactor.ts')

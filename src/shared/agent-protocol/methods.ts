@@ -36,6 +36,12 @@ export const Methods = {
   agentAsk: 'agent.ask',
   agentCancel: 'agent.cancel',
   agentHistory: 'agent.history',
+  /** client → service: the full re-attach state (messages + status carriers +
+   *  plan + file-change ledger + last compaction). agent.history answers only
+   *  with messages; this is what a remote client pulls when it re-attaches and
+   *  its own mirror is cold. Older services reject the name — callers fall
+   *  back to agent.history. */
+  agentSnapshot: 'agent.snapshot',
   ping: 'ping',
   approvalRequest: 'approval.request',
   approvalResponse: 'approval.response',

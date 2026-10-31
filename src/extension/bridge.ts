@@ -42,6 +42,19 @@ export interface PanelSnapshot {
    *  after the failure (worker restart, panel re-opened) has no other carrier
    *  and would show 未知错误 instead of the reason. */
   statusError?: string
+  /** The retry carriers (2026-10-31): the live event stream folds them into
+   *  the mirror, only the re-attach still-life lacked them — the banner hides
+   *  its (n/max) rather than rendering `(/)` when they are absent. */
+  attempt?: number
+  maxRetries?: number
+  delayMs?: number
+  /** The re-attach still-life of the three folded states (2026-10-31): plan /
+   *  file-change ledger / last compaction. Present only when the cold attach
+   *  reached an `agent.snapshot`-aware service; an older desktop answers
+   *  through the history fallback and these stay undefined. */
+  plan?: unknown
+  fileChanges?: unknown
+  lastCompaction?: unknown
   sessions: SessionSummary[]
   /** The bound session's tool-approval level (授权), straight from the desktop. */
   approvalMode?: SandboxApprovalMode

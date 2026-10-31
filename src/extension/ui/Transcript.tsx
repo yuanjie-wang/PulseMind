@@ -48,7 +48,16 @@ function completedToolIds(message: Message): Set<string> {
 
 function hasDisplayable(msg: Message): boolean {
   return (msg.contentBlocks ?? []).some(
-    (b) => b.type === 'text' || b.type === 'tool_use' || b.type === 'thinking' || b.type === 'redacted_thinking',
+    (b) =>
+      b.type === 'text' ||
+      b.type === 'tool_use' ||
+      b.type === 'thinking' ||
+      b.type === 'redacted_thinking' ||
+      // 用户消息里的截图/附件结果（page 工具的回传）以前被这里连同整条消息一起
+      // 丢掉——桌面上贴的图在面板里看不见（2026-10-31 交付物6）。assistant 的
+      // tool_result 不在此列：它住在自己的 tool_use 卡里（AssistantBlock 的
+      // default 分支），整消息计为可显示会渲染空泡。
+      (b.type === 'tool_result' && msg.role === 'user' && !!((b as ToolResultBlock).imageData || (b as ToolResultBlock).content)),
   )
 }
 
@@ -181,15 +190,35 @@ function Message({ message, handlers, showRow }: {
   const isUser = message.role === 'user'
 
   if (isUser) {
-    const text = (message.contentBlocks ?? [])
+    const blocks = message.contentBlocks ?? []
+    const text = blocks
       .filter((b) => b.type === 'text')
       .map((b) => (b.type === 'text' ? b.text : ''))
       .join('\n')
-    if (!text) return null
+    // 截图与工具输出回传（桌面 MessageGroup 的用户 tool_result 分支，同形）：
+    // 之前只 join text blocks，图片在这里静默消失。图片块不带文字也照渲染。
+    const images = blocks.filter((b) => b.type === 'tool_result' && (b as ToolResultBlock).imageData) as ToolResultBlock[]
+    const clips = blocks.filter(
+      (b) => b.type === 'tool_result' && !(b as ToolResultBlock).imageData && !!(b as ToolResultBlock).content,
+    ) as ToolResultBlock[]
+    if (!text && images.length === 0 && clips.length === 0) return null
     return (
       <div className="pm-row-user">
         <div className="pm-bubble">
-          <MarkdownBlock text={text} className="" />
+          {text ? <MarkdownBlock text={text} className="" /> : null}
+          {images.map((img, i) => (
+            <img
+              key={`img-${i}`}
+              className="pm-user-image"
+              src={`data:image/png;base64,${img.imageData}`}
+              alt="截图"
+            />
+          ))}
+          {clips.map((clip, i) => (
+            <pre key={`clip-${i}`} className="pm-user-clip">
+              {clip.content}
+            </pre>
+          ))}
         </div>
       </div>
     )

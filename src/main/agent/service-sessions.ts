@@ -3,7 +3,7 @@
  *  interface so protocol tests can inject a fake without touching real
  *  settings, SQLite or LLM profiles — `agentSessionManager` satisfies it
  *  structurally. */
-import type { AgentEventData, PageContext, ModelState } from '../../shared/agent-protocol'
+import type { AgentEventData, PageContext, ModelState, AgentSnapshotResult } from '../../shared/agent-protocol'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 
 export interface AgentServiceSessions {
@@ -11,6 +11,10 @@ export interface AgentServiceSessions {
   ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void>
   cancel(sessionId: string): void
   history(sessionId: string): Promise<{ messages: unknown[]; agentId: string }>
+  /** agent.snapshot: the re-attach still-life (2026-10-31) — history() only
+   *  answers with messages, this carries the status carriers + plan + ledger +
+   *  last compaction too. Null when the service does not hold the session. */
+  snapshot(sessionId: string): Promise<AgentSnapshotResult | null>
   hasSession(sessionId: string): boolean
   hydrate(sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void>
   engineCall(sessionId: string, method: string, args?: unknown[]): Promise<unknown>
