@@ -188,6 +188,13 @@ export const IPC_CHANNELS = {
   UTIL_COPY_FILE_TO_TMP: 'util:copy-file-to-tmp',
   UTIL_COPY_FILE: 'util:copy-file',
   UTIL_CONVERT_TO_MARKDOWN: 'util:convert-to-markdown',
+  // 工作区文件操作（PLAN-project-ide 刀三）：树的新建/重命名悬停动作。读同一
+  // deny-root 语义的写门（guardFsTarget），无会话时即基线拒绝根。
+  UTIL_CREATE_DIR: 'util:create-dir',
+  UTIL_RENAME_PATH: 'util:rename-path',
+  // 工作区内容搜索（PLAN-project-ide 刀二）：只读，随包 rg 流式收集到帽即杀。
+  // 与 readFile 同类免确认——读在沙盒语义里本就到处可读。
+  UTIL_SEARCH_WORKSPACE: 'util:search-workspace',
   // Element-edit preview nonce (M10): the per-mount secret travels through a
   // main-process registry, never the frame URL (the edited page can read
   // location.search).

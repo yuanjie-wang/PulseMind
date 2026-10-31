@@ -5,6 +5,7 @@
  */
 import { readFile, writeFile, appendFile, stat, mkdir, readdir, unlink } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
+import { spawn } from 'node:child_process'
 import * as path from 'node:path'
 import { patchContent, parseUnifiedDiff } from '../../shared/diff/patch-utils'
 import { editMissError } from '../../shared/diff/edit-similarity'
@@ -13,6 +14,7 @@ import { getOrConvert } from '../storage/read-cache'
 import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { withPathLock } from '../sandbox/write-lock'
+import { getBundledRipgrepPath } from './platform-info'
 
 export interface EditFileInput {
   filePath: string
@@ -78,17 +80,13 @@ async function getSharp(): Promise<any> {
 
 async function compressImage(sourcePath: string, destPath: string): Promise<void> {
   const s = await getSharp()
-  await s(sourcePath)
-    .jpeg({ quality: 65 })
-    .toFile(destPath)
+  await s(sourcePath).jpeg({ quality: 65 }).toFile(destPath)
 }
 
 async function compressBase64(data: string, destPath: string): Promise<void> {
   const s = await getSharp()
   const buffer = Buffer.from(data, 'base64')
-  await s(buffer)
-    .jpeg({ quality: 65 })
-    .toFile(destPath)
+  await s(buffer).jpeg({ quality: 65 }).toFile(destPath)
 }
 
 export async function svcSaveBase64Image(data: string): Promise<{ success: boolean; path: string }> {
@@ -104,7 +102,7 @@ export async function svcSaveBase64Image(data: string): Promise<{ success: boole
   } catch (err) {
     return {
       success: false,
-      path: `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+      path: `Error: ${err instanceof Error ? err.message : 'Unknown'}`,
     }
   }
 }
@@ -128,7 +126,7 @@ export async function svcCopyFileToTmp(sourcePath: string): Promise<{ success: b
   } catch (err) {
     return {
       success: false,
-      path: `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+      path: `Error: ${err instanceof Error ? err.message : 'Unknown'}`,
     }
   }
 }
@@ -143,9 +141,7 @@ function resolvePath(input: string): string {
   // meaning of a relative path for an agent); without a session they resolve
   // against the cwd, as before. Judgment and landing spot cannot diverge.
   const ws = currentSessionSandbox()?.workspaceDir
-  const resolved = ws && !path.isAbsolute(normalized)
-    ? path.resolve(ws, normalized)
-    : path.resolve(normalized)
+  const resolved = ws && !path.isAbsolute(normalized) ? path.resolve(ws, normalized) : path.resolve(normalized)
   // Reject paths that resolve outside the filesystem root (impossible case, but safe)
   if (!resolved.startsWith('/') && !resolved.match(/^[A-Z]:\\/i)) {
     throw new Error('Path must be absolute')
@@ -184,9 +180,7 @@ export async function svcCopyFile(input: { sourceUrl?: string; destination: stri
     if (sourcePath.startsWith('file:///.pulsemind/')) {
       const rest = sourcePath.slice('file:///.pulsemind/'.length)
       const fullPath = join(homedir(), '.pulsemind', rest)
-      sourcePath = process.platform === 'win32'
-        ? 'file:///' + fullPath.replace(/\\/g, '/')
-        : 'file://' + fullPath
+      sourcePath = process.platform === 'win32' ? 'file:///' + fullPath.replace(/\\/g, '/') : 'file://' + fullPath
     }
     // Strip file:// prefix for fs.
     // Windows file: URIs use file:///C:/path (strip 8 chars → C:/path)
@@ -253,7 +247,6 @@ export async function svcReadFileBinary(filePath: string): Promise<string | null
   }
 }
 
-
 /** L11 (PLAN-office-editing): text write tools must not pour text into an
  *  office binary — that corrupts it. office_edit (the three editors merged)
  *  is the only writer for these formats. .pdf joins with pdf 导出:
@@ -274,7 +267,6 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
   const officeReject = officeBinaryReject(input.filePath)
   if (officeReject) return { success: false, error: officeReject } as never as never
   try {
-
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
@@ -301,12 +293,10 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
         return { success: false, replacements: 0, error: editMissError(input.filePath, normalizedContent, oldStr) }
       }
 
-      const replaced = input.multi
-        ? normalizedContent.replaceAll(oldStr, newStr)
-        : normalizedContent.replace(oldStr, newStr)
+      const replaced = input.multi ? normalizedContent.replaceAll(oldStr, newStr) : normalizedContent.replace(oldStr, newStr)
       const newContent = isCRLF ? replaced.replace(/\n/g, '\r\n') : replaced
 
-      if (await statSignature(safePath) !== before) {
+      if ((await statSignature(safePath)) !== before) {
         return { success: false, replacements: 0, error: STALE_FILE_ERROR }
       }
       await writeFile(safePath, newContent, 'utf-8')
@@ -316,7 +306,7 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
     return {
       success: false,
       replacements: 0,
-      error: err instanceof Error ? err.message : 'Unknown error'
+      error: err instanceof Error ? err.message : 'Unknown error',
     }
   }
 }
@@ -325,7 +315,6 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
   const officeReject = officeBinaryReject(input.filePath)
   if (officeReject) return { success: false, error: officeReject } as never
   try {
-
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
@@ -336,7 +325,7 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
       if (!result.success) {
         return { success: false, replacements: 0, error: result.error }
       }
-      if (await statSignature(safePath) !== before) {
+      if ((await statSignature(safePath)) !== before) {
         return { success: false, replacements: 0, error: STALE_FILE_ERROR }
       }
       await writeFile(safePath, result.content!, 'utf-8')
@@ -346,7 +335,7 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
     return {
       success: false,
       replacements: 0,
-      error: err instanceof Error ? err.message : 'Unknown error'
+      error: err instanceof Error ? err.message : 'Unknown error',
     }
   }
 }
@@ -409,9 +398,17 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
       for (const r of ordered) {
         if (r.isNew) {
           let exists = false
-          try { exists = (await stat(r.safePath)).isFile() } catch { exists = false }
+          try {
+            exists = (await stat(r.safePath)).isFile()
+          } catch {
+            exists = false
+          }
           if (exists) {
-            return { success: false, replacements: 0, error: `${r.filePath} already exists — a --- /dev/null section only creates new files; send a normal update section for it instead` }
+            return {
+              success: false,
+              replacements: 0,
+              error: `${r.filePath} already exists — a --- /dev/null section only creates new files; send a normal update section for it instead`,
+            }
           }
           originals.push('')
           beforeStats.push('missing')
@@ -420,9 +417,17 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
         const before = await statSignature(r.safePath)
         beforeStats.push(before)
         let content: string | null = null
-        try { content = await readFile(r.safePath, 'utf-8') } catch { content = null }
+        try {
+          content = await readFile(r.safePath, 'utf-8')
+        } catch {
+          content = null
+        }
         if (content === null) {
-          return { success: false, replacements: 0, error: `${r.filePath}: file not found — an update section needs an existing file (create one with a --- /dev/null section)` }
+          return {
+            success: false,
+            replacements: 0,
+            error: `${r.filePath}: file not found — an update section needs an existing file (create one with a --- /dev/null section)`,
+          }
         }
         originals.push(content)
       }
@@ -432,9 +437,10 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
       // One bad hunk holds back every other section (nothing is written); when
       // those files did not need to land together, the atomic form only turned
       // one miss into N — say so, so the retry can split instead of resending.
-      const heldBack = ordered.length > 1
-        ? ` — nothing was written: the other ${ordered.length - 1} section(s) of this diff are held back by this one (all-or-nothing). If these files need not land together, send them as separate single-file search/replace edits so one bad hunk cannot block the rest.`
-        : ''
+      const heldBack =
+        ordered.length > 1
+          ? ` — nothing was written: the other ${ordered.length - 1} section(s) of this diff are held back by this one (all-or-nothing). If these files need not land together, send them as separate single-file search/replace edits so one bad hunk cannot block the rest.`
+          : ''
       for (let i = 0; i < ordered.length; i++) {
         const r = ordered[i]
         if (r.isNew) {
@@ -472,7 +478,9 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
             try {
               if (ordered[j].isNew) await unlink(ordered[j].safePath)
               else await writeFile(ordered[j].safePath, originals[j], 'utf-8')
-            } catch { /* best effort — report the original failure either way */ }
+            } catch {
+              /* best effort — report the original failure either way */
+            }
           }
           return { success: false, replacements: 0, error: `${r.filePath}: write failed (${msg}) — files written earlier in this call were restored` }
         }
@@ -487,7 +495,7 @@ export async function svcPatchFiles(input: { entries: PatchFilesEntry[] }): Prom
     return {
       success: false,
       replacements: 0,
-      error: err instanceof Error ? err.message : 'Unknown error'
+      error: err instanceof Error ? err.message : 'Unknown error',
     }
   }
 }
@@ -496,7 +504,6 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
   const officeReject = officeBinaryReject(input.filePath)
   if (officeReject) return { success: false, error: officeReject } as never
   try {
-
     const { content, append, expectContent } = input
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
@@ -532,7 +539,7 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Unknown error'
+      error: err instanceof Error ? err.message : 'Unknown error',
     }
   }
 }
@@ -615,6 +622,169 @@ export async function svcDeletePath(target: string): Promise<DeletePathResult> {
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
   }
+}
+
+/** Create a directory for the workbench tree's 新建文件夹 (PLAN-project-ide
+ *  刀三). Guarded as a WRITE, same baseline-deny-root semantics as the delete
+ *  above — the renderer has no session jail to answer to, so the guard is the
+ *  control. `recursive` lets one click materialize a nested path. */
+export async function svcCreateDirectory(dirPath: string): Promise<DeletePathResult> {
+  try {
+    if (!path.isAbsolute(dirPath)) return { success: false, error: `Path must be absolute: ${dirPath}` }
+    const guard = await guardFsTarget(dirPath, 'write')
+    if (!guard.ok) return { success: false, error: guard.reason }
+    const safePath = await resolveWritablePath(dirPath)
+    await mkdir(safePath, { recursive: true })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+/** Rename one entry of the workbench tree's 重命名 hover action. The name is a
+ *  single segment by definition — separators and dot-names are rejected before
+ *  anything touches the guard. Both endpoints are write-guarded (a rename IS a
+ *  write to two paths), the new name must be free, and the old must exist. */
+export async function svcRenamePath(oldPath: string, newName: string): Promise<DeletePathResult> {
+  try {
+    if (!path.isAbsolute(oldPath)) return { success: false, error: `Path must be absolute: ${oldPath}` }
+    const name = newName.trim()
+    if (!name) return { success: false, error: '名称不能为空' }
+    if (name.includes('/') || name.includes('\\')) return { success: false, error: '名称不能包含路径分隔符' }
+    if (name === '.' || name === '..') return { success: false, error: `非法名称：${name}` }
+    const guardOld = await guardFsTarget(oldPath, 'write')
+    if (!guardOld.ok) return { success: false, error: guardOld.reason }
+    const safeOld = await resolveWritablePath(oldPath)
+    const st = await stat(safeOld).catch(() => null)
+    if (!st) return { success: false, error: '原路径不存在' }
+    const safeNew = path.join(path.dirname(safeOld), name)
+    if (safeNew === safeOld) return { success: true } // same name — nothing to do
+    const guardNew = await guardFsTarget(safeNew, 'write')
+    if (!guardNew.ok) return { success: false, error: guardNew.reason }
+    const existing = await stat(safeNew).catch(() => null)
+    if (existing) return { success: false, error: `同名${existing.isDirectory() ? '文件夹' : '文件'}已存在：${name}` }
+    return await withPathLock(safeOld, async (): Promise<DeletePathResult> => {
+      const { rename } = await import('node:fs/promises')
+      await rename(safeOld, safeNew)
+      return { success: true }
+    })
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+// ── Workspace content search (PLAN-project-ide 刀二) ────────────────────────
+
+export interface WorkspaceSearchInput {
+  query: string
+  /** Absolute directory to search (the workbench passes the workspace root). */
+  dir: string
+  /** Default: case-insensitive (rg -i). */
+  caseSensitive?: boolean
+  /** Row cap — the child is KILLED once reached; rg is fast enough that the
+   *  cap is what bounds both memory and latency. Default 200. */
+  maxResults?: number
+  /** Test seam: the rg binary path (production resolves the bundled one). */
+  rgPath?: string
+}
+
+export interface WorkspaceSearchResult {
+  ok: boolean
+  /** rg --no-heading lines: `path:line:text` (the renderer parses them). */
+  lines?: string[]
+  /** True when the cap (or the timeout) cut the search short — the panel says
+   *  so instead of letting a full-looking list claim completeness. */
+  truncated?: boolean
+  error?: string
+}
+
+/** Content search across a workspace, read-only. Reads are free in the sandbox
+ *  semantics (the git service's read stance) — this is `readFile`'s class, not
+ *  exec's: no confirmation dialog, because a search-as-you-type panel behind
+ *  one would be unusable, and the channel spawns a FIXED argument array (the
+ *  query is a single argv element, `-F` fixed-string so regex metacharacters
+ *  search literally — never a shell string). rg's own defaults give the right
+ *  scope for free: .gitignore respected inside repos, hidden files skipped.
+ *  `.pulsemind/` (the scratch namespace) is excluded explicitly — its contents
+ *  are throwaway tool offload, not project source. */
+export async function svcSearchWorkspace(input: WorkspaceSearchInput): Promise<WorkspaceSearchResult> {
+  const query = String(input.query ?? '')
+  if (!query.trim()) return { ok: true, lines: [], truncated: false }
+  if (query.length > 500) return { ok: false, error: '搜索词过长（上限 500 字符）' }
+  const dir = expandTilde(String(input.dir ?? ''))
+  const st = await stat(dir).catch(() => null)
+  if (!st || !st.isDirectory()) return { ok: false, error: `搜索目录不存在或不是目录：${dir}` }
+  const maxResults = Math.min(Math.max(Number(input.maxResults) || 200, 1), 1000)
+  const rg = input.rgPath ?? getBundledRipgrepPath() ?? 'rg'
+  const args = [
+    '-n',
+    '--no-heading',
+    '-F',
+    '--max-columns',
+    '200',
+    '--max-columns-preview',
+    '--sort',
+    'path',
+    ...(input.caseSensitive ? [] : ['-i']),
+    '-g',
+    '!.pulsemind/**',
+    '--',
+    query,
+    dir,
+  ]
+  return await new Promise<WorkspaceSearchResult>((resolvePromise) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(rg, args, { windowsHide: true })
+    } catch (err) {
+      resolvePromise({ ok: false, error: err instanceof Error ? err.message : 'rg 启动失败' })
+      return
+    }
+    const lines: string[] = []
+    let truncated = false
+    let buffer = ''
+    let settled = false
+    const finish = (result: WorkspaceSearchResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* already gone */
+      }
+      resolvePromise(result)
+    }
+    const timer = setTimeout(() => {
+      truncated = true
+      finish({ ok: true, lines, truncated })
+    }, 15_000)
+    child.stdout?.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf-8')
+      let idx: number
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx)
+        buffer = buffer.slice(idx + 1)
+        if (line) lines.push(line)
+        if (lines.length >= maxResults) {
+          truncated = true
+          finish({ ok: true, lines, truncated })
+          return
+        }
+      }
+    })
+    child.stderr?.on('data', () => {
+      /* rg diagnostics — the rows are the truth */
+    })
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      // ENOENT = neither the bundled rg nor a PATH rg exists; say so honestly.
+      finish({ ok: false, error: err.code === 'ENOENT' ? '未找到 ripgrep（rg）二进制' : err.message })
+    })
+    child.on('close', () => {
+      if (buffer) lines.push(buffer) // final line without a trailing newline
+      finish({ ok: true, lines: lines.slice(0, maxResults), truncated: truncated || lines.length >= maxResults })
+    })
+  })
 }
 
 export interface DirEntry {

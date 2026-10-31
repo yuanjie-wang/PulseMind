@@ -27,23 +27,32 @@
 // Closing a tab holding unsaved edits asks first (PLAN-preview-edit D10:
 // nothing is discarded silently) — the four i18n keys that dialog needs had
 // been deleted a day before the strip was; they are back in both locales.
+//
+// `withFileActions` (2026-10-31, 用户裁定「沉浸模式去掉地址栏那一行」): the
+// immersive window's strip hosts the preview actions at the row's right end —
+// a ⋯ dropdown fed by the SHARED builder (preview-file-actions), so 编辑/
+// 保存/刷新 survive the address bar's exit without a fork in semantics.
 
 import React, { useEffect, useMemo, useRef } from 'react'
 import { Dropdown, Modal } from 'antd'
 import type { MenuProps } from 'antd'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, MoreHorizontal, X } from 'lucide-react'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { isDirty } from '../../stores/preview-edit'
 import { NO_FILE_CHANGES, useSessionFileChangesStore } from '../../stores/sessionFileChangesStore'
 import { fileChangeMarks, normalizeChangePath } from '../../../../shared/agent-session/file-changes'
 import { StripEdgeFades, useStripFades } from '../common/StripEdgeFades'
+import { usePreviewFileActions } from './preview-file-actions'
 import { useTranslation } from '../../i18n/useTranslation'
 
 interface Props {
   conversationId: string | undefined
+  /** Immersive-window form: a ⋯ at the strip's right end carries the preview
+   *  actions (the address bar's old job). Workbench form leaves it off. */
+  withFileActions?: boolean
 }
 
-export function WorkspaceTabStrip({ conversationId }: Props): React.ReactElement {
+export function WorkspaceTabStrip({ conversationId, withFileActions }: Props): React.ReactElement {
   const { t } = useTranslation()
   const key = conversationId ?? DRAFT_CONVERSATION_KEY
   const convArg = conversationId ?? null
@@ -52,6 +61,10 @@ export function WorkspaceTabStrip({ conversationId }: Props): React.ReactElement
   const drafts = usePreviewPaneStore((s) => s.drafts)
   const workspaceDir = usePreviewPaneStore((s) => s.workspaceDir)
   const changes = useSessionFileChangesStore((s) => (conversationId ? s.byConversation[conversationId] : undefined)) ?? NO_FILE_CHANGES
+  // The shared preview actions (edit/element/save/refresh). Built whether or
+  // not this strip hosts the ⋯ — hooks cannot be conditional, and the items'
+  // own disabled states already speak for an empty screen.
+  const fileActions = usePreviewFileActions(conversationId)
 
   // One ledger read for the whole strip — the same paint map the tree rows and
   // the address bar build (keyed by the same normalizeChangePath spelling).
@@ -256,6 +269,16 @@ export function WorkspaceTabStrip({ conversationId }: Props): React.ReactElement
         </div>
         <StripEdgeFades fades={fades} />
       </div>
+      {withFileActions && (
+        // 沉浸窗口形态（2026-10-31 用户裁定「去掉地址栏那一行」）：预览动作收进
+        // 条右端的 ⋯——与工作台地址栏同一份共享菜单，编辑/保存/刷新不因地址栏
+        // 退场而失联。触发器真按钮、常驻（动作项各自 disabled 表达空屏）。
+        <Dropdown menu={{ items: fileActions }} trigger={['click']}>
+          <button type="button" className="pm-ws-tab-menu" data-ws-strip-actions title="更多" aria-label="更多">
+            <MoreHorizontal size={14} />
+          </button>
+        </Dropdown>
+      )}
     </div>
   )
 }

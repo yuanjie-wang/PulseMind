@@ -460,9 +460,22 @@ export interface ElectronAPI {
   readFileBinary: (filePath: string) => Promise<string | null>
   listDir: (dirPath: string) => Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null>
   deletePath: (target: string) => Promise<{ success: boolean; error?: string }>
+  /** 工作区文件操作（PLAN-project-ide 刀三）：树的新建/重命名悬停动作。 */
+  createDir: (dirPath: string) => Promise<{ success: boolean; error?: string }>
+  renamePath: (oldPath: string, newName: string) => Promise<{ success: boolean; error?: string }>
+  /** 工作区内容搜索（PLAN-project-ide 刀二）：只读，随包 rg 固定串检索，
+   *  行格式 `path:line:text`，帽截断由 truncated 标记。 */
+  searchWorkspace: (input: {
+    query: string
+    dir: string
+    caseSensitive?: boolean
+    maxResults?: number
+  }) => Promise<{ ok: boolean; lines?: string[]; truncated?: boolean; error?: string }>
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
-  patchFiles: (input: { entries: Array<{ filePath: string; diff: string; isNew?: boolean }> }) => Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }>
+  patchFiles: (input: {
+    entries: Array<{ filePath: string; diff: string; isNew?: boolean }>
+  }) => Promise<{ success: boolean; replacements: number; error?: string; files?: Array<{ path: string; isNew: boolean }> }>
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
   editDocx: (input: {
     filePath: string

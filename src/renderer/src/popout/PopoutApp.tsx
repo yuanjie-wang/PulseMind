@@ -39,11 +39,13 @@ import { SettingsProvider, useSettings } from '../hooks/SettingsContext'
 import { TranslationProvider, useTranslation } from '../i18n/useTranslation'
 import { useWorkbenchStore } from '../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
+import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
 import { usePendingProfileStore } from '../stores/pendingProfileStore'
-import { projectHue } from '../stores/projectStore'
+import { projectHue, useProjectStore } from '../stores/projectStore'
 import { ProjectExplorer } from './ProjectExplorer'
+import { ImmersivePanels } from './ImmersivePanels'
 import { resolvePlanNodeTarget, planNodeIdForSession } from '../agent/plan-node-target'
 import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from '../utils/context-window'
 import { conversationKeyOf } from '../../../shared/conversation-key'
@@ -209,6 +211,21 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   // it in that effect's deps would re-run the boot on every list change.
   // eslint-disable-next-line react-hooks/refs -- latest mirror; the boot effect is project-mount-only
   createNewConversationRef.current = createNewConversation
+
+  // ── 发送按钮的项目色（2026-10-30 用户反馈「发送按钮还是需要使用项目配色」）──
+  // ChatView 的 composerProjectHue 走 useProjectHue → useProjectStore，而这个
+  // 窗口是直接 projectGet 的，store 从未加载 → hue 恒 undefined，按钮永远是
+  // 中性色。挂载即补一次 reload；此后草稿态（钉住的项目）与已 materialize 的
+  // 会话（列表上的 projectId）都会拿到自己的色。
+  useEffect(() => {
+    if (!isProjectWindow) return
+    void useProjectStore.getState().reload()
+    // ── 三面板入口默认（2026-10-31 用户裁定「进入沉浸模式后，左侧默认选中
+    // 文件，右侧默认选中对话」）──：面板选择只在窗口内存里活（store 已不持久
+    // 化），挂载即置默认顺带压掉旧持久化 JSON 里的残留字段。
+    useSecondaryLayoutStore.getState().setLeftPanel('tree')
+    useSecondaryLayoutStore.getState().setRightPanel('chat')
+  }, [isProjectWindow])
 
   const activeConvKey = conversationKeyOf(activeConversationKey) ?? convId ?? undefined
 
@@ -779,25 +796,37 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
               </div>
               {isProjectWindow ? (
                 <ProjectExplorer conversationId={activeConvKey}>
-                  <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-                    {chatView}
-                    {subAgentView && (
-                      <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: 0 }}>
-                        <SubAgentSessionView
-                          subConvId={subAgentView.subConvId}
-                          title={subAgentView.title}
-                          live={subAgentLive}
-                          paused={subAgentPaused}
-                          reportPath={subAgentPlanNode?.reportPath}
-                          declaredStatus={subAgentPlanNode?.declaredStatus}
-                          onOpenReport={() => {
-                            if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
-                          }}
-                          onBack={() => setSubAgentView(null)}
-                        />
-                      </div>
-                    )}
-                  </div>
+                  {/* 右卡三面板（2026-10-31 用户裁定「对话 | 浏览器 | 工作计划」）：
+                      对话保活 display 切换，浏览器/工作计划按需挂载；plan 与全部
+                      回调本组件早已持有（ChatView 只是用它们的一员）。 */}
+                  <ImmersivePanels
+                    plan={plan}
+                    onPlanJump={setPlanScrollToMsgId}
+                    onOpenPlanNode={onOpenPlanNode}
+                    canOpenNode={canOpenNode}
+                    onOpenNodeReport={onOpenNodeReport}
+                    highlightPlanNodeId={highlightPlanNodeId}
+                  >
+                    <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+                      {chatView}
+                      {subAgentView && (
+                        <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: 0 }}>
+                          <SubAgentSessionView
+                            subConvId={subAgentView.subConvId}
+                            title={subAgentView.title}
+                            live={subAgentLive}
+                            paused={subAgentPaused}
+                            reportPath={subAgentPlanNode?.reportPath}
+                            declaredStatus={subAgentPlanNode?.declaredStatus}
+                            onOpenReport={() => {
+                              if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+                            }}
+                            onBack={() => setSubAgentView(null)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </ImmersivePanels>
                 </ProjectExplorer>
               ) : (
                 <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>

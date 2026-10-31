@@ -64,3 +64,9 @@ export function clampExplorerWidth(desired: number, totalWidth: number): number 
   const max = Math.max(EXPLORER_MIN_WIDTH, totalWidth - PROJECT_CHAT_MIN_WIDTH)
   return Math.min(width, max)
 }
+
+/** 沉浸窗口卡片化（2026-10-31 用户裁定）：三列各自圆角矩形包裹，列与窗口
+ *  边缘、列与列之间一律留 5px。ProjectExplorer 的四周 padding 与 explorer↔chat
+ *  gap、WorkspacePane（immersive）的树↔预览 gap，以及两处宽度 clamp 对可用
+ *  行宽的扣减都用这一个常量——间距改这里，几何处处跟随。 */
+export const IMMERSIVE_CARD_GAP = 5

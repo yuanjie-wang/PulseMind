@@ -369,12 +369,19 @@ const electronAPI = {
 
   // ── File operations ──
   readFile: (filePath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_FILE, filePath),
-  readFileBinary: (filePath: string): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_FILE_BINARY, filePath),
+  readFileBinary: (filePath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_FILE_BINARY, filePath),
   listDir: (dirPath: string): Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_LIST_DIR, dirPath),
-  deletePath: (target: string): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_DELETE_PATH, target),
+  deletePath: (target: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_DELETE_PATH, target),
+  createDir: (dirPath: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_CREATE_DIR, dirPath),
+  renamePath: (oldPath: string, newName: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_RENAME_PATH, oldPath, newName),
+  searchWorkspace: (input: {
+    query: string
+    dir: string
+    caseSensitive?: boolean
+    maxResults?: number
+  }): Promise<{ ok: boolean; lines?: string[]; truncated?: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_SEARCH_WORKSPACE, input),
   editFile: (input: {
     filePath: string
     oldStr: string

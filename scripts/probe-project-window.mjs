@@ -26,6 +26,9 @@ const SHOTS = join(tmpdir(), 'pm-project-window-shots')
 const PROJECT_ID = 'proj_20261030120000'
 const PROJECT_NAME = '探针项目'
 const WS_DIR = '/pm-probe-project-ws'
+/** The project row the stub serves — with an explicit hue so the send-button
+ *  accent is deterministic (projectStore must carry it for the composer). */
+const PROJECT = { id: PROJECT_ID, name: PROJECT_NAME, workspaceDir: WS_DIR, colorHue: 210, createdAt: '2026-10-30T08:00:00.000Z', updatedAt: '2026-10-30T08:00:00.000Z' }
 // Two conversations in the project, deliberately ordered so the OLDER name
 // comes first in the list: only an updatedAt sort can pick the newer one.
 const OLD_CONV = 'conv_20261030090000'
@@ -72,13 +75,41 @@ window.__projectProbe = () => {
   const explorer = r('[data-pm-explorer-column]')
   const chat = r('[data-pm-chat-column]')
   const actions = r('[data-pm-header-actions]')
+  const treeCol = r('[data-pm-tree-column]')
+  const tabstrip = r('[data-ws-tabstrip-row]')
+  const previewCard = r('[data-pm-preview-column]')
+  // 卡片化（2026-10-31 用户裁定）：圆角读 computed style，间距读矩形差。
+  const radiusOf = (sel) => {
+    const el = document.querySelector(sel)
+    return el ? Number(getComputedStyle(el).borderTopLeftRadius.replace('px', '')) : null
+  }
   return {
     // ── three columns ──
     hasExplorer: !!explorer,
     hasTree: !!document.querySelector('.pm-ws-tree'),
+    // 2026-10-31 用户裁定：地址栏整行退场，页签条收进预览列（不再跨树列），
+    // 预览动作由条右端的 ⋯ 承接。
     hasAddressBar: !!document.querySelector('[data-ws-address]'),
+    hasTabStrip: !!tabstrip,
+    hasStripActions: !!document.querySelector('[data-ws-strip-actions]'),
+    tabstripLeft: tabstrip ? Math.round(tabstrip.left) : null,
+    treeColumnRight: treeCol ? Math.round(treeCol.right) : null,
     hasExplorerHandle: !!document.querySelector('[data-pm-explorer-drag-handle]'),
     explorerWidth: explorer ? Math.round(explorer.width) : null,
+    // ── cards（2026-10-31 圆角矩形裁定）──
+    hasPreviewCard: !!previewCard,
+    treeCardLeft: treeCol ? Math.round(treeCol.left) : null,
+    treeCardRight: treeCol ? Math.round(treeCol.right) : null,
+    treeCardRadius: radiusOf('[data-pm-tree-column]'),
+    previewCardLeft: previewCard ? Math.round(previewCard.left) : null,
+    previewCardRadius: radiusOf('[data-pm-preview-column]'),
+    chatCardLeft: chat ? Math.round(chat.left) : null,
+    chatCardRight: chat ? Math.round(chat.right) : null,
+    chatCardRadius: radiusOf('[data-pm-chat-column]'),
+    explorerRight: explorer ? Math.round(explorer.right) : null,
+    // ── 三面板切换器（2026-10-31）──
+    hasLeftSwitcher: !!document.querySelector('[data-pm-left-panel-switcher]'),
+    hasRightSwitcher: !!document.querySelector('[data-pm-right-panel-switcher]'),
     // ── conversation column ──
     hasComposer: !!document.querySelector('textarea'),
     chatWidth: chat ? Math.round(chat.width) : null,
@@ -100,9 +131,28 @@ window.__projectProbe = () => {
     innerWidth: window.innerWidth,
   }
 }
+/** 三面板交互态（2026-10-31）：切换后的 DOM 形态 + 主进程收到的最后一次
+ *  pane 状态推送（browserActive/insets/paneWidth 都在推送里验）。 */
+window.__panelProbe = () => {
+  const q = (sel) => document.querySelector(sel)
+  const chatPanel = q('[data-pm-panel-chat]')
+  return {
+    searchVariant: q('[data-ws-search-panel]')?.getAttribute('data-ws-search-variant') ?? null,
+    hasTreeNow: !!q('.pm-ws-tree'),
+    hasSearchHit: !!q('[data-ws-search-hit]'),
+    tabStripTabs: document.querySelectorAll('[data-ws-tabstrip-row] [data-tab-path]').length,
+    hasBrowserPanel: !!q('[data-pm-panel-browser]'),
+    hasPlanPanel: !!q('[data-pm-panel-plan]'),
+    hasBrowserEmpty: !!q('[data-pm-panel-browser] [data-pm-empty]'),
+    hasBrowserAddress: !!q('[data-pm-panel-browser] input[placeholder="输入网址，回车打开"]'),
+    hasChatPanel: !!chatPanel,
+    chatPanelDisplay: chatPanel ? getComputedStyle(chatPanel).display : null,
+    hasComposer: !!q('textarea'),
+    lastPaneState: (window.__paneStateCalls || []).slice(-1)[0] ?? null,
+  }
+}
 window.__ready = true
 `
-
 await build({
   stdin: { contents: HARNESS, resolveDir: process.cwd(), loader: 'tsx', sourcefile: 'harness.tsx' },
   bundle: true, format: 'iife', platform: 'browser', target: 'chrome114',
@@ -155,7 +205,7 @@ const PAGE_HTML = `<!doctype html><html><head><style>
       getPlatformInfo: () => Promise.resolve({ platform: 'darwin' }),
       listConversations: () => Promise.resolve(window.__SCENARIO__ === 'empty' ? [] : CONVS),
       projectGet: () => Promise.resolve({ id: '${PROJECT_ID}', name: '${PROJECT_NAME}', workspaceDir: '${WS_DIR}', createdAt: '2026-10-30T08:00:00.000Z', updatedAt: '2026-10-30T08:00:00.000Z' }),
-      projectList: () => Promise.resolve([]),
+      projectList: () => Promise.resolve([${JSON.stringify(PROJECT)}]),
       agentSessionCreate: (opts) => { lastSession = (opts && opts.conversationId) || null; return Promise.resolve({ sessionId: lastSession || '${NEW_CONV}', agentId: 'default', workspaceDir: '${WS_DIR}' }) },
       agentSessionSnapshot: (id) => Promise.resolve(snapshotFor(id)),
       secondaryWatch: (sessionId) => { window.__watchCalls.push(sessionId); return Promise.resolve() },
@@ -169,6 +219,12 @@ const PAGE_HTML = `<!doctype html><html><head><style>
       expertList: () => Promise.resolve([]),
       knowledgeListBases: () => Promise.resolve([]),
       getModelState: () => Promise.resolve({ profiles: [], activeId: 'p1' }),
+      // ── 三面板（2026-10-31）：pane 状态记录 + rg 命中一条 + 浏览器历史空表 ──
+      browserPaneSetState: (s) => { (window.__paneStateCalls = window.__paneStateCalls || []).push(s); return Promise.resolve() },
+      browserPaneSetWidth: () => Promise.resolve(),
+      browserPaneAction: () => Promise.resolve(),
+      browserHistoryQuery: () => Promise.resolve([]),
+      searchWorkspace: () => Promise.resolve({ ok: true, lines: ['${WS_DIR}/README.md:1:探针文件内容'], truncated: false }),
     }, {
       get: (target, key) => key in target
         ? target[key]
@@ -202,8 +258,23 @@ console.log('  state:', JSON.stringify(state))
 await page.screenshot({ path: join(SHOTS, 'project-window.png'), fullPage: false })
 
 // ── the three columns ──
-check('左栏 explorer 在场（目录树 + 地址栏）', state.hasExplorer && state.hasTree && state.hasAddressBar,
-  `explorer=${state.hasExplorer} tree=${state.hasTree} addressBar=${state.hasAddressBar}`)
+check('左栏 explorer 在场（目录树 + 中列页签条；地址栏已退场）',
+  state.hasExplorer && state.hasTree && state.hasTabStrip && state.hasStripActions && !state.hasAddressBar,
+  `explorer=${state.hasExplorer} tree=${state.hasTree} tabstrip=${state.hasTabStrip} stripActions=${state.hasStripActions} addressBar=${state.hasAddressBar}`)
+check('页签条收进中列（左缘越过树列右缘进入卡内）',
+  state.tabstripLeft !== null && state.treeColumnRight !== null && state.tabstripLeft >= state.treeColumnRight + 3,
+  `tabstrip.left=${state.tabstripLeft} tree.right=${state.treeColumnRight}`)
+// 卡片化（2026-10-31 用户裁定「三列各用圆角矩形包裹，与边缘、互相之间都留
+// 5px」）：树↔预览与 explorer↔chat 的间隙、窗口左右缘的内缩、三卡圆角。
+check('卡间距 = 5px（树↔预览、explorer↔chat）',
+  state.previewCardLeft - state.treeCardRight === 5 && state.chatCardLeft - state.explorerRight === 5,
+  `tree↔preview=${state.previewCardLeft - state.treeCardRight} explorer↔chat=${state.chatCardLeft - state.explorerRight}`)
+check('窗口边缘内缩 = 5px（左缘、右缘）',
+  state.treeCardLeft === 5 && Math.abs(state.chatCardRight - state.innerWidth) === 5,
+  `left=${state.treeCardLeft} rightInset=${state.innerWidth - state.chatCardRight}`)
+check('三卡圆角 = 8px',
+  state.treeCardRadius === 8 && state.previewCardRadius === 8 && state.chatCardRadius === 8,
+  `tree=${state.treeCardRadius} preview=${state.previewCardRadius} chat=${state.chatCardRadius}`)
 check('explorer 分隔手柄在场（可拖宽）', state.hasExplorerHandle)
 // Default 760, clamped against a 1440−360=1080 ceiling → 760 stands (the +1 is
 // the column's own border-right, which getBoundingClientRect includes).
@@ -211,17 +282,75 @@ check('explorer 宽度 = 持久默认 760（未被 clamp 压缩）',
   state.explorerWidth !== null && Math.abs(state.explorerWidth - 760) <= 1, `w=${state.explorerWidth}`)
 check('对话列在场（转录正文渲染）', state.hasComposer && state.pickedNew, `composer=${state.hasComposer} pickedNew=${state.pickedNew}`)
 check('对话列宽度 ≥ 360 下限', state.chatWidth !== null && state.chatWidth >= 360, `w=${state.chatWidth}`)
+check('左右卡面板切换器在场（2026-10-31 三面板裁定）', state.hasLeftSwitcher && state.hasRightSwitcher,
+  `left=${state.hasLeftSwitcher} right=${state.hasRightSwitcher}`)
+
+// ── 三面板切换链（2026-10-31：左 目录树|全文检索，右 对话|浏览器|工作计划）──
+// 纯 Chromium 探针驱动不了原生 WebContentsView——浏览器面板验的是 chrome
+// DOM + pane 状态推送；原生 view 落位（insets 像素级对齐）只有 Electron 实跑可见。
+await page.locator('[data-pm-left-panel-switcher] [data-panel-id="search"]').click()
+await page.waitForSelector('[data-ws-search-variant="panel"]')
+const searchState = await page.evaluate(() => window.__panelProbe())
+check('左卡切到全文检索：整卡面板在场、目录树退场',
+  searchState.searchVariant === 'panel' && !searchState.hasTreeNow,
+  `variant=${searchState.searchVariant} tree=${searchState.hasTreeNow}`)
+await page.fill('[data-ws-search-variant="panel"] input[aria-label="搜索内容"]', '探针')
+await page.waitForSelector('[data-ws-search-hit]')
+check('全文检索命中行渲染（stub rg 返回 README.md:1）', true)
+await page.locator('[data-ws-search-hit]').first().click()
+await page.waitForTimeout(400)
+const hitState = await page.evaluate(() => window.__panelProbe())
+check('命中点击 → 中卡预览页签打开（文件页联动免费）', hitState.tabStripTabs >= 1, `tabs=${hitState.tabStripTabs}`)
+await page.locator('[data-pm-left-panel-switcher] [data-panel-id="tree"]').click()
+await page.waitForSelector('.pm-ws-tree')
+
+await page.locator('[data-pm-right-panel-switcher] [data-panel-id="plan"]').click()
+await page.waitForSelector('[data-pm-panel-plan]')
+check('右卡切到工作计划：面板在场', (await page.evaluate(() => window.__panelProbe())).hasPlanPanel)
+
+await page.locator('[data-pm-right-panel-switcher] [data-panel-id="browser"]').click()
+await page.waitForSelector('[data-pm-panel-browser]')
+const browserState = await page.evaluate(() => window.__panelProbe())
+check('右卡切到浏览器：chrome 空态 + 地址栏在场',
+  browserState.hasBrowserPanel && browserState.hasBrowserEmpty && browserState.hasBrowserAddress,
+  `panel=${browserState.hasBrowserPanel} empty=${browserState.hasBrowserEmpty} address=${browserState.hasBrowserAddress}`)
+check('浏览器在前 → pane 推送 browserActive=true + 卡片 insets(38/5/6) + paneWidth 直通',
+  browserState.lastPaneState?.browserActive === true &&
+    browserState.lastPaneState?.topInset === 38 &&
+    browserState.lastPaneState?.rightInset === 5 &&
+    browserState.lastPaneState?.bottomInset === 6 &&
+    (browserState.lastPaneState?.paneWidth ?? 0) > 0,
+  JSON.stringify(browserState.lastPaneState))
+check('对话面板保活隐藏（display:none，流式/composer 状态不丢）',
+  browserState.hasChatPanel && browserState.chatPanelDisplay === 'none',
+  `display=${browserState.chatPanelDisplay}`)
+
+await page.locator('[data-pm-right-panel-switcher] [data-panel-id="chat"]').click()
+await page.waitForTimeout(200)
+const chatBack = await page.evaluate(() => window.__panelProbe())
+check('切回对话：composer 回归 + pane 推送 browserActive=false',
+  chatBack.hasComposer && chatBack.lastPaneState?.browserActive === false && chatBack.chatPanelDisplay !== 'none',
+  `composer=${chatBack.hasComposer} active=${chatBack.lastPaneState?.browserActive}`)
 
 // The clamp is a RENDER-time consumption, not just a drag-time one: a window
 // too narrow for the stored 760 must squeeze the explorer, never the chat.
 // (The chat reads one pixel under its nominal floor because the explorer
 // column's own 1px border-right is inside the row — the same off-by-one the
 // pre-existing tree↔preview clamp carries.)
+// The session sidebar eats into the row first, so this scenario COLLAPSES it
+// via the header toggle — collapse is exactly the narrow-window escape hatch.
 const narrow = await loadAndBoot(DARWIN_CONTROLS, { width: 900, height: 760 })
+// explorer 的 clamp 依赖 ResizeObserver 带回的行宽，等它落定再量。
+// 卡片化（2026-10-31）后行宽口径：900 − 四周 padding 2×5 − explorer↔chat gap 5
+// = 可分给 explorer+chat 的 885；explorer 上限 = 885 − 360（对话下限）= 525。
+await narrow.waitForFunction(() => {
+  const el = document.querySelector('[data-pm-explorer-column]')
+  return el && Math.abs(el.getBoundingClientRect().width - (900 - 360 - 15)) <= 2
+})
 const narrowState = await narrow.evaluate(() => window.__projectProbe())
 console.log('  narrow state:', JSON.stringify({ explorerWidth: narrowState.explorerWidth, chatWidth: narrowState.chatWidth }))
-check('窄窗下 explorer 被 clamp 到 (row − 360)，对话列守住 360',
-  Math.abs((narrowState.explorerWidth ?? 0) - (900 - 360)) <= 1 && (narrowState.chatWidth ?? 0) >= 359,
+check('窄窗（侧栏收起后）explorer 被 clamp 到 (row − 360 − 卡片间距 15)，对话列守住 360',
+  Math.abs((narrowState.explorerWidth ?? 0) - (900 - 360 - 15)) <= 1 && (narrowState.chatWidth ?? 0) >= 359,
   `explorer=${narrowState.explorerWidth} chat=${narrowState.chatWidth}`)
 
 // ── the workbench must NOT dock in this window ──
@@ -242,6 +371,12 @@ check('别的项目里更新的会话没有被挑走', !state.pickedOutside)
 check('当前会话已报给主进程（secondaryWatch 的末次调用 = 被挑中的会话）',
   state.watchCalls[state.watchCalls.length - 1] === NEW_CONV,
   JSON.stringify(state.watchCalls))
+
+// 输入区宽度帽（2026-10-30 用户裁定「输入区的宽度太大」）：composer 卡不超过 640。
+const senderWidth = await page.locator('.ant-sender').first().evaluate((el) => el.getBoundingClientRect().width)
+check('输入区 composer 卡 ≤ 640（沉浸窗口的宽度帽）', senderWidth <= 641, `w=${Math.round(senderWidth)}`)
+// 发送按钮的项目配色：accent 类在场（没加载项目 store 时恒是中性 .pm-send）。
+check('发送按钮带项目 accent（.pm-accent-send 在场）', !!(await page.locator('.pm-accent-send').count()))
 
 // ── Windows/Linux: the action cluster still clears the caption-button strip ──
 const winPage = await loadAndBoot(WINDOWS_CONTROLS)
@@ -279,6 +414,25 @@ check('welcome 页没进来（副标题与任务切换器都不在）',
   !emptyState.hasWelcomeSubtitle && !emptyState.hasTaskSwitcher,
   `subtitle=${emptyState.hasWelcomeSubtitle} switcher=${emptyState.hasTaskSwitcher}`)
 check('composer 照常在底部', emptyState.hasComposer)
+const draftGeom = await emptyPage.evaluate(() => {
+  const sender = document.querySelector('.ant-sender')
+  const col = document.querySelector('[data-pm-chat-column]')
+  if (!sender || !col) return { error: 'missing' }
+  const sr = sender.getBoundingClientRect()
+  const cr = col.getBoundingClientRect()
+  return {
+    sender: { left: Math.round(sr.left), right: Math.round(sr.right), width: Math.round(sr.width) },
+    column: { left: Math.round(cr.left), right: Math.round(cr.right), width: Math.round(cr.width) },
+    maxW: getComputedStyle(sender).maxWidth,
+  }
+})
+console.log('  draft geometry:', JSON.stringify(draftGeom))
+check('composer 卡完全在对话列内（右缘不越窗）',
+  !draftGeom.error && draftGeom.sender.right <= draftGeom.column.right + 1 && draftGeom.sender.left >= draftGeom.column.left - 1,
+  JSON.stringify(draftGeom.sender || draftGeom))
+check('…composer wrapper 也不再越列（border-box 生效）',
+  !draftGeom.error && draftGeom.sender.right <= draftGeom.column.right + 1,
+  `wrapper 链见 geometry`)
 check('草稿无会话 id：watch 末次为 null',
   emptyState.watchCalls[emptyState.watchCalls.length - 1] === null,
   JSON.stringify(emptyState.watchCalls))

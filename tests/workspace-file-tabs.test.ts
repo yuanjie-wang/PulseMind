@@ -22,6 +22,8 @@ const src = (p: string): string => readFileSync(join(root, p), 'utf8')
 const STRIP = 'src/renderer/src/components/workbench/WorkspaceTabStrip.tsx'
 const PANE = 'src/renderer/src/components/workbench/WorkspacePane.tsx'
 const BAR = 'src/renderer/src/components/workbench/WorkspaceAddressBar.tsx'
+const ACTIONS = 'src/renderer/src/components/workbench/preview-file-actions.tsx'
+const EXPLORER = 'src/renderer/src/popout/ProjectExplorer.tsx'
 const TREE = 'src/renderer/src/components/workbench/WorkspaceTree.tsx'
 const PREVIEW = 'src/renderer/src/components/preview/PreviewPane.tsx'
 const FADES = 'src/renderer/src/components/common/StripEdgeFades.tsx'
@@ -154,11 +156,17 @@ describe('地址栏：说当前预览的文件，不再说树选中', () => {
     expect(bar).not.toContain('height: 36')
   })
 
-  it('菜单动作仍绑 activePath（路径与动作不许各说一个文件）', () => {
-    const bar = src(BAR)
-    expect(bar).toContain('const activeKind = activePath ? detectFileKind(activePath) : null')
-    expect(bar).toContain('if (!activePath || editDisabled) return')
-    expect(bar).toContain('if (!activePath) return')
+  it('菜单动作来自共享构造（2026-10-31：沉浸页签条的 ⋯ 同一份动作，语义不分叉）', () => {
+    // 动作本体搬进 preview-file-actions（地址栏 ⋯ 与沉浸页签条 ⋯ 共用），
+    // 这里钉的是「动作仍绑 activePath」的语义本体 + 两个消费面都取共享构造。
+    const actions = src(ACTIONS)
+    expect(actions).toContain('const activeKind = activePath ? detectFileKind(activePath) : null')
+    expect(actions).toContain('if (!activePath || editDisabled) return')
+    expect(actions).toContain('if (!activePath) return')
+    // 编辑/元素两态与保存都落共享构造，且保存仍走唯一接缝事件。
+    expect(actions).toContain("setPreviewMode(activePath, editOn ? 'view' : 'source')")
+    expect(actions).toContain('pulsemind-preview-save')
+    expect(src(BAR)).toContain('usePreviewFileActions(conversationId)')
   })
 })
 
@@ -326,5 +334,32 @@ describe('页签条两端渐隐（2026-10-30 用户裁定「两端渐隐提示�
       // 包裹盒必须与滚动器同盒：relative + flex:1 + minWidth:0
       expect(text).toContain("style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}")
     }
+  })
+})
+
+describe('沉浸窗口形态（2026-10-31 用户裁定：页签条收进中列、地址栏退场）', () => {
+  it('immersive 分支：页签条进预览列（rowRef 之后、PreviewPane 之前）且带动作菜单', () => {
+    const pane = src(PANE)
+    expect(pane).toContain('immersive?: boolean')
+    // 沉浸形态的页签条在预览列内（第一处 <WorkspaceTabStrip 是工作台形态的列首行）。
+    const inColumn = pane.indexOf('<WorkspaceTabStrip conversationId={conversationId} withFileActions')
+    expect(inColumn).toBeGreaterThan(-1)
+    expect(inColumn).toBeGreaterThan(pane.indexOf('ref={rowRef}'))
+    expect(inColumn).toBeLessThan(pane.indexOf('<PreviewPane'))
+    // 地址栏只在工作台三元分支出现一次（沉浸分支零渲染）。
+    expect(pane.match(/<WorkspaceAddressBar /g)?.length).toBe(1)
+  })
+
+  it('ProjectExplorer 给沉浸窗口传 immersive', () => {
+    expect(src(EXPLORER)).toContain('<WorkspacePane conversationId={conversationId} immersive />')
+  })
+
+  it('页签条动作菜单：withFileActions 走共享构造 + data-ws-strip-actions 探针锚点', () => {
+    const strip = src(STRIP)
+    expect(strip).toContain('withFileActions?: boolean')
+    expect(strip).toContain('usePreviewFileActions(conversationId)')
+    expect(strip).toContain('data-ws-strip-actions')
+    // 触发器常驻在条右端（动作项各自 disabled 表达空屏，几何不跳）。
+    expect(strip.indexOf('data-ws-strip-actions')).toBeGreaterThan(strip.indexOf('<StripEdgeFades'))
   })
 })

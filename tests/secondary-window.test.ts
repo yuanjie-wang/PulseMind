@@ -241,14 +241,72 @@ describe('renderer: window mode + single-writer chain', () => {
     }
   })
 
+  it('carries NO conversation sidebar (2026-10-31 用户裁定，撤回 10-30 的一版)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // 沉浸窗口就是 目录树｜预览｜对话 三栏，会话切换走头部 ▾ 下拉——
+    // 左侧会话侧边栏曾加过一版（复用 ConversationRows + 共享 sidebarStore），
+    // 被裁定不要。这些残留再出现即是回归。
+    expect(pop).not.toContain('data-pm-immersive-sidebar')
+    expect(pop).not.toContain('data-pm-sidebar-toggle')
+    expect(pop).not.toContain('<ConversationRows')
+    expect(pop).not.toContain('useSidebarStore')
+    // 会话列表的唯一入口仍是头部的项目切换器。
+    expect(pop).toContain('data-pm-project-switcher')
+  })
+
+  it('the send button wears the project hue (project store must be loaded)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // ChatView 的 composerProjectHue 走 useProjectHue → useProjectStore；这个窗口
+    // 只 projectGet、从不加载 store，hue 恒 undefined，按钮永远是中性色——
+    // 2026-10-30 用户反馈「发送按钮还是需要使用项目配色」。
+    expect(pop).toContain('useProjectStore.getState().reload()')
+    expect(pop).toContain('if (!isProjectWindow) return')
+  })
+
+  it('the composer is width-capped and cannot leave the column (2026-10-30/31)', () => {
+    const ex = read('renderer/src/popout/ProjectExplorer.tsx')
+    // 对话列可以很宽，composer 的 952 帽顶满整列；min(640, 100%) 让卡在宽列里
+    // 保持对话应用的体量、窄列里永不越界（100% 是硬约束）。
+    expect(ex).toContain('[data-pm-chat-column] .ant-sender { max-width: min(640px, 100%); }')
+    // 欢迎态 wrapper 是 width:100% + 左右 24px padding，应用无全局 border-box
+    // reset —— content-box 下 wrapper 总宽 = 列宽 + 48，天生越列；主窗两侧各溢
+    // 24 不可见，沉浸窗口右缘就是窗口边，卡在越界内容盒里居中即被裁
+    // （2026-10-31 用户实测「还是超出了屏幕」）。
+    expect(ex).toContain("[data-pm-chat-column] [data-welcome-shake='composer'] { box-sizing: border-box; max-width: min(1048px, 100%); }")
+  })
+
   it('the explorer consumes the clamp and exposes probe targets', () => {
     const ex = read('renderer/src/popout/ProjectExplorer.tsx')
-    expect(ex).toContain('clampExplorerWidth(rawExplorerWidth, rowWidth)')
+    // 卡片化（2026-10-31 用户裁定「三列各用圆角矩形包裹，边缘/列间 5px」）：
+    // 渲染 clamp 的行宽要扣掉 explorer↔chat 的那个 gap（rowWidth 来自
+    // contentRect，不含四周 padding，只差列间一个 gap）。
+    expect(ex).toContain('clampExplorerWidth(rawExplorerWidth, rowWidth - IMMERSIVE_CARD_GAP)')
     expect(ex).toContain('data-pm-explorer-column')
     expect(ex).toContain('data-pm-explorer-drag-handle')
     expect(ex).toContain('direction: 1')
-    // The tree/preview surface is REUSED, not re-implemented.
-    expect(ex).toContain('<WorkspacePane conversationId={conversationId} />')
+    // The tree/preview surface is REUSED, not re-implemented — in the immersive
+    // form (2026-10-31: tab strip into the preview column, no address bar).
+    expect(ex).toContain('<WorkspacePane conversationId={conversationId} immersive />')
+  })
+
+  it('三列圆角矩形卡片化：四周与列间 5px（2026-10-31 用户裁定）', () => {
+    const ex = read('renderer/src/popout/ProjectExplorer.tsx')
+    const pane = read('renderer/src/components/workbench/WorkspacePane.tsx')
+    // 行吃四周 padding（窗口边缘 5px）+ explorer↔chat gap；对话卡自带
+    // 圆角边框（border-box 让 flex 宽度含边框）。
+    expect(ex).toContain('padding: IMMERSIVE_CARD_GAP')
+    expect(ex).toContain('gap: IMMERSIVE_CARD_GAP')
+    expect(ex).toContain("border: '1px solid var(--pm-separator-faint)'")
+    expect(ex).toContain("boxSizing: 'border-box'")
+    // 树/预览两卡的圆角边框在 WorkspacePane 的 immersive 分支（工作台形态
+    // 保持 borderRight 分隔不变）。
+    expect(pane).toContain('...(immersive ? IMMERSIVE_CARD : { borderRight:')
+    expect(pane).toContain('...(immersive ? IMMERSIVE_CARD : {})')
+    // 树↔预览的 gap 也只在沉浸形态。
+    expect(pane).toContain('gap: immersive ? IMMERSIVE_CARD_GAP : undefined')
+    // 间距常量单一来源（改一处，几何处处跟随）。
+    expect(ex).toContain("from '../../../shared/ui/layout-widths'")
+    expect(ex).toContain('IMMERSIVE_CARD_GAP')
   })
 
   it('the explorer width store clamps at every consumption, not just at drag time', () => {
@@ -267,5 +325,93 @@ describe('renderer: App wiring', () => {
     const layout = read('renderer/src/components/layout/AppLayout.tsx')
     expect(layout).toContain('onEnterProjectWindow?: (projectId: string, name: string) => void')
     expect(layout).toContain('onEnterImmersive={(project) => onEnterProjectWindow?.(project.id, project.name)}')
+  })
+})
+
+describe('三面板（2026-10-31 用户裁定：左 目录树|全文检索，右 对话|浏览器|工作计划）', () => {
+  it('面板态住 secondaryLayoutStore 但不持久化（2026-10-31 裁定：进窗恒从 文件/对话 起步）', () => {
+    const store = read('renderer/src/stores/secondaryLayoutStore.ts')
+    expect(store).toContain("leftPanel: 'tree'")
+    expect(store).toContain("rightPanel: 'chat'")
+    expect(store).toContain('setLeftPanel: (leftPanel)')
+    expect(store).toContain('setRightPanel: (rightPanel)')
+    // partialize 刻意只带 explorerWidth——面板选择是每窗内存态，持久化
+    // 「上次用的面板」会违背「进入沉浸模式默认 文件/对话」的裁定（阴性钉）。
+    expect(store).toContain('partialize: (s) => ({ explorerWidth: s.explorerWidth })')
+    expect(store).not.toContain('leftPanel: s.leftPanel')
+    // PopoutApp 挂载显式置默认（压掉旧持久化 JSON 里的残留字段）。
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    expect(pop).toContain("useSecondaryLayoutStore.getState().setLeftPanel('tree')")
+    expect(pop).toContain("useSecondaryLayoutStore.getState().setRightPanel('chat')")
+  })
+
+  it('binding 沉浸分支：browserActive 换源右卡面板态 + 卡片 insets + paneWidth 直通', () => {
+    const hook = read('renderer/src/hooks/useBrowserPane.ts')
+    // 旧的 IS_PROJECT_WINDOW 早退改为沉浸分支——推送仍在，判定源换成
+    // rightPanel；viewKind 恒 'chat'（页签 scope 永远挂当前会话）。
+    expect(hook).toContain('if (IS_PROJECT_WINDOW) {')
+    expect(hook).toContain("browserActive: rightPanel === 'browser'")
+    expect(hook).toContain("viewKind: 'chat'")
+    expect(hook).toContain('topInset: IMMERSIVE_BROWSER_TOP_INSET')
+    expect(hook).toContain('rightInset: IMMERSIVE_BROWSER_RIGHT_INSET')
+    expect(hook).toContain('bottomInset: IMMERSIVE_BROWSER_BOTTOM_INSET')
+    expect(hook).toContain('paneWidth: immersiveCardWidth + 3')
+    // 浏览器面板的动作回调薄包装独立导出（第二消费面不得再跑一份推送）。
+    expect(hook).toContain('export function useBrowserPaneActions')
+  })
+
+  it('ImmersivePanels：对话保活 display 切换 + 浏览器/计划接线 + 跳转切回对话', () => {
+    const panels = read('renderer/src/popout/ImmersivePanels.tsx')
+    expect(panels).toContain("display: rightPanel === 'chat' ? 'flex' : 'none'")
+    expect(panels).toContain('<BrowserPaneChrome pane={pane} onAction={action} />')
+    // 计划节点跳转先切回对话面板——否则滚动落在看不见的隐藏面板里。
+    expect(panels).toContain("setRightPanel('chat')")
+    expect(panels).toContain('onPlanJump?.(msgId)')
+    // 卡宽测量进 store（paneWidth 直通的数据源），卸载清零。
+    expect(panels).toContain('setImmersiveCardWidth(w > 0 ? w : null)')
+    expect(panels).toContain('useEffect(() => () => useBrowserPaneStore.getState().setImmersiveCardWidth(null), [])')
+    // 顶部 inset 的算术钉死（5 窗边 + 1 边框 + 32 切换器）。
+    expect(panels).toContain('IMMERSIVE_BROWSER_TOP_INSET = IMMERSIVE_CARD_GAP + 1 + IMMERSIVE_SWITCHER_HEIGHT')
+    expect(panels).toContain('IMMERSIVE_BROWSER_RIGHT_INSET = IMMERSIVE_CARD_GAP')
+    expect(panels).toContain('IMMERSIVE_BROWSER_BOTTOM_INSET = IMMERSIVE_CARD_GAP + 1')
+  })
+
+  it('PopoutApp 把三面板装进右卡（plan 与全部回调直达）', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    expect(pop).toContain('<ImmersivePanels')
+    expect(pop).toContain('onPlanJump={setPlanScrollToMsgId}')
+    expect(pop).toContain('highlightPlanNodeId={highlightPlanNodeId}')
+  })
+
+  it('左卡切换器 + SearchPanel panel 变体（工作台 strip 形态不变）', () => {
+    const pane = read('renderer/src/components/workbench/WorkspacePane.tsx')
+    expect(pane).toContain('data-pm-left-panel-switcher')
+    expect(pane).toContain('variant="panel"')
+    // 2026-10-31 用户裁定：文案「文件 / 搜索」（不再叫 目录树/全文检索）。
+    expect(pane).toContain("['tree', '文件']")
+    expect(pane).toContain("['search', '搜索']")
+    const search = read('renderer/src/components/workbench/SearchPanel.tsx')
+    // 缺省 strip 逐字节保留：主窗树列底条（帽 48% + 顶边框）不回归。
+    expect(search).toContain("variant = 'strip'")
+    expect(search).toContain("panel ? { flex: 1, minHeight: 0 } : { flexShrink: 0, maxHeight: '48%' }")
+  })
+
+  it('搜索面板四连裁定（2026-10-31）：Aa 胶囊、✕ 移除、结果行重排+命中高亮', () => {
+    const search = read('renderer/src/components/workbench/SearchPanel.tsx')
+    // ② Aa 去边框改胶囊（hover/[data-on] 态走注入的类选择器，深色不吃灰边）。
+    expect(search).toContain('pm-search-aa')
+    expect(search).toContain('data-on={caseSensitive}')
+    expect(search).toContain('aria-pressed={caseSensitive}')
+    expect(search).toContain(".pm-search-aa[data-on='true'] { background: var(--pm-tile-soft); color: var(--pm-link); font-weight: 600; }")
+    expect(search).not.toContain("border: '1px solid var(--pm-separator-faint)'")
+    // ③ 关闭按钮移除：主窗工具条本就两向开合，✕ 三处冗余（onClose 全链退场）。
+    expect(search).not.toContain('onClose')
+    expect(search).not.toContain('DeleteOutlined')
+    expect(search).not.toContain('关闭内容搜索')
+    // ④ 结果行两行结构 + 命中高亮（固定串 indexOf 即真坐标；命中 ± 窗口）。
+    expect(search).toContain('pm-search-hit-path')
+    expect(search).toContain('pm-search-hit-line')
+    expect(search).toContain('pm-search-hit-mark')
+    expect(search).toContain('text.toLowerCase().indexOf(debounced.toLowerCase())')
   })
 })

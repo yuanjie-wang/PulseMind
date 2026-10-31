@@ -12,9 +12,9 @@
  *   2. switching the workbench tab really unmounts the tree, and coming back
  *      restores the deep rows with NO clicks — including after 刷新's remount;
  *   3. the hover actions are invisible until the pointer is on the row, and the
- *      row's geometry is identical either way (reserved space, no reflow);
- *   4. 复制路径 puts the absolute path on the clipboard for a file and a folder,
- *      without expanding the folder or opening a preview tab;
+ *      row's geometry is identical either way (overlay, no reflow);
+ *      (复制路径 was removed 2026-10-31, user: 去掉复制路径的按钮 — the old
+ *      clipboard checks went with it);
  *   5. clicking a file name previews it BESIDE the tree in the same 工作区
  *      view (the standalone 文件预览 tab is gone, 2026-10-25): the address bar
  *      sits INSIDE the preview column, directly above the preview, and names
@@ -46,7 +46,7 @@
  *       ledger, closing a dirty chip asks first, the 32px row survives the
  *       empty set, and beyond the cap the chips scroll rather than squash.
  *
- * Why a browser: vitest here is node-env — no layout, no hover, no clipboard,
+ * Why a browser: vitest here is node-env — no layout, no hover,
  * no antd. Every fact above is a fact about what is on screen.
  *
  * Usage: node scripts/probe-workspace-tree.mjs [--headed]
@@ -129,8 +129,7 @@ function check(name, pass, detail) {
   console.log(`${pass ? '  PASS' : '  FAIL'}  ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
-// Served over 127.0.0.1 (a secure context): navigator.clipboard needs one, and
-// the copy checks read the REAL clipboard back.
+// Served over 127.0.0.1 (a secure context) so the page is a normal origin.
 const server = createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html' })
   res.end('<!doctype html><html><body style="margin:0"><div id="root" style="position:relative;width:1200px;height:820px"></div></body></html>')
@@ -140,7 +139,6 @@ const ORIGIN = `http://127.0.0.1:${server.address().port}`
 
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
 const context = await browser.newContext({ viewport: { width: 1200, height: 820 } })
-await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: ORIGIN })
 const page = await context.newPage()
 page.on('pageerror', (err) => console.log('  [page error]', err.message))
 await page.goto(`${ORIGIN}/`)
@@ -209,7 +207,6 @@ const deleteCalls = () => page.evaluate(() => window.__deleteCalls.slice())
 const tabs = () => page.evaluate((k) => (window.__stores.preview.getState().tabsByConversation[k] ?? []).map((t) => t.path), CONV)
 const drafts = () => page.evaluate(() => Object.keys(window.__stores.preview.getState().drafts))
 const activeTab = () => page.evaluate(() => window.__stores.workbench.getState().activeTab)
-const clipboard = () => page.evaluate(() => navigator.clipboard.readText())
 const addressPath = () => page.locator('[data-ws-address-path]').innerText()
 /** The one selected row's paint: the treenode's background + the title's ink.
  *  DirectoryTree derives both from its own component tokens — pinned to the
@@ -303,7 +300,8 @@ check('刷新 remounts the tree (a fresh element)', true)
 check('…and the deep rows are open again after it', await row('/w/a/sub/deep.txt').isVisible())
 check('refresh re-reads the cached levels from disk', (await deepReads()) === readsBefore + 1, `${readsBefore} → ${await deepReads()}`)
 
-/* ── 5. Hover reveals 复制路径 / 删除 on folders AND files. ── */
+/* ── 5. Hover reveals 在系统中打开 / 删除 on folders AND files (复制路径 was
+          removed 2026-10-31, user: 去掉复制路径的按钮). ── */
 const visOf = (p) => actionsOf(p).evaluate((el) => getComputedStyle(el).visibility)
 check('the actions are invisible before the pointer arrives', (await visOf('/w/a')) === 'hidden')
 const boxBefore = await nameOf('/w/a').boundingBox()
@@ -311,25 +309,18 @@ await hover('/w/a')
 check('hovering a folder row reveals them', (await visOf('/w/a')) === 'visible')
 const boxAfter = await nameOf('/w/a').boundingBox()
 check(
-  'the row does not reflow on hover (the buttons had their space reserved)',
+  'the row does not reflow on hover (the buttons float above the name — overlay, not reservation)',
   Math.abs(boxBefore.x - boxAfter.x) < 0.5 && Math.abs(boxBefore.width - boxAfter.width) < 0.5,
   `${JSON.stringify(boxBefore)} → ${JSON.stringify(boxAfter)}`,
 )
 await hover('/w/b.txt')
 check('a file row has them too', (await visOf('/w/b.txt')) === 'visible')
-check('both buttons are on the row', (await copyBtn('/w/c.md').count()) === 1 && (await delBtn('/w/c.md').count()) === 1)
-
-/* ── 6. 复制路径 writes the absolute path — file and folder. ── */
-await hover('/w/b.txt')
-await copyBtn('/w/b.txt').click()
-await page.getByText('已复制路径').first().waitFor()
-check('复制路径 on a file puts its absolute path on the clipboard', (await clipboard()) === '/w/b.txt', await clipboard())
-check('…without opening a preview tab', JSON.stringify(await tabs()) === '[]', JSON.stringify(await tabs()))
-await hover('/w/d')
-await copyBtn('/w/d').click()
-await page.waitForTimeout(120)
-check('复制路径 on a folder copies the folder path', (await clipboard()) === '/w/d', await clipboard())
-check('…without expanding it', JSON.stringify(await cache()) === JSON.stringify(['/w/a', '/w/a/sub']), JSON.stringify(await cache()))
+check(
+  'exactly the two remaining buttons are on the row (打开 + 删除, no 复制路径)',
+  (await row('/w/c.md').locator('button[title="在系统中打开"]').count()) === 1 &&
+    (await delBtn('/w/c.md').count()) === 1 &&
+    (await copyBtn('/w/c.md').count()) === 0,
+)
 
 /* ── 7. Clicking a file name previews it beside the tree (merged view). ── */
 const treeBoxFull = await page.locator('.pm-ws-tree').boundingBox()
@@ -423,15 +414,17 @@ check('…and the preview keeps showing the file (address bar too)', (await addr
           restores. The query 'deep' hits a depth-3 file no expansion has been
           paid for in this state (x.txt's row is gone, /w/a/sub is collapsed in
           the search tree). Click the NAME, never the row's centre: hovering a
-          row reveals its reserved action cluster, and with three buttons
-          (在系统中打开 / 复制路径 / 删除, 2026-10-30) the centre of a deep row
+          row reveals its action cluster, and the centre of a deep row
           now lands on a button — which deliberately swallows the event. ── */
 const searchBox = page.locator('input[aria-label="搜索文件"]')
 await searchBox.fill('deep')
 await page.waitForFunction(() => document.querySelectorAll('.pm-ws-hit').length > 0)
 check('a nested hit surfaces without any expansion (recursive walk)', await row('/w/a/sub/deep.txt').isVisible())
 check('…with the matched substring painted', (await page.locator('.pm-ws-hit').count()) >= 1 && (await page.locator('.pm-ws-hit').first().innerText()) === 'deep')
-await nameOf('/w/a/sub/deep.txt').click()
+// Overlay actions (2026-10-31): on hover the buttons float over the name's
+// right end, so a deep row's name CENTRE lands on a button — click the name's
+// left end, the way a user clicks the text itself.
+await nameOf('/w/a/sub/deep.txt').click({ position: { x: 6, y: 12 } })
 await page.waitForFunction((k) => (window.__stores.preview.getState().tabsByConversation[k] ?? []).some((t) => t.path === '/w/a/sub/deep.txt'), CONV)
 check('clicking the search hit previews it', JSON.stringify(await tabs()).includes('/w/a/sub/deep.txt'), JSON.stringify(await tabs()))
 check('…and the address bar names it', (await addressPath()) === '/w/a/sub/deep.txt', await addressPath())
@@ -848,6 +841,87 @@ await tab('工作区').click()
 await page.waitForFunction(() => document.querySelector('[data-ws-tabstrip]'))
 check('the chips survive a workbench tab round-trip', (await page.locator('.pm-ws-tab').count()) === 12, `${await page.locator('.pm-ws-tab').count()} chips`)
 await closeAllTabs()
+
+/* ── 20. Row polish (2026-10-31, user): a name that cannot fit truncates to …
+          inside the column instead of stretching past it, and the caret→icon
+          gap is tight. The long file rides the refresh button in — the root
+          listing only re-reads on mount/switch/refresh, so the stub gains the
+          entry and the same click the user would make reveals it. ── */
+await page.evaluate(() => {
+  const long = 'a-very-long-workspace-file-name-that-never-fits-the-tree-column-and-must-truncate-with-ellipsis.md'
+  window.__dirs['/w'].push({ name: long, path: `/w/${long}`, isDir: false })
+})
+await page.locator('button[aria-label="刷新"]').click()
+const longPath = `/w/a-very-long-workspace-file-name-that-never-fits-the-tree-column-and-must-truncate-with-ellipsis.md`
+await nameOf(longPath).waitFor()
+const trunc = await nameOf(longPath).evaluate((el) => {
+  const colRight = el.closest('[data-pm-tree-column]').getBoundingClientRect().right
+  const nodeRight = el.closest('.ant-tree-treenode').getBoundingClientRect().right
+  const nameRight = el.getBoundingClientRect().right
+  return {
+    clipped: el.scrollWidth > el.clientWidth,
+    nodeInColumn: nodeRight <= colRight + 1,
+    nameInColumn: nameRight <= colRight + 1,
+    scrollW: el.scrollWidth,
+    clientW: el.clientWidth,
+  }
+})
+check(
+  'a too-long name truncates (… on the name span, not an overflowing row)',
+  trunc.clipped && trunc.nodeInColumn && trunc.nameInColumn,
+  JSON.stringify(trunc),
+)
+const gap = await row('/w/d').evaluate((el) => {
+  const node = el.closest('.ant-tree-treenode')
+  const caret = node.querySelector('.ant-tree-switcher svg').getBoundingClientRect()
+  const icon = node.querySelector('.ant-tree-iconEle svg').getBoundingClientRect()
+  const sw = getComputedStyle(node.querySelector('.ant-tree-switcher'))
+  const iv = getComputedStyle(node.querySelector('.ant-tree-iconEle'))
+  return { gap: icon.left - caret.right, swW: sw.width, swMargin: sw.marginInlineEnd, iconW: iv.width }
+})
+check(
+  'the caret→icon gap is tight (18px cells, no margin, no wrapper inset — ~25px on stock antd)',
+  gap.gap > 0 && gap.gap < 8 && gap.swW === '18px' && gap.swMargin === '0px' && gap.iconW === '18px',
+  JSON.stringify(gap),
+)
+const polish = await nameOf(longPath).evaluate((el) => {
+  const rowEl = el.closest('.pm-ws-row')
+  const acts = rowEl.querySelector('.pm-ws-actions')
+  return {
+    actionsPos: getComputedStyle(acts).position,
+    nameRightAtRowRight: Math.abs(rowEl.getBoundingClientRect().right - el.getBoundingClientRect().right) < 2,
+  }
+})
+check(
+  'the name rides the full row — the actions block reserves no width (absolute overlay)',
+  polish.actionsPos === 'absolute' && polish.nameRightAtRowRight,
+  JSON.stringify(polish),
+)
+// A ROOT row carries no indent units — measure the step on a nested one.
+const indentStep = await row('/w/d/z.txt').evaluate((el) => getComputedStyle(el.closest('.ant-tree-treenode').querySelector('.ant-tree-indent-unit')).width)
+check('the indent step is 10px per level (2026-10-31 二次裁定)', indentStep === '10px', indentStep)
+const maskOf = () => page.evaluate((p) => {
+  const el = document.querySelector(`.pm-ws-row[data-ws-path="${p}"] .pm-ws-name`)
+  const cs = getComputedStyle(el)
+  return cs.maskImage || cs.webkitMaskImage || 'none'
+}, longPath)
+// :hover is pointer truth, not event truth — a dispatched MouseEvent never
+// flips it, so this drives the REAL mouse: park it off the tree, land it on
+// the long row, park it back.
+await page.mouse.move(5, 400)
+await page.waitForTimeout(120)
+const fadeBefore = await maskOf()
+await nameOf(longPath).hover()
+await page.waitForTimeout(120)
+const fadeDuring = await maskOf()
+await page.mouse.move(5, 400)
+await page.waitForTimeout(120)
+const fadeAfter = await maskOf()
+check(
+  'the name tail fades only while the actions are up (mask mirrors visibility)',
+  fadeBefore === 'none' && fadeDuring.includes('linear-gradient') && fadeAfter === 'none',
+  JSON.stringify({ before: fadeBefore, during: fadeDuring.slice(0, 40), after: fadeAfter }),
+)
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

@@ -18,6 +18,9 @@ import {
   svcCopyFile,
   svcListDir,
   svcDeletePath,
+  svcCreateDirectory,
+  svcRenamePath,
+  svcSearchWorkspace,
 } from '../services/file-ops'
 import { svcExportDocument } from '../services/office-export'
 import { svcEditDocx } from '../services/docx-ops'
@@ -39,6 +42,8 @@ import type {
   WriteFileResult,
   DirEntry,
   DeletePathResult,
+  WorkspaceSearchInput,
+  WorkspaceSearchResult,
 } from '../services/file-ops'
 
 export type { EditFileInput, EditFileResult, PatchFileInput, PatchFileResult, WriteFileInput, WriteFileResult }
@@ -82,6 +87,15 @@ export function registerFileOpsHandlers(): void {
 
   // ── Delete one entry (workbench 工作区 tree hover 删除) ───────────
   ipcMain.handle(IPC_CHANNELS.UTIL_DELETE_PATH, (_event, target: string): Promise<DeletePathResult> => svcDeletePath(target))
+
+  // ── Create a directory (workbench tree 新建文件夹, PLAN-project-ide 刀三) ──
+  ipcMain.handle(IPC_CHANNELS.UTIL_CREATE_DIR, (_event, dirPath: string): Promise<DeletePathResult> => svcCreateDirectory(dirPath))
+
+  // ── Rename one entry (workbench tree hover 重命名) ────────────────
+  ipcMain.handle(IPC_CHANNELS.UTIL_RENAME_PATH, (_event, oldPath: string, newName: string): Promise<DeletePathResult> => svcRenamePath(oldPath, newName))
+
+  // ── Workspace content search (workbench tree 内容搜索, 刀二): read-only ──
+  ipcMain.handle(IPC_CHANNELS.UTIL_SEARCH_WORKSPACE, (_event, input: WorkspaceSearchInput): Promise<WorkspaceSearchResult> => svcSearchWorkspace(input))
 
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_FILE, (_event, input: EditFileInput): Promise<EditFileResult> => svcEditFile(input))
 

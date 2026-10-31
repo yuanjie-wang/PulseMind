@@ -9,7 +9,7 @@
 //   * the expansion state is cached per workspace dir in workspaceTreeStore —
 //     WorkbenchPane unmounts this component on every tab switch, so anything
 //     held in component state is gone by the time the user comes back;
-//   * every row reveals 在系统中打开 / 复制路径 / 删除 on hover. Those clicks
+//   * every row reveals 在系统中打开 / 删除 on hover. Those clicks
 //     must not also select or expand the row (DirectoryTree's expandAction is
 //     'click'), hence the stopPropagation on every button — and 删除 asks
 //     first, being the one action here that clicking again cannot undo.
@@ -34,16 +34,36 @@
 // (工作区/浏览器/工作计划).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Tree, Tooltip, Button, Input, Spin, Modal, message } from 'antd'
+import { Tree, Tooltip, Button, Input, Spin, Modal, message, Dropdown } from 'antd'
 import type { DataNode, EventDataNode } from 'antd/es/tree'
-import { CopyOutlined, DeleteOutlined, DiffOutlined, FolderOpenOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
+import {
+  CheckCircleOutlined,
+  DeleteOutlined,
+  DiffOutlined,
+  EditOutlined,
+  FileOutlined,
+  FileSearchOutlined,
+  FolderOpenOutlined,
+  FolderOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
+import { usePreviewPaneStore, openInPreviewPane, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { isDirty } from '../../stores/preview-edit'
 import { useWorkspaceTreeStore, NO_EXPANDED_KEYS } from '../../stores/workspaceTreeStore'
 import { loadedAncestor, parentDir, removeNode } from '../../stores/workspace-tree'
 import { NO_FILE_CHANGES, useSessionFileChangesStore } from '../../stores/sessionFileChangesStore'
 import { buildChangedFilesTree, fileChangeMarks, normalizeChangePath, type ChangedFileNode } from '../../../../shared/agent-session/file-changes'
+import { MAX_MATCHES, walkTreeSearch, type TreeSearchResult } from '../../../../shared/workspace-tree-search'
 import type { SessionFileChange, SessionFileChangeKind } from '../../../../shared/agent-protocol'
+import { VerifyPanel } from './VerifyPanel'
+import { SearchPanel } from './SearchPanel'
+
+/** 刀一验证面板的入口旗标（2026-10-31 用户裁定「有点鸡肋，先隐藏让我再
+ *  想想」）：false = 工具条按钮不渲染。strip/互斥/失败解析链全部保留在位，
+ *  拨回 true 即恢复——不删代码，等用户想清楚去留。 */
+const VERIFY_ENTRY_ENABLED = false
 
 const { DirectoryTree } = Tree
 
@@ -56,14 +76,36 @@ const TREE_CSS = `
    tree: skill browsers elsewhere keep the stock step, and Settings' own Tree
    never sees it. The selector carries the tree class twice over (root + indent
    + unit) on purpose — it has to out-specify the component style antd injects
-   at runtime, which is also why there is no !important. Only the step shrinks:
-   row height and the 24px switcher slot (the caret cell) are untouched, so the
-   arrow's hit area and the hover actions keep their geometry. */
-.pm-ws-tree.ant-tree .ant-tree-indent .ant-tree-indent-unit { width: 16px; }
-.pm-ws-tree .ant-tree-node-content-wrapper { display: flex; align-items: center; }
-.pm-ws-tree .ant-tree-node-content-wrapper > .ant-tree-iconEle { flex: none; }
+   at runtime, which is also why there is no !important. 10px per level
+   (2026-10-31, user: 每级再收窄到 10px). */
+.pm-ws-tree.ant-tree .ant-tree-indent .ant-tree-indent-unit { width: 10px; }
+/* Long names truncate to … instead of stretching past the column (2026-10-31,
+   user). The break has to happen at the wrapper: without the blockNode prop
+   on the Tree (added alongside) the content wrapper is content-sized, so the
+   name span's own ellipsis rules never come into play — the long name pushes
+   the whole row out. blockNode is antd's intended switch (wrapper flex:auto plus
+   full-row stretch, which also gives the selected/hover wash the editor-
+   explorer full-row shape); min-width: 0 + overflow: hidden here complete the
+   shrinkable flex chain down to .pm-ws-name's ellipsis. */
+.pm-ws-tree .ant-tree-node-content-wrapper { display: flex; align-items: center; min-width: 0; overflow: hidden; padding-inline-start: 0; }
+/* Tighter caret→icon gap (2026-10-31, user: 缩小折叠箭头和 icon 之间的间距).
+   Stock antd spends ~25px between the two glyphs: the switcher is a 24px cell
+   with the caret centered (~7px right slack) plus a 4px margin-inline-end antd
+   derives from (switcherSize − controlInteractiveSize)/2, the content wrapper
+   opens with paddingInline 8px, and the icon rides another 24px centered cell
+   (~6px left slack). 18px cells on both sides, no margin, and no wrapper
+   inset bring the gap to ~7px while the caret keeps a full-height 18px hit
+   target — its hover pill (::before) follows the same width. The lost wrapper
+   inset costs nothing visually: blockNode (above) stretches the selected/
+   hover wash across the whole row anyway, so the inset only ever showed as
+   dead space after the caret. This amends the earlier stance that the 24px
+   switcher slot stays untouched: the user asked for the tighter spacing
+   explicitly. */
+.pm-ws-tree.ant-tree .ant-tree-switcher { width: 18px; margin-inline-end: 0; }
+.pm-ws-tree.ant-tree .ant-tree-switcher::before { width: 18px; }
+.pm-ws-tree .ant-tree-node-content-wrapper > .ant-tree-iconEle { flex: none; width: 18px; }
 .pm-ws-tree .ant-tree-title { flex: 1; min-width: 0; display: flex; align-items: center; }
-.pm-ws-row { flex: 1; min-width: 0; display: flex; align-items: center; }
+.pm-ws-row { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
 .pm-ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-ws-hit { background: var(--pm-warn-bg); border-radius: 2px; }
 /* Session-change inks (see the header). On the name span, not the row: the
@@ -72,11 +114,31 @@ const TREE_CSS = `
    an editor's explorer does. */
 .pm-ws-name.pm-ws-created { color: var(--pm-ws-created); }
 .pm-ws-name.pm-ws-modified { color: var(--pm-ws-modified); }
-/* Reserved, not hidden-by-reflow: the row keeps its geometry whether or not the
-   pointer is on it, so running the mouse down the tree never shifts the names. */
-.pm-ws-actions { flex: none; display: flex; align-items: center; gap: 2px; margin-left: 6px; visibility: hidden; }
+/* Hover actions are an OVERLAY, not a reservation (2026-10-31, user: 给按钮
+   预留空间让名字提前截断很奇怪，有没有优化方案). Absolute at the row's right
+   edge, they never consume layout width — the name rides the full row and
+   only truncates when it genuinely hits the column edge, ~64px later than the
+   reserved-block layout allowed. The 2026-10-30 no-reflow ruling survives in
+   a stronger form: the name's geometry is constant across hover because the
+   buttons float above it; what keeps them legible over the name's tail is the
+   fade below, not reserved emptiness. */
+.pm-ws-actions {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; gap: 2px; visibility: hidden;
+}
 .pm-ws-tree .ant-tree-treenode:hover .pm-ws-actions,
 .pm-ws-tree .ant-tree-treenode:focus-within .pm-ws-actions { visibility: visible; }
+/* The fade mirrors the visibility toggle exactly (hover / focus-within): while
+   the buttons float, the name's tail dissolves before their left edge — worst
+   case a modified row carries 4 buttons (4×18px + 3×2px gaps = 78px), so the
+   gradient reaches full transparency at 78px and starts dissolving 34px
+   earlier, a soft slope rather than a hard cut. Paint-only: a mask changes no
+   geometry, so the no-reflow check keeps measuring identical boxes. */
+.pm-ws-tree .ant-tree-treenode:hover .pm-ws-name,
+.pm-ws-tree .ant-tree-treenode:focus-within .pm-ws-name {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 112px), transparent calc(100% - 78px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 112px), transparent calc(100% - 78px));
+}
 .pm-ws-btn {
   width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -109,9 +171,7 @@ interface WorkspaceEntry {
 type WorkspaceNode = DataNode & { entry: WorkspaceEntry }
 
 function entryToNode(entry: WorkspaceEntry): WorkspaceNode {
-  return entry.isDir
-    ? { title: entry.name, key: entry.path, entry }
-    : { title: entry.name, key: entry.path, entry, isLeaf: true }
+  return entry.isDir ? { title: entry.name, key: entry.path, entry } : { title: entry.name, key: entry.path, entry, isLeaf: true }
 }
 
 /** A 「只看本会话改动」 synthetic row keeps the live tree's affordances by
@@ -135,6 +195,20 @@ function withChildren(nodes: WorkspaceNode[], key: React.Key, children: Workspac
   })
 }
 
+/** Look up a listed entry by path inside the loaded levels (新建's target-dir
+ *  resolution: is the selected row a directory?). Unloaded levels answer
+ *  null — the caller falls back to the path's parent. */
+function findEntry(nodes: WorkspaceNode[], target: string): WorkspaceEntry | null {
+  for (const node of nodes) {
+    if (node.entry.path === target) return node.entry
+    if (node.children) {
+      const hit = findEntry(node.children as WorkspaceNode[], target)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
 /** The fresh level, with each child's already-loaded children carried over. */
 function keepSubtrees(prev: WorkspaceNode[] | undefined, next: WorkspaceNode[]): WorkspaceNode[] {
   if (!prev || prev.length === 0) return next
@@ -155,7 +229,18 @@ function replaceLevel(entries: WorkspaceNode[], workspaceDir: string, dir: strin
 /** Centered one-line hint for the no-workspace / unreadable / empty states. */
 function Hint({ text }: { text: string }): React.ReactElement {
   return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px', color: 'var(--pm-text-muted)', fontSize: 12, textAlign: 'center' }}>
+    <div
+      style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '0 16px',
+        color: 'var(--pm-text-muted)',
+        fontSize: 12,
+        textAlign: 'center',
+      }}
+    >
       {text}
     </div>
   )
@@ -237,12 +322,13 @@ interface RowProps {
   highlight?: string
   /** The session-change ink for this row (file or folder), if any. */
   mark?: SessionFileChangeKind
-  onCopy: (entry: WorkspaceEntry) => void
   onDelete: (entry: WorkspaceEntry) => void
   /** Shell-open the row's path — files in their default app, folders in
    *  Finder (2026-10-30: the address bar's 📂 speaks for the previewed file
    *  alone, so this row button is a folder's way out of the app). */
   onOpenOs: (entry: WorkspaceEntry) => void
+  /** Rename-in-place (PLAN-project-ide 刀三): opens the name Modal. */
+  onRename: (entry: WorkspaceEntry) => void
   /** The session-diff action (PLAN-ide-linkage 刀三): only handed down in
    *  「只看改动」 mode, and the button only renders on modified files — a
    *  created file has no git past to diff against. */
@@ -273,7 +359,7 @@ function HighlightedName({ name, highlight }: { name: string; highlight?: string
 /** One row's title: the name, then the hover actions. Rendered through
  *  `titleRender` so the handlers are always the current ones while the tree
  *  data stays plain data. */
-function TreeRow({ entry, highlight, mark, onCopy, onDelete, onOpenOs, onDiff }: RowProps): React.ReactElement {
+function TreeRow({ entry, highlight, mark, onDelete, onOpenOs, onRename, onDiff }: RowProps): React.ReactElement {
   return (
     <span className="pm-ws-row" data-ws-path={entry.path}>
       <span className={mark ? `pm-ws-name pm-ws-${mark}` : 'pm-ws-name'} data-ws-mark={mark}>
@@ -309,14 +395,14 @@ function TreeRow({ entry, highlight, mark, onCopy, onDelete, onOpenOs, onDiff }:
         <button
           type="button"
           className="pm-ws-btn"
-          title="复制路径"
-          aria-label={`复制路径 ${entry.name}`}
+          title="重命名"
+          aria-label={`重命名 ${entry.name}`}
           onClick={(e) => {
             e.stopPropagation()
-            onCopy(entry)
+            onRename(entry)
           }}
         >
-          <CopyOutlined />
+          <EditOutlined />
         </button>
         <button
           type="button"
@@ -348,67 +434,16 @@ function dropPreviewTab(conversationId: string | undefined, path: string): void 
 // ── 搜索 (2026-10-25): a recursive name walk over the workspace. ──
 // The walk is bounded — a runaway tree (node_modules under a project workspace)
 // must not pin the renderer — and the result is pruned to matched entries plus
-// the ancestor folders that reach them, every level expanded.
+// the ancestor folders that reach them, every level expanded. The walk itself
+// lives in shared/workspace-tree-search.ts so vitest can drive it against a
+// fake listDir (the 2026-10-31 「漏」 fixes live there: matched directories
+// are retained as leaves, dependency/VCS trees are skipped by name).
 const SEARCH_DEBOUNCE_MS = 250
-const MAX_WALKED_DIRS = 400
-const MAX_MATCHES = 100
 
 /** Session-created files re-list their parent level after this quiet window:
  *  a sub-agent scaffolding ten files fires ten ledger events in a burst, and
  *  one re-read per touched level is all the tree needs. */
 const LIVE_RELIST_DEBOUNCE_MS = 300
-
-interface SearchResult {
-  nodes: WorkspaceNode[]
-  /** Every dir that survived pruning — the result renders fully expanded. */
-  expanded: string[]
-  truncated: boolean
-}
-
-/** DFS the workspace collecting every entry's coordinates; prune to matches +
- *  ancestors afterwards. Returns the pruned tree fully expanded. */
-async function walkMatches(rootDir: string, query: string): Promise<SearchResult> {
-  const byParent = new Map<string, WorkspaceEntry[]>()
-  const matched = new Set<string>()
-  let walked = 0
-  let truncated = false
-  const walk = async (dir: string): Promise<void> => {
-    if (walked >= MAX_WALKED_DIRS) {
-      truncated = true
-      return
-    }
-    walked += 1
-    const res = await window.electronAPI.listDir(dir)
-    if (!res) return
-    byParent.set(dir, res.entries)
-    for (const entry of res.entries) {
-      if (entry.name.toLowerCase().includes(query.toLowerCase())) {
-        matched.add(entry.path)
-        if (matched.size >= MAX_MATCHES) truncated = true
-      }
-      if (entry.isDir && !truncated) await walk(entry.path)
-    }
-  }
-  await walk(rootDir)
-
-  const expanded: string[] = []
-  const build = (dir: string): WorkspaceNode[] => {
-    const nodes: WorkspaceNode[] = []
-    for (const entry of byParent.get(dir) ?? []) {
-      if (entry.isDir) {
-        const children = build(entry.path)
-        if (children.length > 0) {
-          expanded.push(entry.path)
-          nodes.push({ title: entry.name, key: entry.path, entry, children })
-        }
-      } else if (matched.has(entry.path)) {
-        nodes.push({ title: entry.name, key: entry.path, entry, isLeaf: true })
-      }
-    }
-    return nodes
-  }
-  return { nodes: build(rootDir), expanded, truncated }
-}
 
 export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Props): React.ReactElement {
   const workspaceDir = usePreviewPaneStore((s) => s.workspaceDir)
@@ -432,7 +467,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
   const searching = debounced !== ''
-  const [search, setSearch] = useState<{ key: string; result: SearchResult } | null>(null)
+  const [search, setSearch] = useState<{ key: string; result: TreeSearchResult } | null>(null)
   const searchReqKey = `${workspaceDir ?? ''}#${debounced}#${searchTick}`
   const searchCurrent = search && search.key === searchReqKey ? search.result : null
 
@@ -448,7 +483,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     }
     let cancelled = false
     void (async (): Promise<void> => {
-      const result = await walkMatches(workspaceDir, debounced)
+      const result = await walkTreeSearch(workspaceDir, debounced, (dir) => window.electronAPI.listDir(dir))
       if (!cancelled) setSearch({ key: searchReqKey, result })
     })()
     return () => {
@@ -588,8 +623,23 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   // diff; an empty diff means the change is staged (or the disk moved back).
   const [diffTarget, setDiffTarget] = useState<string | null>(null)
   const [diffState, setDiffState] = useState<{ kind: 'loading' | 'repo' | 'norepo' | 'empty' | 'error'; text: string } | null>(null)
+  // ── 验证面板 (PLAN-project-ide 刀一) + 内容搜索 (刀二) ──
+  // The diff strip's siblings: ONE strip at a time — two half-height strips
+  // would starve the tree they sit under. Every opener closes the other two;
+  // the verify button itself is hidden behind VERIFY_ENTRY_ENABLED (2026-10-31
+  // user ruling: 「有点鸡肋，先隐藏让我再想想」) — the strip wiring stays.
+  const [verifyOpen, setVerifyOpen] = useState(false)
+  const [contentSearchOpen, setContentSearchOpen] = useState(false)
+  const closeStrips = (): void => {
+    setDiffTarget(null)
+    setDiffState(null)
+    setVerifyOpen(false)
+    setContentSearchOpen(false)
+  }
   const showDiff = async (entry: WorkspaceEntry): Promise<void> => {
     if (!workspaceDir) return
+    setVerifyOpen(false)
+    setContentSearchOpen(false)
     setDiffTarget(entry.path)
     setDiffState({ kind: 'loading', text: '' })
     try {
@@ -618,11 +668,14 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   useEffect(() => {
     if (!conversationId) return
     let cancelled = false
-    window.electronAPI.agentSessionEngineCall(conversationId, 'getFileChanges', [])
+    window.electronAPI
+      .agentSessionEngineCall(conversationId, 'getFileChanges', [])
       .then((v) => {
         if (!cancelled && Array.isArray(v)) useSessionFileChangesStore.getState().set(conversationId, v as SessionFileChange[])
       })
-      .catch(() => { /* no live session — nothing to paint */ })
+      .catch(() => {
+        /* no live session — nothing to paint */
+      })
     return () => {
       cancelled = true
     }
@@ -692,15 +745,6 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     setWorkspaceExpanded(workspaceDir, keys.map(String))
   }
 
-  const copyPath = async (entry: WorkspaceEntry): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(entry.path)
-      void message.success('已复制路径')
-    } catch {
-      void message.error('复制失败')
-    }
-  }
-
   /** The same executable-gated IPC the address bar's 📂 rides. That button
    *  only ever opens the previewed file now — a folder needs this row action. */
   const openInOs = (entry: WorkspaceEntry): void => {
@@ -752,6 +796,119 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     })
   }
 
+  // ── 新建 / 重命名 (PLAN-project-ide 刀三) ──
+  // 新建落在「选中目录」（选中行是目录就是它，是文件则其父目录），无选中 =
+  // 根。重命名是单段名称操作：分隔符在主进程 svcRenamePath 拒，这里也先挡
+  // 一道省一次往返。两者完成后重列受影响的一层——根走 tick 全量、子目录走
+  // withChildren 原地替换（与 created 文件的实时重列同款，不走重挂）。
+  const [createKind, setCreateKind] = useState<'file' | 'dir' | null>(null)
+  const [createName, setCreateName] = useState('')
+  const [renameTarget, setRenameTarget] = useState<WorkspaceEntry | null>(null)
+  const [renameName, setRenameName] = useState('')
+
+  const openCreate = (kind: 'file' | 'dir'): void => {
+    setCreateKind(kind)
+    setCreateName('')
+  }
+
+  /** The directory a 新建 lands in: the selected row's own dir, else the
+   *  selected file's parent, else the workspace root. */
+  const createTargetDir = (): string => {
+    if (!workspaceDir) return ''
+    if (selectedPath) {
+      const entry = current ? findEntry(current.entries, selectedPath) : null
+      if (entry?.isDir) return entry.path
+      if (selectedPath.startsWith(workspaceDir + '/')) return parentDir(selectedPath)
+    }
+    return workspaceDir
+  }
+
+  /** Re-list ONE affected level in place through replaceLevel (root keeps
+   *  loaded subtrees, a nested level swaps its children) — no `tick`, so no
+   *  remount/spinner/lost scroll, the same discipline as the created-file
+   *  re-list above. */
+  const relistDir = async (dir: string): Promise<void> => {
+    if (!dir || !workspaceDir) return
+    const res = await window.electronAPI.listDir(dir)
+    if (!res) return
+    setRoot((prev) => (prev && prev.key === reqKey ? { ...prev, entries: replaceLevel(prev.entries, workspaceDir, dir, res.entries) } : prev))
+  }
+
+  const confirmCreate = async (): Promise<void> => {
+    const kind = createKind
+    const name = createName.trim()
+    if (!kind || !name) return
+    if (name.includes('/') || name.includes('\\')) {
+      void message.error('名称不能包含路径分隔符')
+      return
+    }
+    const dir = createTargetDir()
+    const target = `${dir}/${name}`
+    try {
+      if (kind === 'dir') {
+        const res = await window.electronAPI.createDir(target)
+        if (!res.success) {
+          void message.error(res.error || '创建失败')
+          return
+        }
+        void message.success(`已创建文件夹「${name}」`)
+      } else {
+        // An empty-file create rides the preview-save write path: same guard,
+        // and it materializes nested parents for free.
+        const res = await window.electronAPI.writeFile({ filePath: target, content: '' })
+        if (!res.success) {
+          void message.error(res.error || '创建失败')
+          return
+        }
+        openInPreviewPane(target)
+        void message.success(`已创建「${name}」`)
+      }
+      setCreateKind(null)
+      await relistDir(dir)
+    } catch (err) {
+      void message.error(err instanceof Error ? err.message : '创建失败')
+    }
+  }
+
+  const requestRename = (entry: WorkspaceEntry): void => {
+    setRenameTarget(entry)
+    setRenameName(entry.name)
+  }
+
+  const confirmRename = async (): Promise<void> => {
+    const entry = renameTarget
+    if (!entry) return
+    const name = renameName.trim()
+    if (!name || name === entry.name) {
+      setRenameTarget(null)
+      return
+    }
+    if (name.includes('/') || name.includes('\\')) {
+      void message.error('名称不能包含路径分隔符')
+      return
+    }
+    try {
+      const res = await window.electronAPI.renamePath(entry.path, name)
+      if (!res.success) {
+        void message.error(res.error || '重命名失败')
+        return
+      }
+      const parent = parentDir(entry.path)
+      setRenameTarget(null)
+      // The old key leaves the expansion cache (a renamed DIR must not have its
+      // children re-expanded onto a path that no longer exists), the open tab
+      // follows the delete's semantics — a dirty draft keeps its tab — and the
+      // selection moves to the new path so the highlight survives.
+      useWorkspaceTreeStore.getState().dropDeleted(entry.path)
+      dropPreviewTab(conversationId, entry.path)
+      if (selectedPath === entry.path) onSelectPath(`${parent}/${name}`)
+      await relistDir(parent)
+      void message.success(`已重命名为「${name}」`)
+    } catch (err) {
+      void message.error(err instanceof Error ? err.message : '重命名失败')
+    }
+  }
+
   const titleRender = (node: DataNode): React.ReactNode => {
     const entry = (node as WorkspaceNode).entry
     if (!entry) return node.title as React.ReactNode
@@ -760,9 +917,9 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
         entry={entry}
         highlight={searching ? debounced : undefined}
         mark={marks.get(entry.path)}
-        onCopy={copyPath}
         onDelete={requestDelete}
         onOpenOs={openInOs}
+        onRename={requestRename}
         onDiff={onlyChanges ? showDiff : undefined}
       />
     )
@@ -804,7 +961,11 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
             style={{ flex: 1, minWidth: 0 }}
           />
         )}
-        {onlyChanges && <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', paddingLeft: 2 }}>{`本会话改动 · ${changed.nodes.length} 个文件`}</div>}
+        {onlyChanges && (
+          <div
+            style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', paddingLeft: 2 }}
+          >{`本会话改动 · ${changed.nodes.length} 个文件`}</div>
+        )}
         <Tooltip title={changes.length > 0 ? `只看本会话改动（${changes.length} 个文件）` : '本会话暂无文件改动'}>
           <Button
             type="text"
@@ -827,6 +988,60 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
             style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
           />
         </Tooltip>
+        {VERIFY_ENTRY_ENABLED && (
+          <Tooltip title="验证（运行工作区自带的 test/lint 命令）">
+            <Button
+              type="text"
+              size="small"
+              aria-label="验证"
+              icon={<CheckCircleOutlined style={{ fontSize: 12, color: verifyOpen ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
+              disabled={!workspaceDir}
+              onClick={() => {
+                const next = !verifyOpen
+                if (next) closeStrips()
+                setVerifyOpen(next)
+              }}
+              style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+            />
+          </Tooltip>
+        )}
+        <Tooltip title="全文搜索（工作区内容）">
+          <Button
+            type="text"
+            size="small"
+            aria-label="全文搜索"
+            icon={<FileSearchOutlined style={{ fontSize: 12, color: contentSearchOpen ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
+            disabled={!workspaceDir}
+            onClick={() => {
+              const next = !contentSearchOpen
+              if (next) closeStrips()
+              setContentSearchOpen(next)
+            }}
+            style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+          />
+        </Tooltip>
+        <Dropdown
+          trigger={['click']}
+          disabled={!workspaceDir}
+          menu={{
+            items: [
+              { key: 'file', icon: <FileOutlined />, label: '新建文件' },
+              { key: 'dir', icon: <FolderOutlined />, label: '新建文件夹' },
+            ],
+            onClick: ({ key }) => openCreate(key === 'dir' ? 'dir' : 'file'),
+          }}
+        >
+          <Tooltip title="新建（在选中目录或根目录）">
+            <Button
+              type="text"
+              size="small"
+              aria-label="新建"
+              icon={<PlusOutlined style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }} />}
+              disabled={!workspaceDir}
+              style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+            />
+          </Tooltip>
+        </Dropdown>
         <Tooltip title="刷新">
           <Button
             type="text"
@@ -850,6 +1065,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
             <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '6px 4px' }}>
               <DirectoryTree
                 className="pm-ws-tree"
+                blockNode
                 treeData={changedNodes}
                 expandedKeys={filterExpanded ?? changed.expanded}
                 onExpand={(keys) => setFilterExpanded(keys.map(String))}
@@ -874,9 +1090,30 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
                   background: 'var(--pm-bg)',
                 }}
               >
-                <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderBottom: '1px solid var(--pm-separator-faint)' }}>
+                <div
+                  style={{
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '4px 8px',
+                    borderBottom: '1px solid var(--pm-separator-faint)',
+                  }}
+                >
                   <DiffOutlined style={{ fontSize: 11, color: 'var(--pm-text-quiet)', flexShrink: 0 }} />
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 11,
+                      color: 'var(--pm-text-muted)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      direction: 'rtl',
+                      textAlign: 'left',
+                    }}
+                  >
                     <span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{diffTarget}</span>
                   </span>
                   <button
@@ -922,6 +1159,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
           <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '6px 4px' }}>
             <DirectoryTree
               className="pm-ws-tree"
+              blockNode
               treeData={searchCurrent.nodes}
               expandedKeys={searchCurrent.expanded}
               onSelect={onSelect}
@@ -930,9 +1168,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
               style={{ fontSize: 12 }}
             />
             {searchCurrent.truncated && (
-              <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--pm-text-faint)' }}>
-                结果过多，仅显示前 {MAX_MATCHES} 条
-              </div>
+              <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--pm-text-faint)' }}>结果过多，仅显示前 {MAX_MATCHES} 条</div>
             )}
           </div>
         )
@@ -951,6 +1187,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
               <DirectoryTree
                 key={reqKey}
                 className="pm-ws-tree"
+                blockNode
                 treeData={current.entries}
                 height={viewportH}
                 expandedKeys={expandedKeys}
@@ -965,6 +1202,49 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
           }
         </TreeScrollShell>
       )}
+      {/* The verify strip (PLAN-project-ide 刀一): tree-column bottom strip,
+          sibling of the diff strip (mutually exclusive). Search mode hides it —
+          the strip would squeeze the result list it sits under. */}
+      {verifyOpen && !searching && workspaceDir != null && <VerifyPanel workspaceDir={workspaceDir} onClose={() => setVerifyOpen(false)} />}
+      {contentSearchOpen && !searching && workspaceDir != null && <SearchPanel workspaceDir={workspaceDir} />}
+
+      {/* 新建 / 重命名 Modals（PLAN-project-ide 刀三） */}
+      <Modal
+        title={createKind === 'dir' ? '新建文件夹' : '新建文件'}
+        open={createKind != null}
+        okText="创建"
+        cancelText="取消"
+        onCancel={() => setCreateKind(null)}
+        onOk={() => void confirmCreate()}
+        destroyOnClose
+      >
+        <Input
+          aria-label="新建名称"
+          placeholder="名称"
+          value={createName}
+          autoFocus
+          onChange={(e) => setCreateName(e.target.value)}
+          onPressEnter={() => void confirmCreate()}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--pm-text-muted)' }}>{`位置：${createTargetDir()}`}</div>
+      </Modal>
+      <Modal
+        title="重命名"
+        open={renameTarget != null}
+        okText="重命名"
+        cancelText="取消"
+        onCancel={() => setRenameTarget(null)}
+        onOk={() => void confirmRename()}
+        destroyOnClose
+      >
+        <Input
+          aria-label="新名称"
+          value={renameTarget ? renameName : ''}
+          autoFocus
+          onChange={(e) => setRenameName(e.target.value)}
+          onPressEnter={() => void confirmRename()}
+        />
+      </Modal>
     </div>
   )
 }

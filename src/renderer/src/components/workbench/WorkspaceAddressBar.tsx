@@ -13,15 +13,16 @@
 // the tree rows and the tab TEXT, and the dirty state is the ⋯ menu's 保存
 // enablement — the bar is a nameplate, not a status row. Height is the tree
 // toolbar's 32px (4 + 24 + 4), so the two columns' first strips line up.
+// The ⋯ menu's items come from the SHARED builder (preview-file-actions,
+// 2026-10-31) — the immersive tab strip's right-end ⋯ serves the identical
+// actions, so the semantics cannot fork between the two surfaces.
 
 import React from 'react'
-import { Dropdown, message } from 'antd'
-import type { MenuProps } from 'antd'
-import { Check, Eye, FolderOpen, MoreHorizontal, PenLine, RotateCw, Save } from 'lucide-react'
-import { detectFileKind } from '../../../../shared/preview/file-kind'
-import { isDirty } from '../../stores/preview-edit'
+import { Dropdown } from 'antd'
+import { FolderOpen, MoreHorizontal } from 'lucide-react'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { useTranslation } from '../../i18n/useTranslation'
+import { usePreviewFileActions } from './preview-file-actions'
 
 const ICON_BUTTON: React.CSSProperties = {
   width: 24,
@@ -44,78 +45,13 @@ export function WorkspaceAddressBar({ conversationId }: Props): React.ReactEleme
   const key = conversationId ?? DRAFT_CONVERSATION_KEY
   const workspaceDir = usePreviewPaneStore((s) => s.workspaceDir)
   const activePath = usePreviewPaneStore((s) => s.activeByConversation[key] ?? null)
-  const drafts = usePreviewPaneStore((s) => s.drafts)
-  const previewModes = usePreviewPaneStore((s) => s.previewModes)
-  const oversized = usePreviewPaneStore((s) => s.oversized)
+  // The preview actions come from the shared builder (see the header note);
+  // the ⋯ dropdown below only renders them.
+  const items = usePreviewFileActions(conversationId)
 
   // The file on screen — and only it (2026-10-30 裁定). Nothing open = the
   // workspace root, so the row still says where this conversation lives.
   const displayPath = activePath ?? workspaceDir
-  // The menu targets the file ON SCREEN, like the path beside it.
-  const activeKind = activePath ? detectFileKind(activePath) : null
-  const editableKind = activeKind === 'markdown' || activeKind === 'text' || activeKind === 'csv' || activeKind === 'html'
-  const mode = activePath ? (previewModes[activePath] ?? 'view') : 'view'
-  const editOn = mode === 'source'
-  const elementOn = mode === 'element' && activeKind === 'html'
-  const dirty = !!activePath && !!drafts[activePath] && isDirty(drafts[activePath])
-  const oversizedActive = !!activePath && !!oversized[activePath]
-  const editDisabled = !activePath || !editableKind || oversizedActive
-
-  const toggleSource = () => {
-    if (!activePath || editDisabled) return
-    usePreviewPaneStore.getState().setPreviewMode(activePath, editOn ? 'view' : 'source')
-  }
-
-  const toggleElement = () => {
-    if (!activePath || activeKind !== 'html') return
-    if (oversizedActive) {
-      void message.info(t('previewPane.tooLarge'))
-      return
-    }
-    usePreviewPaneStore.getState().setPreviewMode(activePath, elementOn ? 'view' : 'element')
-  }
-
-  const saveActive = () => {
-    if (!activePath) return
-    // The one save seam: PreviewPane owns the write sequence and both ⌘S in
-    // the editor and this menu item meet at the event.
-    window.dispatchEvent(new CustomEvent('pulsemind-preview-save', { detail: activePath }))
-  }
-
-  const items: MenuProps['items'] = [
-    {
-      key: 'edit',
-      icon: editOn ? <Eye size={13} /> : <PenLine size={13} />,
-      label: editDisabled ? t('previewPane.editNotAvailable') : editOn ? t('previewPane.view') : t('previewPane.edit'),
-      disabled: editDisabled,
-      onClick: toggleSource,
-    },
-    ...(activeKind === 'html'
-      ? [
-          {
-            key: 'element',
-            icon: <Check size={13} style={{ visibility: elementOn ? 'visible' : 'hidden' }} />,
-            label: t('htmlEdit.modeToggle'),
-            onClick: toggleElement,
-          },
-        ]
-      : []),
-    { type: 'divider' as const },
-    {
-      key: 'save',
-      icon: <Save size={13} />,
-      label: t('previewPane.save'),
-      disabled: !dirty,
-      onClick: saveActive,
-    },
-    {
-      key: 'refresh',
-      icon: <RotateCw size={12} />,
-      label: t('previewPane.refresh'),
-      disabled: !activePath,
-      onClick: () => activePath && usePreviewPaneStore.getState().bumpReload(activePath),
-    },
-  ]
 
   return (
     <div

@@ -306,10 +306,10 @@ describe('WorkspaceTree wiring (source scan — the renderer half is probed, not
     expect(src).toContain('.ant-tree-treenode:hover .pm-ws-actions')
   })
 
-  it('routes 删除 through the guarded IPC and 复制路径 through the clipboard', () => {
+  it('routes 删除 through the guarded IPC (复制路径 removed 2026-10-31 — its clipboard pin left the suite with the button)', () => {
     expect(src).toContain('window.electronAPI.deletePath(entry.path)')
-    expect(src).toContain('navigator.clipboard.writeText(entry.path)')
     expect(src).toContain('Modal.confirm')
+    expect(src).not.toContain('复制路径')
   })
 
   it('takes a deleted path out of the loaded tree and the expansion cache', () => {
