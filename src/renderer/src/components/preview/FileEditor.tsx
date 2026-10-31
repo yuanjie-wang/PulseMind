@@ -1,66 +1,32 @@
-// ── File editor for the preview pane (PLAN-preview-edit T2, D2) ──
-// Zero-dependency monospace <textarea> filling the pane. Deliberately not
-// CodeMirror/Monaco: a 380px pane and the repo's zero-dep baseline; the
-// CodeMirror upgrade (line numbers / highlight / large files) is phase 2.
-// Tab inserts two spaces instead of moving focus; ⌘S/Ctrl+S asks the parent
-// to save. EOL/BOM handling lives in stores/preview-edit.ts, not here — the
-// textarea hands back LF text and the store restores the file's shape on save.
+// ── File editor for the preview pane (2026-10-31 CM batch: phase 2 landed) ──
+//
+// Thin shell over the lazy CodeMirror editor — the CM chunk stays out of the
+// entry bundle (same split the LazyDocxPreview rides). The props contract is
+// unchanged from the textarea era: value/onChange/onSave, EOL/BOM handling in
+// stores/preview-edit.ts, ⌘S/Ctrl+S asks the parent to save. Tab indents via
+// indentUnit ('  ', the old textarea's two spaces).
 
-import React from 'react'
+import React, { Suspense } from 'react'
 
 interface Props {
   value: string
   onChange: (next: string) => void
   onSave: () => void
+  /** Drives the CM grammar via the shared language table; absent/unknown =
+   *  editable without highlighting (PlainCode's honest gap). */
+  path?: string
 }
 
-const MONO_STACK = "'SF Mono', 'Menlo', 'Consolas', 'Courier New', monospace"
+const CodeMirrorEditor = React.lazy(() => import('./CodeMirrorEditor'))
 
-export function FileEditor({ value, onChange, onSave }: Props): React.ReactElement {
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      onSave()
-      return
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const el = e.currentTarget
-      const { selectionStart, selectionEnd } = el
-      const next = value.slice(0, selectionStart) + '  ' + value.slice(selectionEnd)
-      onChange(next)
-      // Restore the caret after the controlled re-render.
-      requestAnimationFrame(() => {
-        el.selectionStart = el.selectionEnd = selectionStart + 2
-      })
-    }
-  }
-
+export function FileEditor({ value, onChange, onSave, path }: Props): React.ReactElement {
   return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={handleKeyDown}
-      spellCheck={false}
-      wrap="off"
-      style={{
-        display: 'block',
-        width: '100%',
-        height: '100%',
-        minHeight: 200,
-        resize: 'none',
-        border: 'none',
-        outline: 'none',
-        padding: 12,
-        fontFamily: MONO_STACK,
-        fontSize: 12,
-        lineHeight: 1.6,
-        color: 'var(--pm-text-strong)',
-        background: 'var(--pm-bg)',
-        whiteSpace: 'pre',
-        overflow: 'auto',
-        tabSize: 2,
-      }}
-    />
+    <Suspense
+      fallback={
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>…</div>
+      }
+    >
+      <CodeMirrorEditor value={value} onChange={onChange} onSave={onSave} path={path} />
+    </Suspense>
   )
 }

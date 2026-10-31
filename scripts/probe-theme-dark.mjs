@@ -2505,7 +2505,7 @@ window.__wbVector = () => {
   v.wsTabActive = pick(fileStrip && fileStrip.querySelector('.pm-ws-tab[data-active="true"]'), ['backgroundColor', 'boxShadow', 'color'])
   v.wsTabIdle = pick(fileStrip && fileStrip.querySelector('.pm-ws-tab:not([data-active="true"])'), ['color'])
 
-  v.editorInk = pick(document.querySelector('#wb-editor textarea'), ['color', 'backgroundColor'])
+  v.editorInk = pick(document.querySelector('#wb-editor [data-pm-cm-editor] .cm-editor'), ['color', 'backgroundColor'])
   return v
 }
 
@@ -5113,7 +5113,7 @@ await page.waitForFunction(() => {
   // 三个工具 tab（工作区/浏览器/工作计划）——文件预览已并入工作区。
   return !!tabs && tabs.children.length >= 3
     && !!document.querySelector('#wb-tree .pm-ws-btn')
-    && !!document.querySelector('#wb-editor textarea')
+    && !!document.querySelector('#wb-editor [data-pm-cm-editor] .cm-editor')
 }, { timeout: 20000 })
 await page.waitForTimeout(150)
 

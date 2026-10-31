@@ -11,15 +11,21 @@
  *   1. typing makes the file dirty (the orange dot beside the address path —
  *      and on the file's tab chip, 2026-10-30);
  *   2. menu-save and ⌘S both write — with the CRLF line endings and BOM
- *      restored from the ORIGINAL file, not the textarea's LF;
+ *      restored from the ORIGINAL file, not the editor's LF (2026-10-31: the
+ *      editor is now CodeMirror — doc text is read through the view seam
+ *      `window.__pmPreviewCM`, since contenteditable renders one div per
+ *      line and textContent would lose the newlines);
  *   3. switching files and back keeps the draft;
  *   4. an external change meets a dirty draft as a two-choice banner
  *      (保留我的修改 / 重新加载 both behave), and a clean draft refreshes
- *      WITHOUT remounting the editor;
+ *      WITHOUT remounting the editor (the CM external-value sync replaces
+ *      the doc in place — DOM node survives);
  *   5. image tabs get no edit entry (disabled menu item); an oversized file
  *      refuses to edit;
  *   6. saving an html bumps the iframe key (the frame really remounts);
- *   7. a rejected write (path jail) surfaces the error as a toast.
+ *   7. a rejected write (path jail) surfaces the error as a toast;
+ *   8. mount cost of the CM editor on ~32KB / ~200KB code files (the 1MB
+ *      edit gate stays until this number says otherwise).
  *
  * Usage: node scripts/probe-preview-edit.mjs [--headed]
  */
@@ -80,6 +86,42 @@ const PAGE = '<!doctype html><html><body style="margin:0"><div id="root"></div><
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }))
 await page.goto('http://pm-probe.local/')
 
+// Perf fixtures: pySource-like TS modules at ~32KB (the view mode's highlight
+// cap) and ~200KB (2× the old full-render tax territory).
+function tsSource(units) {
+  const header = [
+    "import { join } from 'node:path'",
+    "import type { Stage } from './types'",
+    '',
+    'export const VERSION = "1.0.0"',
+    '',
+  ]
+  const unit = (i) => [
+    `/** Validates stage ${i} of the pipeline. */`,
+    `export function stage${i}Validate(config: Stage): boolean {`,
+    `  const name = \`stage-${i}\``,
+    `  if (config.retries < 0) {`,
+    `    console.warn("negative retries for", name)`,
+    `    return false`,
+    `  }`,
+    `  return config.tags.every((t) => t.startsWith("a")) && config.timeout > 0`,
+    `}`,
+    '',
+    `export async function stage${i}Run(payload: Record<string, string>, config: Stage): Promise<Stage> {`,
+    `  const out = { ...payload, stage: "${i}", ok: true }`,
+    `  for (const [key, value] of Object.entries(payload).sort()) {`,
+    `    out[key] = typeof value === "string" ? value.repeat(config.retries + 1) : value`,
+    `  }`,
+    `  await Promise.resolve()`,
+    `  return out as unknown as Stage`,
+    `}`,
+    '',
+  ]
+  return [...header, ...Array.from({ length: units }, (_, i) => unit(i).join('\n'))].join('\n')
+}
+const PY32 = tsSource(20)
+const PY200 = tsSource(125)
+
 await page.addScriptTag({
   content: `window.__files = {
     '/w/a.md': '# 标题\\r\\n正文\\r\\n',
@@ -88,6 +130,8 @@ await page.addScriptTag({
     '/w/pic.png': 'PNGBYTES',
     '/w/huge.md': '# big\\n' + 'x'.repeat(1024 * 1024 + 100),
     '/w/deny.md': '# deny\\n',
+    '/w/perf32.ts': ${JSON.stringify(PY32)},
+    '/w/perf200.ts': ${JSON.stringify(PY200)},
   };
   window.__writeCalls = [];
   window.__deny = {};
@@ -119,13 +163,36 @@ await page.addScriptTag({
 await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => window.__ready)
 
-const textarea = () => page.locator('textarea')
+/** The CM editor's contenteditable (one div per line inside — doc text only
+ *  readable through the view seam). */
+const cmContent = () => page.locator('[data-pm-cm-editor] [contenteditable="true"]')
+/** Null-safe: across a file switch the old view's seam is deleted before the
+ *  new one is registered — callers poll. */
+const docText = () => page.evaluate(() => (window.__pmPreviewCM ? window.__pmPreviewCM.state.doc.toString() : null))
+/** Caret to doc end: a click into a tall editor lands mid-content, and the
+ *  old textarea's "click below the text" trick has no CM equivalent. Typing
+ *  itself stays a real keyboard event. */
+const caretToEnd = () => page.evaluate(() => {
+  const view = window.__pmPreviewCM
+  view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })
+})
 const row = (p) => page.locator(`.pm-ws-row[data-ws-path="${p}"] .pm-ws-name`)
 const openFile = async (p) => {
   await row(p).click()
   await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, p)
 }
 const addressPath = () => page.locator('[data-ws-address-path]').innerText()
+/** The pane BODY trails the active path through bursts (2026-10-31 连发去抖:
+ *  rapid switches coalesce into one render) — assertions on displayed content
+ *  poll for the expected value instead of pinning immediacy. */
+const waitDocText = async (pred) => {
+  for (let i = 0; i < 20; i++) {
+    const v = await docText()
+    if (v !== null && pred(v)) return v
+    await page.waitForTimeout(100)
+  }
+  return (await docText()) ?? ''
+}
 /** Open the 更多 menu and click one item by its exact label. */
 const menuClick = async (label) => {
   await page.locator('[data-ws-more]').click()
@@ -148,6 +215,7 @@ await openFile('/w/a.md')
 
 /* ── 0. The address bar names the selection; the preview shows the file. ── */
 check('the address bar shows the selected file’s absolute path', (await addressPath()) === '/w/a.md', await addressPath())
+await page.getByText('标题').first().waitFor({ timeout: 2000 }).catch(() => {})
 check(
   '…and the preview renders the file (the preview body itself carries no strip — the tab strip lives up in WorkspacePane)',
   (await page.locator('.pm-preview-tabstrip').count()) === 0 &&
@@ -155,11 +223,12 @@ check(
     (await page.getByText('标题').first().isVisible()),
 )
 
-/* ── 1. Typing makes the file dirty; the textarea shows the file text. ── */
+/* ── 1. Typing makes the file dirty; the editor shows the file text. ── */
 await menuClick('编辑')
-await textarea().waitFor()
-const initial = await textarea().inputValue()
-check('edit mode shows the file source (CRLF normalized to LF for the textarea)', initial === '# 标题\n正文\n', JSON.stringify(initial))
+await cmContent().waitFor()
+const initial = await docText()
+check('edit mode shows the file source (CRLF normalized to LF in the CM doc)', initial === '# 标题\n正文\n', JSON.stringify(initial))
+check('…and the editor is highlighted (markdown grammar mounted)', (await page.locator('[data-pm-cm-editor][data-pm-cm-lang="markdown"]').count()) === 1, '')
 // Scoped to the address bar: since 2026-10-30 the tab chip carries its own
 // unsaved dot too, so a page-wide count would read 2 (asserted separately in
 // probe-workspace-tree §19).
@@ -168,8 +237,8 @@ check('edit mode shows the file source (CRLF normalized to LF for the textarea)'
 const addrDots = () => page.locator('[data-ws-address] span[title="未保存的修改"]').count()
 check('the address bar carries no dirty dot (2026-10-30 裁定，脏态归 ⋯ 菜单)', (await addrDots()) === 0)
 check('…and 保存 is disabled while clean', (await menuDisabled('保存')) === true)
-await textarea().click()
-await textarea().press('End')
+await cmContent().click()
+await caretToEnd()
 await page.keyboard.type('# 尾注')
 check('typing enables 保存 (the dirty state lives in the ⋯ menu now)', (await menuDisabled('保存')) === false)
 
@@ -185,8 +254,8 @@ check(
 check('…and the save disables 保存 again', (await menuDisabled('保存')) === true)
 
 /* ── 3. ⌘S saves too (the editor's own keyboard path). ── */
-await textarea().click()
-await page.keyboard.press('End')
+await cmContent().click()
+await caretToEnd()
 await page.keyboard.type('!')
 await page.keyboard.press('Meta+S')
 await page.waitForTimeout(120)
@@ -198,20 +267,20 @@ check(
 )
 
 /* ── 4. Switching files and back keeps the draft. ── */
-await textarea().click()
-await textarea().press('End')
+await cmContent().click()
+await caretToEnd()
 await page.keyboard.type('DRAFT-MARK')
 await openFile('/w/b.md')
 await menuClick('编辑') // b.md starts in view mode — edit mode is per file
-await textarea().waitFor()
-check('the other file opens with its own text', (await textarea().inputValue()).startsWith('# B'), '')
+await cmContent().waitFor()
+check('the other file opens with its own text', (await waitDocText((v) => v.startsWith('# B'))).startsWith('# B'), '')
 await openFile('/w/a.md')
-await textarea().waitFor()
-check('switching back restores the draft (D4: store survives remount)', (await textarea().inputValue()).includes('DRAFT-MARK'), '')
+await cmContent().waitFor()
+check('switching back restores the draft (D4: store survives remount)', (await waitDocText((v) => v.includes('DRAFT-MARK'))).includes('DRAFT-MARK'), '')
 
 /* ── 5. Conflict banner: dirty draft + external change (D7). ── */
 await openFile('/w/a.md')
-await textarea().waitFor()
+await cmContent().waitFor()
 await page.evaluate(() => {
   const st = window.__store.getState()
   const entry = st.drafts['/w/a.md'] ?? window.__makeDraft(window.__files['/w/a.md'])
@@ -221,9 +290,9 @@ await page.evaluate(() => {
 })
 await page.getByText('文件已被外部修改').waitFor()
 check('an external change over a dirty draft raises the conflict banner', true)
-check('…and the draft text is still on show (not clobbered)', (await textarea().inputValue()) === '我的本地修改\n', JSON.stringify(await textarea().inputValue()))
+check('…and the draft text is still on show (not clobbered)', (await waitDocText((v) => v === '我的本地修改\n')) === '我的本地修改\n', JSON.stringify(await docText()))
 await page.getByText('保留我的修改').click()
-check('保留我的修改 clears the banner and keeps the draft', (await page.locator('.ant-modal-confirm, div[style*="fff7e6"]').count()) === 0 && (await textarea().inputValue()) === '我的本地修改\n', '')
+check('保留我的修改 clears the banner and keeps the draft', (await page.locator('.ant-modal-confirm, div[style*="fff7e6"]').count()) === 0 && (await docText()) === '我的本地修改\n', '')
 
 await page.evaluate(() => {
   const st = window.__store.getState()
@@ -232,7 +301,7 @@ await page.evaluate(() => {
 await page.getByText('文件已被外部修改').waitFor()
 await page.getByText('重新加载').click()
 await page.waitForTimeout(120)
-check('重新加载 discards the draft and shows the disk text', (await textarea().inputValue()) === 'agent 改过的\n', JSON.stringify(await textarea().inputValue()))
+check('重新加载 discards the draft and shows the disk text', (await waitDocText((v) => v === 'agent 改过的\n')) === 'agent 改过的\n', JSON.stringify(await docText()))
 
 /* ── 6. A CLEAN draft refreshes without remounting the editor. ── */
 await page.evaluate(() => {
@@ -240,17 +309,17 @@ await page.evaluate(() => {
   st.setDraft('/w/a.md', window.__makeDraft(window.__files['/w/a.md']))
 })
 const nodeBefore = await page.evaluate(() => {
-  window.__taNode = document.querySelector('textarea')
-  return !!window.__taNode
+  window.__cmNode = document.querySelector('[data-pm-cm-editor]')
+  return !!window.__cmNode
 })
 await page.evaluate(() => {
   window.__files['/w/a.md'] = 'agent 静默改的\n'
   window.__store.getState().bumpReload('/w/a.md')
 })
 await page.waitForTimeout(150)
-const stayed = await page.evaluate(() => document.querySelector('textarea') === window.__taNode)
-const adopted = await textarea().inputValue()
-check('a clean draft refreshes silently (editor NOT remounted)', nodeBefore && stayed, `same node=${stayed}`)
+const stayed = await page.evaluate(() => document.querySelector('[data-pm-cm-editor]') === window.__cmNode)
+const adopted = await waitDocText((v) => v === 'agent 静默改的\n')
+check('a clean draft refreshes silently (editor NOT remounted; doc replaced in place)', nodeBefore && stayed, `same node=${stayed}`)
 check('…and adopts the new disk text', adopted === 'agent 静默改的\n', JSON.stringify(adopted))
 
 /* ── 7. Image files expose a disabled edit entry. ── */
@@ -270,6 +339,7 @@ await page.evaluate(() => {
   const entry = st.drafts['/w/c.html'] ?? window.__makeDraft(window.__files['/w/c.html'])
   st.setDraft('/w/c.html', { ...entry, content: '<html><body><p>edited</p></body></html>' })
 })
+for (let i = 0; i < 15 && !(await page.evaluate(() => !!document.querySelector('iframe'))); i++) await page.waitForTimeout(100)
 let iframe = await page.evaluate(() => { window.__frame = document.querySelector('iframe'); return !!window.__frame })
 await menuClick('保存')
 await page.waitForTimeout(150)
@@ -280,14 +350,42 @@ check('…and saving remounts the frame (key={reloadTick}, D5)', frameReplaced, 
 /* ── 10. A rejected write surfaces the error (D9). ── */
 await openFile('/w/deny.md')
 await menuClick('编辑')
-await textarea().waitFor()
-await textarea().click()
-await page.keyboard.press('End')
+await cmContent().waitFor()
+await cmContent().click()
+await caretToEnd()
 await page.keyboard.type('x')
 await page.evaluate(() => { window.__deny['/w/deny.md'] = '路径被拒绝：~/.ssh 属于受保护目录' })
 await menuClick('保存')
 await page.getByText('路径被拒绝').waitFor()
 check('a rejected save shows the error as a toast (D9)', true)
+
+/* ── 11. CM mount cost on real-size code files (informs the 1MB gate). ── */
+const mountCost = async (p) => {
+  await openFile(p)
+  const t0 = Date.now()
+  await menuClick('编辑')
+  await cmContent().waitFor({ timeout: 10000 })
+  const ms = Date.now() - t0
+  // A typing latency sample: 10 chars through the real key pipeline.
+  await cmContent().click()
+  await caretToEnd()
+  const baseLen = await page.evaluate(() => window.__pmPreviewCM.state.doc.length)
+  const t1 = Date.now()
+  await page.keyboard.type('0123456789')
+  await page.waitForFunction((base) => window.__pmPreviewCM.state.doc.length > base, baseLen)
+  const typingMs = Date.now() - t1
+  // Leave edit mode (the toggle reads 查看 while editing; the draft is
+  // dropped with the file switch that follows).
+  await menuClick('预览')
+  await page.waitForTimeout(60)
+  return { mountMs: ms, typingMs }
+}
+const m32 = await mountCost('/w/perf32.ts')
+check('~32KB code file: CM edit mount < 1000ms (was ~128ms of Prism full-render for VIEW)', m32.mountMs < 1000, JSON.stringify(m32))
+check('~32KB code file: 10-char typing round-trip < 400ms', m32.typingMs < 400, `typing=${m32.typingMs}ms`)
+const m200 = await mountCost('/w/perf200.ts')
+check('~200KB code file: CM edit mount < 1500ms (viewport rendering, not full-doc DOM)', m200.mountMs < 1500, JSON.stringify(m200))
+check('~200KB code file: 10-char typing round-trip < 400ms', m200.typingMs < 400, `typing=${m200.typingMs}ms`)
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

@@ -634,10 +634,11 @@ check('a forged pm:select/pm:commit-text (right source, wrong nonce) lands nowhe
 check('the picker script tag is scrubbed from the frame (nonce unreadable), overlay intact', !forged.scriptTagLeft && forged.pickerHostAlive, JSON.stringify(forged))
 
 /* ── 10. The source editor entry is still reachable (D2 advanced hatch,
-          via the address bar's 更多 menu). ── */
+          via the address bar's 更多 menu). 2026-10-31: the source editor is
+          CodeMirror now — doc text rides the view seam. ── */
 await enterSourceMode()
-await page.locator('textarea').waitFor()
-check('the advanced source editor still opens for html', (await page.locator('textarea').inputValue()).includes('<h1 style="color: purple'), '')
+await page.waitForFunction(() => !!window.__pmPreviewCM)
+check('the advanced source editor still opens for html', (await page.evaluate(() => window.__pmPreviewCM.state.doc.toString())).includes('<h1 style="color: purple'), '')
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
