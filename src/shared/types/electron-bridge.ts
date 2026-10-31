@@ -14,6 +14,7 @@ import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { MemoryPageRecord, MemoryPageType, PageOp, PageOpResult } from '../memory-pages'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
+import type { BrowserPaneState } from '../browser/pane'
 import type { SummonedExpert } from '../expert-context'
 import type { GitAction, GitResult } from './git'
 import type { ExperienceRecord, ExperienceDraft } from './experience-types'
@@ -407,13 +408,7 @@ export interface ElectronAPI {
   hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) => Promise<unknown>
   /** Browser pane (A-M5). `browserActive`: PLAN-workbench W3 — false folds the
    *  native WebView while the workbench shows a non-browser tab. */
-  browserPaneSetState: (state: {
-    viewKind: string
-    conversationId: string | null
-    chatAreaWidth: number
-    browserActive?: boolean
-    chromeOverlayHeight?: number
-  }) => Promise<void>
+  browserPaneSetState: (state: BrowserPaneState) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>
   browserPaneAction: (action: Record<string, unknown>) => Promise<void>
   /** Address-bar history (PLAN-browser-pane-ux T3): manual navigation only. */

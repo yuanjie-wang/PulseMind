@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveWindowControlsLayout } from '../shared/window-chrome'
 import type { WindowControlsLayout } from '../shared/window-chrome'
+import type { BrowserPaneState } from '../shared/browser/pane'
 import type { Conversation, ConversationIndexEntry, Message, TokenStats, ToolResultBatchEntry } from '../shared/types/conversation'
 import type { ProjectCreateInput, ProjectUpdateInput } from '../shared/types/project'
 import type { AppSettings } from '../shared/types/settings'
@@ -92,8 +93,7 @@ const electronAPI = {
   hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) =>
     ipcRenderer.invoke(IPC_CHANNELS.HOSTED_TOOL_CALL, tool, args, opts),
   // Browser pane (A-M5): chrome state / width / user tab actions + live updates.
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean; chromeOverlayHeight?: number }) =>
-    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
+  browserPaneSetState: (state: BrowserPaneState) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
   browserPaneSetWidth: (width: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_WIDTH, width),
   browserPaneAction: (action: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_ACTION, action),
   browserHistoryQuery: (text: string): Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>> =>

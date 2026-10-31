@@ -9,7 +9,7 @@
 import { prefixedId } from '../utils/id'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { clipboard, shell, type WebContents, type WebContentsView } from 'electron'
+import { BrowserWindow, clipboard, shell, type WebContents, type WebContentsView } from 'electron'
 import {
   assertAllowedUrl,
   browserError,
@@ -121,24 +121,43 @@ export class BrowserService {
    *  (headless) remains selectable via settings or setActiveBackend. */
   private defaultBackend: 'managed' | 'app-view' = 'app-view'
   private defaultTimeoutMs: number | undefined
-  /** What the renderer is showing right now — drives pane visibility. */
-  private paneState: BrowserPaneState = { viewKind: 'other', conversationId: null, chatAreaWidth: 1300 }
   /** Persisted pane width (settings.browser.paneWidth); null = never dragged. */
   private paneWidth: number | null = null
   /** The user's selected tab per conversation inside the pane. */
   private paneActiveTab = new Map<string, string>()
-  private paneSender: WebContents | null = null
 
-  /** Track which renderer owns the pane (review 2026-09-18 M1): a renderer
-   *  reload (refresh, crash restore, window reopen) creates a NEW WebContents
-   *  whose store starts EMPTY — the paneUpdateEquals gate in pushPaneUpdates
-   *  would swallow the identical re-push and the new renderer would learn
-   *  nothing until a tab actually changed. A sender change invalidates the
-   *  last push once, so the first syncPane reaches the fresh store. */
-  private setPaneSender(sender: WebContents): void {
-    if (this.paneSender !== sender) {
-      this.paneSender = sender
-      this.lastPanePush = null
+  /** ── Per-window pane registry (PLAN-popout-browser-pane 2026-10-31) ──
+   *  Every window (main + conversation popouts) drives its own pane: its own
+   *  "what am I showing" state, its own push target, its own dock. One
+   *  conversation lives in one window (the watch-guard chain), so each
+   *  window's pane scopes to a DIFFERENT tab set and two windows' panes can
+   *  be up at the same time. Project windows never register (their
+   *  workbench is hidden — the renderer gates the push). */
+  private paneWindows = new Map<number, { state: BrowserPaneState; sender: WebContents; win: BrowserWindow }>()
+
+  /** Which window is this sender? The test seam: vitest has no real
+   *  BrowserWindow (the electron stub answers fromWebContents with null), so
+   *  tests override this to map fake senders onto fake windows. */
+  private resolveWindow(sender: WebContents): BrowserWindow | null {
+    return BrowserWindow.fromWebContents(sender)
+  }
+
+  /** Sender change invalidates ONLY that window's last push (review
+   *  2026-09-18 M1, per window): a renderer reload creates a NEW WebContents
+   *  whose store starts EMPTY — the paneUpdateEquals gate would swallow the
+   *  identical re-push and the fresh renderer would learn nothing until a tab
+   *  actually changed. */
+  private dropPaneWindow(key: number): void {
+    this.paneWindows.delete(key)
+    this.lastPanePush.delete(key)
+    this.lastShownFresh.delete(key)
+  }
+
+  /** Dead windows/renderers leave the registry without trusting events —
+   *  closeAllPopouts destroys via win.destroy(), which emits no 'closed'. */
+  private prunePaneWindows(): void {
+    for (const [key, entry] of this.paneWindows) {
+      if (entry.win.isDestroyed() || (entry.sender.isDestroyed?.() ?? false)) this.dropPaneWindow(key)
     }
   }
 
@@ -171,15 +190,25 @@ export class BrowserService {
   /** ── Pane (A-M5): chrome state, width, user tab actions ── */
 
   handlePaneState(state: BrowserPaneState, sender: WebContents): void {
-    this.setPaneSender(sender)
-    this.paneState = state
-    appViewDock.setChromeOverlay(state.chromeOverlayHeight ?? 0)
-    this.syncPane()
+    const win = this.resolveWindow(sender)
+    if (!win) return
+    appViewDock.attach(win)
+    const key = win.id
+    const prev = this.paneWindows.get(key)
+    if (!prev || prev.sender !== sender) this.lastPanePush.delete(key)
+    this.paneWindows.set(key, { state, sender, win })
+    appViewDock.setChromeOverlay(win, state.chromeOverlayHeight ?? 0)
+    // 沉浸窗口（2026-10-31）：三向卡片 inset 随 pane 状态推送更新——主窗与
+    // popout 不带这些字段，全是 0，dock 几何逐字节不变。
+    appViewDock.setInsets(win, state.topInset ?? 0, state.rightInset ?? 0, state.bottomInset ?? 0)
+    this.syncPaneFor(key)
   }
 
   async handlePaneWidth(width: number, sender: WebContents): Promise<void> {
-    this.setPaneSender(sender)
-    const clamped = clampPaneWidth(width, this.paneState.chatAreaWidth)
+    const win = this.resolveWindow(sender)
+    if (!win) return
+    const entry = this.paneWindows.get(win.id)
+    const clamped = clampPaneWidth(width, entry?.state.chatAreaWidth ?? 1300)
     if (clamped !== this.paneWidth) {
       this.paneWidth = clamped
       try {
@@ -188,13 +217,18 @@ export class BrowserService {
         /* width stays session-only */
       }
     }
-    appViewDock.setWidth(this.resolvePaneWidth())
+    // One persisted width, clamped per window against THAT window's chat area.
+    // 沉浸窗口的 paneWidth 直通（2026-10-31）——面板占满右卡，不走 chatArea clamp。
+    for (const e of this.paneWindows.values()) {
+      appViewDock.dockFor(e.win).setWidth(e.state.paneWidth ?? this.resolvePaneWidthFor(e.state.chatAreaWidth))
+    }
     this.pushPaneUpdates(true)
   }
 
   async handlePaneAction(action: BrowserPaneAction, sender: WebContents): Promise<void> {
-    this.setPaneSender(sender)
-    const scope = this.paneState.conversationId
+    const win = this.resolveWindow(sender)
+    if (!win) return
+    const scope = this.paneWindows.get(win.id)?.state.conversationId ?? null
     if (!scope) return
     switch (action.op) {
       case 'newTab':
@@ -645,8 +679,11 @@ export class BrowserService {
 
   /** ── pane internals (A-M5) ── */
 
-  private resolvePaneWidth(): number {
-    return clampPaneWidth(this.paneWidth ?? defaultPaneWidth(this.paneState.chatAreaWidth), this.paneState.chatAreaWidth)
+  /** The pane width in force for a window showing a chat area of
+   *  `chatAreaWidth` px: the persisted pick, clamped against that window (two
+   *  windows have different chat areas; the same drag feeds both). */
+  private resolvePaneWidthFor(chatAreaWidth: number): number {
+    return clampPaneWidth(this.paneWidth ?? defaultPaneWidth(chatAreaWidth), chatAreaWidth)
   }
 
   /** The scope's app-view tabs, as the pane sees them. */
@@ -727,43 +764,50 @@ export class BrowserService {
     return entry
   }
 
-  /** Apply the pane snapshot to the native dock. Folding (no tabs, not on
-   *  the chat view, or the workbench showing a non-browser tab — W3) keeps
-   *  tabs alive — bounds go zero, nothing is destroyed. */
+  /** Apply the pane snapshot to EVERY registered window's dock. Folding (no
+   *  tabs, not on the chat view, or the workbench showing a non-browser tab —
+   *  W3) keeps tabs alive — bounds go zero, nothing is destroyed. */
   private syncPane(): void {
-    const { viewKind, conversationId } = this.paneState
-    const browserActive = this.paneState.browserActive !== false
+    this.prunePaneWindows()
+    for (const key of [...this.paneWindows.keys()]) this.syncPaneFor(key)
+  }
+
+  /** The per-window half: dock + fold for ONE window's own scope. */
+  private syncPaneFor(key: number): void {
+    const entry = this.paneWindows.get(key)
+    if (!entry) return
+    if (entry.win.isDestroyed() || (entry.sender.isDestroyed?.() ?? false)) {
+      this.dropPaneWindow(key)
+      return
+    }
+    const { viewKind, conversationId } = entry.state
+    const browserActive = entry.state.browserActive !== false
     const scope = viewKind === 'chat' ? conversationId : null
-    appViewDock.setWidth(this.resolvePaneWidth())
+    const dock = appViewDock.dockFor(entry.win)
+    dock.setWidth(entry.state.paneWidth ?? this.resolvePaneWidthFor(entry.state.chatAreaWidth))
     const active = browserActive && scope ? this.activePaneEntry(scope) : null
     // T4.3: a never-navigated tab (''/about:blank) shows the renderer's empty
     // state instead of a white native page — fold exactly like "no tab"; the
     // tab itself stays alive and listed (折叠保留语义不变).
-    const fresh = active ? this.activeFresh() : null
-    this.lastShownFresh = fresh
+    const fresh = this.freshnessOf(active)
+    this.lastShownFresh.set(key, fresh)
     const view = active ? this.viewOfTab(active.id) : null
-    appViewDock.show(view && fresh === false ? view : null)
-    appViewDock.setVisible(Boolean(active) && fresh === false)
+    appViewDock.show(entry.win, view && fresh === false ? view : null)
+    dock.setVisible(Boolean(active) && fresh === false)
     this.pushPaneUpdates(true)
   }
 
-  /** The freshness of the pane's active tab (false = a real page is showing),
-   *  or null when there is no active tab. One read shared by syncPane and the
-   *  activity hook — a second copy could fold one side while the other shows
-   *  a page. */
-  private activeFresh(): boolean | null {
-    const { viewKind, conversationId } = this.paneState
-    const browserActive = this.paneState.browserActive !== false
-    const scope = viewKind === 'chat' ? conversationId : null
-    const active = browserActive && scope ? this.activePaneEntry(scope) : null
+  /** The freshness of a pane's active tab (false = a real page is showing),
+   *  or null when there is no active tab. */
+  private freshnessOf(active: ServiceTab | null): boolean | null {
     if (!active) return null
     const view = this.viewOfTab(active.id)
     return !view || isFreshTabUrl(view.webContents.getURL() ?? '')
   }
 
-  /** Freshness at last syncPane — the fold-flip detector below compares
-   *  against it so only the transition pushes immediately. */
-  private lastShownFresh: boolean | null = null
+  /** Freshness at last syncPane, per window — the fold-flip detector below
+   *  compares against it so only the transition pushes immediately. */
+  private lastShownFresh = new Map<number, boolean | null>()
 
   /** AppViewBackend activity hook (wired in backendFor): agent-driven
    *  navigations bypass handlePaneAction (executeCommand never syncs), so the
@@ -771,13 +815,25 @@ export class BrowserService {
    *  gained a real URL — that transition must lift the fold at once. Every
    *  other activity stays on the throttled push (T1.3). */
   handleTabActivity(): void {
-    const fresh = this.activeFresh()
-    if (fresh === null || fresh !== this.lastShownFresh) this.syncPane()
+    this.prunePaneWindows()
+    let flipped = false
+    for (const [key, entry] of this.paneWindows) {
+      const { viewKind, conversationId } = entry.state
+      const browserActive = entry.state.browserActive !== false
+      const scope = viewKind === 'chat' ? conversationId : null
+      const fresh = browserActive && scope ? this.freshnessOf(this.activePaneEntry(scope)) : null
+      if (fresh === null || fresh !== this.lastShownFresh.get(key)) {
+        flipped = true
+        break
+      }
+    }
+    if (flipped) this.syncPane()
     else this.pushPaneUpdates()
   }
 
-  /** The last pane update actually sent — content-equality gate below. */
-  private lastPanePush: BrowserPaneUpdate | null = null
+  /** The last pane update actually sent per window — content-equality gate
+   *  below. Keyed by window id: each window's snapshot is its own. */
+  private lastPanePush = new Map<number, BrowserPaneUpdate | null>()
 
   /** Trailing ~64ms coalescing for activity-driven pushes (PLAN
    *  PLAN-browser-pane-ux T1.3): a loading page emits an event storm and each
@@ -803,32 +859,49 @@ export class BrowserService {
   }
 
   private doPushPaneUpdates(): void {
-    const target = this.paneSender ?? appViewDock.getWindow()?.webContents
-    if (!target || target.isDestroyed()) return
-    const { viewKind, conversationId } = this.paneState
-    const scope = viewKind === 'chat' ? conversationId : null
-    const entries = this.paneScopeEntries(scope)
-    const activeId = scope ? (this.activePaneEntry(scope)?.id ?? null) : null
-    const tabs: PaneTabInfo[] = entries.map((entry) => ({
-      id: entry.id,
-      url: this.viewOfTab(entry.id)?.webContents.getURL() ?? '',
-      title: this.viewOfTab(entry.id)?.webContents.getTitle() ?? '',
-      active: entry.id === activeId,
-    }))
-    const update: BrowserPaneUpdate = {
-      visible: viewKind === 'chat' && entries.length > 0,
-      width: this.resolvePaneWidth(),
-      conversationId: scope,
-      tabs,
+    this.prunePaneWindows()
+    if (this.paneWindows.size === 0) {
+      // Boot-race fallback: a tab created before ANY window pushed pane state
+      // still needs a push target (was: the main window's webContents). The
+      // default scope is null — the moment the window's own state push lands,
+      // its scoped snapshot replaces this.
+      const fallback = appViewDock.anyLiveWindow()?.webContents
+      if (!fallback || fallback.isDestroyed()) return
+      const update: BrowserPaneUpdate = { visible: false, width: this.resolvePaneWidthFor(1300), conversationId: null, tabs: [] }
+      if (!paneUpdateEquals(update, this.lastPanePush.get(-1) ?? null)) {
+        this.lastPanePush.set(-1, update)
+        fallback.send(IPC_CHANNELS.BROWSER_PANE_UPDATE, update)
+      }
+      return
     }
-    // Second line of defense against a render↔main loop: callers push on
-    // every width write and tab activity without checking for change, and a
-    // new update object re-renders the whole ChatView. Nothing changed → say
-    // nothing (a title/url polling delta is the renderer's own refresh path,
-    // not this push's job).
-    if (paneUpdateEquals(update, this.lastPanePush)) return
-    this.lastPanePush = update
-    target.send(IPC_CHANNELS.BROWSER_PANE_UPDATE, update)
+    for (const [key, entry] of this.paneWindows) {
+      if (entry.sender.isDestroyed?.() ?? false) continue
+      const { viewKind, conversationId } = entry.state
+      const scope = viewKind === 'chat' ? conversationId : null
+      const entries = this.paneScopeEntries(scope)
+      const activeId = scope ? (this.activePaneEntry(scope)?.id ?? null) : null
+      const tabs: PaneTabInfo[] = entries.map((tab) => ({
+        id: tab.id,
+        url: this.viewOfTab(tab.id)?.webContents.getURL() ?? '',
+        title: this.viewOfTab(tab.id)?.webContents.getTitle() ?? '',
+        active: tab.id === activeId,
+      }))
+      const update: BrowserPaneUpdate = {
+        visible: viewKind === 'chat' && entries.length > 0,
+        width: entry.state.paneWidth ?? this.resolvePaneWidthFor(entry.state.chatAreaWidth),
+        conversationId: scope,
+        tabs,
+      }
+      // Second line of defense against a render↔main loop: callers push on
+      // every width write and tab activity without checking for change, and a
+      // new update object re-renders the whole ChatView. Nothing changed → say
+      // nothing (a title/url polling delta is the renderer's own refresh path,
+      // not this push's job). Gated PER WINDOW — each window's snapshot is its
+      // own, and one window's no-op must not swallow another's change.
+      if (paneUpdateEquals(update, this.lastPanePush.get(key) ?? null)) continue
+      this.lastPanePush.set(key, update)
+      entry.sender.send(IPC_CHANNELS.BROWSER_PANE_UPDATE, update)
+    }
   }
 
   private resolveTab(tabId: string, scopeId: string): ServiceTab {

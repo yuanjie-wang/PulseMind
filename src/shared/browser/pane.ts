@@ -57,6 +57,20 @@ export interface BrowserPaneState {
    *  paints ABOVE all DOM, so an open dropdown is invisible unless the dock
    *  shifts the webview down by exactly this much. 0/absent = closed. */
   chromeOverlayHeight?: number
+  // ── 沉浸窗口几何补偿（2026-10-31，三面板右卡）──
+  // dock.layout 写死「原生 view 贴窗口右缘、从 TITLE_BAR_HEIGHT 下开始」；沉浸
+  // 窗口的右卡是圆角卡片（5px 窗口边距 + 1px 卡边框）且顶部还有面板切换器行，
+  // 原生 view 必须收进卡的内容盒。三个 inset 缺省 0/absent = 主窗与 popout 的
+  // 旧几何逐字节不变。
+  /** TITLE_BAR_HEIGHT 之下再下推的 px（窗口边距 + 卡边框 + 切换器行高）。 */
+  topInset?: number
+  /** 距窗口右缘收进的 px（窗口边距；卡边框由 webviewBox 自身的 2px 内缩吸收）。 */
+  rightInset?: number
+  /** 距窗口底缘收进的 px（窗口边距 + 卡边框）——available 高度随之收窄。 */
+  bottomInset?: number
+  /** 直通面板宽度（沉浸浏览器面板占满右卡，没有「挤占聊天」的侧栏关系，
+   *  绕开 clampPaneWidth 的 chatArea−640 数学）。absent = 走旧 clamp。 */
+  paneWidth?: number
 }
 
 /** One row in the pane's tab strip. */

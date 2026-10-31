@@ -8,11 +8,11 @@
 //
 // Consumers:
 //   • main.tsx  — render PopoutApp (conversation popout OR project window)
-//     instead of the full workbench App
-//   • useBrowserPane — never push browser pane state (the native
-//     WebContentsView dock is a main-window singleton, appViewDock; a
-//     secondary window must not become its target, or the native view would
-//     composite over the wrong window)
+//     instead of the full workbench App, and fetch the donor's side-window
+//     seed (popout/seed.ts) before anything mounts
+//   • useBrowserPane — conversation popouts push their own pane state (the
+//     dock registry is per-window since PLAN-popout-browser-pane 2026-10-31);
+//     project windows stay excluded (IS_PROJECT_WINDOW gate there)
 //
 // Both kinds boot the SAME root component (PopoutApp): a project window is the
 // popout bound to a project instead of a fixed conversation. Kept as two

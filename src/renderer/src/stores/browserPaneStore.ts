@@ -23,10 +23,14 @@ interface BrowserPaneStore {
    *  dropdown) — rides the pane-state push so the dock can shift the
    *  WebContentsView down while it is open (PLAN-browser-pane-ux T3.5). */
   chromeOverlayHeight: number
+  /** 沉浸窗口右卡的实测量宽（2026-10-31 三面板）——浏览器面板占满整卡，
+   *  paneWidth 直通不带 chatArea clamp；主窗恒 null 走旧 clamp。 */
+  immersiveCardWidth: number | null
   setUpdate: (update: BrowserPaneUpdate) => void
   setOptimisticActive: (id: string | null) => void
   setChromeOverlayHeight: (px: number) => void
   setChatAreaWidth: (width: number) => void
+  setImmersiveCardWidth: (width: number | null) => void
 }
 
 export const useBrowserPaneStore = create<BrowserPaneStore>((set) => ({
@@ -34,10 +38,12 @@ export const useBrowserPaneStore = create<BrowserPaneStore>((set) => ({
   chatAreaWidth: Math.max(600, typeof window !== 'undefined' ? window.innerWidth - 240 : 800),
   optimisticActiveId: null,
   chromeOverlayHeight: 0,
+  immersiveCardWidth: null,
   setUpdate: (update) => set({ update, optimisticActiveId: null }),
   setOptimisticActive: (id) => set({ optimisticActiveId: id }),
   setChromeOverlayHeight: (px) => set({ chromeOverlayHeight: px }),
   setChatAreaWidth: (width) => set({ chatAreaWidth: width }),
+  setImmersiveCardWidth: (immersiveCardWidth) => set({ immersiveCardWidth }),
 }))
 
 if (typeof window !== 'undefined' && window.electronAPI?.onBrowserPaneUpdate) {
