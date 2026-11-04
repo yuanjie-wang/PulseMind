@@ -2,17 +2,20 @@
 // Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
 // the product intro markdown; the window header carries the page title, so the
 // drawer chrome is gone. Content re-featured per release rather than drifting
-// back to an era-stale feature list — the 0.4.3 pass carries the memory-wiki
-// unification (four-type memory pages, scheduled extraction, the curated
-// compile pass with retire/restore), the experience-as-skill ruling (the skill
-// center's three sections, SKILL-standard manuals, one-click SOP distillation,
-// pick_skill pulling experiences), recall as the one federated search, the
-// workbench address bar + draggable splits, background-task wakeup, sub-agent
-// follow-up, the network proxy (packet debugging), the 12h unattended
-// hardening batch, and the execution-guardrails batch (read-before-write and
-// the four gates, CSP'd artifact cards). The two intro paragraphs name the
-// SHIPPING version (the footer's __APP_VERSION__ already follows package.json
-// on its own). Deliberately NOT mentioned: the routine webhook trigger and the
+// back to an era-stale feature list — the 0.5.0 pass carries the layout-modes
+// batch (per-conversation chat / workspace / browser views behind a header
+// cycle button, the card-ed main window, the welcome page's three task modes
+// including the browser task with a URL entry and recent visits, the New Task
+// split-button submenu), the CodeMirror preview batch (view/edit flip on one
+// instance, completion, ⌘F find-and-replace, the read-only agent-change diff
+// with Show/Hide changes), the multi-window batch (conversation popout, the
+// project immersive window's three panels), the workbench batch (full-text
+// search card, only-this-session-changes filter, per-file diff, file
+// operations, review linkage), and the extension batch (history scoped per
+// Chrome tab, kept across browser restarts, turn-end hosted persistence).
+// The two intro paragraphs name the SHIPPING version (the footer's
+// __APP_VERSION__ already follows package.json on its own). Deliberately NOT
+// mentioned: the routine webhook trigger and the
 // settlement webhook — ROUTINE_WEBHOOK_UI keeps both surfaces hidden (backend
 // keeps working), so the fact sheet hides them with it. The tool count is
 // BUILT_IN_TOOLS.length (33): page tools are extension-only and
@@ -37,7 +40,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.4.3 重排了 AI 的记性与本领：记忆与经验统一为可全文检索的记忆页，自动提取、自动整理、可退役可恢复；经验按技能手册的标准沉淀，确定性流程可一键固化为带脚本与验证证据的 SOP；recall 一个口子查遍记忆、历史会话与知识库。工作台换上地址栏与可拖拽分栏，后台任务完成自动唤醒对话，对外请求可统一挂代理抓包调试；长会话无人值守更稳，AI 执行护栏更严。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.0 把窗口还给了任务：同一段对话可以在对话、工作区、浏览器三种视图间随时轮转，视图跟着任务走、按会话记住；主窗整体换成卡片语言，欢迎页按对话 / 项目 / 浏览器三档开局，输入网址就能直接开一个浏览任务。预览侧换成了带语法高亮、自动补全与 ⌘F 查找替换的代码编辑器，AI 改过的文件以只读审阅高亮「改了什么」；对话与项目都能弹出为独立窗口，工作台补齐全文检索、只看本会话改动与逐文件 diff。浏览器扩展的历史按 Chrome 页签隔离，浏览器重启后照样找得回来。所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -60,12 +63,21 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## 全新的信息架构
 
-- **欢迎页** — 「试试」快捷提示词一键开聊；对话 / 项目两个视角；项目、日常、知识三类卡片把下一步放在眼前
-- **侧栏** — 新建任务 / 搜索 / 日常任务 / 能力 • 知识 • 创作
-- **设置页** — 常规（语言、外观、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
+- **欢迎页** — 对话 / 项目 / 浏览器三档开局：对话形态是「继续对话 / 开始日常 / 知识沉淀」三类卡片加「试试」提示词；项目形态先挑一个工作目录，选好即压缩成一条横条、随时「更换」；浏览器形态只需输入网址
+- **主窗三视图** — 会话头右上角的循环钮在对话 / 工作区 / 浏览器之间轮转，视图跟着任务走、按会话记住；新建任务也能从侧栏子菜单直接落进对应形态
+- **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务 / 能力 • 知识 • 创作
+- **设置页** — 常规（语言、外观、开机自启、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
 - **会话列表** — 置顶 / 今天 / 昨天 / 更早 自动分组
+
+## 多窗口
+
+同一个对话可以有不止一个容器，卡片语言贯穿主窗与次级窗口。
+
+- **卡片化主窗** — 对话列与工作台各是一张圆角卡，四周留白、列间留缝；浏览器页签、文件预览都收进各自的卡里
+- **弹出为独立窗口** — 会话头一下「弹出为独立窗口」，这段对话就搬进自己的窗口：主窗关掉它也一起关，盯着它就算已读，关掉窗口不会销毁会话
+- **项目沉浸窗口** — 项目可以整页打开：左栏「目录树 / 全文检索」二选一，中间预览，右侧「对话 / 浏览器 / 工作计划」三选一，三列都是圆角卡；每次进窗都从左文件、右对话起步，分栏宽度自动记住
 
 ## 项目
 
@@ -74,6 +86,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 - **命名工作区** — 每个项目一个文件夹、一个专属身份色，项目下的会话自动归档
 - **项目概述** — 一句话介绍项目（50 字以内），随消息注入上下文，AI 不必每次重新摸索
 - **欢迎页卡片** — 继续上次对话，或立即开始新任务
+- **沉浸打开** — 项目可以整页打开为独立窗口，左树右对话地干活（见「多窗口」）
 - **排序** — 拖拽最顺手，也支持按创建时间 / 名称 / 最近活动
 
 ## 工作台
@@ -81,7 +94,12 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包屑，点一层跳一层。
 
 - **拖拽分栏** — 侧栏与「目录树 ↔ 预览」的宽度都能拖拽调整，小窗不挤、宽屏不空，布局自动记住
-- **文件 tab 预览** — 目录树选中即预览，多个文件并排开着不迷路
+- **文件 tab 预览** — 目录树选中即预览，多个文件并排开着不迷路，页签条可横向滚动
+- **只看本会话改动** — 一开关把树收窄到「这段会话里 AI 动过什么」：新建 / 修改 / 删除按工具记账，不猜文件时间
+- **逐文件 diff** — 对着某个改动文件直接看 Git 差异，不用切出去敲命令；非 Git 目录如实说明
+- **全文检索** — 项目沉浸窗口的左栏在「目录树 / 全文检索」之间切换，命中直接跳进预览并定位到行
+- **文件操作** — 重命名、删除（进废纸篓）、新建文件与文件夹（沉浸形态），都在树的右键与工具条上
+- **审阅联动** — 对话里点一个改动行，预览自动跳到那一段并高亮
 
 ## 日常任务
 
@@ -144,6 +162,9 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 ## 浏览器
 
 - **内置浏览器面板** — 多标签、地址栏历史与收藏、即时切换；页面快照带原生引用编号，每步只发差异、iframe 内容一并可见，AI 精准定位元素
+- **浏览器视图** — 会话头循环钮切到浏览器，主卡整个换成网页，dock 里保留对话输入面：边看边问，不必来回切窗
+- **浏览任务** — 欢迎页浏览器形态输入网址就开一个容器：标签即地址，打开后可让 AI 总结页面、提取要点、接着操作
+- **历史不串不丢** — 扩展面板的历史按 Chrome 页签隔离：同一个页签刷新、跳转都读得到同一份，页签之间互不串；浏览器重启后旧历史照样找得回来
 - **收藏** — 地址栏星标收藏常用站点，新标签页直达；也可以对 AI 说「打开我收藏的知乎」，按名字取址、不靠猜
 - **浏览器扩展** — 任意网页右下角点开悬浮球，展开同款对话面板；8 个页面工具直接操作你正在看的标签页，HTML 产物卡在面板里同样可预览
 - **安装** — 「设置 → 浏览器插件」提供服务开关、插件包下载与安装指南
@@ -168,7 +189,8 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 ## 富预览与预览即编辑
 
 - **开箱即看** — Markdown / 文本 / 代码 / CSV / HTML（沙箱隔离）/ 图片 / Word 分页 / PPT 幻灯片 / Excel 网格 / PDF
-- **预览即编辑** — 文件面板不只是渲染，还能直接改
+- **预览即编辑** — 文本与代码文件的查看态本身就是代码编辑器，翻到编辑也只是同一个实例换态：滚动位置与未保存草稿都不丢，切回去接着看；语法高亮、自动补全、⌘F 查找一应齐全，要替换就翻到编辑态在同一面板里改（区分大小写、正则、跳转行）
+- **AI 改了什么** — AI 写过或改过的文件，查看态直接高亮出它的改动，只读审阅；不设接受 / 拒绝按钮，菜单里可随时显示或隐藏。你自己的输入不参与这份 diff
 - **HTML 元素编辑** — 元素面板按类型编辑，双击就地改文字，逐步撤销，或一句话让 AI 改
 
 ## 产物
@@ -205,7 +227,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 - **多模型** — Anthropic / OpenAI 双协议适配，模型按供应商分组共享凭据，单个会话还可单独指定模型
 - **记忆** — 手写 MEMORY.md 永远注入，其余自动提取、整理为记忆页（见「记忆」）
 - **经验** — 会话后自动萃取，可固化为 SOP（见「经验」）
-- **会话与统计** — 本地 SQLite 存储，自动标题（第三条消息后还会重写得更准）、自动清理；Token 用量按小时 / 日 / 月统计，缓存命中单独记账
+- **会话与统计** — 本地 SQLite 存储，自动标题（第三条消息后还会重写得更准）、自动清理；每条回复带耗时与 Token 数，Token 用量按小时 / 日 / 月统计，缓存命中单独记账
 - **长跑更稳** — 闲置会话自动逐出内存、终端输出封顶、网络断流自动续跑、调度槽位不再卡死——12 小时无人值守也不失控
 - **双语** — 中文 / English 即时切换，当前语言自动注入提示词
 `
@@ -215,7 +237,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.4.3 reorganizes what the AI remembers and what it can do: memories and experiences are unified into full-text-searchable memory pages — extracted, curated, retired and restorable; experiences are written to the skill manual standard, and deterministic workflows distill into SOPs with scripts and verification evidence in one click; a single recall call searches memories, past conversations, and the knowledge base. The workbench gains an address bar and draggable splits, finished background tasks wake the conversation on their own, all outbound traffic can ride a proxy for packet-level debugging, long unattended sessions hold steady, and the AI's execution guardrails are stricter. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.0 hands the window back to the task: one conversation rotates between chat, workspace, and browser views at any moment — the view follows the task and is remembered per conversation. The main window speaks one card language throughout, the welcome page opens in three modes (chat / project / browser) where a URL alone starts a browsing task, and previews became a code editor with syntax highlighting, completion, and ⌘F find-and-replace, while AI-changed files are reviewed read-only as what-changed highlights. Conversations and projects both pop out into their own windows, and the workbench gains full-text search, an only-this-session-changes filter, and per-file diffs. The browser extension's history is scoped per Chrome tab and survives browser restarts. All data stays on your own machine.
 
 ## Quick Start
 
@@ -238,12 +260,21 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 ## A New Information Architecture
 
-- **Welcome page** — one-click starters under Try these; a chats view and a projects view; project, routine, and knowledge cards keep the next step within reach
-- **Sidebar** — New Task / Search / Routines / Capability · Knowledge · Studio
-- **Settings** — General (language, appearance, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / About; light / dark / system appearance
+- **Welcome page** — three ways to begin: chat shows continue-the-conversation / start-a-routine / knowledge cards plus Try-these prompts; project asks for a working folder first, then collapses into a single strip with a change affordance; browser just wants a URL
+- **Three main views** — a cycle button in the conversation header rotates chat / workspace / browser, the view follows the task and is remembered per conversation; New Task's submenu drops you straight into the mode you want
+- **Sidebar** — New Task (chat / project / browser) / Search / Routines / Capability · Knowledge · Studio
+- **Settings** — General (language, appearance, launch at login, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
 - **Conversation list** — auto-grouped into Pinned / Today / Yesterday / Earlier
+
+## Multiple Windows
+
+A conversation can live in more than one container, and the card language carries from the main window into the secondary ones.
+
+- **Card-ed main window** — the chat column and the workbench are each one rounded card with breathing room between them; browser tabs and file previews sit inside their own cards
+- **Pop out into its own window** — one click in the conversation header moves that conversation into a window of its own: it closes with the main window, watching it counts as read, and closing the window does not destroy the session
+- **Project immersive window** — open a project full-page: directory tree or full-text search on the left, preview in the middle, and chat / browser / work plan on the right, all three columns as rounded cards; every entry starts file-left and chat-right, with the split widths remembered
 
 ## Projects
 
@@ -252,6 +283,7 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 - **Named workspace** — one folder and one identity color per project; its conversations file themselves under it
 - **Project overview** — one sentence (up to 50 characters) injected into every prompt, so the AI never re-explores from scratch
 - **Welcome cards** — continue the last conversation, or start a new task right away
+- **Immersive open** — a project can open full-page as its own window, tree on the left and chat on the right (see Multiple Windows)
 - **Ordering** — drag to reorder, or sort by created / name / recent activity
 
 ## Workbench
@@ -259,7 +291,12 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 Every file the AI writes lives here: the address bar lays the workspace path out as breadcrumbs — click a segment to jump there.
 
 - **Draggable splits** — the sidebar and the tree ↔ preview divider both drag; narrow windows stay usable, wide ones stay filled, and the layout is remembered
-- **File tabs** — select in the tree to preview; several files stay open side by side
+- **File tabs** — select in the tree to preview; several files stay open side by side, and the tab strip scrolls sideways
+- **Only this session's changes** — one toggle narrows the tree to what the AI touched this session, with creates / edits / deletes tracked from tool activity rather than file timestamps
+- **Per-file diff** — ask for the Git diff of a changed file right there instead of dropping to a shell; non-Git folders say so plainly
+- **Full-text search** — in the project's immersive window the left card toggles between tree and search; a hit jumps into the preview at the matching line
+- **File operations** — rename, delete (to the trash), and create file or folder (immersive form), from the tree's context menu and toolbar
+- **Review linkage** — click a changed line in the conversation and the preview jumps to that passage and highlights it
 
 ## Routines
 
@@ -322,6 +359,9 @@ Experiences are working methods grown out of your conversations, distilled to th
 ## Browser
 
 - **Built-in browser pane** — tabs, address-bar history and favorites, instant switching; snapshots carry native ref numbers, send only the diff per step, and see into iframes, so the AI points at exactly the right element
+- **Browser view** — the header cycle button turns the main card into the web page itself while the dock keeps a chat composer: ask while you watch, no window juggling
+- **Browsing tasks** — type a URL on the welcome page and a container opens with the address as its label; from there the AI can summarize the page, pull out key points, or keep operating it
+- **History that never crosses or vanishes** — extension history is scoped per Chrome tab: one tab keeps one history across refreshes and navigations, tabs stay isolated, and restarting the browser finds the old history again
 - **Favorites** — star sites in the address bar and reach them from the new-tab page; or just tell the AI "open my favorited Zhihu" — it resolves by name instead of guessing
 - **Browser extension** — the floating orb on any web page opens the same conversation panel; 8 page tools operate on the tab you are looking at, and HTML artifact cards preview right in the panel too
 - **Install** — Settings → Extension has the service toggle, the extension download, and the guide
@@ -346,7 +386,8 @@ Experiences are working methods grown out of your conversations, distilled to th
 ## Rich Previews & In-Place Editing
 
 - **Opens everything** — Markdown / text / code / CSV / HTML (sandboxed) / images / Word pages / PPT slides / Excel grid / PDF
-- **Preview becomes editing** — the file pane does not just render, it edits
+- **Preview becomes editing** — text and code files open in a code editor even to view, and flipping to edit is the same instance changing mode: scroll position and unsaved drafts both survive, so flipping back never loses your place; syntax highlighting, completion, and ⌘F search are all there, and replacing means flipping to edit mode and using the same panel (match case, regex, go to line)
+- **What the AI changed** — files the AI wrote or edited show its changes highlighted right in the view state, read-only: no accept or deny buttons, and the menu shows or hides them at will. Your own typing never enters that diff
 - **HTML element editing** — a type-aware element panel, double-click to edit text in place, step-by-step undo, or one sentence for the AI to do it
 
 ## Deliverables
@@ -383,7 +424,7 @@ Build your own tools from three pieces:
 - **Multi-model** — Anthropic and OpenAI protocols via adapters; group models under shared-credential providers, or pin a different model to a single conversation
 - **Memory** — hand-written MEMORY.md always injected; everything else extracted and curated into memory pages (see Memory)
 - **Experiences** — distilled after sessions, distillable into SOPs (see Experiences)
-- **Sessions & usage** — local SQLite storage, auto titles (rewritten once more accurately after the third message), auto cleanup; token usage charted by hour / day / month, with cache hits accounted separately
+- **Sessions & usage** — local SQLite storage, auto titles (rewritten once more accurately after the third message), auto cleanup; every reply carries its duration and token count, token usage charted by hour / day / month, with cache hits accounted separately
 - **Long runs hold** — idle conversations evicted from memory, terminal output capped, interrupted streams auto-resume, scheduler slots never wedge — 12 hours unattended without losing control
 - **Bilingual** — Chinese and English switch instantly; the active language rides the prompt
 `

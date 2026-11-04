@@ -63,6 +63,9 @@ describe('listUserPrompts — 哪些消息算「我发送的」', () => {
 
 describe('接线扫描 — ChatView × 悬浮导航组', () => {
   const chatView = readFileSync(join(ROOT, 'src/renderer/src/components/layout/ChatView.tsx'), 'utf8')
+  // PLAN-layout-modes：composer 的 topSlot 交付点（InputArea 挂载）随抽取搬进
+  // ChatBody——两个宿主（主卡 / 侧栏 dock）渲染同一份。
+  const chatBody = readFileSync(join(ROOT, 'src/renderer/src/components/chat/ChatBody.tsx'), 'utf8')
   const controls = readFileSync(join(ROOT, 'src/renderer/src/components/chat/MessageNavigator.tsx'), 'utf8')
 
   it('显隐翻面在 handleScroll 的 landing/suppress 早退之前', () => {
@@ -83,8 +86,8 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
   })
 
   it('topSlot 组合悬浮导航组（回到底部 + 步进对）', () => {
-    expect(chatView).toContain('topSlot={navTopSlot}')
-    expect(chatView).not.toContain('topSlot={planStrip}')
+    expect(chatBody).toContain('topSlot={navTopSlot}')
+    expect(chatBody).not.toContain('topSlot={planStrip}')
     expect(chatView).toContain('onJumpToBottom={jumpToBottom}')
     expect(chatView).toContain('onJumpPrompt={handleNavJump}')
     expect(chatView).toContain('prompts={userPrompts}')
@@ -138,7 +141,7 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
   })
 
   it('planStrip 在 navTopSlot 内保持居中收缩（块级包裹会拉伸成通栏条）', () => {
-    expect(chatView).toMatch(/\{planStrip && \(/)
+    expect(chatView).toMatch(/\{planStrip && </)
     expect(chatView).toContain("justifyContent: 'center'")
   })
 
@@ -168,7 +171,8 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
   it('userPrompts 的 memo key 是 ids 签名而非 messages 引用——不击穿 InputArea 的 memo（review_20261006 中3）', () => {
     // 每条 messages_update 都换新 messages；锚点数组必须只在「哪些用户消息」
     // 变化时才换新引用。签名谓词与 listUserPrompts 同源，不漂移。
-    expect(chatView).toContain('.filter(isUserPromptMessage).map((m) => m.id).join(')
+    // prettier 把链式调用拆成多行——对空白鲁棒。
+    expect(chatView).toMatch(/\.filter\(isUserPromptMessage\)\s*\.map\(\(m\) => m\.id\)\s*\.join\(/)
     expect(chatView).toContain('[promptIdsKey]')
     const nav = readFileSync(join(ROOT, 'src/renderer/src/components/chat/message-navigator.ts'), 'utf8')
     expect(nav).toContain('export function isUserPromptMessage')

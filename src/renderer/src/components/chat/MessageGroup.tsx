@@ -26,6 +26,7 @@ import type { MenuProps } from 'antd'
 
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
+import { cacheHitRate, formatDuration, formatTokenCount } from '../../../../shared/ui/message-stats'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard, { AskUserBatchCard } from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
@@ -84,26 +85,9 @@ function hasDisplayableContent(msg: AgentMessage): boolean {
   )
 }
 
-function formatDuration(ms: number): string {
-  // ≥2 分钟换算成分钟（2026-11-01 用户裁定）——长任务的「184.6s」读不出量级，
-  // 「3.1min」可以。秒档的 0.1s 精度只对短任务有意义，分钟档沿用同款一位小数。
-  if (ms >= 120_000) return `${(ms / 60_000).toFixed(1)}min`
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
-function formatTokenCount(n: number): string {
-  if (n >= 10_000) {
-    return `${(n / 1000).toFixed(1)}k`
-  }
-  return n.toLocaleString()
-}
-
-// inputTokens is the cached share's container (both adapters' streaming paths
-// sum cache reads into it), so the pair alone prices the rate.
-function cacheHitRate(hitTokens: number, inputTokens: number): string {
-  return `${Math.round((hitTokens / inputTokens) * 100)}%`
-}
+// 耗时 / Token / cache-hit 的措辞真源在 shared/ui/message-stats.ts（review
+// 20261103 中6：面板私有副本漏掉 2026-11-01 的 min/k 档，同一条消息两侧
+// 显示漂移）。消费点已改顶部 import，禁止再落本地实现。
 
 // ── Collapsible tool_use block ────────────────────────────────────────
 

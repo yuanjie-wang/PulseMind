@@ -520,7 +520,9 @@ describe('steer wiring', () => {
     expect(input).toContain('submitSteer')
     // 方案 A: the veto branch rides the PROVEN keydown door (staging branch
     // precedent), and the stop button is untouched (single-stop ruling).
-    expect(input).toContain('canSteer &&\n      e.key')
+    // Whitespace-tolerant: prettier printWidth 160 collapses the condition
+    // onto one line — the CONTRACT is the gating, not the line breaks.
+    expect(input).toMatch(/canSteer\s*&&\s*e\.key === 'Enter'/)
     expect(input).toContain('chatView.sender.steer')
   })
 })

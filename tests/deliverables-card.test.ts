@@ -183,6 +183,7 @@ describe('Placement — the card mounts above the action toolbar', () => {
 describe('Wiring (source scans — the mount itself is probe territory)', () => {
   const read = (p: string) => require('node:fs').readFileSync(p, 'utf-8')
   const CHAT_VIEW = 'src/renderer/src/components/layout/ChatView.tsx'
+  const CHAT_BODY = 'src/renderer/src/components/chat/ChatBody.tsx'
   const WORKBENCH_PANE = 'src/renderer/src/components/workbench/WorkbenchPane.tsx'
 
   it('ChatView: the derivation eats the FULL messages; the slot and the sibling path both exist', () => {
@@ -194,31 +195,37 @@ describe('Wiring (source scans — the mount itself is probe territory)', () => 
     // row — the conv_20260925211304 double-row regression).
     expect(src).toContain('collectTurnDeliverables(messages, childDeliverables, { workspaceDir })')
     expect(src).not.toContain('collectTurnDeliverables(renderedSegments')
-    expect(src).toContain('<TurnDeliverablesCard')
-    // the two mount points: the aboveActions slot for text-ending turns, the
-    // sibling column wrapper for everything else
-    expect(src).toContain('renderSegment(seg, abs, cardInMessage ? card : undefined)')
-    expect(src).toContain('{!cardInMessage && card && (')
     // the workbench aggregate is gone — no data flows to the pane
     expect(src).not.toContain('deliverable={deliverables')
+    // PLAN-layout-modes: the card map itself lives in ChatBody (the transcript
+    // face both hosts — primary card / side dock — render).
+    const body = read(CHAT_BODY)
+    expect(body).toContain('<TurnDeliverablesCard')
+    // the two mount points: the aboveActions slot for text-ending turns, the
+    // sibling column wrapper for everything else
+    expect(body).toContain('renderSegment(seg, abs, cardInMessage ? card : undefined)')
+    // prettier 可能折叠/展开三元后的包裹块——对格式鲁棒。
+    expect(body).toMatch(/\{!cardInMessage && card &&/)
   })
 
   it('WorkbenchPane: the deliverables tab/panel is gone', () => {
     const src = read(WORKBENCH_PANE)
     expect(src).not.toContain('DeliverablesPanel')
     expect(src).not.toContain("'deliverables'")
-    // a persisted activeTab naming the removed tab must not blank the pane
-    expect(src).toContain('WORKBENCH_TAB_IDS.has(s.activeTab)')
+    // a persisted activeTab naming the removed tab — or one that IS the
+    // primary itself (视图模式) — must not blank the pane; reconcileActiveTab
+    // owns that fallback now (PLAN-layout-modes).
+    expect(src).toContain('reconcileActiveTab(primary, s.activeTab)')
   })
 
   it('ChatView: the live turn card waits for the turn to settle (2026-10-25)', () => {
-    const src = read(CHAT_VIEW)
     // The live turn (the last one while the engine is still working) is
     // suppressed from the card map; the settle predicate is routine-entry's —
     // the same idle/completed/error rule 存为日常任务 rides. Earlier turns are
     // settled history and must keep rendering, so the gate is per-turn, not a
-    // blanket `turnRows` shutdown.
-    expect(src).toContain('!routineEntryAllowed(agentStatus.status)')
-    expect(src).toContain('turn !== liveTurn && turnPlacement.lastSegmentOfTurn[turn] === abs')
+    // blanket `turnRows` shutdown. PLAN-layout-modes: the predicate computes
+    // in ChatView (liveTurn), the per-turn gate renders in ChatBody.
+    expect(read(CHAT_VIEW)).toContain('!routineEntryAllowed(agentStatus.status)')
+    expect(read(CHAT_BODY)).toContain('turn !== liveTurn && turnPlacement.lastSegmentOfTurn[turn] === abs')
   })
 })

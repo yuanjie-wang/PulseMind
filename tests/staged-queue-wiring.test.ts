@@ -15,6 +15,7 @@ const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
 
 const INPUT_AREA = read('src', 'renderer', 'src', 'components', 'chat', 'InputArea.tsx')
 const CHAT_VIEW = read('src', 'renderer', 'src', 'components', 'layout', 'ChatView.tsx')
+const CHAT_BODY = read('src', 'renderer', 'src', 'components', 'chat', 'ChatBody.tsx')
 const APP = read('src', 'renderer', 'src', 'App.tsx')
 const CONTROLLER = read('src', 'renderer', 'src', 'hooks', 'useChatController.ts')
 
@@ -34,8 +35,9 @@ describe('InputArea: Enter mid-run stages instead of silently dropping', () => {
     // It stages through the store and vetoes Sender's submit (return false is
     // the contract — without it the loading flag just swallows the key).
     expect(branch).toContain('.stage(staging.convId')
-    expect(INPUT_AREA.slice(INPUT_AREA.indexOf('return false', gate) - 40,
-      INPUT_AREA.indexOf('return false', gate) + 'return false'.length)).toContain('return false')
+    expect(INPUT_AREA.slice(INPUT_AREA.indexOf('return false', gate) - 40, INPUT_AREA.indexOf('return false', gate) + 'return false'.length)).toContain(
+      'return false',
+    )
   })
 
   it('renders the strip above the card with both per-state hints', () => {
@@ -47,8 +49,9 @@ describe('InputArea: Enter mid-run stages instead of silently dropping', () => {
     // auto-send" to a user parked on ask_user while the drain sent anyway
     // (review0924 M3, also scanned in staged-drain-edge.test.ts).
     expect(INPUT_AREA).toContain("t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled'")
-    // The strip anchors through the same aboveCard slot as the mention popup.
-    expect(INPUT_AREA).toContain('topSlot || stagedCount > 0')
+    // The strip anchors through the same aboveCard slot as the mention popup
+    // (inside the measured persistent group — see above-card-reserve.test.ts).
+    expect(INPUT_AREA).toContain('topSlot || hasStagedStrip')
   })
 
   it('wires 立即发送 through takeById → onSendNow → restore on failure', () => {
@@ -89,23 +92,19 @@ describe('useChatController: the drain effect and 立即发送', () => {
     // become rebases rather than value-check drains.
     expect(CONTROLLER).toContain('stagedStatusRef.current = { convId, status }')
     // A value check must not sneak in alongside the edge check.
-    const effect = CONTROLLER.slice(
-      CONTROLLER.indexOf('const stagedStatusRef'),
-      CONTROLLER.indexOf('const sendStagedNow')
-    )
+    const effect = CONTROLLER.slice(CONTROLLER.indexOf('const stagedStatusRef'), CONTROLLER.indexOf('const sendStagedNow'))
     expect(effect).not.toMatch(/status\s*===\s*'completed'/)
   })
 
   it('takes atomically and restores in place when the send never left', () => {
-    const effect = CONTROLLER.slice(
-      CONTROLLER.indexOf('const stagedStatusRef'),
-      CONTROLLER.indexOf('const sendStagedNow')
-    )
+    const effect = CONTROLLER.slice(CONTROLLER.indexOf('const stagedStatusRef'), CONTROLLER.indexOf('const sendStagedNow'))
     expect(effect).toContain('takeStagedHead(convId)')
     expect(effect).toContain('restoreStaged(convId, item, 0)')
     // Restore is wired to BOTH the false resolution and the rejection.
-    expect(effect).toContain('(ok) => { if (!ok) restore() }')
-    expect(effect).toContain('restore\n    )')
+    // prettier 展开单行回调——对空白鲁棒。
+    expect(effect).toMatch(/\(ok\) => \{\s*if \(!ok\) restore\(\)\s*\}/)
+    // 拒绝臂也恢复（prettier 重排 then 的收尾形态——对空白鲁棒）。
+    expect(effect).toMatch(/,\s*restore\s*\)/)
   })
 
   it('handleRequest reports true/false so the caller knows whether to restore', () => {
@@ -154,10 +153,12 @@ describe('ChatView / App: the strip reaches both composers', () => {
     expect(CHAT_VIEW).toContain('onSendStaged,')
     // One shared expression, keyed by the open conversation.
     expect(CHAT_VIEW).toContain('onSendStaged && conversationId')
-    // Exactly two InputArea sites (welcome inline + main floating), both wired.
-    const sites = (CHAT_VIEW.match(/<InputArea/g) ?? []).length
+    // PLAN-layout-modes: both InputArea sites (welcome inline + main floating)
+    // moved into ChatBody — the transcript face both hosts render. Exactly two
+    // sites, both wired.
+    const sites = (CHAT_BODY.match(/<InputArea/g) ?? []).length
     expect(sites).toBe(2)
-    const wired = (CHAT_VIEW.match(/staging=\{staging\}/g) ?? []).length
+    const wired = (CHAT_BODY.match(/staging=\{staging\}/g) ?? []).length
     expect(wired).toBe(sites)
   })
 

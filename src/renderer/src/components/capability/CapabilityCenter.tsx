@@ -7,7 +7,7 @@
 // imperative handles. 经验 moved to 设置 (its own section + master switch).
 
 import React, { useRef, useState } from 'react'
-import { Button, Tooltip } from 'antd'
+import { Button } from 'antd'
 import {
   ApiOutlined,
   ThunderboltOutlined,
@@ -76,15 +76,15 @@ export default function CapabilityCenter({
   }
 
   // Per-tab actions, hoisted from the panels' removed title rows, rendered as
-  // icon+text rounded-rect buttons. Tooltip only where the label loses nuance.
+  // icon+text rounded-rect buttons. Deliberately NO tooltips here (user ruling
+  // 2026-11-04): every button carries a full label of its own, so a hover
+  // tooltip only repeated it — don't re-wrap these.
   const actions: Record<CapabilityTab, React.ReactNode> = {
     mcp: (
       <>
-        <Tooltip title="从配置文件重新加载">
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => mcpRef.current?.reloadFromDisk()}>
-            重新加载
-          </Button>
-        </Tooltip>
+        <Button size="small" icon={<ReloadOutlined />} onClick={() => mcpRef.current?.reloadFromDisk()}>
+          重新加载
+        </Button>
         <Button size="small" icon={<PlusOutlined />} onClick={() => mcpRef.current?.openAddModal()}>
           添加连接器
         </Button>
@@ -93,18 +93,14 @@ export default function CapabilityCenter({
     skills: (
       <>
         {onRefreshSkills && (
-          <Tooltip title="扫描目录检测新技能">
-            <Button size="small" icon={<ReloadOutlined />} onClick={onRefreshSkills}>
-              扫描新技能
-            </Button>
-          </Tooltip>
+          <Button size="small" icon={<ReloadOutlined />} onClick={onRefreshSkills}>
+            扫描新技能
+          </Button>
         )}
         {onImportSkill && (
-          <Tooltip title="导入 .zip 包">
-            <Button size="small" icon={<PlusOutlined />} onClick={onImportSkill}>
-              导入技能
-            </Button>
-          </Tooltip>
+          <Button size="small" icon={<PlusOutlined />} onClick={onImportSkill}>
+            导入技能
+          </Button>
         )}
       </>
     ),
@@ -113,11 +109,9 @@ export default function CapabilityCenter({
         <Button size="small" icon={<PlusOutlined />} onClick={() => expertRef.current?.openAddModal()}>
           {t('expertCenter.newExpert')}
         </Button>
-        <Tooltip title={t('expertCenter.resetConfirmTitle')}>
-          <Button size="small" icon={<UndoOutlined />} onClick={() => expertRef.current?.resetToDefaults()}>
-            {t('expertCenter.resetDefaults')}
-          </Button>
-        </Tooltip>
+        <Button size="small" icon={<UndoOutlined />} onClick={() => expertRef.current?.resetToDefaults()}>
+          {t('expertCenter.resetDefaults')}
+        </Button>
       </>
     ),
     tools: <></>
