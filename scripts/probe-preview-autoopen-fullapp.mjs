@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
 import { build } from 'esbuild'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -42,6 +42,21 @@ h1{color:var(--red)} .card{border:1px solid #e4e9f0;border-radius:10px;padding:1
 </style></head><body><h1>金融九问 · 一页纸精华（全栈探针）</h1>
 ${Array.from({ length: 120 }, (_, i) => `<div class="card"><b>问 ${i + 1}</b>：这一段是探针生成的正文内容，用于确认预览帧渲染了真实文档。</div>`).join('\n')}
 </body></html>`
+
+// The split experiments below need a real local-file: target. They used to point
+// at the document from the reporting machine (`/Users/…/.pulsemind/workspace/
+// 20261029000035/金融九问-一页纸精华.html`), which exists only there — on any
+// other machine the iframe matrix was silently loading a missing file. Mint the
+// same document in this probe's own temp HOME instead: identical URL shape
+// (absolute path under .pulsemind/workspace, CJK filename needing percent
+// encoding), no dependency on the developer's data.
+const REPORT_DIR = join(HOME, '.pulsemind', 'workspace', '20261029000035')
+const REPORT_FILE = join(REPORT_DIR, '金融九问-一页纸精华.html')
+mkdirSync(REPORT_DIR, { recursive: true })
+writeFileSync(REPORT_FILE, HTML)
+// local-file:// + POSIX-style absolute path, percent-encoded because both uses
+// go through a renderer-side URL parser (CJK filename).
+const REPORT_LOCAL_FILE_ENCODED = 'local-file://' + encodeURI(REPORT_FILE.split(sep).join('/'))
 
 const argsJson = JSON.stringify({ file_path: '__WS__/金融九问-demo.html', content: HTML })
 
@@ -190,15 +205,23 @@ if (process.env.PM_SELFTEST) {
   const resultFile = process.env.PM_SELFTEST_OUT
   setTimeout(() => {
     const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().startsWith('http'))
-    if (!w) { fs.writeFileSync(resultFile, JSON.stringify({ error: 'no window' })); electron.app.exit(3) }
-    w.webContents.executeJavaScript(\`(async () => {
+    if (!w) {
+      fs.writeFileSync(resultFile, JSON.stringify({ error: 'no window' }))
+      electron.app.exit(3)
+      return
+    }
+    // The page-side script is a real template literal here. It used to be pasted
+    // with the double escaping of a `.join('\n')` string array (`\`` / `\\${…}`)
+    // and closed with `")` instead of a backtick, which kept this whole file from
+    // parsing at all — so self-test mode had never run once.
+    w.webContents.executeJavaScript(`(async () => {
       const t = document.createElement('iframe')
       t.setAttribute('sandbox', 'allow-scripts')
       const ev = new Promise((res) => { t.addEventListener('load', () => res('load'), { once: true }) })
-      t.src = \\`local-file://\\${process.env.PM_SELFTEST_TARGET}\\`
+      t.src = ${JSON.stringify(`local-file://${process.env.PM_SELFTEST_TARGET || ''}`)}
       document.body.appendChild(t)
       return await Promise.race([ev, new Promise((res) => setTimeout(() => res('timeout'), 5000))])
-    })()", false).then((r) => {
+    })()`, false).then((r) => {
       fs.writeFileSync(resultFile, JSON.stringify({ result: r }))
       electron.app.exit(0)
     }).catch((e) => {
@@ -270,7 +293,7 @@ try {
     t.setAttribute('sandbox', 'allow-scripts')
     t.style.cssText = 'position:fixed;left:0;top:0;width:200px;height:120px;z-index:99999'
     const ev = new Promise((r) => { t.addEventListener('load', () => r('load'), { once: true }) })
-    t.src = 'local-file:///Users/wangyuanjie/.pulsemind/workspace/20261029000035/%E9%87%91%E8%9E%8D%E4%B9%9D%E9%97%AE-%E4%B8%80%E9%A1%B5%E7%BA%B8%E7%B2%BE%E5%8D%8E.html'
+    t.src = '${REPORT_LOCAL_FILE_ENCODED}'
     document.body.appendChild(t)
     const out = await Promise.race([ev, new Promise((r) => setTimeout(() => r('timeout'), 4000))])
     // Controls: does ANY subframe navigation work in this page?
@@ -284,7 +307,7 @@ try {
       setTimeout(() => res('timeout'), 4000)
     })
     const httpFrame = await mk(location.origin + '/probe-frame', 'allow-scripts')
-    const localNoSandbox = await mk('local-file:///Users/wangyuanjie/.pulsemind/workspace/20261029000035/%E9%87%91%E8%9E%8D%E4%B9%9D%E9%97%AE-%E4%B8%80%E9%A1%B5%E7%BA%B8%E7%B2%BE%E5%8D%8E.html', null)
+    const localNoSandbox = await mk('${REPORT_LOCAL_FILE_ENCODED}', null)
     t.remove()
     return out + ' | http-frame=' + httpFrame + ' | local-nosandbox=' + localNoSandbox
   })()`).catch((e) => 'ERR:' + String(e).slice(0, 100))
@@ -294,7 +317,7 @@ try {
     const t = document.createElement('iframe')
     t.setAttribute('sandbox', 'allow-scripts')
     const ev = new Promise((res) => { t.addEventListener('load', () => res('load'), { once: true }) })
-    t.src = 'local-file:///Users/wangyuanjie/.pulsemind/workspace/20261029000035/%E9%87%91%E8%9E%8D%E4%B9%9D%E9%97%AE-%E4%B8%80%E9%A1%B5%E7%BA%B8%E7%B2%BE%E5%8D%8E.html'
+    t.src = '${REPORT_LOCAL_FILE_ENCODED}'
     document.body.appendChild(t)
     const out = await Promise.race([ev, new Promise((res) => setTimeout(() => res('timeout'), 3000))])
     t.remove()
@@ -302,7 +325,7 @@ try {
   })() `
   const runMatrix = async (label) => {
     for (const mode of ['app', 'string', 'buffer', 'bufferSmall', 'stub']) {
-      const set = await electronApp.evaluate((_e, [m, fp]) => globalThis.__pmSetHandler(m, fp), [mode, '/Users/wangyuanjie/.pulsemind/workspace/20261029000035/金融九问-一页纸精华.html'])
+      const set = await electronApp.evaluate((_e, [m, fp]) => globalThis.__pmSetHandler(m, fp), [mode, REPORT_FILE])
       await wait(300)
       const r = await wcExec(frameTest).catch((e) => 'ERR:' + String(e).slice(0, 60))
       console.log(`  [${label}] mode=${mode.padEnd(11)} iframe=${r}`)
