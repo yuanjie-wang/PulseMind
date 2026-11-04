@@ -117,24 +117,12 @@ export function toolBlockSummary(block: ToolUseBlock): string {
   return detail ? `${label} · ${detail}` : label
 }
 
-/** `950ms` / `1.4s` — the chat's duration format for the action row. */
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
-/** `1,234` / `12.3k` — the chat's token format. */
-export function formatTokenCount(n: number): string {
-  if (n >= 10_000) return `${(n / 1000).toFixed(1)}k`
-  return n.toLocaleString()
-}
-
-/** `83%` — the chat's cache-hit rate off the message's own usage pair:
- *  inputTokens is the cached share's container (both adapters' streaming paths
- *  sum cache reads into it), so the pair alone prices the rate. */
-export function cacheHitRate(hitTokens: number, inputTokens: number): string {
-  return `${Math.round((hitTokens / inputTokens) * 100)}%`
-}
+// ── 耗时 / Token / cache-hit wording ── THE shared source is
+// shared/ui/message-stats.ts (review_20261103 中6: this file's private copies
+// missed the 2026-11-01 min/k rewording — the same message read 184.6s /
+// 1,234 here and 3.1min / 1.2k on the desktop). Re-exported so MessageBlocks'
+// import surface stays './format'; do not re-create local copies.
+export { cacheHitRate, formatDuration, formatTokenCount } from '../../shared/ui/message-stats'
 
 /** Thinking-block preview line: the first line (truncated) plus a line count —
  *  the chat's ThinkingBlockView heuristic, so a collapsed block reads the same. */

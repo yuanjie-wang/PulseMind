@@ -123,6 +123,9 @@ function makeFakeSessions(): FakeSessions {
     approvalModes: [] as Array<{ sessionId: string; mode: SandboxApprovalMode }>,
     sessionModels: [] as Array<{ sessionId: string; profileId: string | null }>,
     modelStateCalls: [] as Array<string | undefined>,
+    /** The live transcript a snapshot() would answer with (the persistence
+     *  tests seed it before emitting a turn end). */
+    messages: [] as unknown[],
   }
   const live = new Set<string>()
   return {
@@ -134,6 +137,8 @@ function makeFakeSessions(): FakeSessions {
     get approvalModes() { return state.approvalModes },
     get sessionModels() { return state.sessionModels },
     get modelStateCalls() { return state.modelStateCalls },
+    get state() { return state },
+    get live() { return live },
     // The real manager writes the conversation column and re-resolves the live
     // engine; the fake records the write and echoes the level back, which is
     // what the caller reconciles against.
@@ -185,8 +190,8 @@ function makeFakeSessions(): FakeSessions {
       if (handler) setTimeout(() => void handler(sessionId, content, pageContext), 0)
     },
     cancel: () => {},
-    history: async () => ({ messages: [], agentId: 'default' }),
-    snapshot: async () => null,
+    history: async () => ({ messages: state.messages, agentId: 'default' }),
+    snapshot: async () => (live.size > 0 ? { messages: state.messages } : null),
     hasSession: (sessionId) => live.has(sessionId),
     hydrate: async () => {},
     engineCall: async (sessionId, method, args = []) => {
@@ -202,18 +207,23 @@ function makeFakeSessions(): FakeSessions {
 
 /** In-memory conversations store (better-sqlite3 is Electron-ABI and cannot
  *  load under plain Node — the repo's known DB-layer test gap). */
-type FakeRow = { title: string; origin: string | null; updatedAt: string; approvalMode?: SandboxApprovalMode }
-function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRow> } {
+type FakeRow = { title: string; origin: string | null; updatedAt: string; approvalMode?: SandboxApprovalMode; tabKey?: string | undefined }
+function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRow>; savedConversations: Map<string, unknown> } {
   const rows = new Map<string, FakeRow>()
+  const savedConversations = new Map<string, unknown>()
   return {
     rows,
+    savedConversations,
     hydrate: (id) => {
       const row = rows.get(id)
       return row ? { title: row.title, messages: [], historySummary: undefined, historySummaryFrontier: undefined } : null
     },
-    listByOrigin: (origin, limit) => {
+    listByOrigin: (origin, limit, tabKey) => {
       const found = [...rows.entries()]
         .filter(([, r]) => r.origin === origin)
+        // Same scope semantics as the SQL: a scoped call never sees an unscoped
+        // row (the real store hands those to the first tab via adoptUnscoped).
+        .filter(([, r]) => !tabKey || r.tabKey === tabKey)
         .sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt))
         .slice(0, limit)
         // approvalMode rides along (the real listConversationsByOrigin reads
@@ -223,7 +233,22 @@ function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRo
         .map(([id, r]) => ({ id, title: r.title, updatedAt: r.updatedAt, approvalMode: r.approvalMode }))
       return found
     },
+    adoptUnscoped: (origin, tabKey) => {
+      for (const [, r] of rows) {
+        if (r.origin === origin && !r.tabKey) r.tabKey = tabKey
+      }
+    },
+    releaseDeadScopes: (origin, liveScopes) => {
+      for (const [, r] of rows) {
+        if (r.origin === origin && r.tabKey && !liveScopes.includes(r.tabKey)) r.tabKey = undefined
+      }
+    },
     origin: (id) => rows.get(id)?.origin ?? null,
+    approvalMode: (id) => rows.get(id)?.approvalMode,
+    title: (id) => rows.get(id)?.title ?? null,
+    // The hosted-transcript writer records its saves so tests can assert the
+    // turn-end write without a database.
+    persist: (conversation) => { savedConversations.set(conversation.id, conversation) },
     remove: (id) => { rows.delete(id) },
     rename: (id, title) => { const r = rows.get(id); if (r) r.title = title },
   }
@@ -405,6 +430,30 @@ describe('M0.4 session surface', () => {
       // Stale id → fresh session with a server-generated id.
       const stale = await client.request('session.create', { sessionId: 'ws_gone' })
       expect(stale.result.sessionId).not.toBe('ws_gone')
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  // review_20261103 高3：doCreateSession 把「上次使用」档位种进新会话列，而
+  // session.list 只列有消息的会话——面板在首条消息落库前没有别的渠道读到它。
+  // session.create 必须把列值带回来（best-effort：行不存在/存储抛错 → undefined，
+  // 不弄死 create 回答）。
+  it('session.create echoes the stored 授权 level so a message-less session is still visible', async () => {
+    const { handle, store } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const res = await client.request('session.create', {})
+      expect(res.result.approvalMode).toBeUndefined() // 无行 → best-effort undefined
+
+      store.rows.set(res.result.sessionId, { title: '', origin: 'pulsemind-extension', updatedAt: new Date().toISOString(), approvalMode: 'auto' })
+      const seeded = await client.request('session.create', { sessionId: res.result.sessionId })
+      expect(seeded.result.approvalMode).toBe('auto')
 
       client.close()
     } finally {
@@ -719,9 +768,19 @@ describe('M0.4 session surface', () => {
       await ext.hello('pulsemind-extension')
 
       const list = await ext.request('session.list', {})
-      const ids = (list.result as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)
+      // The protocol's list item is `sessionId` (like every other session.*
+      // payload), NOT the conversation store's raw `id`: the panel resumes a row
+      // with `session.create({ sessionId })`, so shipping `id` left every row
+      // unresumable — the 历史会话 menu rendered titles, yet clicking one unbound
+      // the tab instead of switching (2026-11-02).
+      const rows = (list.result as { sessions: Array<{ sessionId: string; id?: string }> }).sessions
+      const ids = rows.map((s) => s.sessionId)
       expect(ids).toContain('ws_a')
       expect(ids).not.toContain('ws_b')
+      expect(rows.every((r) => r.id === undefined)).toBe(true)
+      // The round trip the panel performs: a listed id must resume, not create.
+      const resumed = await ext.request('session.create', { sessionId: 'ws_a' })
+      expect(resumed.result).toMatchObject({ sessionId: 'ws_a', resumed: true })
 
       const renamed = await ext.request('session.rename', { sessionId: 'ws_a', title: 'A2' })
       expect(renamed.result).toMatchObject({ ok: true })
@@ -740,6 +799,93 @@ describe('M0.4 session surface', () => {
 
       ext.close()
       foreign.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.list is scoped per tabKey; unscoped rows are adopted by the first tab (2026-11-03)', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      // A row written before per-tab history existed (the extension's whole
+      // existing history, in practice): no tab_key.
+      store.rows.set('ws_legacy', { title: '旧会话', origin: 'pulsemind-extension', updatedAt: '2026-11-01T00:00:00.000Z' })
+
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+
+      // Tab A's create carries its scope through to the session manager — that
+      // is what stamps `conversations.tab_key` on the real store.
+      const created = await ext.request('session.create', { tabKey: 'tab_a' })
+      const createdId = (created.result as { sessionId: string }).sessionId
+      expect(sessions.created.at(-1)?.opts?.tabKey).toBe('tab_a')
+      store.rows.set(createdId, { title: 'A 的会话', origin: 'pulsemind-extension', updatedAt: new Date().toISOString(), tabKey: 'tab_a' })
+
+      const listA = (await ext.request('session.list', { tabKey: 'tab_a' })).result as { sessions: Array<{ sessionId: string }> }
+      const idsA = listA.sessions.map((s) => s.sessionId)
+      // Its own conversation, plus the legacy row it adopted on first sight —
+      // upgrading must not make a user's history disappear.
+      expect(idsA).toContain(createdId)
+      expect(idsA).toContain('ws_legacy')
+      expect(store.rows.get('ws_legacy')?.tabKey).toBe('tab_a')
+
+      // A sibling tab starts empty and stays empty: two tabs never share.
+      const listB = (await ext.request('session.list', { tabKey: 'tab_b' })).result as { sessions: Array<{ sessionId: string }> }
+      expect(listB.sessions).toHaveLength(0)
+
+      // Unscoped callers (desktop tooling, tests) keep the old whole-origin view.
+      const listAll = (await ext.request('session.list', {})).result as { sessions: Array<{ sessionId: string }> }
+      expect(listAll.sessions.map((s) => s.sessionId)).toContain('ws_legacy')
+
+      ext.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  // review_20261104 中3：chrome.storage.session 随浏览器退出清空——重启后所有
+  // 带戳会话携带死 scope，scoped 列表查不到、收养只触 NULL 行、桌面端又排除
+  // 托管 origin，历史在所有 UI 不可达且每回合继续落库。session.list 携带活
+  // scope 集合，服务端先释放死戳再收养：历史整批归入重启后首个列表的页签。
+  it('releases dead scopes then adopts them into the listing tab (review_20261104 中3)', async () => {
+    const { handle, store } = await start()
+    try {
+      // 重启前的世界：tab_old 作用域的会话；重启后存储清空，liveScopes 只剩
+      // 新铸的 tab_a。
+      store.rows.set('ws_old1', { title: '旧一', origin: 'pulsemind-extension', updatedAt: '2026-11-03T10:00:00.000Z', tabKey: 'tab_old1' })
+      store.rows.set('ws_old2', { title: '旧二', origin: 'pulsemind-extension', updatedAt: '2026-11-03T09:00:00.000Z', tabKey: 'tab_old2' })
+
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+
+      // 重启后首个列表：死戳释放 → 同一调用内的收养把它们交给 tab_a。
+      const listA = (await ext.request('session.list', { tabKey: 'tab_a', liveScopes: ['tab_a'] })).result as {
+        sessions: Array<{ sessionId: string }>
+      }
+      const idsA = listA.sessions.map((s) => s.sessionId)
+      expect(idsA).toContain('ws_old1')
+      expect(idsA).toContain('ws_old2')
+      expect(store.rows.get('ws_old1')?.tabKey).toBe('tab_a')
+      expect(store.rows.get('ws_old2')?.tabKey).toBe('tab_a')
+
+      // 活 scope 永不释放：兄弟页签的行不动。
+      store.rows.set('ws_live', { title: '兄弟页签', origin: 'pulsemind-extension', updatedAt: '2026-11-03T11:00:00.000Z', tabKey: 'tab_live' })
+      await ext.request('session.list', { tabKey: 'tab_a', liveScopes: ['tab_a', 'tab_live'] })
+      expect(store.rows.get('ws_live')?.tabKey).toBe('tab_live')
+
+      // 无 liveScopes 的 scoped 调用（旧版扩展）：不释放，行为与从前一致。
+      store.rows.set('ws_stale', { title: '另一死戳', origin: 'pulsemind-extension', updatedAt: '2026-11-03T08:00:00.000Z', tabKey: 'tab_dead' })
+      await ext.request('session.list', { tabKey: 'tab_a' })
+      expect(store.rows.get('ws_stale')?.tabKey).toBe('tab_dead')
+
+      // 畸形项被逐条过滤（非字符串/空串丢弃），合法子集照常驱动释放+收养。
+      await ext.request('session.list', { tabKey: 'tab_a', liveScopes: ['tab_a', 42, null, ''] })
+      expect(store.rows.get('ws_stale')?.tabKey).toBe('tab_a')
+
+      // 无人值守 origin（isHostedClientId 但非扩展常量）不受影响：释放按 origin 走。
+      ext.close()
     } finally {
       await handle.close()
     }
@@ -944,7 +1090,7 @@ describe('M4.5 模型切换', () => {
       })
 
       const list = await client.request('session.list', {})
-      expect(list.result).toMatchObject({ sessions: [{ id: sessionId, approvalMode: 'always-ask' }] })
+      expect(list.result).toMatchObject({ sessions: [{ sessionId, approvalMode: 'always-ask' }] })
 
       client.close()
     } finally {
@@ -1025,6 +1171,130 @@ describe('M0.4 desktop list excludes hosted sessions', () => {
     const body = src.slice(src.indexOf('export function updateConversationOrigin'))
     const fn = body.slice(0, body.indexOf('\n}'))
     expect(fn).toMatch(/INSERT INTO conversations/)
-    expect(fn).toMatch(/ON CONFLICT\(id\) DO UPDATE SET origin = excluded\.origin/)
+    expect(fn).toMatch(/ON CONFLICT\(id\) DO UPDATE SET\s+origin = excluded\.origin/)
+    // A scope-less create/resume (a desktop caller) must not erase a stamp that
+    // is already there — only a real tabKey overwrites.
+    expect(fn).toMatch(/tab_key = COALESCE\(excluded\.tab_key, tab_key\)/)
+  })
+})
+
+describe('hosted transcripts persist at turn end (2026-11-02)', () => {
+  // Main-hosted sessions have no renderer to save for them: without this the
+  // extension conversation stayed the origin stamp's message-less stub forever
+  // (32 such rows on the dev machine), invisible to session.list's
+  // EXISTS(messages) and lost to a desktop restart. The writer reads the LIVE
+  // session through snapshot() — not history(), whose ensureEntry mints a
+  // missing session back into existence; snapshot answers null and nothing is
+  // written (the G84 double-writer/UPSERT trap).
+  /** The row the real session-manager stamps at session.create — the fake
+   *  sessions above do not touch the store, so each test seeds it itself. */
+  const seedRow = (store: ReturnType<typeof makeFakeStore>, sessionId: string, title = ''): void => {
+    store.rows.set(sessionId, { title, origin: 'pulsemind-extension', updatedAt: new Date().toISOString() })
+  }
+
+  it('a hosted transcript lands on the idle status; the title follows the first text', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      const { sessionId } = await openWithSession(handle)
+      seedRow(store, sessionId)
+      sessions.state.messages.push({
+        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '总结这个页面' }], createdAt: '2026-11-02T00:00:00.000Z',
+      })
+      sessions.emit(sessionId, { type: 'status', status: 'streaming' } as AgentEventData)
+      expect(store.savedConversations.size).toBe(0) // active — the turn is open
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await waitUntil(() => store.savedConversations.size === 1)
+      const saved = store.savedConversations.get(sessionId) as { title: string; messages: unknown[] }
+      expect(saved.title).toBe('总结这个页面')
+      expect(saved.messages).toHaveLength(1)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  // review_20261103 中2：upsert 的冲突子句无条件写 history_summary，落库不带
+  // 摘要 = 每回合把列抹成 NULL，压缩过的会话重启后拿全量转写、首拍重新压一遍
+  // （多一次 LLM 调用）。桌面写者保存前赋 engine.getHistorySummary()；托管
+  // 写者走同一值经 engineCall，best-effort（读失败 → 无摘要照常落转写）。
+  it('the history summary rides the turn-end save instead of being NULLed', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      const { sessionId } = await openWithSession(handle)
+      seedRow(store, sessionId)
+      sessions.state.messages.push({
+        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '长任务' }], createdAt: '2026-11-02T00:00:00.000Z',
+      })
+      sessions.engineCall = async (sid, method) => {
+        expect(sid).toBe(sessionId)
+        return method === 'getHistorySummary' ? { text: '早前轮次的摘要', firstKeptId: 'm_keep' } : undefined
+      }
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await waitUntil(() => store.savedConversations.size === 1)
+      const saved = store.savedConversations.get(sessionId) as { historySummary?: string; historySummaryFrontier?: string }
+      expect(saved.historySummary).toBe('早前轮次的摘要')
+      expect(saved.historySummaryFrontier).toBe('m_keep')
+
+      // 读失败（session gone / engine 关闭）：摘要为空但转写照常落。
+      const { handle: h2, sessions: s2, store: store2 } = await start()
+      try {
+        const { sessionId: sid2 } = await openWithSession(h2)
+        seedRow(store2, sid2)
+        s2.state.messages.push({ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: 'hi' }], createdAt: '2026-11-02T00:00:00.000Z' })
+        s2.engineCall = async () => { throw new Error('session not found') }
+        s2.emit(sid2, { type: 'status', status: 'idle' } as AgentEventData)
+        await waitUntil(() => store2.savedConversations.size === 1)
+        const saved2 = store2.savedConversations.get(sid2) as { historySummary?: string }
+        expect(saved2.historySummary).toBeUndefined()
+      } finally {
+        await h2.close()
+      }
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('a non-hosted origin never persists (the desktop renderer writes its own)', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      const { sessionId } = await openWithSession(handle, 'local-ui')
+      store.rows.set(sessionId, { title: '', origin: 'local', updatedAt: new Date().toISOString() })
+      sessions.state.messages.push({ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: 'hi' }], createdAt: '2026-11-02T00:00:00.000Z' })
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await new Promise((r) => setTimeout(r, 30))
+      expect(store.savedConversations.size).toBe(0)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('an existing title survives; the placeholder is replaced; a deleted session writes nothing', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+      seedRow(store, sessionId)
+      await client.request('session.rename', { sessionId, title: '我的会话' })
+      sessions.state.messages.push({ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: 'hi' }], createdAt: '2026-11-02T00:00:00.000Z' })
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await waitUntil(() => store.savedConversations.has(sessionId))
+      expect((store.savedConversations.get(sessionId) as { title: string }).title).toBe('我的会话')
+
+      // Placeholder → the FIRST message's text (the desktop's rule, which
+      // reads messages[0], not the newest) even on a later turn.
+      store.rows.get(sessionId)!.title = '新对话'
+      sessions.state.messages.push({ id: 'm2', role: 'assistant', contentBlocks: [{ type: 'text', text: '回答' }], createdAt: '2026-11-02T00:00:01.000Z' })
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await waitUntil(() => (store.savedConversations.get(sessionId) as { title?: string })?.title === 'hi')
+
+      // Deleted mid-turn: snapshot() answers null → no write, no resurrection.
+      // (The fake keys "service holds the session" off `live` — the same thing
+      // the real snapshot's hasSession/pendingCreates check stands for.)
+      store.savedConversations.delete(sessionId)
+      sessions.live.delete(sessionId)
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await new Promise((r) => setTimeout(r, 30))
+      expect(store.savedConversations.has(sessionId)).toBe(false)
+    } finally {
+      await handle.close()
+    }
   })
 })

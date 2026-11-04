@@ -15,7 +15,7 @@
  *  renderer's own (i18n/locales/zh.ts) — the panel has no i18n layer, so they
  *  are written out here. */
 
-import { memo, useRef, useMemo, useState } from 'react'
+import { memo, useEffect, useRef, useMemo, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
 import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolDetailSummary, toolDisplayName, toolObjectSummary } from './format'
@@ -210,6 +210,12 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
   const objectLine = hasParams ? toolObjectSummary(block) : ''
   const summaryLine = resultSummary(block.name, block.output)?.line ?? null
   const [showFullOutput, setShowFullOutput] = useState(false)
+  // 输出框跟随尾部（桌面 CommandCard 的 outputRef 同款）：运行中的 exec 逐块
+  // 追加 output，maxHeight 300 的框不吸底就只看得到开头、尾巴藏在滚动条后面。
+  const outputRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+  }, [block.output])
   return (
     <div className="pm-cmd">
       <div className="pm-cmd-head">
@@ -274,7 +280,7 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
               查看完整输出
             </button>
           ) : (
-            <div className="pm-cmd-out">{block.output}</div>
+            <div className="pm-cmd-out" ref={outputRef}>{block.output}</div>
           )}
         </>
       )}

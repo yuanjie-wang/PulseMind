@@ -30,6 +30,26 @@ export interface SessionCreateParams {
   title?: string
   /** Page the client is on at creation time (title seeds the session title). */
   pageContext?: PageContext
+  /** The client's history scope for this session (2026-11-03). The whole
+   *  point is the browser extension's 历史会话 list: one Chrome tab owns one
+   *  scope, so its list survives refresh/navigation while another tab's stays
+   *  separate. Stored on the conversation row (`tab_key`) and used by
+   *  `session.list` as the filter; omitted = unscoped (desktop, other clients). */
+  tabKey?: string
+}
+
+export interface SessionListParams {
+  limit?: number
+  /** Only conversations stamped with this scope (see `SessionCreateParams.tabKey`). */
+  tabKey?: string
+  /** Every scope alive in this browser session (review_20261104 中3): the
+   *  extension's scope map lives in chrome.storage.session, which clears on
+   *  browser exit — after a restart every stamped row carries a DEAD scope,
+   *  invisible to its scoped list and never adopted. The service releases
+   *  those stamps (rows outside this set drop their tab_key) so the existing
+   *  adoption hands the whole batch to the first tab that opens; scopes in
+   *  this set are untouched. Extension callers only; omitted = no-op. */
+  liveScopes?: string[]
 }
 
 export interface SessionCreateResult {
@@ -37,6 +57,15 @@ export interface SessionCreateResult {
   agentId: string
   /** True when an existing stored session was resumed rather than created. */
   resumed?: boolean
+  /** The conversation's STORED 授权 level after creation (review_20261103 高3):
+   *  `doCreateSession` seeds an unconfigured normal session with the global
+   *  last-used value, and `session.list` lists only conversations WITH
+   *  messages — so a fresh session's real level was reachable through neither
+   *  the list nor the cold snapshot, and the panel fell back to the default
+   *  while the engine ran the seeded one (dangerously one-sided when the
+   *  last-used is `auto`). Best-effort like the snapshot's own carrier; an
+   *  older service omits it. */
+  approvalMode?: SandboxApprovalMode
 }
 
 /** Session creation options as passed by the local renderer over the Electron
@@ -48,6 +77,9 @@ export interface AgentSessionCreateOptions {
   title?: string
   /** Owning client: 'local' (desktop UI) or a ws clientId. */
   clientId?: string
+  /** Client-side history scope, stored on the conversation row (`tab_key`) —
+   *  the browser extension's per-tab 历史会话 list (2026-11-03). */
+  tabKey?: string
   projectId?: string
   workspaceDir?: string
   /** Full system-prompt replacement for derived sessions. */
@@ -72,7 +104,10 @@ export interface AgentSessionCreateOptions {
 export interface SessionListResult {
   sessions: Array<{
     sessionId: string
-    agentId: string
+    /** Optional: the list is read from the conversation table
+     *  (`id`/`title`/`updated_at`/`approval_mode`), which does not persist the
+     *  agent a session ran with — that lives only in a live session entry. */
+    agentId?: string
     title?: string
     updatedAt?: string
     /** The conversation's stored 授权 level, so a remote client's approval
@@ -159,6 +194,12 @@ export interface PageContext {
   title?: string
   /** Compact text DOM / page summary supplied by browser clients. */
   content?: string
+  /** Who is showing the page (2026-11-04). `'extension'` (the wire default —
+   *  a browser client pushed it with the message) reads the page with the
+   *  `page_*` tools; `'builtin'` (the desktop app's own browser pane, produced
+   *  main-side and never sent by a client) reads it with the `browser` tool.
+   *  Only the state block's hint line branches on this. */
+  source?: 'extension' | 'builtin'
 }
 
 export interface AgentAskParams {
@@ -202,6 +243,12 @@ export interface AgentSnapshotResult {
   plan: PlanSnapshot | null
   fileChanges: SessionFileChange[]
   lastCompaction: CompactionEvent | null
+  /** The session's stored 授权 level (`conversations.approval_mode`), the
+   *  value the desktop composer shows for it (2026-11-02). It used to be read
+   *  off `session.list`, which now lists only conversations with messages —
+   *  a fresh session whose 授权 was picked before its first message would have
+   *  shown the default after a reload. Optional: an older service omits it. */
+  approvalMode?: SandboxApprovalMode
 }
 
 // ── agent.event (notification) ───────────────────────────────────────

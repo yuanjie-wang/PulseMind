@@ -42,12 +42,18 @@ import { agentClientRegistry, isHostedClientId, type ClientTransport } from './c
 import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
+  adoptUnscopedConversations,
+  getConversationApprovalMode,
   getConversationOrigin,
+  getConversationTitle,
   hydrateConversation,
   listConversationsByOrigin,
+  releaseDeadScopeConversations,
+  saveConversation,
   updateConversationTitle,
 } from '../storage/conversation.db'
 import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
+import { installHostedPersistence, type HostedPersistenceDeps } from './hosted-persistence'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
 import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -64,9 +70,31 @@ export interface AgentServiceConversations {
   hydrate(id: string): { title: string; messages: unknown[]; historySummary?: string; historySummaryFrontier?: string } | null
   /** Rows for `session.list`. Carries the conversation's stored 授权 level so a
    *  remote client's approval control can show the same value the desktop
-   *  composer shows (absent = never chosen). */
-  listByOrigin(origin: string, limit: number): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
+   *  composer shows (absent = never chosen). `tabKey` scopes to one client-side
+   *  history scope (the extension's per-tab list); omitted = unscoped. */
+  listByOrigin(origin: string, limit: number, tabKey?: string): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
+  /** Hand this origin's unscoped conversations to `tabKey` — the upgrade path
+   *  for rows written before per-tab history existed (and any row the desktop
+   *  side stamped). Optional so lightweight test stores need not implement it. */
+  adoptUnscoped?(origin: string, tabKey: string): void
+  /** Drop the tab_key of rows whose scope is not in `liveScopes` — the
+   *  browser-restart path (review_20261104 中3): chrome.storage.session cleared,
+   *  so every old stamp is dead and the row strands in every UI. Released rows
+   *  become adoptable by the next tab. Optional like `adoptUnscoped`. */
+  releaseDeadScopes?(origin: string, liveScopes: string[]): void
   origin(id: string): string | null
+  /** The conversation's STORED 授权 level (undefined = never chosen / row
+   *  gone) — `session.create` echoes it so a panel can seed its cache even
+   *  while the fresh session is invisible to `session.list` (EXISTS(messages)):
+   *  doCreateSession's last-used seed would otherwise run the engine at a
+   *  level the panel cannot see (review_20261103 高3). */
+  approvalMode(id: string): SandboxApprovalMode | undefined
+  /** The stored title alone (null = row gone) — the hosted-transcript writer
+   *  keeps a user rename across its turn-end rewrite (hosted-persistence.ts). */
+  title(id: string): string | null
+  /** Write a hosted session's transcript (2026-11-02): main-hosted sessions
+   *  have no renderer to persist for them — see hosted-persistence.ts. */
+  persist: HostedPersistenceDeps['save']
   /** May return a promise (the production impl deletes the minted workspace
    *  folder before the row); the delete handler awaits it when present. */
   remove(id: string): void | Promise<void>
@@ -75,8 +103,13 @@ export interface AgentServiceConversations {
 
 const storageConversations: AgentServiceConversations = {
   hydrate: (id) => hydrateConversation(id),
-  listByOrigin: (origin, limit) => listConversationsByOrigin(origin, limit),
+  listByOrigin: (origin, limit, tabKey) => listConversationsByOrigin(origin, limit, tabKey),
+  adoptUnscoped: (origin, tabKey) => adoptUnscopedConversations(origin, tabKey),
+  releaseDeadScopes: (origin, liveScopes) => releaseDeadScopeConversations(origin, liveScopes),
   origin: (id) => getConversationOrigin(id),
+  approvalMode: (id) => getConversationApprovalMode(id),
+  title: (id) => getConversationTitle(id),
+  persist: (conversation) => saveConversation(conversation),
   remove: (id) => deleteConversationWithWorkspace(id),
   rename: (id, title) => updateConversationTitle(id, title),
 }
@@ -272,6 +305,10 @@ export async function startAgentService(
             const agentId = typeof params.agentId === 'string' ? params.agentId : undefined
             const pageContext = sanitizePageContext(params.pageContext)
             const title = (typeof params.title === 'string' && params.title.trim()) || pageContext?.title || undefined
+            // The client's history scope (the extension's per-tab list). Cheap
+            // junk-proofing: a scope is an opaque token, nothing else.
+            const tabKey =
+              typeof params.tabKey === 'string' && params.tabKey && params.tabKey.length <= 128 ? params.tabKey : undefined
             void (async () => {
               let sessionId = requestedId
               let resumed = false
@@ -282,7 +319,7 @@ export async function startAgentService(
                   // conversation so a desktop restart or a fresh SW keeps the
                   // thread going. Same fill-in of tool_result content the
                   // desktop "continue conversation" path uses.
-                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.clientId })
+                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.clientId, tabKey })
                   await sessions.hydrate(
                     sessionId,
                     conv.messages,
@@ -295,7 +332,7 @@ export async function startAgentService(
               }
               if (!sessionId) {
                 sessionId = `ws_${Date.now()}_${shortUuid(8)}`
-                await sessions.createSession(sessionId, { agentId, title, clientId: conn.clientId })
+                await sessions.createSession(sessionId, { agentId, title, clientId: conn.clientId, tabKey })
               }
               conn.sessions.add(sessionId)
               // Bind here too (2026-10-10): agentAsk was the ONLY bind site, so
@@ -308,14 +345,55 @@ export async function startAgentService(
               // continuation. Hosted clients only: the registry's isHostedCapable
               // gate keeps page tools extension-owned.
               if (isHostedClientId(conn.clientId)) agentClientRegistry.bind(sessionId, transport)
-              send(makeResult(msg.id ?? null, { sessionId, agentId: agentId ?? 'default', resumed }))
+              // The seeded 授权 rides the answer (review_20261103 高3): a fresh
+              // normal session was just seeded with the global last-used level,
+              // and neither session.list (EXISTS(messages)) nor a cold snapshot
+              // (the bridge already holds a mirror) will surface it. Best-effort
+              // like every column read — a storage failure must not cost the
+              // client its create answer.
+              let approvalMode: SandboxApprovalMode | undefined
+              try { approvalMode = store.approvalMode(sessionId) } catch { /* best effort */ }
+              send(makeResult(msg.id ?? null, { sessionId, agentId: agentId ?? 'default', resumed, approvalMode }))
             })().catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
             break
           }
           case Methods.sessionList: {
             const rawLimit = typeof params.limit === 'number' ? params.limit : 50
             const limit = Math.min(Math.max(Math.floor(rawLimit), 1), 200)
-            const rows = store.listByOrigin(conn.clientId, limit)
+            const tabKey =
+              typeof params.tabKey === 'string' && params.tabKey && params.tabKey.length <= 128 ? params.tabKey : undefined
+            // The extension's live scope set (review_20261104 中3): scopes from
+            // previous browser sessions are dead — release their stamps BEFORE
+            // the adoption below so the released rows land in this very list.
+            const liveScopes = Array.isArray(params.liveScopes)
+              ? params.liveScopes.filter((s): s is string => typeof s === 'string' && s.length > 0 && s.length <= 128).slice(0, 256)
+              : []
+            if (tabKey && liveScopes.length > 0) {
+              try {
+                store.releaseDeadScopes?.(conn.clientId, liveScopes)
+              } catch {
+                /* best effort */
+              }
+            }
+            // Rows stamped before the column existed (and every row the desktop
+            // side stamped with an extension origin) carry no scope. Hand them to
+            // this tab on first sight instead of hiding the user's history.
+            if (tabKey) {
+              try { store.adoptUnscoped?.(conn.clientId, tabKey) } catch { /* best effort */ }
+            }
+            const rows = store.listByOrigin(conn.clientId, limit, tabKey)
+            // The conversation store's rows are `{ id, title, updatedAt, … }`;
+            // the protocol's list items are `{ sessionId, … }` like every other
+            // session.* payload. Shipping the raw row made every panel row's
+            // `sessionId` undefined: the 历史会话 menu rendered titles but no row
+            // could be resumed (clicking one unbound the tab and answered an
+            // empty snapshot) and `currentId` never matched (2026-11-02).
+            const listed = rows.map((r) => ({
+              sessionId: r.id,
+              title: r.title,
+              updatedAt: r.updatedAt,
+              approvalMode: r.approvalMode,
+            }))
             // The model state rides along: every panel snapshot calls this
             // anyway, so the picker's inventory costs no extra round trip. A
             // failure to read settings must not cost the caller the list it
@@ -323,7 +401,7 @@ export async function startAgentService(
             void sessions
               .modelState()
               .catch(() => undefined)
-              .then((model) => send(makeResult(msg.id ?? null, { sessions: rows, model })))
+              .then((model) => send(makeResult(msg.id ?? null, { sessions: listed, model })))
             break
           }
           case Methods.modelList: {
@@ -550,6 +628,32 @@ export async function startAgentService(
 
   hostedPromptRouter.attach(sessions)
 
+  // Hosted transcripts persist at turn end (2026-11-02): the extension's
+  // sessions have no renderer to save for them, so without this every
+  // extension conversation stayed a message-less stub the 历史会话 menu could
+  // not list (session.list's EXISTS(messages)) and a desktop restart lost.
+  // Runs on the same event sink chain; its own failures are caught inside.
+  const unsubHostedPersistence = installHostedPersistence({
+    // An arrow, not the method reference `sessions.onEvent`: detached, its
+    // `this` is gone and the real manager's eventSinks read throws.
+    onEvent: (sink) => sessions.onEvent(sink),
+    snapshot: (id) => sessions.snapshot(id),
+    origin: store.origin,
+    title: store.title,
+    // The engine's summary cache rides the turn-end save (review_20261103
+    // 中2): the upsert writes history_summary unconditionally, so a save
+    // without it NULLed the column every turn and compacted sessions paid a
+    // fresh compaction LLM call after every restart.
+    historySummary: async (id) => {
+      try {
+        return ((await sessions.engineCall(id, 'getHistorySummary')) as { text: string; firstKeptId?: string } | null) ?? null
+      } catch {
+        return null // session gone / engine closed — save summary-less
+      }
+    },
+    save: store.persist,
+  })
+
   // ── Listen (loopback only) with a deterministic EADDRINUSE scan: the
   // extension discovers us by probing the same range, so a random port from
   // listen(0) would be unfindable. port 0 (tests) attempts once.
@@ -613,6 +717,7 @@ export async function startAgentService(
     close: async () => {
       clearInterval(heartbeat)
       unsubEvents()
+      unsubHostedPersistence()
       hostedPromptRouter.detach()
       for (const conn of conns) conn.socket.terminate()
       wss.close()

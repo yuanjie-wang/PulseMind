@@ -230,11 +230,19 @@ chrome.runtime.onMessage.addListener((msg: { type?: string }, sender, sendRespon
   if (msg?.type === OPEN_OPTIONS_MESSAGE_TYPE) {
     // The panel's 打开设置 banner button: openOptionsPage exists only in
     // extension contexts (a content script's chrome.runtime lacks it), so the
-    // content script forwards here. Fire-and-forget — the sender wants no reply.
-    chrome.runtime.openOptionsPage().catch((err: unknown) => {
-      console.warn('[PulseMind] open options failed:', err instanceof Error ? err.message : err)
-    })
-    return false
+    // content script forwards here. The sender DOES await a reply: a branch
+    // that returns without sendResponse rejects its promise-shaped sendMessage
+    // ("The message port closed before a response was received") — a
+    // false-alarm warn on every SUCCESSFUL open (review_20261010 低5). The
+    // success path answers {ok:true}; genuine failures answer {ok:false}.
+    chrome.runtime
+      .openOptionsPage()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err: unknown) => {
+        console.warn('[PulseMind] open options failed:', err instanceof Error ? err.message : err)
+        sendResponse({ ok: false })
+      })
+    return true // async response — the receipt above needs the port kept open
   }
   if (msg?.type === RECONNECT_MESSAGE_TYPE) {
     void ensureClient(true).then(() => sendResponse(currentState()))

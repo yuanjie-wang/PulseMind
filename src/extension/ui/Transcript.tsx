@@ -53,11 +53,15 @@ function hasDisplayable(msg: Message): boolean {
       b.type === 'tool_use' ||
       b.type === 'thinking' ||
       b.type === 'redacted_thinking' ||
-      // 用户消息里的截图/附件结果（page 工具的回传）以前被这里连同整条消息一起
-      // 丢掉——桌面上贴的图在面板里看不见（2026-10-31 交付物6）。assistant 的
-      // tool_result 不在此列：它住在自己的 tool_use 卡里（AssistantBlock 的
-      // default 分支），整消息计为可显示会渲染空泡。
-      (b.type === 'tool_result' && msg.role === 'user' && !!((b as ToolResultBlock).imageData || (b as ToolResultBlock).content)),
+      // 用户消息里的截图结果（page 工具的回传）以前被这里连同整条消息一起丢掉
+      // ——桌面上贴的图在面板里看不见（2026-10-31 交付物6）。只认 imageData，
+      // 与桌面 MessageGroup.hasDisplayableContent 逐字同形：引擎每轮把工具结果
+      // 作为一条 user 消息追加（result-ingestion.ts），contentBlocks 全是带文字
+      // 的 tool_result——那是工具卡【输出】的载体，不是用户说的话。曾把 content
+      // 也算进来（2026-11-01），于是每轮工具调用后都多出一个右侧用户气泡，里面
+      // 是原始工具输出（user report 2026-11-02：tool use 的结果那块展示有问题）。
+      // assistant 的 tool_result 同样不在此列：它住在自己的 tool_use 卡里。
+      (b.type === 'tool_result' && msg.role === 'user' && !!(b as ToolResultBlock).imageData),
   )
 }
 
@@ -197,6 +201,8 @@ function Message({ message, handlers, showRow }: {
       .join('\n')
     // 截图与工具输出回传（桌面 MessageGroup 的用户 tool_result 分支，同形）：
     // 之前只 join text blocks，图片在这里静默消失。图片块不带文字也照渲染。
+    // 文字结果（clips）只在这条消息本就可显示时才跟着出现——hasDisplayable 已
+    // 把纯工具结果的载体消息整条挡住，这里的 clips 只会伴随截图或用户正文。
     const images = blocks.filter((b) => b.type === 'tool_result' && (b as ToolResultBlock).imageData) as ToolResultBlock[]
     const clips = blocks.filter(
       (b) => b.type === 'tool_result' && !(b as ToolResultBlock).imageData && !!(b as ToolResultBlock).content,
