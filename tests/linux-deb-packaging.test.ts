@@ -101,11 +101,9 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
   it('python 3.12 独立构建装在 npm ci 之前（gyp 用了 3.8 的 walrus 语法，buster 只有 3.7）', () => {
     // find-python.js 的 ≥3.6 门放过了 3.7，但 gyp/__init__.py:212 的
     // `if flags := ...` import 即 SyntaxError —— 2026-11-05 第四次 CI 实测。
-    const pyAt = WORKFLOW.indexOf('python-build-standalone')
-    // 头部注释里也写着「干净 npm ci」，按可执行行找，别用子串。
-    const npmCiAt = WORKFLOW
-      .split('\n')
-      .findIndex((line) => line.trim() === 'npm ci')
+    const lines = WORKFLOW.split('\n')
+    const pyAt = lines.findIndex((line) => line.includes('python-build-standalone'))
+    const npmCiAt = lines.findIndex((line) => line.trim() === 'npm ci')
     expect(pyAt).toBeGreaterThan(-1)
     expect(npmCiAt).toBeGreaterThan(-1)
     expect(pyAt).toBeLessThan(npmCiAt)
