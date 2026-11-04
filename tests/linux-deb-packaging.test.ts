@@ -83,31 +83,31 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
     for (const line of cachePaths) expect(line).not.toContain('node_modules')
   })
 
-  it('构建基线必须 ≤ 2.28（bullseye 实测编出 GLIBC_2.29 的 better_sqlite3.node）', () => {
-    // 2026-11-05 第三次 CI 实测：bullseye（glibc 2.31）上重编的 better_sqlite3.node
-    // 要求 GLIBC_2.29，门禁按设计红。UOS 20 是 2.28，基线必须与目标机严格同档。
-    expect(WORKFLOW).toMatch(/image:\s*buildpack-deps:buster/)
+  it('容器基线 node:20-bullseye，但编译器必须是 zig 且把符号下限钉在 glibc 2.28', () => {
+    // 四轮 CI 实测（2026-11-04/05）：容器自身编译要么符号超 2.28（bullseye 官方
+    // prebuild 要 2.29），要么 g++ 8.3 认不得 better-sqlite3 12.9 的 -std=c++20
+    //（buster）。zig 的 -target glibc 后缀精确钉符号下限，clang 又吃得下 C++20。
+    expect(WORKFLOW).toMatch(/image:\s*node:20-bullseye/)
+    expect(WORKFLOW).toMatch(/CC:\s*zig cc -target x86_64-linux-gnu\.2\.28/)
+    expect(WORKFLOW).toMatch(/CXX:\s*zig c\+\+ -target x86_64-linux-gnu\.2\.28/)
   })
 
-  it('node 本体来自 nodejs.org 二进制（官方镜像没有 buster 变体），装在 checkout 之前', () => {
-    // checkout@v4 需要容器里先有 node20；没有官方 node:20-buster，node 只能从
-    // nodejs.org 装。装晚了 checkout 第一步就挂。
-    const installAt = WORKFLOW.indexOf('node-v20.')
-    const checkoutAt = WORKFLOW.indexOf('actions/checkout@v4')
-    expect(installAt, 'workflow 必须有 nodejs.org 的 node 安装步骤').toBeGreaterThan(-1)
-    expect(installAt).toBeLessThan(checkoutAt)
-  })
-
-  it('python 3.12 独立构建装在 npm ci 之前（gyp 用了 3.8 的 walrus 语法，buster 只有 3.7）', () => {
-    // find-python.js 的 ≥3.6 门放过了 3.7，但 gyp/__init__.py:212 的
-    // `if flags := ...` import 即 SyntaxError —— 2026-11-05 第四次 CI 实测。
+  it('zig 装在 npm ci 之前（job 级 CC/CXX 靠它在 PATH 里）', () => {
     const lines = WORKFLOW.split('\n')
-    const pyAt = lines.findIndex((line) => line.includes('python-build-standalone'))
+    const zigAt = lines.findIndex((line) => line.includes('zig-linux-x86_64'))
     const npmCiAt = lines.findIndex((line) => line.trim() === 'npm ci')
-    expect(pyAt).toBeGreaterThan(-1)
+    expect(zigAt).toBeGreaterThan(-1)
     expect(npmCiAt).toBeGreaterThan(-1)
-    expect(pyAt).toBeLessThan(npmCiAt)
+    expect(zigAt).toBeLessThan(npmCiAt)
     expect(WORKFLOW).toContain('GITHUB_PATH')
+  })
+
+  it('官方 prebuild 一律不装（它们是 GLIBC_2.29 的新 glibc 构建，electron 路径还不校验）', () => {
+    // better-sqlite3 发有 electron-v130 linux-x64 prebuild，@electron/rebuild 的
+    // prebuild 路径不做加载校验 —— 不挡住它，编译机 glibc 根本没机会决定产物。
+    // npm_config_build_from_source=true 让 prebuild-install 在下载之前就退出
+    //（bin.js 的 buildFromSource 短路），两条调用路径都落到 node-gyp。
+    expect(WORKFLOW).toMatch(/npm_config_build_from_source:\s*'true'/)
   })
 
   it('不得在容器里跑 apt-get（bullseye 已 EOL：升级 ca-certificates 直接 404）', () => {
