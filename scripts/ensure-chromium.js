@@ -21,8 +21,25 @@
 const { existsSync, mkdirSync, cpSync, rmSync, readdirSync, readFileSync, writeFileSync } = require('node:fs')
 const { join, dirname, basename, resolve } = require('node:path')
 
-const FLAVORS = ['chrome-mac', 'chrome-mac-arm64', 'chrome-win', 'chrome-win64', 'chrome-linux']
-const NORMALIZED = { 'chrome-mac-arm64': 'chrome-mac', 'chrome-win64': 'chrome-win' }
+const FLAVORS = [
+  'chrome-mac',
+  'chrome-mac-arm64',
+  'chrome-win',
+  'chrome-win64',
+  'chrome-linux',
+  // Chrome for Testing 的 Linux 包解出来是 chrome-linux64（x64）/ chrome-linux-arm64，
+  // 名字里带位宽，而 ManagedBackend 只认归一化后的 chrome-linux。漏掉这两格时本脚本
+  // 会打印 "Could not locate a flavor directory" 然后静默跳过 —— 包打好、里面没有
+  // 浏览器。mac 上碰不到这个缝：CFT 的 mac 包解出来就是 chrome-mac-arm64，早就在表里。
+  'chrome-linux64',
+  'chrome-linux-arm64',
+]
+const NORMALIZED = {
+  'chrome-mac-arm64': 'chrome-mac',
+  'chrome-win64': 'chrome-win',
+  'chrome-linux64': 'chrome-linux',
+  'chrome-linux-arm64': 'chrome-linux',
+}
 
 function readMarker(path) {
   try {
