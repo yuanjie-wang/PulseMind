@@ -83,8 +83,19 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
     for (const line of cachePaths) expect(line).not.toContain('node_modules')
   })
 
-  it('构建容器必须是 glibc ≤ 2.31 的基线（2.34+ 编出来的 .node 要 GLIBC_2.34）', () => {
-    expect(WORKFLOW).toMatch(/image:\s*node:20-(bullseye|buster)/)
+  it('构建基线必须 ≤ 2.28（bullseye 实测编出 GLIBC_2.29 的 better_sqlite3.node）', () => {
+    // 2026-11-05 第三次 CI 实测：bullseye（glibc 2.31）上重编的 better_sqlite3.node
+    // 要求 GLIBC_2.29，门禁按设计红。UOS 20 是 2.28，基线必须与目标机严格同档。
+    expect(WORKFLOW).toMatch(/image:\s*buildpack-deps:buster/)
+  })
+
+  it('node 本体来自 nodejs.org 二进制（官方镜像没有 buster 变体），装在 checkout 之前', () => {
+    // checkout@v4 需要容器里先有 node20；没有官方 node:20-buster，node 只能从
+    // nodejs.org 装。装晚了 checkout 第一步就挂。
+    const installAt = WORKFLOW.indexOf('node-v20.')
+    const checkoutAt = WORKFLOW.indexOf('actions/checkout@v4')
+    expect(installAt, 'workflow 必须有 nodejs.org 的 node 安装步骤').toBeGreaterThan(-1)
+    expect(installAt).toBeLessThan(checkoutAt)
   })
 
   it('不得在容器里跑 apt-get（bullseye 已 EOL：升级 ca-certificates 直接 404）', () => {
