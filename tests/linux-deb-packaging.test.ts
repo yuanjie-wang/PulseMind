@@ -25,6 +25,7 @@ const { glibcRequirementsOf, maxVersion, exceedsCeiling, collectNodeFiles, forma
 )
 
 const WORKFLOW = read('.github/workflows/build-linux.yml')
+const ENSURE_CHROMIUM = read('scripts/ensure-chromium.js')
 const PKG = JSON.parse(read('package.json')) as {
   author?: { name?: string; email?: string }
   build: { linux: { target: string[]; maintainer?: string } }
@@ -137,6 +138,13 @@ describe('Chromium 取件：debian11 支持矩阵已被摘掉（2026-11-04 第�
     expect(at(/^- name: Verify bundled Chromium landed$/)).toBeLessThan(
       at(/^run: npx electron-builder /),
     )
+  })
+
+  // 这条与 Playwright 无关，是 ensure-chromium 自己的缝：它按解包目录名找 flavor，
+  // 而 CFT 的 Linux 包解出来叫 chrome-linux64，ManagedBackend 只认 chrome-linux。
+  it('ensure-chromium 认得 chrome-linux64 并归一化成 chrome-linux', () => {
+    expect(ENSURE_CHROMIUM).toMatch(/'chrome-linux64'/)
+    expect(ENSURE_CHROMIUM).toMatch(/'chrome-linux64':\s*'chrome-linux'/)
   })
 })
 
