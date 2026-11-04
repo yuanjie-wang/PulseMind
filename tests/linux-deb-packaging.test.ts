@@ -104,6 +104,42 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
   })
 })
 
+describe('Chromium 取件：debian11 支持矩阵已被摘掉（2026-11-04 第二次实测）', () => {
+  // playwright-core 1.63 的 registry 里 debian11-* 是 void 0，容器里直接
+  // 「Playwright does not support chromium on debian11-x64」。而 debian12/13 与
+  // ubuntu22/24 那几格指向同一个 linux64/chrome-linux64.zip —— override 只绕开
+  // 一张支持性表格。
+  it('必须把 host platform 覆写成 debian12-x64', () => {
+    expect(WORKFLOW).toMatch(/PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:\s*'debian12-x64'/)
+  })
+
+  it('覆写必须是 job 级 env —— ensure-chromium 在 build 步骤里还要用一次', () => {
+    // 只设在 `Fetch bundled Chromium` 步骤上是个静默陷阱：npm run build 里的
+    // ensure-chromium.js 用 executablePath() 走同一张表解析缓存路径，读不到
+    // override 就拷不到浏览器，而它永不非零退出。
+    const envAt = WORKFLOW.indexOf('PLAYWRIGHT_HOST_PLATFORM_OVERRIDE')
+    const stepsAt = WORKFLOW.indexOf('\n    steps:')
+    expect(envAt).toBeGreaterThan(-1)
+    expect(stepsAt).toBeGreaterThan(-1)
+    expect(envAt).toBeLessThan(stepsAt)
+  })
+
+  it('跳过宿主依赖校验（容器从不启动浏览器；补库走 apt，bullseye 已 EOL）', () => {
+    expect(WORKFLOW).toMatch(/PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS:\s*'1'/)
+  })
+
+  it('浏览器没落下要红（ensure-chromium 永不非零退出，只有这一步能拦）', () => {
+    expect(WORKFLOW).toContain('Verify bundled Chromium landed')
+    // 这一步必须在 build 之后、打包之前：pre-build 时 resources/chromium 还不存在
+    const lines = WORKFLOW.split('\n')
+    const at = (pattern: RegExp) => lines.findIndex((line) => pattern.test(line.trim()))
+    expect(at(/^- name: Build bundles$/)).toBeLessThan(at(/^- name: Verify bundled Chromium landed$/))
+    expect(at(/^- name: Verify bundled Chromium landed$/)).toBeLessThan(
+      at(/^run: npx electron-builder /),
+    )
+  })
+})
+
 describe('glibc 需求扫描：版本串比对与上限判定', () => {
   it('从原始字节里取出去重升序的版本清单（含三段 2.2.5）', () => {
     const buf = Buffer.from('junkGLIBC_2.34\0GLIBC_2.28\0GLIBC_2.2.5\0GLIBC_2.28\0', 'latin1')
