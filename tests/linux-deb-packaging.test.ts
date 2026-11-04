@@ -86,6 +86,18 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
     expect(WORKFLOW).toMatch(/image:\s*node:20-(bullseye|buster)/)
   })
 
+  it('不得在容器里跑 apt-get（bullseye 已 EOL：升级 ca-certificates 直接 404）', () => {
+    // 2026-11-04 首次 CI 实测：apt-get install -y … ca-certificates 会升到一个
+    // Debian 已经从 deb.debian.org 摘掉的路径，job 在 checkout 之前就红了。
+    // 注释里当然可以讲这件事，所以只在可执行行上断言。
+    const executable = WORKFLOW.split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n')
+    expect(executable).not.toMatch(/apt-get\s+(update|install)/)
+    // 工具链改为只做存在性断言：镜像瘦身要在这里明确报错，而不是在 node-gyp 深处
+    expect(WORKFLOW).toContain('Verify build toolchain')
+  })
+
   it('产物缺失要红（if-no-files-found: error），且门禁上限与目标机对齐 2.28', () => {
     expect(WORKFLOW).toContain('if-no-files-found: error')
     expect(WORKFLOW).toContain('--ceiling=2.28')
