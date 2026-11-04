@@ -19,11 +19,12 @@
 # **不要在这个容器里跑 apt-get install**（bullseye 那次是 404，buster 的源已整体
 # 搬去 archive.debian.org，一样不可信），一切依赖镜像自带。
 #
-# python 版本：重编链是 @electron/rebuild 4.0.4 硬性携带 node-gyp ^12，文档口径
-# python ≥ 3.8，但运行时门是 find-python.js 的 `semverRange = '>=3.6.0'`
-# （v12.3.0 源码第 46 行），buster 自带的 python 3.7.3 过得了这道门 —— 哪天
-# node-gyp 抬了它，这里会以「找不到可用 Python」明确报错，届时再给容器装
-# python-build-standalone（glibc 2.17 基线）。
+# python 版本：重编链是 @electron/rebuild 4.0.4 硬性携带 node-gyp ^12（12.3.0）。
+# buster 自带的 python 3.7 过得了 find-python.js 的运行时门（`>=3.6.0`，v12.3.0
+# 第 46 行），但 gyp 的代码用了 Python 3.8 的 walrus 语法（`gyp/__init__.py:212`
+# 的 `if flags := ...`），import 即 SyntaxError —— 所以容器里另装 python 3.12
+# （python-build-standalone 独立构建，实测产物符号下限 GLIBC_2.17，buster 吃得下；
+# 哪天它抬高基线，这步会以「python --version 失败」或 gyp 深处的错明确红出来）。
 #
 # 两条缓存都是必需的，且都不是省事：
 #   · resources/chromium 是 gitignore 的，构建时由 ensure-chromium.js 从
@@ -101,6 +102,19 @@ jobs:
           done
           python3 --version
           g++ --version | head -1
+
+      # gyp（node-gyp 12 的构建脚本引擎）用了 Python 3.8 的 walrus 语法，系统自带
+      # 的 3.7 import 即 SyntaxError（find-python 的 ≥3.6 门挡不住语法）。装
+      # python-build-standalone 的独立构建并放进 PATH —— node-gyp 按 PATH 挑
+      # python3，装在 npm ci 之前才来得及被重编链用上。
+      - name: Install Python 3.12
+        run: |
+          mkdir -p /opt/python
+          curl -fsSL 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16%2B20261026-x86_64-unknown-linux-gnu-install_only.tar.gz' \
+            | tar -xz -C /opt/python --strip-components=1
+          /opt/python/bin/python3 --version
+          echo '/opt/python/bin' >> "$GITHUB_PATH"
+          python3 --version
 
       - uses: actions/checkout@v4
 
