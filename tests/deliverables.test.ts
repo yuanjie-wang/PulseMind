@@ -14,6 +14,13 @@ const T0 = '2026-09-18T10:00:00.000Z'
 const T1 = '2026-09-18T10:01:00.000Z'
 const T2 = '2026-09-18T10:02:00.000Z'
 
+// Synthetic workspace path (the repo's /Users/u convention, same as
+// external-url.test.ts): these assertions are pure string joins and nothing here
+// touches the filesystem, so a real home path in a fixture only leaks the dev
+// machine's user name.
+const WORKSPACE_DIR = '/Users/u/.pulsemind/workspace/20260925211304'
+const DELIVERABLE = `${WORKSPACE_DIR}/成都旅游攻略-3天2晚.docx`
+
 const use = (id: string, name: string, input: Record<string, unknown>): ContentBlock =>
   ({ type: 'tool_use', id, name, input })
 
@@ -247,15 +254,15 @@ describe('collectDeliverables', () => {
         use('u2', 'docx_edit', { file_path: '成都旅游攻略-3天2晚.docx', ops: [] })
       ]),
       msg('u1', 'user', T1, [
-        exported('/Users/wangyuanjie/.pulsemind/workspace/20260925211304/成都旅游攻略-3天2晚.docx'),
+        exported(DELIVERABLE),
         result('u2')
       ])
     ]
     const d = collectDeliverables(messages, {
-      workspaceDir: '/Users/wangyuanjie/.pulsemind/workspace/20260925211304'
+      workspaceDir: WORKSPACE_DIR
     })
     expect(d.rows).toHaveLength(1)
-    expect(d.rows[0].path).toBe('/Users/wangyuanjie/.pulsemind/workspace/20260925211304/成都旅游攻略-3天2晚.docx')
+    expect(d.rows[0].path).toBe(DELIVERABLE)
     expect(d.rows[0].ops.map((o) => o.tool)).toEqual(['export_document', 'docx_edit'])
   })
 
