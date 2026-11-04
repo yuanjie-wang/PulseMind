@@ -25,14 +25,25 @@ export type { PopoutWorkbenchSeed }
  *  stale pointer must not point at nothing). */
 export function applyPopoutSeed(convId: string, seed: PopoutWorkbenchSeed | null | undefined): void {
   if (!seed) return
+  // 主视图模式（2026-11-04 裁定「对话在主窗是什么视图模式，弹出独立弹窗后要
+  // 保持一致」）：primaryByConversation 不持久化、每窗一份内存态，不播种就恒
+  // boot 成对话优先。非 chat 模式必须补 setOpen——chatSlot 只在 dock 渲染、
+  // dock 关着时对话列不可达（与循环钮同一对调用）。'chat'/缺席不动：无条目即
+  // 对话优先，多写一条空态条目只会让 map 无谓变长。模式先落、tab 后开：下面
+  // openTab 的调和直接对最终 side 集合做（setConversationPrimary 自己也调和
+  // activeTab，两条顺序的终态一致，先后只表达「模式是这一窗的底」）。
+  if (seed.primary === 'files' || seed.primary === 'browser') {
+    const store = useWorkbenchStore.getState()
+    store.setConversationPrimary(convId, seed.primary)
+    store.setOpen(convId, true)
+  }
   if (seed.workbenchTab && WORKBENCH_TAB_IDS.has(seed.workbenchTab as WorkbenchTab)) {
     useWorkbenchStore.getState().openTab(convId, seed.workbenchTab)
   }
   const paths = (seed.previewPaths ?? []).slice(0, MAX_OPEN_TABS)
   if (paths.length === 0) return
   const tabs = paths.map(makeTab)
-  const active =
-    seed.activePreviewPath && tabs.some((t) => t.path === seed.activePreviewPath) ? seed.activePreviewPath : null
+  const active = seed.activePreviewPath && tabs.some((t) => t.path === seed.activePreviewPath) ? seed.activePreviewPath : null
   const preview = usePreviewPaneStore.getState()
   usePreviewPaneStore.setState({
     tabsByConversation: { ...preview.tabsByConversation, [convId]: tabs },

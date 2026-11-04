@@ -11,12 +11,16 @@ const TRAFFIC_LIGHT_LEFT_INSET = 16
 // window exists (read from settings at startup) and can change while it is open.
 let titleBarTheme = 'light'
 
-// Combined alpha of the renderer's full-window masks (0 = none), reported by the
-// mask watcher (renderer/utils/title-bar-mask.ts). The OS draws the caption
+// Combined alpha of ONE window's full-window masks (0 = none), reported by that
+// window's mask watcher (renderer/utils/title-bar-mask.ts). The OS draws the caption
 // buttons ON TOP of the web content, so a modal's dim layer can never reach
 // them — main pre-dims the overlay colours instead, or the buttons stay bright
-// over a dimmed header (Windows: 穿帮 through the 弹窗遮罩).
-let titleBarMaskAlpha = 0
+// over a dimmed header (Windows: 穿帮 through the 弹窗遮罩). Per window: a
+// theme repaint of a secondary window must not inherit the main window's open
+// modal (and vice versa), so the alpha travels with the window that reported
+// it — absent entry reads 0, which is also why a fresh window never opens
+// pre-dimmed.
+const titleBarMaskAlphas = new WeakMap<BrowserWindow, number>()
 
 interface TitleBarOptions {
   titleBarStyle: 'hidden'
@@ -28,7 +32,10 @@ interface TitleBarOptions {
  *  (the traffic lights are plain native dots — no background to repaint). */
 function applyTitleBarOverlay(win: BrowserWindow | null): void {
   if (process.platform === 'darwin' || !win || win.isDestroyed()) return
-  const colors = dimTitleBarOverlayColors(resolveTitleBarOverlayColors(titleBarTheme), titleBarMaskAlpha)
+  const colors = dimTitleBarOverlayColors(
+    resolveTitleBarOverlayColors(titleBarTheme),
+    titleBarMaskAlphas.get(win) ?? 0,
+  )
   win.setTitleBarOverlay({ ...colors, height: TITLE_BAR_HEIGHT })
 }
 
@@ -39,10 +46,9 @@ function applyTitleBarOverlay(win: BrowserWindow | null): void {
  * animation and Windows snap, none of which then have to be reimplemented.
  */
 export function resolveTitleBarOptions(): TitleBarOptions {
-  // A fresh window boots a fresh renderer with no masks open — drop whatever the
-  // previous window reported (tray relaunch) rather than opening pre-dimmed and
-  // waiting for the watcher's first report to correct it.
-  titleBarMaskAlpha = 0
+  // A fresh window has reported no mask of its own (no per-window entry →
+  // alpha 0), and whatever another window reported cannot leak into its
+  // overlay — a tray relaunch must not open pre-dimmed.
   if (process.platform === 'darwin') {
     return {
       titleBarStyle: 'hidden',
@@ -70,14 +76,16 @@ export function setTitleBarTheme(theme: string, win: BrowserWindow | null): void
 }
 
 /**
- * Record the combined mask alpha the renderer reports and repaint the caption
- * buttons blended with it. Clamped and short-circuited on no change, so the
- * watcher's structural mutations (chat streaming churns the DOM constantly)
- * cost a compare when they do not move the value.
+ * Record ONE window's combined mask alpha and repaint its caption buttons
+ * blended with it. Clamped and short-circuited on no change, so the watcher's
+ * structural mutations (chat streaming churns the DOM constantly) cost a
+ * compare when they do not move the value. The state is the window's own:
+ * another window's repaint never sees it.
  */
 export function setTitleBarMaskAlpha(alpha: number, win: BrowserWindow | null): void {
+  if (!win || win.isDestroyed()) return
   const next = Math.min(1, Math.max(0, Number.isFinite(alpha) ? alpha : 0))
-  if (next === titleBarMaskAlpha) return
-  titleBarMaskAlpha = next
+  if (next === (titleBarMaskAlphas.get(win) ?? 0)) return
+  titleBarMaskAlphas.set(win, next)
   applyTitleBarOverlay(win)
 }

@@ -4,7 +4,9 @@
 // header). The contract has three halves, pinned here:
 //   1. shared/window-chrome.ts — the blend (pure maths, the whole fix);
 //   2. main/window-chrome.ts — theme × alpha → setTitleBarOverlay, with the
-//      short-circuit, the clamp and the fresh-window alpha reset;
+//      short-circuit, the clamp and the PER-WINDOW alpha (a secondary window's
+//      repaint must not inherit the main window's open modal, and a theme save
+//      reaches every secondary window: settings.handler → refreshPopoutTitleBarTheme);
 //   3. the chain that carries alpha from a DOM mutation to that repaint —
 //      asserted as source (vitest here is node-env; the DOM half lives in
 //      tests/title-bar-mask-watcher.test.ts, which drives the real observer).
@@ -19,6 +21,7 @@ import {
   resolveCaptionButtonStyle,
   resolveTitleBarOverlayColors,
   resolveWindowControlsLayout,
+  titleBarActionsRight,
   titleBarRightInset,
   TITLE_BAR_HEIGHT,
 } from '../src/shared/window-chrome'
@@ -36,11 +39,9 @@ function setPlatform(value: string): void {
   Object.defineProperty(process, 'platform', { value, configurable: true })
 }
 afterEach(() => {
-  // Leave the module's mask state at 0 for the next test in this file — the
-  // module is shared across `it`s and a leaked dim would short-circuit a later
-  // repaint (the short-circuit is itself asserted below). The record works on
-  // any platform; the repaint is the darwin-guarded half.
-  setTitleBarMaskAlpha(0, null)
+  // Mask state is per window (a WeakMap keyed by the stub instances), and every
+  // test mints its own window — nothing leaks between `it`s. Only the THEME is
+  // module-global; tests that flip it restore it inline.
   Object.defineProperty(process, 'platform', platformDesc)
 })
 
@@ -56,6 +57,22 @@ describe('titleBarRightInset — the top-right cluster clears the OS controls', 
     const mac = resolveWindowControlsLayout('darwin')
     expect(mac.side).toBe('left')
     expect(titleBarRightInset(mac)).toBe(0)
+  })
+})
+
+describe('titleBarActionsRight — cluster offset = OS strip + app gutter', () => {
+  it('Windows/Linux sit flush against the caption strip (gutter 0)', () => {
+    // 2026-11-04 user rulings: first 24px → 9px ("间距过大"), then 9px → 0
+    // ("干脆把那 9px 也去掉") — the app buttons and the native min/max/close
+    // read as one row of caption buttons.
+    const win = resolveWindowControlsLayout('win32')
+    expect(titleBarActionsRight(win)).toBe(win.inset)
+    // Never inside the strip — there the buttons are hidden and dead.
+    expect(titleBarActionsRight(win)).toBeGreaterThanOrEqual(win.inset)
+  })
+
+  it('macOS keeps the header gutter (24px) — nothing on the right to hug', () => {
+    expect(titleBarActionsRight(resolveWindowControlsLayout('darwin'))).toBe(24)
   })
 })
 
@@ -151,7 +168,6 @@ describe('title-bar overlay repaint (main)', () => {
     setTitleBarTheme('light', win)
     setTitleBarMaskAlpha(0.45, win)
     expect(win.overlayUpdates).toEqual([])
-    setTitleBarMaskAlpha(0, win) // record the reset while still on darwin
   })
 
   it('win32: a mask repaints the overlay blended with the header', () => {
@@ -185,15 +201,44 @@ describe('title-bar overlay repaint (main)', () => {
     expect(win.overlayUpdates.at(-1)).toEqual({ color: '#FFFFFF', symbolColor: '#333333', height: TITLE_BAR_HEIGHT })
   })
 
-  it('a fresh window drops the previous window’s reported alpha (tray relaunch must not open pre-dimmed)', () => {
+  it('a fresh window opens undimmed — another window’s reported alpha does not leak (tray relaunch)', () => {
     setPlatform('win32')
-    const win = new BrowserWindow()
-    setTitleBarMaskAlpha(0.45, win)
-    const dimmed = win.overlayUpdates.at(-1)!.color
-    expect(dimmed).toBe('#8c8c8c')
+    const old = new BrowserWindow()
+    setTitleBarMaskAlpha(0.45, old)
+    expect(old.overlayUpdates.at(-1)!.color).toBe('#8c8c8c')
     resolveTitleBarOptions()
-    setTitleBarTheme('light', win)
-    expect(win.overlayUpdates.at(-1)).toEqual({ color: '#FFFFFF', symbolColor: '#333333', height: TITLE_BAR_HEIGHT })
+    const fresh = new BrowserWindow()
+    setTitleBarTheme('light', fresh)
+    expect(fresh.overlayUpdates.at(-1)).toEqual({ color: '#FFFFFF', symbolColor: '#333333', height: TITLE_BAR_HEIGHT })
+  })
+
+  it('mask alpha is per window: one window’s open modal never dims another’s repaint', () => {
+    setPlatform('win32')
+    // Main window mid-modal; the popout has no mask and opens clean…
+    const main = new BrowserWindow()
+    setTitleBarMaskAlpha(0.45, main)
+    const popout = new BrowserWindow()
+    setTitleBarTheme('light', popout)
+    expect(popout.overlayUpdates.at(-1)).toEqual({ color: '#FFFFFF', symbolColor: '#333333', height: TITLE_BAR_HEIGHT })
+    // …and a THEME repaint of the popout stays undimmed while the main
+    // window's own keeps its dim (2026-11-02: settings save → all windows).
+    setTitleBarTheme('dark', popout)
+    expect(popout.overlayUpdates.at(-1)).toEqual({ color: '#141414', symbolColor: '#CCCCCC', height: TITLE_BAR_HEIGHT })
+    setTitleBarTheme('dark', main)
+    expect(main.overlayUpdates.at(-1)).toEqual({ color: '#0b0b0b', symbolColor: '#707070', height: TITLE_BAR_HEIGHT })
+  })
+
+  it('a report with no window (sender gone) or for a destroyed window is dropped, not recorded anywhere', () => {
+    setPlatform('win32')
+    expect(() => setTitleBarMaskAlpha(0.45, null)).not.toThrow()
+    const gone = new BrowserWindow()
+    gone.destroy()
+    setTitleBarMaskAlpha(0.45, gone)
+    expect(gone.overlayUpdates).toEqual([])
+    // …and did not poison a window created afterwards.
+    const next = new BrowserWindow()
+    setTitleBarTheme('light', next)
+    expect(next.overlayUpdates.at(-1)).toEqual({ color: '#FFFFFF', symbolColor: '#333333', height: TITLE_BAR_HEIGHT })
   })
 
   it('win32: creation options carry the theme colours undimmed', () => {
@@ -251,5 +296,29 @@ describe('wiring — renderer mask → IPC → repaint', () => {
 
   it('the chat image viewer opts in through the data hook', () => {
     expect(imageView).toContain('data-pm-mask')
+  })
+})
+
+describe('wiring — a theme save reaches every secondary window', () => {
+  const settings = read('src/main/ipc/settings.handler.ts')
+  const popout = read('src/main/popout-window.ts')
+  const index = read('src/main/index.ts')
+
+  it('the settings save repaints the sender AND the secondaries with ONE resolved mode', () => {
+    expect(settings).toContain("import { refreshPopoutTitleBarTheme } from '../popout-window'")
+    // One resolution, both consumers — the two halves must never disagree.
+    expect(settings).toMatch(
+      /const chromeTheme = resolveThemePreference\(settings\.theme, nativeTheme\.shouldUseDarkColors\)/,
+    )
+    expect(settings).toMatch(/setTitleBarTheme\(chromeTheme, BrowserWindow\.fromWebContents\(event\.sender\)\)/)
+    expect(settings).toMatch(/refreshPopoutTitleBarTheme\(chromeTheme\)/)
+  })
+
+  it('the secondary refresh takes the mode from its caller, not from nativeTheme', () => {
+    expect(popout).toMatch(/export function refreshPopoutTitleBarTheme\(mode: string\): void/)
+    // A 'light' preference must win over a dark OS — the old shape re-derived
+    // the mode inside and would paint dark over a light-content popout.
+    expect(popout).not.toMatch(/refreshPopoutTitleBarTheme\(\): void[\s\S]{0,200}shouldUseDarkColors/)
+    expect(index).toMatch(/refreshPopoutTitleBarTheme\(bootThemeMode\)/)
   })
 })

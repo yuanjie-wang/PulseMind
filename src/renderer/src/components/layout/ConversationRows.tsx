@@ -27,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { CLOCK_TICK_MS, bucketDayByDate, describeRelativeTimeText, type DayBucket } from '../../utils/relative-time'
+import { ConversationLightDot, ConversationLightDotStyle } from './ConversationLightDot'
 import type { ConversationLight } from '../../hooks/useConversationEngine'
 import type { ConversationListItem } from '../../types/conversation'
 
@@ -139,18 +140,9 @@ export function groupConversationsByDate(
   return groups
 }
 
-/** The solid dots. Running keeps the link blue but is the only animated state —
- *  a slow opacity blink (no scale, no ripple); the other three are static:
- *  the approval/ask amber (`--pm-warn`, the held-approval family — not the gold
- *  accent, which marked the retired retrying state), the api-exception red and
- *  the completed-unread green (the status pair from the palette: antd red-5 /
- *  green-6). */
-const LIGHT_DOT_COLOR: Record<ConversationLight, string> = {
-  running: 'var(--pm-link)',
-  waiting: 'var(--pm-warn)',
-  error: 'var(--pm-error-status)',
-  unread: 'var(--pm-success-status)'
-}
+// The solid dots (color table + blink keyframes) moved into the shared
+// ConversationLightDot — the immersive window's header conversation switcher
+// renders the same dot, and one table keeps the two surfaces from drifting.
 
 interface ConversationRowProps {
   /** The conversation's list key, re-declared so the row root can carry it as
@@ -212,13 +204,7 @@ function ConversationRow({
           running dot animates (user ruling 2026-09-30: the ring read badly — a slow
           opacity blink on the link-blue dot instead, same 6px as the rest). */}
       <span style={{ width: STATUS_GUTTER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-        {light && (
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: LIGHT_DOT_COLOR[light],
-            animation: light === 'running' ? 'conv-dot-blink 2s ease-in-out infinite' : undefined
-          }} />
-        )}
+        {light && <ConversationLightDot light={light} />}
       </span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--pm-row-ink)', fontSize: 14, lineHeight: '20px' }}>
         {label}
@@ -359,11 +345,8 @@ function ConversationRows({
 
   return (
     <>
+      <ConversationLightDotStyle />
       <style>{`
-        @keyframes conv-dot-blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.35; }
-        }
         .conv-show-more {
           display: block; width: 100%; text-align: left;
           border: none; background: transparent; cursor: pointer;

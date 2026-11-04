@@ -100,7 +100,9 @@ describe('layout width wiring', () => {
   it('workbenchStore persists treeWidth with the pane width', () => {
     const src = read('src/renderer/src/stores/workbenchStore.ts')
     expect(src).toContain('WORKBENCH_DEFAULT_TREE_WIDTH')
-    expect(src).toMatch(/partialize: \(s\) => \(\{ width: s\.width, activeTab: s\.activeTab, treeWidth: s\.treeWidth \}\)/)
+    // 视图模式二期「模式跟任务走」：primaryByConversation 按会话存内存、
+    // 不落盘（重启回归对话优先，与 openByConversation 同裁定）。
+    expect(src).toMatch(/partialize: \(s\) =>\s*\(\{ width: s\.width, activeTab: s\.activeTab, treeWidth: s\.treeWidth \}\)/)
   })
 
   it('both drags share the pointer guards the workbench handle paid for', () => {

@@ -72,6 +72,8 @@ describe('collapse CSS (global index.html)', () => {
 
 describe('collapse wiring (MessageGroup)', () => {
   const groupSrc = readFileSync(GROUP, 'utf-8')
+  // 耗时/Token 措辞真源（review_20261103 中6 起）。
+  const statsSrc = readFileSync(join(REPO, 'src', 'shared', 'ui', 'message-stats.ts'), 'utf-8')
 
   it('the row carries the container class', () => {
     expect(groupSrc).toContain('className="pm-msg-actions"')
@@ -132,9 +134,20 @@ describe('collapse wiring (MessageGroup)', () => {
   })
 
   it('durations past two minutes read in minutes (2026-11-01 user ruling)', () => {
-    // 「184.6s」读不出量级；≥2min 换算成一位小数的分钟档。
-    expect(groupSrc).toContain('if (ms >= 120_000)')
-    expect(groupSrc).toContain('toFixed(1)}min')
+    // 「184.6s」读不出量级；≥2min 换算成一位小数的分钟档。措辞真源已抬进
+    // shared/ui/message-stats.ts（review_20261103 中6：面板私有副本漏改导致
+    // 同一条消息两侧漂移）——扫描跟着真源走，MessageGroup 只认导入。
+    expect(statsSrc).toContain('if (ms >= 120_000)')
+    expect(statsSrc).toContain('toFixed(1)}min')
+    expect(groupSrc).toContain("from '../../../../shared/ui/message-stats'")
+  })
+
+  it('token counts past one thousand read in k (2026-11-01 user ruling)', () => {
+    // 千位分隔的「12,345」比「12.3k」宽且读不出量级；1000 整也入档不分叉。
+    expect(statsSrc).toContain('if (n >= 1000)')
+    expect(statsSrc).toContain('toFixed(1)}k')
+    // 旧 10k 阈值不得残留。
+    expect(statsSrc).not.toContain('n >= 10_000')
   })
 
   it('the stats group never participates in the collapse', () => {

@@ -254,6 +254,47 @@ describe('renderer: window mode + single-writer chain', () => {
     expect(pop).toContain('data-pm-project-switcher')
   })
 
+  it('the header is TWO lines: small project name, big conversation title + ▾ (2026-11-01)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // 第一行 = 项目名（小字身份行，data-pm-project-name，不触发切换器）；
+    // 第二行 = 状态灯 + 会话标题 + ▾（data-pm-project-switcher，切换器触发区）。
+    // 项目名刻意不在切换器里——探针分元素断言两行（probe-project-window）。
+    expect(pop).toContain('data-pm-project-name')
+    expect(pop).toContain("fontSize: FONT_SIZE.sm,\n          fontWeight: FONT_WEIGHT.medium,\n          color: 'var(--pm-text-muted)'")
+    // 会话标题占原项目名字号（lg/semibold）；▾ 与标题同一行、同在触发器内。
+    expect(pop).toContain("data-pm-project-switcher")
+    expect(pop).toContain("{activeConvTitle || t('projectWindow.draftConversation')}")
+    // 草稿态标题占位键双语都在。
+    for (const loc of ['zh', 'en'] as const) {
+      expect(read(`renderer/src/i18n/locales/${loc}.ts`)).toContain('draftConversation:')
+    }
+  })
+
+  it('both header lines share ONE grid template — the text axes coincide (2026-11-01)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // 旧 flex 版里图标把上行文字挤右 8px、▾ 把下行挤左 8px（两条文字轴差
+    // 16px）。对称端槽（16|文字|16）让文字列中心 = 盒中心 = 列轴；两行模板
+    // 必须逐字一致，探针量 |ΔcenterX| ≤ 1.5px（probe-project-window）。
+    const template = "gridTemplateColumns: '16px minmax(0, 1fr) 16px'"
+    expect(pop.split(template).length - 1).toBe(2)
+    // 附件全部挂在端槽/文字两侧，不进文字流挤偏：图标 justifySelf、灯槽恒占位。
+    expect(pop).toContain("justifySelf: 'end'")
+    expect(pop).toContain('data-pm-header-light={headerLight ?? undefined}')
+    // 状态灯读同一张 convLights 表（切换器菜单行的表）。prettier 会给三元
+    // 分支里的 ?? 补括号，两种写法都算命中。
+    expect(pop).toMatch(/const headerLight = activeConvKey \? \(?convLights\[String\(activeConvKey\)\] \?\? null\)? : null/)
+  })
+
+  it('the project window header carries the 新建会话 direct button (2026-11-01)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // 频用动作从切换器菜单提为头部直钮（项目侧栏悬停簇同款先例）；工作台
+    // 切换按钮仍然不在（无处可切）。
+    expect(pop).toContain('{isProjectWindow && (')
+    expect(pop).toContain("aria-label={t('projectWindow.newConversation')}")
+    expect(pop).toContain('onClick={startProjectDraft}')
+    expect(pop).toContain("className={CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}")
+  })
+
   it('the send button wears the project hue (project store must be loaded)', () => {
     const pop = read('renderer/src/popout/PopoutApp.tsx')
     // ChatView 的 composerProjectHue 走 useProjectHue → useProjectStore；这个窗口
@@ -383,17 +424,19 @@ describe('三面板（2026-10-31 用户裁定：左 目录树|全文检索，右
     expect(pop).toContain('highlightPlanNodeId={highlightPlanNodeId}')
   })
 
-  it('左卡切换器 + SearchPanel panel 变体（工作台 strip 形态不变）', () => {
+  it('左卡切换器 + SearchPanel 整卡形态（strip 变体随主窗入口退场，2026-11-01 用户裁定）', () => {
     const pane = read('renderer/src/components/workbench/WorkspacePane.tsx')
     expect(pane).toContain('data-pm-left-panel-switcher')
-    expect(pane).toContain('variant="panel"')
+    expect(pane).toContain('<SearchPanel workspaceDir={workspaceDir} />')
     // 2026-10-31 用户裁定：文案「文件 / 搜索」（不再叫 目录树/全文检索）。
     expect(pane).toContain("['tree', '文件']")
     expect(pane).toContain("['search', '搜索']")
     const search = read('renderer/src/components/workbench/SearchPanel.tsx')
-    // 缺省 strip 逐字节保留：主窗树列底条（帽 48% + 顶边框）不回归。
-    expect(search).toContain("variant = 'strip'")
-    expect(search).toContain("panel ? { flex: 1, minHeight: 0 } : { flexShrink: 0, maxHeight: '48%' }")
+    // 树工具条的全文搜索按钮退场后（2026-11-01 用户裁定「只有沉浸模式提供
+    // 全量的编辑和操作能力，普通模式保持简洁」），strip 变体再无消费面、
+    // 一并删除——面板（整卡填充）是唯一形态。
+    expect(search).toContain('data-ws-search-panel')
+    expect(search).not.toContain('variant')
   })
 
   it('搜索面板四连裁定（2026-10-31）：Aa 胶囊、✕ 移除、结果行重排+命中高亮', () => {
@@ -413,5 +456,57 @@ describe('三面板（2026-10-31 用户裁定：左 目录树|全文检索，右
     expect(search).toContain('pm-search-hit-line')
     expect(search).toContain('pm-search-hit-mark')
     expect(search).toContain('text.toLowerCase().indexOf(debounced.toLowerCase())')
+  })
+})
+
+describe('头部会话切换器：状态灯 + 分页（2026-11-01 用户裁定）', () => {
+  it('switcher rows carry the same status dot as the sidebar (one shared table)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // The switcher reads the SAME lights map ChatView's column consumes
+    // (statusToLight → convLights) — no second light source to drift.
+    expect(pop).toContain('const light = convLights[String(c.key)] ?? null')
+    expect(pop).toContain("import { ConversationLightDot, ConversationLightDotStyle } from '../components/layout/ConversationLightDot'")
+    expect(pop).toContain('<ConversationLightDot light={light} />')
+    // Probe hook carrying the light state on the reserved gutter (the
+    // switcher probe reads it; sidebar rows keep their own gutter recipe).
+    expect(pop).toContain('data-pm-switcher-light={light ?? undefined}')
+    // The blink keyframes must exist in THIS window — the sidebar's copy never
+    // mounts here, so the shared style tag mounts at the PopoutApp root.
+    expect(pop).toContain('<ConversationLightDotStyle />')
+    // The color table lives once, beside the dot.
+    const dot = read('renderer/src/components/layout/ConversationLightDot.tsx')
+    expect(dot).toContain("running: 'var(--pm-link)'")
+    expect(dot).toContain("waiting: 'var(--pm-warn)'")
+    expect(dot).toContain("error: 'var(--pm-error-status)'")
+    expect(dot).toContain("unread: 'var(--pm-success-status)'")
+    // The sidebar rows render the same component (refactor, not a fork).
+    expect(read('renderer/src/components/layout/ConversationRows.tsx'))
+      .toContain('{light && <ConversationLightDot light={light} />}')
+  })
+
+  it('rows sort by recency — the first page leads with what the window booted on', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    expect(pop).toContain(".sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))")
+  })
+
+  it('paging: first page = 10, 显示更多 appends 10 in place without closing the dropdown', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    // One page size, shared with the sidebar's blocks (both start at 10).
+    expect(pop).toContain("import { CONVERSATION_PAGE_SIZE } from '../components/layout/ConversationRows'")
+    expect(pop).toContain('useState(CONVERSATION_PAGE_SIZE)')
+    expect(pop).toContain('projectConvs.slice(0, switcherLimit)')
+    // The item reuses the sidebar's label with the REAL remaining count, and
+    // each click extends the limit by one page.
+    expect(pop).toContain("t('conversationSidebar.showMore', { count: hiddenConvCount })")
+    expect(pop).toContain('setSwitcherLimit((v) => v + CONVERSATION_PAGE_SIZE)')
+    // Controlled open: antd closes on EVERY menu-item click (source 'menu');
+    // the guard swallows exactly the __more__ one so the next page renders in
+    // place. The ref is written by the menu onClick FIRST (antd order: item
+    // onClick → menu onClick → injected close), so only that item's close
+    // matches — a switch/新建 item's close passes through and the dropdown
+    // closes as before.
+    expect(pop).toContain('open={switcherOpen}')
+    expect(pop).toContain('switcherClickRef.current = key')
+    expect(pop).toContain("info.source === 'menu' && switcherClickRef.current === '__more__'")
   })
 })

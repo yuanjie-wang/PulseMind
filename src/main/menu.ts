@@ -16,7 +16,10 @@
 //   platforms.
 //
 // Both halves funnel through one dispatchMenuAction → MENU_ACTION IPC push;
-// the renderer (AppLayout) owns what the actions actually do.
+// the renderer (AppLayout) owns what the actions actually do. An accelerator
+// firing while a secondary window (popout / immersive / hook browser) holds
+// focus is swallowed — the main window must not act on keys aimed at another
+// window (shouldDispatchMenuAction in shared/shortcuts.ts).
 //
 // Labels are a local zh/en map rather than the renderer's i18n locales: those
 // live under src/renderer/src and the main bundle must not reach into
@@ -26,7 +29,7 @@
 import { Menu, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { settingsStore } from './storage/settings-store'
-import { effectiveAccelerators, fallbackComboFor, type ShortcutActionId } from '../shared/shortcuts'
+import { effectiveAccelerators, fallbackComboFor, shouldDispatchMenuAction, type ShortcutActionId } from '../shared/shortcuts'
 
 export type MenuActionId = ShortcutActionId
 
@@ -67,9 +70,14 @@ const LABELS = {
 
 let getWindow: (() => BrowserWindow | null) | null = null
 
-function dispatchMenuAction(action: MenuActionId): void {
+/** The focus gate (shouldDispatchMenuAction) rides here: on macOS the app
+ *  menu is global, so an accelerator fired while a secondary window holds
+ *  focus must not reach the main window. A mouse click on the menu item
+ *  (triggeredByAccelerator === false) always dispatches. */
+function dispatchMenuAction(action: MenuActionId, viaAccelerator: boolean): void {
   const win = getWindow?.()
   if (!win || win.isDestroyed()) return
+  if (!shouldDispatchMenuAction(viaAccelerator, win.isFocused())) return
   win.webContents.send(IPC_CHANNELS.MENU_ACTION, action)
 }
 
@@ -77,7 +85,7 @@ function actionItem(action: MenuActionId, label: string, withAccelerator: boolea
   return {
     label,
     accelerator: withAccelerator ? accelerators[action] : undefined,
-    click: () => dispatchMenuAction(action),
+    click: (_item, _browserWindow, event) => dispatchMenuAction(action, event?.triggeredByAccelerator === true),
   }
 }
 
@@ -211,6 +219,9 @@ export function attachShortcutFallback(win: BrowserWindow): void {
     const action = fallbackCombos[parts.join('+')]
     if (!action) return
     event.preventDefault()
-    dispatchMenuAction(action)
+    // This guard lives on the main window's webContents only, so the key
+    // reaching here proves the main window had focus — viaAccelerator=true
+    // passes the gate (kept explicit for when a second attach point appears).
+    dispatchMenuAction(action, true)
   })
 }

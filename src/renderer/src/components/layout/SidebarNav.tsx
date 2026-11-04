@@ -11,12 +11,17 @@ import { Button, Dropdown, type MenuProps } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import { SIDEBAR_NAV, type SidebarNavItem } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
+import type { NewTaskMode } from '../../stores/newTaskStore'
 
 interface SidebarNavProps {
   /** False once the session cap is reached with auto-cleanup off. */
   canCreateNew: boolean
   /** Create and open a fresh conversation. */
   onCreateNew: () => void
+  /** 带任务形态的新建（PLAN-layout-modes 十四期）：新建任务子菜单的
+   *  对话/项目/浏览器三档——按档位设 newTaskStore.mode 并进对应 welcome
+   *  表单。缺省 = 子项走 onCreateNew（listTab 语义）。 */
+  onCreateNewWithMode?: (mode: NewTaskMode) => void
 }
 
 // Submenus fly out to the right of the entry, top-aligned, 4px clear of it.
@@ -25,7 +30,7 @@ interface SidebarNavProps {
 // pair antd's own `rightTop` placement is built from.
 const SUBMENU_ALIGN = { points: ['tl', 'tr'], offset: [4, 0] }
 
-function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.ReactElement {
+function SidebarNav({ canCreateNew, onCreateNew, onCreateNewWithMode }: SidebarNavProps): React.ReactElement {
   const { t } = useTranslation()
   const view = useNavigationStore((s) => s.view)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
@@ -34,6 +39,12 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
     // navigateKind restores the kind's remembered params (e.g. the tool center's
     // selected tool / capability tab) instead of resetting to the bare kind.
     navigateKind(item.view)
+    // 新建任务子菜单的档位分流（十四期）：taskMode 决定 welcome 形态，由
+    // AppLayout 的带模式 handler 接手（setMode + shake + 建新会话）。
+    if (item.taskMode) {
+      if (canCreateNew) onCreateNewWithMode?.(item.taskMode)
+      return
+    }
     if (item.isAction && canCreateNew) onCreateNew()
   }
 
@@ -73,7 +84,9 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
         const items: MenuProps['items'] = item.submenu.map((sub) => {
           const SubIcon = sub.icon
           return {
-            key: sub.view,
+            // key 必须唯一：rc-menu 的 active/selected 按 key 匹配——新建任务
+            // 三档的 view 都是 'chat'，同 key 会让 hover 一项高亮全部。
+            key: sub.taskMode ?? sub.view,
             icon: <SubIcon style={{ fontSize: 16 }} />,
             label: t(sub.labelKey),
             disabled: isDisabled(sub),

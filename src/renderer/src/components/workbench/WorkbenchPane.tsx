@@ -6,11 +6,16 @@
 // left-edge drag handle, one paddingRight reserve upstream. The browser tab
 // keeps its native-WebView contract — while it is frontmost the renderer
 // reports browserActive=true so the main-process dock shows.
+//
+// 视图模式（PLAN-layout-modes 2026-11-03）：tab 集合按主视图模式走
+// （sideTabsFor）——文件/浏览器优先时对话降级为侧栏 tab，其内容由 ChatView
+// 构造好经 chatSlot 注入（WorkbenchPane 不反向依赖 ChatView，避免环）。
 
 import React, { useRef } from 'react'
 import { X } from 'lucide-react'
-import { clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
-import { useWorkbenchStore, WORKBENCH_TAB_IDS, type WorkbenchTab } from '../../stores/workbenchStore'
+import { WORKBENCH_CARD_MARGIN, clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
+import { IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
+import { useWorkbenchStore, useConversationPrimary, reconcileActiveTab, sideTabsFor, type WorkbenchTab } from '../../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { PlanGraphView } from './PlanGraphView'
@@ -23,6 +28,15 @@ interface Props {
   conversationId: string | undefined
   /** Measured chat-column width — the clamp input for the drag handle. */
   chatAreaWidth: number
+  /** 卡片形态（2026-11-03 主窗裁定，参考沉浸卡片语言）：面板收成圆角卡——
+   *  四周 5px 窗口边距（top/right/bottom 各让 5）、1px separator-faint 全边框
+   *  接管旧的 borderLeft、圆角 8 + 裁切 + border-box（clamp 数学不被 +2 打破，
+   *  沉浸卡同款）。主窗 App.tsx 与会话弹出窗口 PopoutApp 都传（2026-11-04
+   *  用户裁定两窗统一）；缺省 false = 项目沉浸窗口的贴边 dock 几何逐字节
+   *  不变。主窗侧 ChatView 的
+   *  对话卡 reserve 已按「卡边距 + 列间 gap」加宽，原生浏览器 view 的对位由
+   *  ChatView 经 useBrowserPaneBinding 携带的 WORKBENCH_CARD_*_INSET 承担。 */
+  card?: boolean
   plan: Plan | null
   onPlanJump?: (msgId: string) => void
   /** Node click → the host opens the node's linked sub-agent session (or
@@ -41,19 +55,39 @@ interface Props {
   /** While the browser tab is frontmost, width drags must reach the
    *  main-process dock so the native WebView keeps aligned. */
   onBrowserWidth: (width: number) => void
+  /** 对话 tab 的内容（视图模式 ≠ chat 时由 ChatView 注入的 ChatBody 节点）。
+   *  chat-primary 的侧栏集合没有对话 tab，永远不渲染它。 */
+  chatSlot?: React.ReactNode
 }
 
-export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump = () => {}, onOpenPlanNode, canOpenNode, onOpenNodeReport, highlightPlanNodeId, browserPane, onBrowserAction, onBrowserWidth }: Props): React.ReactElement {
+export function WorkbenchPane({
+  conversationId,
+  chatAreaWidth,
+  card,
+  plan,
+  onPlanJump = () => {},
+  onOpenPlanNode,
+  canOpenNode,
+  onOpenNodeReport,
+  highlightPlanNodeId,
+  browserPane,
+  onBrowserAction,
+  onBrowserWidth,
+  chatSlot,
+}: Props): React.ReactElement {
   const width = useWorkbenchStore((s) => s.width)
   // The persisted width predates every window it renders into (a drag under
   // one monitor survives onto a smaller one; this instance also predates the
   // 2026-10-06 zoom fix, whose 3× CSS viewport stored an 1854px drag) — the
   // drag clamp is not enough, every consumption of the stored value clamps.
   const effWidth = clampPaneWidth(width, chatAreaWidth)
-  // A persisted activeTab naming a removed tab (the one-day deliverables
-  // aggregate, or 'files' before its merge into 工作区) would otherwise render
-  // a pane body with no view.
-  const activeTab = useWorkbenchStore((s) => (WORKBENCH_TAB_IDS.has(s.activeTab) ? s.activeTab : 'workspace'))
+  // 视图模式：side tab 集合与 activeTab 调和都跟着 primary 走（次级窗口恒
+  // 'chat'）。A persisted activeTab naming a removed tab (the one-day
+  // deliverables aggregate, or 'files' before its merge into 工作区) — or one
+  // that IS the primary itself — would otherwise render a pane body with no
+  // view; reconcileActiveTab falls back per mode.
+  const primary = useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)
+  const activeTab = useWorkbenchStore((s) => reconcileActiveTab(primary, s.activeTab))
   const setWidth = useWorkbenchStore((s) => s.setWidth)
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab)
   const setOpen = useWorkbenchStore((s) => s.setOpen)
@@ -98,27 +132,37 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
     drag.current = null
   }
 
-  const tabs: Array<{ id: WorkbenchTab; label: string; badge?: string }> = [
-    // The open-file count rides 工作区's badge now that the preview lives there.
-    ...(fileTabs > 0
-      ? [{ id: 'workspace' as const, label: '工作区', badge: String(fileTabs) }]
-      : [{ id: 'workspace' as const, label: '工作区' }]),
-    ...(browserPane.tabs.length > 0
-      ? [{ id: 'browser' as const, label: '浏览器', badge: String(browserPane.tabs.length) }]
-      : [{ id: 'browser' as const, label: '浏览器' }]),
-    ...(total > 0 ? [{ id: 'plan' as const, label: '工作计划', badge: `${settled}/${total}` }] : [{ id: 'plan' as const, label: '工作计划' }]),
-  ]
+  // Tab set follows the view mode (= 全集减去主视图自己); badges attach per id
+  // — the open-file count rides 工作区's badge now that the preview lives there.
+  const labels: Record<WorkbenchTab, string> = { workspace: '工作区', browser: '浏览器', plan: '工作计划', chat: '对话' }
+  const badges: Partial<Record<WorkbenchTab, string>> = {
+    workspace: fileTabs > 0 ? String(fileTabs) : undefined,
+    browser: browserPane.tabs.length > 0 ? String(browserPane.tabs.length) : undefined,
+    plan: total > 0 ? `${settled}/${total}` : undefined,
+  }
+  const tabs: Array<{ id: WorkbenchTab; label: string; badge?: string }> = sideTabsFor(primary).map((id) => ({
+    id,
+    label: labels[id],
+    badge: badges[id],
+  }))
 
   return (
     <div
       style={{
         position: 'absolute',
-        top: 0,
-        right: 0,
-        bottom: 0,
+        top: card ? WORKBENCH_CARD_MARGIN : 0,
+        right: card ? WORKBENCH_CARD_MARGIN : 0,
+        bottom: card ? WORKBENCH_CARD_MARGIN : 0,
         width: effWidth,
         background: 'var(--pm-bg)',
-        borderLeft: '1px solid var(--pm-pop-border)',
+        ...(card
+          ? {
+              boxSizing: 'border-box',
+              border: '1px solid var(--pm-separator-faint)',
+              borderRadius: IMMERSIVE_CARD_RADIUS,
+              overflow: 'hidden',
+            }
+          : { borderLeft: '1px solid var(--pm-pop-border)' }),
         display: 'flex',
         flexDirection: 'column',
         zIndex: 30,
@@ -200,7 +244,17 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
         <div
           onClick={() => setOpen(key, false)}
           title="收起工作台"
-          style={{ width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, color: 'var(--pm-text-quiet)', cursor: 'pointer', flexShrink: 0 }}
+          style={{
+            width: 22,
+            height: 22,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 5,
+            color: 'var(--pm-text-quiet)',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
         >
           <X size={13} />
         </div>
@@ -210,7 +264,19 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {activeTab === 'workspace' && <WorkspacePane conversationId={conversationId} />}
         {activeTab === 'browser' && <BrowserPaneChrome pane={browserPane} onAction={onBrowserAction} />}
-        {activeTab === 'plan' && <PlanGraphView plan={plan} onJumpToStep={onPlanJump} onOpenPlanNode={onOpenPlanNode} canOpenNode={canOpenNode} onOpenNodeReport={onOpenNodeReport} highlightNodeId={highlightPlanNodeId} />}
+        {activeTab === 'plan' && (
+          <PlanGraphView
+            plan={plan}
+            onJumpToStep={onPlanJump}
+            onOpenPlanNode={onOpenPlanNode}
+            canOpenNode={canOpenNode}
+            onOpenNodeReport={onOpenNodeReport}
+            highlightNodeId={highlightPlanNodeId}
+          />
+        )}
+        {/* 视图模式的对话 tab：内容 = ChatView 注入的 ChatBody 节点（浮动
+            Composer 锚 WorkbenchPane 根的 absolute 盒，几何与主卡同构）。 */}
+        {activeTab === 'chat' && chatSlot}
       </div>
     </div>
   )

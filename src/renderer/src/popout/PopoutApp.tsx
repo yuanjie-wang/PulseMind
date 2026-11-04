@@ -25,7 +25,7 @@
 // sub-agent drill-in overlay, and the theme/i18n/settings bootstrap.
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { XProvider } from '@ant-design/x'
-import { ConfigProvider, App as AntdApp, Button, Dropdown, Tooltip } from 'antd'
+import { ConfigProvider, App as AntdApp, Button, Dropdown, Layout, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import { DownOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons'
 import zhCN from 'antd/locale/zh_CN'
@@ -37,7 +37,9 @@ import { InstallNotifier } from '../components/chat/InstallNotifier'
 import { useChatController } from '../hooks/useChatController'
 import { SettingsProvider, useSettings } from '../hooks/SettingsContext'
 import { TranslationProvider, useTranslation } from '../i18n/useTranslation'
-import { useWorkbenchStore } from '../stores/workbenchStore'
+import { useWorkbenchStore, useConversationPrimary } from '../stores/workbenchStore'
+import { useBrowserPaneStore } from '../stores/browserPaneStore'
+import { PRIMARY_CYCLE_ICON, PRIMARY_CYCLE_TITLE, cyclePrimaryMode } from '../components/layout/primary-cycle'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
 import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
@@ -46,12 +48,16 @@ import { usePendingProfileStore } from '../stores/pendingProfileStore'
 import { projectHue, useProjectStore } from '../stores/projectStore'
 import { ProjectExplorer } from './ProjectExplorer'
 import { ImmersivePanels } from './ImmersivePanels'
+import { ConversationLightDot, ConversationLightDotStyle } from '../components/layout/ConversationLightDot'
+import { CONVERSATION_PAGE_SIZE } from '../components/layout/ConversationRows'
 import { resolvePlanNodeTarget, planNodeIdForSession } from '../agent/plan-node-target'
 import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from '../utils/context-window'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../../shared/sandbox/policy'
-import { TITLE_BAR_HEIGHT, titleBarRightInset, captionButtonVars } from '../../../shared/window-chrome'
+import { TITLE_BAR_HEIGHT, titleBarActionsRight, captionButtonVars } from '../../../shared/window-chrome'
+import { WORKBENCH_CARD_MARGIN, clampPaneWidth } from '../../../shared/browser/pane'
+import { IMMERSIVE_CARD_RADIUS } from '../../../shared/ui/layout-widths'
 import { storedMessagesToAgentMessages } from '../utils/message-utils'
 import { installFileDropGuard } from '../utils/file-drop-guard'
 import { startTitleBarMaskWatcher } from '../utils/title-bar-mask'
@@ -67,13 +73,14 @@ import type { SteerOutcome } from '../types/agent'
 
 /** What a sub-agent drill-in points at — the same shape App.tsx owns; the
  *  popout runs its own instance because its ChatView needs the callbacks. */
-type SubAgentViewTarget =
-  | { kind: 'plan'; nodeId: string; subConvId: string; title: string }
-  | { kind: 'spawn'; subConvId: string; title: string }
+type SubAgentViewTarget = { kind: 'plan'; nodeId: string; subConvId: string; title: string } | { kind: 'spawn'; subConvId: string; title: string }
 
 /** Where the OS draws this window's controls (macOS left, Windows/Linux right)
  *  — read once, same call the main window's AppLayout makes. */
 const windowControls = window.electronAPI.getWindowControls?.() ?? { side: 'right' as const, inset: 0 }
+/** Right offset for the action cluster: OS strip + its own gutter (Windows/Linux
+ *  uses the tighter one, matching the caption buttons beside it). */
+const TITLE_BAR_ACTIONS_RIGHT = titleBarActionsRight(windowControls)
 /** Windows/Linux: the header actions wear the caption-button look (they sit
  *  right beside the native min/max/close). macOS keeps the rounded icon button. */
 const CAPTION_STYLE_ACTIONS = windowControls.side === 'right'
@@ -81,7 +88,8 @@ const CAPTION_STYLE_ACTIONS = windowControls.side === 'right'
 /** Hand-mirrored from AppLayout's PanelRightIcon (same tight viewBox — the
  *  padded 0..24 canvas made this glyph render smaller than the antd icons
  *  beside it, measured 2026-10-30). */
-function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }): React.ReactElement {  return (
+function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }): React.ReactElement {
+  return (
     <svg
       width={size}
       height={size}
@@ -106,7 +114,7 @@ export function PopoutApp({ convId, projectId }: { convId?: string; projectId?: 
   // supplied here — useSettings/useTranslation both throw without them.
   return (
     <SettingsProvider>
-      <TranslationProvider initialLocale='zh'>
+      <TranslationProvider initialLocale="zh">
         <PopoutContent fixedConvId={convId} projectId={projectId} />
       </TranslationProvider>
     </SettingsProvider>
@@ -142,7 +150,9 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   // Sleep/resume ack: per-window correct, cheap — keep.
   useEffect(() => {
     const unsub = window.electronAPI?.onSystemResumed(() => {
-      try { window.electronAPI.systemResumedAck() } catch {}
+      try {
+        window.electronAPI.systemResumedAck()
+      } catch {}
     })
     return unsub
   }, [])
@@ -229,14 +239,28 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
 
   const activeConvKey = conversationKeyOf(activeConversationKey) ?? convId ?? undefined
 
-  /** The project's conversations, for the header switcher. */
+  /** The project's conversations, for the header switcher — most recently
+   *  updated first, the same recency order the boot effect picks from, so the
+   *  switcher's first page always leads with what the window booted on. */
   const projectConvs = useMemo(
-    () => (isProjectWindow && projectId
-      ? (conversations as unknown as Array<{ key: string; label?: string; projectId?: string; updatedAt?: string }>)
-        .filter((c) => c.projectId === projectId)
-      : []),
+    () =>
+      isProjectWindow && projectId
+        ? (conversations as unknown as Array<{ key: string; label?: string; projectId?: string; updatedAt?: string }>)
+            .filter((c) => c.projectId === projectId)
+            .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+        : [],
     [conversations, isProjectWindow, projectId],
   )
+
+  // ── Switcher paging (2026-11-01 用户裁定)：默认展示最近的 10 个会话，显示更多
+  //    每次追加 10 个，依次类推。计数与开合都留在组件内存里——窗口生命期与项目
+  //    绑定，无需重置；antd 会在任意菜单项点击后关闭下拉，所以 open 受控，「显示
+  //    更多」的那一次 menu 来源关闭被吞掉，列表原地增长（switcherClickRef 记录
+  //    最近一次点击的 key，menu.onClick 先于注入的关闭回调触发——顺序由 antd 的
+  //    MenuItem.onInternalClick 保证：item onClick → menu onClick → close）。
+  const [switcherLimit, setSwitcherLimit] = useState(CONVERSATION_PAGE_SIZE)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const switcherClickRef = useRef<string | null>(null)
 
   /** 新建会话 in the project window: bind the project and hand the composer an
    *  empty draft (the row materializes on the first message, M3.6). */
@@ -252,11 +276,34 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
    *  changes — the boot effect re-attaches snapshot-first, and nothing here
    *  writes the transcript, so no flush-then-swap is needed. booted drops so
    *  the old transcript cannot flash while the new one loads. */
-  const switchProjectConversation = useCallback((next: string): void => {
-    if (next === convId) return
-    setBooted(false)
-    setConvId(next)
-  }, [convId])
+  const switchProjectConversation = useCallback(
+    (next: string): void => {
+      if (next === convId) return
+      setBooted(false)
+      setConvId(next)
+    },
+    [convId],
+  )
+  // Latest-value mirror: the remote-switch subscription below is mount-only
+  // (same idiom as createNewConversationRef — the callback closes over convId,
+  // so subscribing with it directly would re-subscribe on every switch).
+  // eslint-disable-next-line react-hooks/refs -- latest mirror for the mount-only subscription below
+  const switchProjectConversationRef = useRef(switchProjectConversation)
+  // eslint-disable-next-line react-hooks/refs -- latest mirror for the mount-only subscription below
+  switchProjectConversationRef.current = switchProjectConversation
+
+  // ── Remote switch (main-window click on one of this project's conversations)
+  // The main window resolves the holding project window and focuses it; this
+  // event is the switch order. Main routes by projectId and sends TARGETED
+  // (POPOUT_SWITCH is never broadcast — the main window's POPOUT_EVENT handler
+  // must not see it), so no project check is needed here. Same id early-return
+  // inside switchProjectConversation keeps 「focus only」 clicks from re-booting.
+  useEffect(() => {
+    if (!isProjectWindow) return
+    return window.electronAPI.onPopoutSwitch(({ sessionId }) => {
+      switchProjectConversationRef.current(sessionId)
+    })
+  }, [isProjectWindow])
 
   // ── Project boot: pick the project's most recent conversation, or start a
   //    project-bound draft when it has none ──
@@ -287,7 +334,9 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
         setBooted(true)
       }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once per project; startProjectDraft is stable
   }, [isProjectWindow, projectId])
 
@@ -334,7 +383,9 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       }
       if (!cancelled) setBooted(true)
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot per conversation; the primitives are stable
   }, [convId])
 
@@ -374,7 +425,6 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
     return useNewTaskStore.subscribe(pin)
   }, [isProjectWindow, projectId])
 
-
   // ── 授权档位 — copied from AppContent: the composer must resolve the
   // fallback exactly as the engine does (pin > column > default), or the
   // button would label a level the next message will not use. The no-open-
@@ -384,12 +434,15 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   const approvalMode: SandboxApprovalMode = activeConvKey
     ? (conversations.find((c: any) => c.key === activeConvKey)?.approvalMode ?? DEFAULT_APPROVAL_MODE)
     : (pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE)
-  const changeApprovalMode = useCallback((mode: SandboxApprovalMode): void => {
-    // With no conversation yet the click has nothing to write to — hold it for
-    // the one the first message will create (useChatController consumes it).
-    if (activeConvKey) updateConversationApproval(activeConvKey, mode)
-    else usePendingApprovalStore.getState().setMode(mode)
-  }, [activeConvKey, updateConversationApproval])
+  const changeApprovalMode = useCallback(
+    (mode: SandboxApprovalMode): void => {
+      // With no conversation yet the click has nothing to write to — hold it for
+      // the one the first message will create (useChatController consumes it).
+      if (activeConvKey) updateConversationApproval(activeConvKey, mode)
+      else usePendingApprovalStore.getState().setMode(mode)
+    },
+    [activeConvKey, updateConversationApproval],
+  )
 
   // ── 模型 — same per-conversation shape as AppContent (pin > column >
   // default), including the overflow re-aim pin bookkeeping. The draft arm
@@ -397,41 +450,33 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   // does, so a model picked before the first message is the one it is created
   // with rather than a dead control.
   const pendingProfileId = usePendingProfileStore((s) => s.profileId)
-  const activeConvProfileId = activeConvKey
-    ? conversations.find((c: any) => c.key === activeConvKey)?.profileId
-    : undefined
+  const activeConvProfileId = activeConvKey ? conversations.find((c: any) => c.key === activeConvKey)?.profileId : undefined
   const effectiveProfileId: string | undefined = activeConvKey
     ? (activeConvProfileId ?? settings.activeProfileId)
     : (pendingProfileId ?? settings.lastUsedProfileId ?? settings.activeProfileId)
   const profilePinned = activeConvKey ? activeConvProfileId != null : false
   const clearSessionWindow = useSessionContextWindowStore((s) => s.clearConv)
   const pinSessionWindow = useSessionContextWindowStore((s) => s.pin)
-  const sessionWindowKey = activeConvKey && effectiveProfileId
-    ? sessionWindowKeyOf(activeConvKey, effectiveProfileId)
-    : null
-  const pinnedSessionWindow = useSessionContextWindowStore((s) =>
-    sessionWindowKey ? s.pinned[sessionWindowKey] : undefined)
+  const sessionWindowKey = activeConvKey && effectiveProfileId ? sessionWindowKeyOf(activeConvKey, effectiveProfileId) : null
+  const pinnedSessionWindow = useSessionContextWindowStore((s) => (sessionWindowKey ? s.pinned[sessionWindowKey] : undefined))
   useEffect(() => {
     if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null && activeConvKey && effectiveProfileId) {
       pinSessionWindow(activeConvKey, effectiveProfileId, agentStatus.contextWindow)
     }
   }, [agentStatus, activeConvKey, effectiveProfileId, pinSessionWindow])
-  const profileContextLength = resolveContextWindow(
-    settings.profiles ?? [],
-    effectiveProfileId,
-    settings.activeProfileId,
+  const profileContextLength = resolveContextWindow(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId)
+  const displayContextLength = pinnedSessionWindow != null ? Math.min(profileContextLength, pinnedSessionWindow) : profileContextLength
+  const changeProfile = useCallback(
+    (profileId: string): void => {
+      if (activeConvKey) {
+        if (profileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
+        updateConversationProfile(activeConvKey, profileId)
+      } else {
+        usePendingProfileStore.getState().setProfileId(profileId)
+      }
+    },
+    [activeConvKey, effectiveProfileId, updateConversationProfile, clearSessionWindow],
   )
-  const displayContextLength = pinnedSessionWindow != null
-    ? Math.min(profileContextLength, pinnedSessionWindow)
-    : profileContextLength
-  const changeProfile = useCallback((profileId: string): void => {
-    if (activeConvKey) {
-      if (profileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
-      updateConversationProfile(activeConvKey, profileId)
-    } else {
-      usePendingProfileStore.getState().setProfileId(profileId)
-    }
-  }, [activeConvKey, effectiveProfileId, updateConversationProfile, clearSessionWindow])
   const resetProfile = useCallback((): void => {
     if (activeConvKey) {
       if (settings.activeProfileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
@@ -440,7 +485,6 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       usePendingProfileStore.getState().clearProfileId()
     }
   }, [activeConvKey, effectiveProfileId, settings.activeProfileId, updateConversationProfile, clearSessionWindow])
-
 
   // Open external links in system browser (same global click handler as App).
   useEffect(() => {
@@ -478,47 +522,64 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
     }
     return messages.some((m) =>
       m.contentBlocks.some(
-        (b) =>
-          b.type === 'tool_use' &&
-          b.subConvId === subAgentView.subConvId &&
-          (b.status === 'running' || b.status === 'queued' || b.status === 'pending')
-      )
+        (b) => b.type === 'tool_use' && b.subConvId === subAgentView.subConvId && (b.status === 'running' || b.status === 'queued' || b.status === 'pending'),
+      ),
     )
   }, [subAgentView, plan, messages])
   const subAgentPaused = subAgentView !== null && agentStatus.status === 'awaiting_continue'
-  const subAgentPlanNode = subAgentView?.kind === 'plan'
-    ? plan?.nodes.find(n => n.id === subAgentView.nodeId)
-    : null
+  const subAgentPlanNode = subAgentView?.kind === 'plan' ? plan?.nodes.find((n) => n.id === subAgentView.nodeId) : null
   const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
   const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
   const workbenchWidth = useWorkbenchStore((s) => s.width)
+  // 卡片形态（2026-11-04 用户裁定「弹出独立弹窗应该和主窗统一，用圆角矩形包裹
+  // 主交互区和右侧边窗口」）：会话弹出窗口与主窗同一套卡片语言——card 直通
+  // ChatView（对话卡 + 工作台卡）+ Layout 灰底做窗口底衬，与主窗
+  // AppLayout 的 Header(token.colorBgContainer)/Content(colorBgLayout) 分层同构。
+  // 项目沉浸窗口不套（它已经在 ProjectExplorer/ImmersivePanels 里自带三列卡）。
+  const card = !isProjectWindow
+  // chatAreaWidth：pane 宽的 clamp 依据（ChatView 的 browserPaneBinding 观测
+  // 自己的根宽写进同一个 store——每个窗口是独立渲染进程，store 天然不跨窗）。
+  const chatAreaWidth = useBrowserPaneStore((s) => s.chatAreaWidth)
+  // 本窗的主视图模式（2026-11-04 裁定：弹出窗口也要循环钮）。项目沉浸窗口
+  // 由 PRIMARY_MODE_CLAMPED 钳在 'chat'，这里的读法对它恒返回 'chat'。
+  const primary = useConversationPrimary(wbKey)
+  // welcome 门控与主窗同款：零消息的 chat 优先态不出现（那里没有可换的视图，
+  // 头部只留侧栏开关）。流式中 messages 仍可能为空，isRequesting 兜住。
+  const showPrimaryCycle = !isProjectWindow && (primary !== 'chat' || messages.length > 0 || isRequesting)
+  const CycleIcon = PRIMARY_CYCLE_ICON[primary]
   const openableNodeIds = useMemo(() => {
     const ids = new Set<string>()
     for (const n of plan?.nodes ?? []) if (resolvePlanNodeTarget(n, messages)) ids.add(n.id)
     return ids
   }, [plan, messages])
   const canOpenNode = useCallback((nodeId: string) => openableNodeIds.has(nodeId), [openableNodeIds])
-  const onOpenPlanNode = useCallback((nodeId: string) => {
-    const node = plan?.nodes.find(n => n.id === nodeId)
-    const target = resolvePlanNodeTarget(node, messages)
-    if (!target) return
-    if (target.kind === 'session') {
-      setSubAgentView({
-        kind: 'plan',
-        nodeId,
-        subConvId: target.subConvId,
-        title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
-      })
-      return
-    }
-    setPlanScrollToMsgId(target.msgId)
-  }, [messages, plan])
-  const onOpenNodeReport = useCallback((nodeId: string) => {
-    const node = plan?.nodes.find(n => n.id === nodeId)
-    if (!node?.reportPath) return
-    const wsDir = activeConvKey ? getWorkspaceDir(activeConvKey) : undefined
-    usePreviewPaneStore.getState().openFile(activeConvKey ?? null, resolvePreviewPath(node.reportPath, wsDir ?? null))
-  }, [plan, activeConvKey, getWorkspaceDir])
+  const onOpenPlanNode = useCallback(
+    (nodeId: string) => {
+      const node = plan?.nodes.find((n) => n.id === nodeId)
+      const target = resolvePlanNodeTarget(node, messages)
+      if (!target) return
+      if (target.kind === 'session') {
+        setSubAgentView({
+          kind: 'plan',
+          nodeId,
+          subConvId: target.subConvId,
+          title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
+        })
+        return
+      }
+      setPlanScrollToMsgId(target.msgId)
+    },
+    [messages, plan],
+  )
+  const onOpenNodeReport = useCallback(
+    (nodeId: string) => {
+      const node = plan?.nodes.find((n) => n.id === nodeId)
+      if (!node?.reportPath) return
+      const wsDir = activeConvKey ? getWorkspaceDir(activeConvKey) : undefined
+      usePreviewPaneStore.getState().openFile(activeConvKey ?? null, resolvePreviewPath(node.reportPath, wsDir ?? null))
+    },
+    [plan, activeConvKey, getWorkspaceDir],
+  )
   const onOpenSubAgent = useCallback((subConvId: string, title: string) => {
     setSubAgentView({ kind: 'spawn', subConvId, title })
   }, [])
@@ -560,95 +621,193 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   useEffect(() => {
     writeThemeMirror(themePref)
   }, [themePref])
-  const antdTheme = useMemo(
-    () => buildAntdTheme(resolvedTheme),
-    [resolvedTheme]
-  )
+  const antdTheme = useMemo(() => buildAntdTheme(resolvedTheme), [resolvedTheme])
 
   const activeConvTitle = conversations.find((c) => c.key === activeConvKey)?.label
+  // 头部标题行左侧的状态灯（2026-11-01 用户裁定「附加 icon」）：与切换器菜单行
+  // 同一张 convLights 表；槽位恒占位，亮不亮都不动文字轴。
+  const headerLight = activeConvKey ? (convLights[String(activeConvKey)] ?? null) : null
 
   // ── 项目窗口的草稿面（2026-10-30 用户裁定「新建会话不需要 welcome 页面，干净
   //    点就行」）：输入框上方的空区只放一段居中的提示——项目名 + 一句话。完整
   //    欢迎页的 logo/问候/建议/项目卡在钉死的项目里都没有意义；welcomeHint 一给，
   //    ChatView 就不挂 WelcomeContent。空项目才走这条面（有会话时直接接最新）。
-  const draftHint: React.ReactNode = isProjectWindow && project ? (
-    <div
-      data-pm-draft-hint
-      style={{
-        flex: 1,
-        minHeight: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        padding: 24,
-        textAlign: 'center',
-      }}
-    >
-      <FolderOutlined style={{ fontSize: 26, color: `hsl(${projectHue(project)} 60% 47%)` }} />
-      <div style={{ fontSize: 15, fontWeight: FONT_WEIGHT.semibold, color: 'var(--pm-text-strong)' }}>
-        {t('projectWindow.draftTitle', { name: project.name })}
+  const draftHint: React.ReactNode =
+    isProjectWindow && project ? (
+      <div
+        data-pm-draft-hint
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          padding: 24,
+          textAlign: 'center',
+        }}
+      >
+        <FolderOutlined style={{ fontSize: 26, color: `hsl(${projectHue(project)} 60% 47%)` }} />
+        <div style={{ fontSize: 15, fontWeight: FONT_WEIGHT.semibold, color: 'var(--pm-text-strong)' }}>
+          {t('projectWindow.draftTitle', { name: project.name })}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t('projectWindow.draftSubtitle')}</div>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>
-        {t('projectWindow.draftSubtitle')}
-      </div>
-    </div>
-  ) : undefined
+    ) : undefined
 
-  // ── Header (project window): the PROJECT is the window's identity, and the
-  //    conversation switcher rides it. The dropdown trigger must be no-drag:
-  //    the band it sits on is the OS drag region.
+  // ── Header (project window): two lines (2026-11-01 用户裁定) — the PROJECT
+  //    name is the small identity line, the CONVERSATION title is the big
+  //    second line and carries the switcher (▾ + title, same line). The
+  //    dropdown trigger must be no-drag: the band it sits on is the OS drag
+  //    region. Rows carry the same task-status dot as the sidebar
+  //    (statusToLight via convLights — a status light exists only for sessions
+  //    this window has mirrored, i.e. ones it booted on or switched to; a
+  //    conversation driven elsewhere without ever being visited here stays
+  //    unlit, the same per-window semantics the main sidebar has).
+  const visibleConvs = projectConvs.slice(0, switcherLimit)
+  const hiddenConvCount = projectConvs.length - visibleConvs.length
   const projectMenu: MenuProps = {
     items: [
-      ...projectConvs.map((c) => ({ key: String(c.key), label: c.label || '新对话' })),
+      ...visibleConvs.map((c) => {
+        const light = convLights[String(c.key)] ?? null
+        return {
+          key: String(c.key),
+          label: (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              {/* Reserved gutter keeps every title aligned whether or not the
+                  conversation is lit — same recipe as the sidebar rows. */}
+              <span data-pm-switcher-light={light ?? undefined} style={{ width: 10, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+                {light ? <ConversationLightDot light={light} /> : null}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label || '新对话'}</span>
+            </span>
+          ),
+        }
+      }),
+      // 显示更多 stays a menu item: antd closes the dropdown on ANY menu-item
+      // click, but the controlled open below swallows exactly that one close,
+      // so each click appends the next page in place.
+      ...(hiddenConvCount > 0
+        ? [
+            {
+              key: '__more__',
+              label: <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t('conversationSidebar.showMore', { count: hiddenConvCount })}</span>,
+            },
+          ]
+        : []),
       ...(projectConvs.length > 0 ? [{ type: 'divider' as const }] : []),
       { key: '__new__', label: t('projectWindow.newConversation'), icon: <PlusOutlined /> },
     ],
     selectable: true,
     selectedKeys: activeConvKey ? [String(activeConvKey)] : [],
     onClick: ({ key }) => {
-      if (key === '__new__') startProjectDraft()
+      switcherClickRef.current = key
+      if (key === '__more__') setSwitcherLimit((v) => v + CONVERSATION_PAGE_SIZE)
+      else if (key === '__new__') startProjectDraft()
       else switchProjectConversation(key)
     },
   }
   const projectHeader = project ? (
-    <Dropdown menu={projectMenu} trigger={['click']} placement='bottomLeft'>
-      <div
-        data-pm-project-switcher
-        style={{
+    <div
+      style={
+        {
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
-          gap: 6,
+          gap: 1,
           maxWidth: '60%',
           minWidth: 0,
-          padding: '4px 8px',
-          borderRadius: 6,
-          cursor: 'pointer',
-          WebkitAppRegion: 'no-drag',
-        } as React.CSSProperties}
+        } as React.CSSProperties
+      }
+    >
+      {/* 两行共用同一 16|1fr|16 网格模板（2026-11-01 用户裁定「上下两行的文字
+          居中对齐」）：行首/行尾附件（图标/状态灯/▾）各占等宽端槽，文字列中心
+          = 盒中心 = 列轴——附件挂在文字两侧，不把文字挤偏（旧 flex 版里图标
+          把上行文字挤右 8px、▾ 把下行挤左 8px，两条文字轴差 16px）。 */}
+      <span
+        data-pm-project-name
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '16px minmax(0, 1fr) 16px',
+          columnGap: 4,
+          alignItems: 'center',
+          maxWidth: '100%',
+          minWidth: 0,
+          fontSize: FONT_SIZE.sm,
+          fontWeight: FONT_WEIGHT.medium,
+          color: 'var(--pm-text-muted)',
+          lineHeight: 1.2,
+        }}
       >
-        <FolderOutlined style={{ fontSize: 14, color: `hsl(${projectHue(project)} 60% 47%)`, flexShrink: 0 }} />
-        <span
-          style={{
-            fontSize: FONT_SIZE.lg,
-            fontWeight: FONT_WEIGHT.semibold,
-            color: 'var(--pm-text)',
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <FolderOutlined style={{ fontSize: 12, color: `hsl(${projectHue(project)} 60% 47%)`, justifySelf: 'end' }} />
+        <span data-pm-project-name-text style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>
           {project.name}
         </span>
-        <DownOutlined style={{ fontSize: 10, color: 'var(--pm-text-quiet)', flexShrink: 0 }} />
-      </div>
-    </Dropdown>
+      </span>
+      <Dropdown
+        menu={projectMenu}
+        trigger={['click']}
+        placement="bottomLeft"
+        open={switcherOpen}
+        // Probe/scoping anchor: the switcher's popup is the only antd dropdown
+        // this window keeps mounted, so the probe can address it unambiguously.
+        classNames={{ root: 'pm-switcher-dropdown' }}
+        onOpenChange={(next, info) => {
+          // The switcher must close on a real switch (menu item), the trigger and
+          // outside clicks — everything EXCEPT the 显示更多 item's own close
+          // request (source 'menu'), which is swallowed so the next page renders
+          // in place. switcherClickRef only ever names __more__ when that item
+          // was the last thing clicked, so no other close is affected.
+          if (!next && info.source === 'menu' && switcherClickRef.current === '__more__') return
+          setSwitcherOpen(next)
+        }}
+      >
+        <div
+          data-pm-project-switcher
+          style={
+            {
+              display: 'grid',
+              gridTemplateColumns: '16px minmax(0, 1fr) 16px',
+              columnGap: 4,
+              alignItems: 'center',
+              maxWidth: '100%',
+              minWidth: 0,
+              padding: '0 8px',
+              borderRadius: 6,
+              cursor: 'pointer',
+              WebkitAppRegion: 'no-drag',
+            } as React.CSSProperties
+          }
+        >
+          {/* 状态灯槽位恒占位（切换器菜单行同一配方）：亮不亮都不动文字轴。 */}
+          <span data-pm-header-light={headerLight ?? undefined} style={{ display: 'flex', justifyContent: 'center' }}>
+            {headerLight ? <ConversationLightDot light={headerLight} /> : null}
+          </span>
+          <span
+            data-pm-switcher-title
+            style={{
+              fontSize: FONT_SIZE.lg,
+              fontWeight: FONT_WEIGHT.semibold,
+              color: 'var(--pm-text)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              lineHeight: 1.3,
+              textAlign: 'center',
+            }}
+          >
+            {activeConvTitle || t('projectWindow.draftConversation')}
+          </span>
+          <DownOutlined style={{ fontSize: 10, color: 'var(--pm-text-quiet)', justifySelf: 'end' }} />
+        </div>
+      </Dropdown>
+    </div>
   ) : null
 
   const chatView = (
     <ChatView
+      card={card}
       messages={messages}
       isRequesting={isRequesting}
       isLoadingConversation={isLoadingConversation || !booted}
@@ -702,7 +861,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
         pinned: c.pinned,
         updatedAt: c.updatedAt,
         projectId: c.projectId,
-        expertId: c.expertId
+        expertId: c.expertId,
       }))}
       convLights={convLights}
       // The window is bound to one conversation (popout) or one project
@@ -723,25 +882,36 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
 
   return (
     <ErrorBoundary>
+      {/* The switcher's status dots animate in THIS window (the main sidebar's
+          copy never mounts here) — mount the shared keyframes at the root. */}
+      <ConversationLightDotStyle />
       <XProvider>
         <ConfigProvider locale={locale === 'zh' ? zhCN : enUS} theme={antdTheme}>
           <AntdApp>
             <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)', overflow: 'hidden' }}>
               <div
-                style={{
-                  background: 'var(--pm-bg-container)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '0 24px',
-                  height: TITLE_BAR_HEIGHT,
-                  flexShrink: 0,
-                  position: 'relative',
-                  zIndex: 1,
-                  WebkitAppRegion: 'drag'
-                } as React.CSSProperties}
+                style={
+                  {
+                    // 与主窗 Header 同色：antd Header 的 background =
+                    // token.colorBgContainer（浅 #ffffff / 深 #141414），也就是
+                    // --pm-bg。（旧值 --pm-bg-container 全仓从未定义——它一直是
+                    // 无效值→透明，只是恰好露出根节点的 --pm-bg 才没露馅。）
+                    background: 'var(--pm-bg)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 24px',
+                    height: TITLE_BAR_HEIGHT,
+                    flexShrink: 0,
+                    position: 'relative',
+                    zIndex: 1,
+                    WebkitAppRegion: 'drag',
+                  } as React.CSSProperties
+                }
               >
-                {isProjectWindow ? projectHeader : (
+                {isProjectWindow ? (
+                  projectHeader
+                ) : (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '60%', minWidth: 0 }}>
                     <span
                       style={{
@@ -751,7 +921,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
                         minWidth: 0,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap'
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       {activeConvTitle || ''}
@@ -765,18 +935,37 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
                     so there is nothing to toggle. */}
                 <div
                   data-pm-header-actions
-                  style={{
-                    position: 'absolute',
-                    right: 24 + titleBarRightInset(windowControls),
-                    top: 0,
-                    height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: CAPTION_STYLE_ACTIONS ? 0 : 8,
-                    WebkitAppRegion: 'no-drag',
-                    ...(CAPTION_STYLE_ACTIONS ? captionButtonVars(resolvedTheme) : {})
-                  } as React.CSSProperties}
+                  style={
+                    {
+                      position: 'absolute',
+                      right: TITLE_BAR_ACTIONS_RIGHT,
+                      top: 0,
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: CAPTION_STYLE_ACTIONS ? 0 : 8,
+                      WebkitAppRegion: 'no-drag',
+                      ...(CAPTION_STYLE_ACTIONS ? captionButtonVars(resolvedTheme) : {}),
+                    } as React.CSSProperties
+                  }
                 >
+                  {/* 主视图模式循环（chat → files → browser → chat）：与主窗
+                      标题栏同一颗钮、同一份表（primary-cycle.ts）。图标即当前
+                      状态；换到 files/browser 时补开 dock，对话列在 dock 可达
+                      （chatSlot 只在 dock 渲染）。项目窗口不出现——它没有 dock、
+                      hideWorkbench 常开。 */}
+                  {showPrimaryCycle && (
+                    <Tooltip title={t(PRIMARY_CYCLE_TITLE[primary])}>
+                      <Button
+                        type="text"
+                        data-pm-primary-cycle
+                        className={CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}
+                        aria-label={t(PRIMARY_CYCLE_TITLE[primary])}
+                        icon={<CycleIcon style={{ fontSize: 14 }} />}
+                        onClick={() => cyclePrimaryMode(wbKey, primary)}
+                      />
+                    </Tooltip>
+                  )}
                   {!isProjectWindow && (
                     <Tooltip title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}>
                       <Button
@@ -785,70 +974,116 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
                         aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
                         icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
                         onClick={() =>
-                          workbenchOpen
-                            ? useWorkbenchStore.getState().setOpen(wbKey, false)
-                            : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                          workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
                         }
+                      />
+                    </Tooltip>
+                  )}
+                  {/* 项目窗口：频用的「新建会话」从切换器菜单提为直钮（项目侧栏
+                      悬停簇同款先例——新建任务 stays a direct button）。 */}
+                  {isProjectWindow && (
+                    <Tooltip title={t('projectWindow.newConversation')}>
+                      <Button
+                        type="text"
+                        className={CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}
+                        aria-label={t('projectWindow.newConversation')}
+                        icon={<PlusOutlined />}
+                        onClick={startProjectDraft}
                       />
                     </Tooltip>
                   )}
                 </div>
               </div>
-              {isProjectWindow ? (
-                <ProjectExplorer conversationId={activeConvKey}>
-                  {/* 右卡三面板（2026-10-31 用户裁定「对话 | 浏览器 | 工作计划」）：
-                      对话保活 display 切换，浏览器/工作计划按需挂载；plan 与全部
-                      回调本组件早已持有（ChatView 只是用它们的一员）。 */}
-                  <ImmersivePanels
-                    plan={plan}
-                    onPlanJump={setPlanScrollToMsgId}
-                    onOpenPlanNode={onOpenPlanNode}
-                    canOpenNode={canOpenNode}
-                    onOpenNodeReport={onOpenNodeReport}
-                    highlightPlanNodeId={highlightPlanNodeId}
-                  >
-                    <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-                      {chatView}
-                      {subAgentView && (
-                        <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: 0 }}>
-                          <SubAgentSessionView
-                            subConvId={subAgentView.subConvId}
-                            title={subAgentView.title}
-                            live={subAgentLive}
-                            paused={subAgentPaused}
-                            reportPath={subAgentPlanNode?.reportPath}
-                            declaredStatus={subAgentPlanNode?.declaredStatus}
-                            onOpenReport={() => {
-                              if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
-                            }}
-                            onBack={() => setSubAgentView(null)}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </ImmersivePanels>
-                </ProjectExplorer>
-              ) : (
-                <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-                  <div style={{ height: '100%' }}>{chatView}</div>
-                  {subAgentView && (
-                    <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: workbenchOpen ? workbenchWidth : 0 }}>
-                      <SubAgentSessionView
-                        subConvId={subAgentView.subConvId}
-                        title={subAgentView.title}
-                        live={subAgentLive}
-                        paused={subAgentPaused}
-                        reportPath={subAgentPlanNode?.reportPath}
-                        declaredStatus={subAgentPlanNode?.declaredStatus}
-                        onOpenReport={() => {
-                          if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+              {/* 内容区底衬（2026-11-04 卡片统一）：与主窗 AppLayout 的
+                  Content 同一机制——antd Layout 自带 colorBgLayout
+                  （浅色 #f7f7f8 / 深色算法默认黑）。卡片是白/深灰的
+                  var(--pm-bg)，只有落在灰底上才读成一张卡；此前弹窗的内容区
+                  直接铺 --pm-bg，套卡就是白上白。项目沉浸窗口同样受益——
+                  它的三列卡本来就该浮在这层底衬上。 */}
+              <Layout style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+                {isProjectWindow ? (
+                  <ProjectExplorer conversationId={activeConvKey}>
+                    {/* 右卡三面板（2026-10-31 用户裁定「对话 | 浏览器 | 工作计划」）：
+                        对话保活 display 切换，浏览器/工作计划按需挂载；plan 与全部
+                        回调本组件早已持有（ChatView 只是用它们的一员）。 */}
+                    <ImmersivePanels
+                      plan={plan}
+                      onPlanJump={setPlanScrollToMsgId}
+                      onOpenPlanNode={onOpenPlanNode}
+                      canOpenNode={canOpenNode}
+                      onOpenNodeReport={onOpenNodeReport}
+                      highlightPlanNodeId={highlightPlanNodeId}
+                    >
+                      <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+                        {chatView}
+                        {subAgentView && (
+                          <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: 0 }}>
+                            <SubAgentSessionView
+                              subConvId={subAgentView.subConvId}
+                              title={subAgentView.title}
+                              live={subAgentLive}
+                              paused={subAgentPaused}
+                              reportPath={subAgentPlanNode?.reportPath}
+                              declaredStatus={subAgentPlanNode?.declaredStatus}
+                              onOpenReport={() => {
+                                if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+                              }}
+                              onBack={() => setSubAgentView(null)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </ImmersivePanels>
+                  </ProjectExplorer>
+                ) : (
+                  <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+                    <div style={{ height: '100%' }}>{chatView}</div>
+                    {subAgentView && (
+                      <div
+                        style={{
+                          // 与主窗 App.tsx 的 drill-in 覆盖层同款（卡片化
+                          // 2026-11-03 / 弹窗统一 2026-11-04）：覆盖层盖住对话卡
+                          // 本身——四周 5px 卡边距 + 与工作台卡之间 5px gap，
+                          // 盒样式与对话卡同款，视觉上就是同一张卡换了内容。
+                          // 视图模式分支同主窗：files/browser 优先下对话住在右侧
+                          // 工作台卡，覆盖层锚 dock 卡（宽 = clamp 后的 pane 宽）。
+                          position: 'absolute',
+                          top: WORKBENCH_CARD_MARGIN,
+                          ...(primary === 'chat'
+                            ? {
+                                left: WORKBENCH_CARD_MARGIN,
+                                bottom: WORKBENCH_CARD_MARGIN,
+                                right: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) + WORKBENCH_CARD_MARGIN * 2 : WORKBENCH_CARD_MARGIN,
+                              }
+                            : {
+                                right: WORKBENCH_CARD_MARGIN,
+                                bottom: WORKBENCH_CARD_MARGIN,
+                                width: clampPaneWidth(workbenchWidth, chatAreaWidth),
+                              }),
+                          boxSizing: 'border-box',
+                          background: 'var(--pm-bg)',
+                          border: '1px solid var(--pm-separator-faint)',
+                          borderRadius: IMMERSIVE_CARD_RADIUS,
+                          overflow: 'hidden',
                         }}
-                        onBack={() => setSubAgentView(null)}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
+                      >
+                        <SubAgentSessionView
+                          subConvId={subAgentView.subConvId}
+                          title={subAgentView.title}
+                          live={subAgentLive}
+                          paused={subAgentPaused}
+                          reportPath={subAgentPlanNode?.reportPath}
+                          declaredStatus={subAgentPlanNode?.declaredStatus}
+                          onOpenReport={() => {
+                            if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+                          }}
+                          onBack={() => setSubAgentView(null)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Layout>
               <InstallNotifier messages={messages} />
             </div>
           </AntdApp>

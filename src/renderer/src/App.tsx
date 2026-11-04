@@ -25,13 +25,18 @@ import zhCN from 'antd/locale/zh_CN'
 import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
-import { useWorkbenchStore } from './stores/workbenchStore'
+import { useWorkbenchStore, useConversationPrimary, conversationPrimaryOf, autoOpenTab } from './stores/workbenchStore'
+import { useBrowserPaneStore } from './stores/browserPaneStore'
+import { clampPaneWidth, WORKBENCH_CARD_MARGIN } from '../../shared/browser/pane'
+import { IMMERSIVE_CARD_RADIUS } from '../../shared/ui/layout-widths'
 import { SubAgentSessionView } from './components/subagent/SubAgentSessionView'
 import { resolvePlanNodeTarget, planNodeIdForSession } from './agent/plan-node-target'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from './stores/previewPaneStore'
 import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
+import { useFloatOverlayShift } from './hooks/useFloatOverlayShift'
+import { useNavigationStore } from './stores/navigationStore'
 import { SettingsProvider, useSettings } from './hooks/SettingsContext'
 import { MemoryManager } from './memory/MemoryManager'
 import { KnowledgeManager } from './knowledge/KnowledgeManager'
@@ -44,8 +49,9 @@ import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { usePendingProfileStore } from './stores/pendingProfileStore'
-import { usePopoutWatchStore, isPoppedOut } from './stores/popoutWatchStore'
+import { usePopoutWatchStore, isPoppedOut, routeToProjectWindow } from './stores/popoutWatchStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
+import type { PopoutWorkbenchSeed } from '../../shared/types/electron-bridge'
 import { resolvePreviewPath } from '../../shared/preview/file-kind'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
@@ -61,7 +67,7 @@ import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sa
 function App(): React.ReactElement {
   return (
     <SettingsProvider>
-      <TranslationProvider initialLocale='zh'>
+      <TranslationProvider initialLocale="zh">
         <AppContent />
       </TranslationProvider>
     </SettingsProvider>
@@ -74,9 +80,7 @@ function App(): React.ReactElement {
  *  has no node to click, so the card is the only way in). Only the plan route
  *  knows a node id, and only the card route is a tool call; each is what its own
  *  liveness check reads. */
-type SubAgentViewTarget =
-  | { kind: 'plan'; nodeId: string; subConvId: string; title: string }
-  | { kind: 'spawn'; subConvId: string; title: string }
+type SubAgentViewTarget = { kind: 'plan'; nodeId: string; subConvId: string; title: string } | { kind: 'spawn'; subConvId: string; title: string }
 
 function AppContent(): React.ReactElement {
   const { settings, loading, hasApiKey, activeProfile, reloadSettings } = useSettings()
@@ -125,7 +129,9 @@ function AppContent(): React.ReactElement {
     const unsub = window.electronAPI?.onMcpServersChanged(() => {
       setTimeout(tryGenerate, 300) // small delay to let mcp-cache settle
     })
-    return () => { unsub?.() }
+    return () => {
+      unsub?.()
+    }
   }, [hasApiKey, activeProfile?.provider, activeProfile?.apiKey, activeProfile?.baseURL, activeProfile?.model, settings.locale])
 
   // ── Sleep/resume recovery ──
@@ -137,7 +143,9 @@ function AppContent(): React.ReactElement {
       // so an rAF-gated ack silently times out and the main process falls
       // back to a full reload — resetting app state on every wake that
       // happens while the window is not on screen.
-      try { window.electronAPI.systemResumedAck() } catch {}
+      try {
+        window.electronAPI.systemResumedAck()
+      } catch {}
     })
     return unsub
   }, [])
@@ -148,7 +156,7 @@ function AppContent(): React.ReactElement {
   const baseURL = activeProfile?.baseURL ?? settings.profiles[0]?.baseURL ?? ''
   const model = activeProfile?.model ?? settings.profiles[0]?.model ?? ''
   const maxTokens = activeProfile?.maxTokens ?? settings.profiles[0]?.maxTokens ?? 8192
-const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.contextLength ?? 128000
+  const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.contextLength ?? 128000
   const adapter = useMemo(() => createLlmAdapter(activeProfile?.provider ?? 'anthropic'), [activeProfile?.provider])
 
   // ── Greeting (regenerated on each new conversation) ──
@@ -163,30 +171,33 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // (hooks useMemo runs before useChatController's return values are destructured)
   const conversationIdRef = useRef<string | null>(null)
 
-  const hooks: HooksConfig = useMemo(() => ({
-    beforeSession: (ctx) => {
-      console.log('[Hook] beforeSession:', ctx.userMessage.slice(0, 80))
-      return ctx
-    },
-    afterSession: (ctx) => {
-      // 提取已移交定时清扫（PLAN-memory-wiki M2c）：afterSession 不再触发 LLM 提取
-      console.log('[Hook] afterSession, status:', ctx.status.status)
-    },
-    beforeTool: (ctx) => {
-      console.log('[Hook] beforeTool:', ctx.toolName, ctx.command.slice(0, 80))
-      return ctx
-    },
-    afterTool: (ctx) => {
-      console.log('[Hook] afterTool:', ctx.toolName, 'error:', ctx.isError)
-    },
-    beforeLlmCall: (ctx) => {
-      console.log('[Hook] beforeLlmCall, messages:', ctx.messages.length, 'tools:', (ctx.body.tools as Array<unknown>)?.length ?? 0)
-      return ctx
-    },
-    afterLlmCall: (ctx) => {
-      console.log('[Hook] afterLlmCall, stopReason:', ctx.stopReason)
-    }
-  }), [apiKey, baseURL, adapter, model])
+  const hooks: HooksConfig = useMemo(
+    () => ({
+      beforeSession: (ctx) => {
+        console.log('[Hook] beforeSession:', ctx.userMessage.slice(0, 80))
+        return ctx
+      },
+      afterSession: (ctx) => {
+        // 提取已移交定时清扫（PLAN-memory-wiki M2c）：afterSession 不再触发 LLM 提取
+        console.log('[Hook] afterSession, status:', ctx.status.status)
+      },
+      beforeTool: (ctx) => {
+        console.log('[Hook] beforeTool:', ctx.toolName, ctx.command.slice(0, 80))
+        return ctx
+      },
+      afterTool: (ctx) => {
+        console.log('[Hook] afterTool:', ctx.toolName, 'error:', ctx.isError)
+      },
+      beforeLlmCall: (ctx) => {
+        console.log('[Hook] beforeLlmCall, messages:', ctx.messages.length, 'tools:', (ctx.body.tools as Array<unknown>)?.length ?? 0)
+        return ctx
+      },
+      afterLlmCall: (ctx) => {
+        console.log('[Hook] afterLlmCall, stopReason:', ctx.stopReason)
+      },
+    }),
+    [apiKey, baseURL, adapter, model],
+  )
 
   const {
     conversations,
@@ -201,6 +212,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     renameConversation,
     setActiveConversationKey,
     handleRequest,
+    createBrowserTask,
     sendStagedNow,
     abort,
     steer,
@@ -237,7 +249,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     stopExecution,
     resumeExecution,
     adoptConversation,
-    markConversationRead
+    markConversationRead,
   } = useChatController({
     apiKey,
     baseURL,
@@ -257,7 +269,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     lastUsedProfileId: settings.lastUsedProfileId,
     locale: settings.locale,
     experienceEnabled: settings.experienceEnabled,
-    hooks
+    hooks,
   })
 
   // Wire refs for hook access
@@ -314,19 +326,20 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // from main on mount. Without this a reloaded main window would re-open a
   // popped conversation in-window and stop saving it.
   useEffect(() => {
-    void window.electronAPI.popoutList().then((ids) => {
-      for (const id of ids) {
-        usePopoutWatchStore.getState().add(id)
-        void adoptConversation(id)
-      }
-    }).catch((err: unknown) => reportSilentFailure('popout-list-sync', err))
+    void window.electronAPI
+      .popoutList()
+      .then((ids) => {
+        for (const id of ids) {
+          usePopoutWatchStore.getState().add(id)
+          void adoptConversation(id)
+        }
+      })
+      .catch((err: unknown) => reportSilentFailure('popout-list-sync', err))
   }, [adoptConversation])
 
   // Keep conversationId ref in sync for the afterSession hook
   // eslint-disable-next-line react-hooks/refs -- afterSession reads the live conversation id; mirrored fresh each render
-  conversationIdRef.current = activeConversationKey
-    ? String(activeConversationKey.toString())
-    : null
+  conversationIdRef.current = activeConversationKey ? String(activeConversationKey.toString()) : null
 
   // The open conversation, resolved once: `activeConversationKey` is `''` while
   // nothing is open (see conversationKeyOf), and `''` is not a conversation — it
@@ -334,9 +347,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // held for the one the first message creates.
   const activeConvKey = conversationKeyOf(activeConversationKey)
 
-  const activeConvTitle = activeConvKey
-    ? conversations.find((c) => c.key === activeConvKey)?.label
-    : undefined
+  const activeConvTitle = activeConvKey ? conversations.find((c) => c.key === activeConvKey)?.label : undefined
 
   // ── 授权档位 (composer's 授权 button, formerly the sidebar YOLO switch) ──
   // Approval belongs to the conversation, not to its project or to a global
@@ -354,12 +365,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     : (pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE)
   // useCallback 不是风格洁癖：App 随引擎的每个流式 tick 重渲染，这三个回调
   // 一旦每次重建，ChatView → InputArea 的 React.memo 就被整体击穿。
-  const changeApprovalMode = useCallback((mode: SandboxApprovalMode): void => {
-    // With no conversation yet the click has nothing to write to — hold it for
-    // the one the first message will create (useChatController consumes it).
-    if (activeConvKey) updateConversationApproval(activeConvKey, mode)
-    else usePendingApprovalStore.getState().setMode(mode)
-  }, [activeConvKey, updateConversationApproval])
+  const changeApprovalMode = useCallback(
+    (mode: SandboxApprovalMode): void => {
+      // With no conversation yet the click has nothing to write to — hold it for
+      // the one the first message will create (useChatController consumes it).
+      if (activeConvKey) updateConversationApproval(activeConvKey, mode)
+      else usePendingApprovalStore.getState().setMode(mode)
+    },
+    [activeConvKey, updateConversationApproval],
+  )
 
   // ── 模型 (composer's model picker) ──
   // The same per-conversation shape as the 授权 block above: a conversation
@@ -373,9 +387,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // not use. A welcome-picked model rides pendingProfileStore to the
   // conversation the first message creates.
   const pendingProfileId = usePendingProfileStore((s) => s.profileId)
-  const activeConvProfileId = activeConvKey
-    ? conversations.find((c: any) => c.key === activeConvKey)?.profileId
-    : undefined
+  const activeConvProfileId = activeConvKey ? conversations.find((c: any) => c.key === activeConvKey)?.profileId : undefined
   // undefined column = following the default; null pending = none picked yet.
   // The fallbacks are asymmetric ON PURPOSE: an EXISTING conversation with no
   // column resolves to the global default (that is what the engine's
@@ -398,14 +410,10 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // 的重新命中。换会话不失效——引擎的 reaim 本就随会话存续。
   const pinSessionWindow = useSessionContextWindowStore((s) => s.pin)
   const clearSessionWindow = useSessionContextWindowStore((s) => s.clearConv)
-  const sessionWindowKey = activeConvKey && effectiveProfileId
-    ? sessionWindowKeyOf(activeConvKey, effectiveProfileId)
-    : null
-  const pinnedSessionWindow = useSessionContextWindowStore((s) =>
-    sessionWindowKey ? s.pinned[sessionWindowKey] : undefined)
+  const sessionWindowKey = activeConvKey && effectiveProfileId ? sessionWindowKeyOf(activeConvKey, effectiveProfileId) : null
+  const pinnedSessionWindow = useSessionContextWindowStore((s) => (sessionWindowKey ? s.pinned[sessionWindowKey] : undefined))
   useEffect(() => {
-    if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null
-      && activeConvKey && effectiveProfileId) {
+    if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null && activeConvKey && effectiveProfileId) {
       pinSessionWindow(activeConvKey, effectiveProfileId, agentStatus.contextWindow)
     }
   }, [agentStatus, activeConvKey, effectiveProfileId, pinSessionWindow])
@@ -416,26 +424,23 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // 显示值是用户实际看到的刻度，必须按会话解析 —— 旧实现直接画默认模型的
   // 窗口，改默认模型的上下文长度会当场穿透到钉了别的模型的会话上
   // （2026-10-18 用户报告「正在用 A，改了默认 B 的参数，错乱」）。
-  const profileContextLength = resolveContextWindow(
-    settings.profiles ?? [],
-    effectiveProfileId,
-    settings.activeProfileId,
+  const profileContextLength = resolveContextWindow(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId)
+  const displayContextLength = pinnedSessionWindow != null ? Math.min(profileContextLength, pinnedSessionWindow) : profileContextLength
+  const changeProfile = useCallback(
+    (profileId: string): void => {
+      if (activeConvKey) {
+        // 条件镜像引擎侧的 `opts.profileId !== oldProfileId` 才丢 reaim：重选
+        // 同一个模型时引擎保留重瞄准，这里也必须保留 pin。清的时机必须显式
+        // （review_20261025 低4）——键失配只拦「当前模型 ≠ pin 时的模型」，
+        // 拦不住往返切换对旧键的重新命中。
+        if (profileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
+        updateConversationProfile(activeConvKey, profileId)
+      } else {
+        usePendingProfileStore.getState().setProfileId(profileId)
+      }
+    },
+    [activeConvKey, effectiveProfileId, updateConversationProfile, clearSessionWindow],
   )
-  const displayContextLength = pinnedSessionWindow != null
-    ? Math.min(profileContextLength, pinnedSessionWindow)
-    : profileContextLength
-  const changeProfile = useCallback((profileId: string): void => {
-    if (activeConvKey) {
-      // 条件镜像引擎侧的 `opts.profileId !== oldProfileId` 才丢 reaim：重选
-      // 同一个模型时引擎保留重瞄准，这里也必须保留 pin。清的时机必须显式
-      // （review_20261025 低4）——键失配只拦「当前模型 ≠ pin 时的模型」，
-      // 拦不住往返切换对旧键的重新命中。
-      if (profileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
-      updateConversationProfile(activeConvKey, profileId)
-    } else {
-      usePendingProfileStore.getState().setProfileId(profileId)
-    }
-  }, [activeConvKey, effectiveProfileId, updateConversationProfile, clearSessionWindow])
   const resetProfile = useCallback((): void => {
     if (activeConvKey) {
       // 解除钉选后会话回落到全局默认模型——解析值变化才清（同上，镜像引擎）。
@@ -552,11 +557,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     }
     return messages.some((m) =>
       m.contentBlocks.some(
-        (b) =>
-          b.type === 'tool_use' &&
-          b.subConvId === subAgentView.subConvId &&
-          (b.status === 'running' || b.status === 'queued' || b.status === 'pending')
-      )
+        (b) => b.type === 'tool_use' && b.subConvId === subAgentView.subConvId && (b.status === 'running' || b.status === 'queued' || b.status === 'pending'),
+      ),
     )
   }, [subAgentView, plan, messages])
   // 冻结树（awaiting_continue，2026-09-29 停止语义）里的 spawn 块仍标 running、
@@ -569,9 +571,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // The drilled-in plan node, read live off the plan: its report fields drive
   // the drill-in header's 查看报告 entry (B3 前半), so a report that lands
   // while the view is open appears without re-opening the view.
-  const subAgentPlanNode = subAgentView?.kind === 'plan'
-    ? plan?.nodes.find(n => n.id === subAgentView.nodeId)
-    : null
+  const subAgentPlanNode = subAgentView?.kind === 'plan' ? plan?.nodes.find((n) => n.id === subAgentView.nodeId) : null
   // The docked workbench's own open state — the drill-in overlay must stop at
   // its left edge instead of covering it (user ruling 2026-09-25: 主对话打开了
   // 侧边窗口，进入子对话也要打开). Same key expression ChatView/WorkbenchPane
@@ -581,6 +581,48 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
   const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
   const workbenchWidth = useWorkbenchStore((s) => s.width)
+  // 视图模式：非 chat 主视图下对话住在右侧工作台卡，drill-in 覆盖层跟着
+  // 对话卡走（见下方 overlay 盒的两分支）。模式跟任务走，按会话读。
+  const primary = useConversationPrimary(wbKey)
+  // 浮窗让位（十三期）：浏览器主视图下原生 view 画在一切 DOM 之上，侧边栏
+  // /dock 的下拉浮窗右侵/左侵会被遮挡——量浮窗越缘 px 推给 dock 内收 view。
+  const viewKindForOverlay = useNavigationStore((s) => s.view.kind)
+  useFloatOverlayShift(primary === 'browser' && viewKindForOverlay === 'chat')
+  // 卡片化后的 drill-in 覆盖层要盖住「对话卡」本身：右缘 = clamp 后的 pane 宽
+  // + 卡边距 + 列间 gap（ChatView 的 reserve 同一把 clamp 尺——旧代码用 raw
+  // workbenchWidth，存储值大于今日 chatArea 时覆盖层会越过对话列压到 pane）。
+  // chatAreaWidth 由 ChatView 的 ResizeObserver 实测（browserPaneStore）。
+  const chatAreaWidth = useBrowserPaneStore((s) => s.chatAreaWidth)
+  // pane 快照订阅：welcome 浏览器任务等「页签绑定到新会话」的那一拍。只订阅
+  // conversationId（review_20261104 中2）：整个 update 对象在页面加载期间的
+  // 每次 url/title 推送都换新引用，整对象订阅会把 AppContent → AppLayout →
+  // ChatView 一路拖进无谓重渲染。
+  const browserPaneConversationId = useBrowserPaneStore((s) => s.update.conversationId)
+  // ── welcome 浏览器任务（PLAN-layout-modes 二期「模式跟任务走」）──
+  // URL 表单回车/点历史项：createBrowserTask 铸容器会话（乐观列表 + 浏览器
+  // 主视图绑定），等 pane 快照报到「提交目标」会话名下（绑定推送 →
+  // BrowserService 回推）再开页签——navigate 不带 tabId 的契约是「无页签时
+  // 开新页签直达」。
+  const pendingBrowserUrl = useRef<{ convId: string; url: string } | null>(null)
+  const handleBrowserTaskStart = useCallback(
+    (url: string) => {
+      // 三期裁定：URL 提交零消息——createBrowserTask 只铸容器会话（乐观列
+      // 表 + 浏览器主视图绑定），pane 绑定后由下方 effect 开页签直达。
+      const convId = createBrowserTask(url)
+      pendingBrowserUrl.current = { convId, url }
+    },
+    [createBrowserTask],
+  )
+  useEffect(() => {
+    const pending = pendingBrowserUrl.current
+    if (!pending) return
+    // 双匹配（review_20261104 中1）：比对提交目标而非当前活跃会话——回声未
+    // 到时用户切走，旧守卫会让别的会话的绑定回声替 URL 导航、留下一个从未
+    // 导航的悬空容器。
+    if (browserPaneConversationId !== pending.convId) return
+    pendingBrowserUrl.current = null
+    window.electronAPI.browserPaneAction({ op: 'navigate', url: pending.url }).catch((err: unknown) => reportSilentFailure('browser-task-tab', err))
+  }, [browserPaneConversationId])
   /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
    *  a node the model never dispatched does not advertise a click it drops. */
   const openableNodeIds = useMemo(() => {
@@ -589,31 +631,37 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     return ids
   }, [plan, messages])
   const canOpenNode = useCallback((nodeId: string) => openableNodeIds.has(nodeId), [openableNodeIds])
-  const onOpenPlanNode = useCallback((nodeId: string) => {
-    const node = plan?.nodes.find(n => n.id === nodeId)
-    const target = resolvePlanNodeTarget(node, messages)
-    if (!target) return
-    if (target.kind === 'session') {
-      setSubAgentView({
-        kind: 'plan',
-        nodeId,
-        subConvId: target.subConvId,
-        title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
-      })
-      return
-    }
-    setPlanScrollToMsgId(target.msgId)
-  }, [messages, plan])
+  const onOpenPlanNode = useCallback(
+    (nodeId: string) => {
+      const node = plan?.nodes.find((n) => n.id === nodeId)
+      const target = resolvePlanNodeTarget(node, messages)
+      if (!target) return
+      if (target.kind === 'session') {
+        setSubAgentView({
+          kind: 'plan',
+          nodeId,
+          subConvId: target.subConvId,
+          title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
+        })
+        return
+      }
+      setPlanScrollToMsgId(target.msgId)
+    },
+    [messages, plan],
+  )
   /** 报告契约表达面（PLAN-plan-exchange B3 前半）：节点交付的报告在预览窗格
    *  打开——与产物行 DeliverableRows.openRow 同一通道（previewPaneStore.
    *  openFile），报告的行为与其他交付物完全一致；reportPath 由系统铸造，
    *  resolvePreviewPath 只做 workspace 相对 → 绝对的一步。 */
-  const onOpenNodeReport = useCallback((nodeId: string) => {
-    const node = plan?.nodes.find(n => n.id === nodeId)
-    if (!node?.reportPath) return
-    const wsDir = activeConvKey ? getWorkspaceDir(activeConvKey) : undefined
-    usePreviewPaneStore.getState().openFile(activeConvKey ?? null, resolvePreviewPath(node.reportPath, wsDir ?? null))
-  }, [plan, activeConvKey, getWorkspaceDir])
+  const onOpenNodeReport = useCallback(
+    (nodeId: string) => {
+      const node = plan?.nodes.find((n) => n.id === nodeId)
+      if (!node?.reportPath) return
+      const wsDir = activeConvKey ? getWorkspaceDir(activeConvKey) : undefined
+      usePreviewPaneStore.getState().openFile(activeConvKey ?? null, resolvePreviewPath(node.reportPath, wsDir ?? null))
+    },
+    [plan, activeConvKey, getWorkspaceDir],
+  )
   /** The spawn card's own entry into the same view. The card composes the title
    *  from the tool input it holds; liveness is read back off the card, above. */
   const onOpenSubAgent = useCallback((subConvId: string, title: string) => {
@@ -639,7 +687,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     const has = !!plan && !plan.completed
     const prev = hadPlanRef.current
     if (has && prev !== null && prev.convKey === key && !prev.has) {
-      useWorkbenchStore.getState().openTab(key, 'plan')
+      // autoOpenTab（视图模式守卫）：'plan' 在三种模式的侧栏集合里，守卫恒
+      // 放行——统一入口只为语义一致。
+      autoOpenTab(key, 'plan')
     }
     hadPlanRef.current = { convKey: key, has }
   }, [plan, activeConvKey])
@@ -677,10 +727,23 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // token recomputation (and the cssinjs style churn that follows it) off every
   // render — and the same-value short-circuit keeps an OS flip while a concrete
   // preference is selected from recomputing anything.
-  const antdTheme = useMemo(
-    () => buildAntdTheme(resolvedTheme),
-    [resolvedTheme]
-  )
+  const antdTheme = useMemo(() => buildAntdTheme(resolvedTheme), [resolvedTheme])
+
+  // 弹窗 donor seed（2026-10-31 裁定 + 2026-11-04 追加主视图模式）：工作台开/
+  // 前置 tab + 预览文件页签/活动文件 + 本窗该会话的主视图模式。in-memory，只走
+  // 这次 IPC + 弹窗启动时的一次取回，两个 store 都不持久化；页签即使在工作台
+  // 关着时也携带（弹窗里后开工作台照样复原）。两条入口（新建弹窗/聚焦已弹窗）
+  // 共用一份——各写一份必然漂移。
+  const popoutSeedFor = (key: string): PopoutWorkbenchSeed => {
+    const wb = useWorkbenchStore.getState()
+    const pp = usePreviewPaneStore.getState()
+    return {
+      primary: conversationPrimaryOf(key),
+      workbenchTab: wb.openByConversation[key] ? wb.activeTab : undefined,
+      previewPaths: pp.tabsByConversation[key]?.map((t) => t.path),
+      activePreviewPath: pp.activeByConversation[key] ?? null,
+    }
+  }
 
   return (
     <ErrorBoundary>
@@ -689,54 +752,59 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
           <AntdApp>
             <NotifyBridge />
             <AppLayout
-            conversations={conversations.map((c: any) => ({
+              conversations={conversations.map((c: any) => ({
                 key: c.key,
                 label: c.label,
                 pinned: c.pinned,
                 updatedAt: c.updatedAt,
-                projectId: c.projectId
+                projectId: c.projectId,
               }))}
-            activeConversationKey={activeConversationKey}
-            totalSessions={conversations.length}
-            autoCleanup={settings.autoCleanup ?? false}
-            onCreateNew={() => { createNewConversation(); regenerateGreeting() }}
-            onDeleteConversation={deleteConversation}
-            onRenameConversation={renameConversation}
-            onSelectConversation={setActiveConversationKey}
-            onTogglePinConversation={togglePin}
-            onPopoutConversation={(key, label) => {
-              // 2026-10-31 裁定：弹出携带侧边窗口的打开状态——工作台开/前置
-              // tab + 预览文件页签/活动文件一起作为 seed 递给弹窗（in-memory，
-              // 只走这次 IPC + 弹窗启动时的一次取回，两个 store 都不持久化）。
-              // 页签即使在工作台关着时也携带：弹窗里后开工作台照样复原。
-              const wb = useWorkbenchStore.getState()
-              const pp = usePreviewPaneStore.getState()
-              const seed = {
-                workbenchTab: wb.openByConversation[key] ? wb.activeTab : undefined,
-                previewPaths: pp.tabsByConversation[key]?.map((t) => t.path),
-                activePreviewPath: pp.activeByConversation[key] ?? null,
-              }
-              void window.electronAPI.popoutOpen(key, label, seed)
-            }}
-            onFocusPoppedConversation={(key) => { void window.electronAPI.popoutOpen(key) }}
-            // The project's immersive window reuses the popout machinery end to
-            // end; `popoutOpen` is also what raises a conversation that window
-            // is driving, so no extra focus path is needed here.
-            onEnterProjectWindow={(projectId, name) => { void window.electronAPI.projectWindowOpen(projectId, name) }}
-            onReloadConversations={reloadConversations}
-            skills={skills}
-            onToggleSkill={toggleSkill}
-            tools={tools}
-            onToggleTool={toggleTool}
-            onImportSkill={importSkill}
-            onDeleteSkill={deleteImportedSkill}
-            onRefreshSkills={refreshSkillsFromDisk}
-            importError={importError}
-            memoryManager={memoryManager}
-            knowledgeManager={knowledgeManager}
-            convLights={convLights}
-          >
-            {/* The drill-in is a display layer over the chat pane, not a
+              activeConversationKey={activeConversationKey}
+              // 会话头模式循环钮的 welcome 门控：只在「welcome 正在显示」时
+              // 隐藏——chat 优先 + 零消息 + 非流式（对齐 ChatView 的
+              // isWelcomeForm && primary === 'chat' 早退条件）。浏览器任务
+              // 容器（零消息但 browser 优先）不是 welcome，循环钮照常在——
+              // 那是它切回对话视图的唯一头部入口。
+              activeConvShowCycle={!!activeConvKey && (primary !== 'chat' || messages.length > 0 || isRequesting)}
+              totalSessions={conversations.length}
+              autoCleanup={settings.autoCleanup ?? false}
+              onCreateNew={() => {
+                createNewConversation()
+                regenerateGreeting()
+              }}
+              onDeleteConversation={deleteConversation}
+              onRenameConversation={renameConversation}
+              onSelectConversation={setActiveConversationKey}
+              onTogglePinConversation={togglePin}
+              onPopoutConversation={(key, label) => {
+                void window.electronAPI.popoutOpen(key, label, popoutSeedFor(key))
+              }}
+              // Same seed on both entries: normally this only raises an existing
+              // popout (the registry already holds its seed, ignored on re-open),
+              // but a stale registry would otherwise mint a chat-mode window.
+              onFocusPoppedConversation={(key) => {
+                void window.electronAPI.popoutOpen(key, undefined, popoutSeedFor(key))
+              }}
+              // The project's immersive window reuses the popout machinery end to
+              // end; `popoutOpen` is also what raises a conversation that window
+              // is driving, so no extra focus path is needed here.
+              onEnterProjectWindow={(projectId, name) => {
+                void window.electronAPI.projectWindowOpen(projectId, name)
+              }}
+              onReloadConversations={reloadConversations}
+              skills={skills}
+              onToggleSkill={toggleSkill}
+              tools={tools}
+              onToggleTool={toggleTool}
+              onImportSkill={importSkill}
+              onDeleteSkill={deleteImportedSkill}
+              onRefreshSkills={refreshSkillsFromDisk}
+              importError={importError}
+              memoryManager={memoryManager}
+              knowledgeManager={knowledgeManager}
+              convLights={convLights}
+            >
+              {/* The drill-in is a display layer over the chat pane, not a
                 replacement for it (AppLayout's own view swap is the precedent):
                 a ternary here unmounted ChatView, so the header could switch
                 conversations while the pane kept showing the previous one's
@@ -746,95 +814,128 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 together with the chat): the overlay below covers the chat
                 column only, so the side window the main chat had open remains
                 visible over the sub-agent session (user ruling 2026-09-25). */}
-            <div style={{ position: 'relative', height: '100%' }}>
-              <div style={{ height: '100%' }}>
-                <ChatView
-              messages={messages}
-              isRequesting={isRequesting}
-              isLoadingConversation={isLoadingConversation}
-              lastCompaction={lastCompaction}
-              agentStatus={agentStatus}
-              streamingBlocks={streamingBlocks}
-              hasApiKey={hasApiKey}
-              contextLength={displayContextLength}
-              onOpenPlanNode={onOpenPlanNode}
-              onOpenNodeReport={onOpenNodeReport}
-              onOpenSubAgent={onOpenSubAgent}
-              highlightPlanNodeId={highlightPlanNodeId}
-              hideComposer={!!subAgentView}
-              onExtractRoutine={extractRoutine}
-              canOpenNode={canOpenNode}
-              onSendMessage={handleRequest}
-              onSendStaged={sendStagedNow}
-              onSteer={steer}
-              onCancel={abort}
-              onApproveTool={approveTool}
-              onRejectTool={rejectTool}
-              onKillTool={killTool}
-              onRespondToTool={respondToTool}
-              onClearError={clearError}
-              onRetryLast={retryLast}
-              onExtendLoop={extendLoop}
-              onResumeExecution={resumeExecution}
-              onStopExecution={stopExecution}
-              onSaveConversation={saveCurrentConversation}
-              conversationId={activeConvKey}
-              conversationTitle={activeConvTitle}
-              profiles={settings.profiles}
-              activeProfileId={effectiveProfileId}
-              profilePinned={profilePinned}
-              onSelectProfile={changeProfile}
-              onResetProfile={resetProfile}
-              greeting={greeting}
-              planScrollToMsgId={planScrollToMsgId}
-              onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
-              plan={plan}
-              onPlanJump={setPlanScrollToMsgId}
-              workspaceDir={activeConvKey ? getWorkspaceDir(activeConvKey) : undefined}
-              conversations={conversations.map((c: any) => ({
-                key: c.key,
-                label: c.label,
-                pinned: c.pinned,
-                updatedAt: c.updatedAt,
-                projectId: c.projectId,
-                expertId: c.expertId
-              }))}
-              convLights={convLights}
-              onOpenConversation={(key) => {
-                // Welcome quick entries: a popped conversation is raised, never
-                // reopened in this window (ruling 2026-10-30).
-                if (isPoppedOut(key)) { void window.electronAPI.popoutOpen(key); return }
-                setActiveConversationKey(key)
-              }}
-              activeExpertId={
-                activeConvKey
-                  ? conversations.find((c: any) => c.key === activeConvKey)?.expertId
-                  : undefined
-              }
-              onUnbindExpert={(convId) => updateConversationExpert(convId, null)}
-              approvalMode={approvalMode}
-              onChangeApprovalMode={changeApprovalMode}
-                />
-              </div>
-              {subAgentView && (
-                <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: workbenchOpen ? workbenchWidth : 0 }}>
-                  <SubAgentSessionView
-                    subConvId={subAgentView.subConvId}
-                    title={subAgentView.title}
-                    live={subAgentLive}
-                    paused={subAgentPaused}
-                    reportPath={subAgentPlanNode?.reportPath}
-                    declaredStatus={subAgentPlanNode?.declaredStatus}
-                    onOpenReport={() => {
-                      if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+              <div style={{ position: 'relative', height: '100%' }}>
+                <div style={{ height: '100%' }}>
+                  <ChatView
+                    card
+                    messages={messages}
+                    isRequesting={isRequesting}
+                    isLoadingConversation={isLoadingConversation}
+                    lastCompaction={lastCompaction}
+                    agentStatus={agentStatus}
+                    streamingBlocks={streamingBlocks}
+                    hasApiKey={hasApiKey}
+                    contextLength={displayContextLength}
+                    onOpenPlanNode={onOpenPlanNode}
+                    onOpenNodeReport={onOpenNodeReport}
+                    onOpenSubAgent={onOpenSubAgent}
+                    highlightPlanNodeId={highlightPlanNodeId}
+                    hideComposer={!!subAgentView}
+                    onExtractRoutine={extractRoutine}
+                    canOpenNode={canOpenNode}
+                    onSendMessage={handleRequest}
+                    onBrowserTaskStart={handleBrowserTaskStart}
+                    onSendStaged={sendStagedNow}
+                    onSteer={steer}
+                    onCancel={abort}
+                    onApproveTool={approveTool}
+                    onRejectTool={rejectTool}
+                    onKillTool={killTool}
+                    onRespondToTool={respondToTool}
+                    onClearError={clearError}
+                    onRetryLast={retryLast}
+                    onExtendLoop={extendLoop}
+                    onResumeExecution={resumeExecution}
+                    onStopExecution={stopExecution}
+                    onSaveConversation={saveCurrentConversation}
+                    conversationId={activeConvKey}
+                    conversationTitle={activeConvTitle}
+                    profiles={settings.profiles}
+                    activeProfileId={effectiveProfileId}
+                    profilePinned={profilePinned}
+                    onSelectProfile={changeProfile}
+                    onResetProfile={resetProfile}
+                    greeting={greeting}
+                    planScrollToMsgId={planScrollToMsgId}
+                    onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
+                    plan={plan}
+                    onPlanJump={setPlanScrollToMsgId}
+                    workspaceDir={activeConvKey ? getWorkspaceDir(activeConvKey) : undefined}
+                    conversations={conversations.map((c: any) => ({
+                      key: c.key,
+                      label: c.label,
+                      pinned: c.pinned,
+                      updatedAt: c.updatedAt,
+                      projectId: c.projectId,
+                      expertId: c.expertId,
+                    }))}
+                    convLights={convLights}
+                    onOpenConversation={(key) => {
+                      // Welcome quick entries: a popped conversation is raised, never
+                      // reopened in this window (ruling 2026-10-30). Same for a
+                      // project conversation whose immersive window is running —
+                      // raise + switch there.
+                      if (isPoppedOut(key)) {
+                        void window.electronAPI.popoutOpen(key, undefined, popoutSeedFor(key))
+                        return
+                      }
+                      void routeToProjectWindow(conversations, key).then((taken) => {
+                        if (taken) return
+                        setActiveConversationKey(key)
+                      })
                     }}
-                    onBack={() => setSubAgentView(null)}
+                    activeExpertId={activeConvKey ? conversations.find((c: any) => c.key === activeConvKey)?.expertId : undefined}
+                    onUnbindExpert={(convId) => updateConversationExpert(convId, null)}
+                    approvalMode={approvalMode}
+                    onChangeApprovalMode={changeApprovalMode}
                   />
                 </div>
-              )}
-            </div>
-          </AppLayout>
-          <InstallNotifier messages={messages} />
+                {subAgentView && (
+                  <div
+                    style={{
+                      // 卡片化（2026-11-03）：覆盖层盖住对话卡本身——四周 5px
+                      // 卡边距 + 与工作台卡之间 5px gap；盒样式与对话卡同款
+                      // （圆角边框 + 裁切），视觉上就是同一张卡换了个内容。
+                      // 视图模式分支（PLAN-layout-modes）：文件/浏览器优先下
+                      // 对话住在右侧工作台卡，覆盖层锚 dock 卡（宽 = clamp 后
+                      // 的 pane 宽）——同一语义「对话卡变成子会话」。
+                      position: 'absolute',
+                      top: WORKBENCH_CARD_MARGIN,
+                      ...(primary === 'chat'
+                        ? {
+                            left: WORKBENCH_CARD_MARGIN,
+                            bottom: WORKBENCH_CARD_MARGIN,
+                            right: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) + WORKBENCH_CARD_MARGIN * 2 : WORKBENCH_CARD_MARGIN,
+                          }
+                        : {
+                            right: WORKBENCH_CARD_MARGIN,
+                            bottom: WORKBENCH_CARD_MARGIN,
+                            width: clampPaneWidth(workbenchWidth, chatAreaWidth),
+                          }),
+                      boxSizing: 'border-box',
+                      background: 'var(--pm-bg)',
+                      border: '1px solid var(--pm-separator-faint)',
+                      borderRadius: IMMERSIVE_CARD_RADIUS,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <SubAgentSessionView
+                      subConvId={subAgentView.subConvId}
+                      title={subAgentView.title}
+                      live={subAgentLive}
+                      paused={subAgentPaused}
+                      reportPath={subAgentPlanNode?.reportPath}
+                      declaredStatus={subAgentPlanNode?.declaredStatus}
+                      onOpenReport={() => {
+                        if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+                      }}
+                      onBack={() => setSubAgentView(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            </AppLayout>
+            <InstallNotifier messages={messages} />
           </AntdApp>
         </ConfigProvider>
       </XProvider>
