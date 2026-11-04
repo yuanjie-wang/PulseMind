@@ -10,6 +10,15 @@
  * Prism re-tokenizes the whole file and React reconciles thousands of spans
  * on EVERY width tick, on top of the unavoidable re-wrap layout.
  *
+ * 2026-11-01 PLAN-codemirror-view: the text view half is a CodeMirror
+ * instance now (TextPreview/CodeHighlight retired from the pane). The chain
+ * above is history — a width tick re-renders PreviewContent, but the CM
+ * host's mount effect is one-time and the value/mode effects compare before
+ * dispatching, so the editor does NOT re-tokenize; the drag cost is CM's
+ * own re-measure of the viewport (lineWrapping re-wraps the visible lines
+ * only). The comparative assertion keeps its shape; re-baselined green
+ * (max 17ms, 0 janky frames).
+ *
  * The probe measures frame gaps (rAF deltas) while a REAL pointer drag widens
  * the pane, in two scenarios:
  *   - python preview open (the report's case)

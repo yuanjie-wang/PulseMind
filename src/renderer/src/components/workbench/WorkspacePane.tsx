@@ -18,7 +18,11 @@
 // the window-edge insets and the explorer↔chat gap live in ProjectExplorer.
 // Same day again, 用户裁定「左侧目录树升级：目录树 | 全文检索 两面板切换」:
 // the immersive tree card grows a switcher row; 全文检索 fills the card via
-// SearchPanel's panel variant (the main window's strip form is untouched).
+// SearchPanel. 2026-11-01 用户裁定「只有沉浸模式提供全量的编辑和操作能力，
+// 普通模式保持简洁」: the main window's 全文搜索 toolbar button is gone in
+// BOTH forms (so is SearchPanel's strip variant — no consumers left); the
+// immersive left card is the feature's only surface, and the tree toolbar's
+// 新建 dropdown renders in the immersive form only.
 // Selection lives here: the tree writes it, the tree rows paint it, and an
 // agent-opened preview (openFile without a click) highlights itself through
 // the same state.
@@ -34,7 +38,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { useSecondaryLayoutStore } from '../../stores/secondaryLayoutStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
-import { clampTreeWidth, COLUMN_DRAG_HANDLE_WIDTH, IMMERSIVE_CARD_GAP } from '../../../../shared/ui/layout-widths'
+import { clampTreeWidth, COLUMN_DRAG_HANDLE_WIDTH, IMMERSIVE_CARD_GAP, IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
 import { useColumnDrag } from '../../hooks/useColumnDrag'
 import { PreviewPane } from '../preview/PreviewPane'
 import { SearchPanel } from './SearchPanel'
@@ -42,17 +46,14 @@ import { WorkspaceAddressBar } from './WorkspaceAddressBar'
 import { WorkspaceTabStrip } from './WorkspaceTabStrip'
 import { WorkspaceTree } from './WorkspaceTree'
 
-/** 沉浸卡片圆角（2026-10-31 用户裁定「三列各用圆角矩形包裹」）——与
- *  ProjectExplorer 的对话卡同一个值。 */
-const CARD_RADIUS = 8
-
-/** 沉浸卡的公共盒：border-box（width 含边框，clamp 数学不被 +2 打破）+
- *  圆角边框 + 裁切 + 实底（浮在窗口底色上读作一张卡）。 */
+/** 沉浸卡的公共盒（圆角 = shared 的 IMMERSIVE_CARD_RADIUS）：border-box
+ *  （width 含边框，clamp 数学不被 +2 打破）+ 圆角边框 + 裁切 + 实底（浮在
+ *  窗口底色上读作一张卡）。 */
 const IMMERSIVE_CARD: React.CSSProperties = {
   boxSizing: 'border-box',
   background: 'var(--pm-bg)',
   border: '1px solid var(--pm-separator-faint)',
-  borderRadius: CARD_RADIUS,
+  borderRadius: IMMERSIVE_CARD_RADIUS,
   overflow: 'hidden',
 }
 
@@ -186,19 +187,20 @@ export function WorkspacePane({ conversationId, immersive }: Props): React.React
               })}
             </div>
           )}
-          {/* 全文检索面板态：整卡填充（panel 变体），命中点击 → 中卡预览打开
-              （同窗口 store，联动免费）。无工作目录时诚实提示（rg 无处可搜）。
-              工作台形态与树态照旧渲染 WorkspaceTree。 */}
+          {/* 全文检索面板态：整卡填充，命中点击 → 中卡预览打开（同窗口
+              store，联动免费）。无工作目录时诚实提示（rg 无处可搜）。
+              工作台形态与树态照旧渲染 WorkspaceTree（immersive 传递下去，
+              决定树工具条是否带「新建」）。 */}
           {immersive && leftPanel === 'search' ? (
             workspaceDir ? (
-              <SearchPanel workspaceDir={workspaceDir} variant="panel" />
+              <SearchPanel workspaceDir={workspaceDir} />
             ) : (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontSize: 12, color: 'var(--pm-text-muted)' }}>
                 当前会话暂无工作目录
               </div>
             )
           ) : (
-            <WorkspaceTree conversationId={conversationId} selectedPath={selectedPath} onSelectPath={setSelectedPath} />
+            <WorkspaceTree conversationId={conversationId} selectedPath={selectedPath} onSelectPath={setSelectedPath} immersive={immersive} />
           )}
         </div>
         <div

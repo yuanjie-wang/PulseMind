@@ -30,11 +30,11 @@
  *      one deletePath call, drops a folder's whole subtree from the expansion
  *      cache, keeps the row and shows the reason when main refuses, closes the
  *      deleted file's preview tab — unless it holds unsaved edits;
- *   9. a preview opened WITHOUT a click (agent auto-preview shape) REVEALS its
- *      row: the lazy tree fetches the unlisted folder, expands the chain to it
- *      and the controlled selection paints it;
- *   10. collapsing a folder under an active selection re-expands the chain —
- *       the selected file never stays folded away;
+ *   (9/10 removed 2026-11-01, user: 交互逻辑变了 — the reveal walk (an opened
+ *      file auto-expanded the lazy tree to its row; a folded ancestor under an
+ *      active selection re-expanded) is gone. The expansion cache only answers
+ *      user clicks now; an agent-opened preview of an unlisted folder simply
+ *      does not highlight in the tree.);
  *   11. 「在系统中打开」 is the row's Finder exit (files in their default app,
  *       folders in Finder) — added 2026-10-30, when the address bar stopped
  *       speaking for the tree selection; the click must not select/expand the
@@ -161,17 +161,14 @@ await page.addScriptTag({
     key === 'listDir' ? (p) => {
       window.__listed.push(p);
       const entries = window.__dirs[p];
-      // §17: a per-path delay widens the fold window — the collapse→reveal
-      // cycle otherwise completes inside one task and never paints.
-      const delay = window.__delayDirs && window.__delayDirs[p];
-      const answer = () => Promise.resolve(entries === undefined ? null : { entries });
-      return delay ? new Promise((r) => setTimeout(r, delay)).then(answer) : answer();
+      return Promise.resolve(entries === undefined ? null : { entries });
     }
     : key === 'deletePath' ? (p) => {
       window.__deleteCalls.push(p);
       const reason = window.__denyDelete[p];
       // The stub IS the disk: a successful delete prunes the fixture tree, so
-      // a later level fetch (the reveal walk) cannot resurrect the row.
+      // a later re-list (刷新's remount restores the cached levels) cannot
+      // resurrect the row.
       if (!reason) {
         const parent = p.slice(0, p.lastIndexOf('/'));
         if (window.__dirs[parent]) window.__dirs[parent] = window.__dirs[parent].filter((e) => e.path !== p);
@@ -448,20 +445,6 @@ check(
   JSON.stringify(await cache()),
 )
 
-/* ── 15. A preview opened WITHOUT a click (the agent auto-preview shape)
-          reveals its row: the lazy tree fetches the unlisted folder, expands
-          the chain to it and paints the row selected. /w/d was never expanded
-          in this state and the cache is empty. ── */
-await page.evaluate((k) => {
-  window.__stores.preview.getState().openFile(k, '/w/d/z.txt')
-}, CONV)
-await row('/w/d/z.txt').waitFor()
-check('an agent-opened preview expands its folder and renders the row', await row('/w/d/z.txt').isVisible())
-check('…and the address bar names it', (await addressPath()) === '/w/d/z.txt', await addressPath())
-const zSel = await selectedRowStyle()
-check('…and the row is painted selected (grey-on-ink)', zSel.bg === 'rgb(245, 245, 245)' && zSel.ink === 'rgba(0, 0, 0, 0.88)', JSON.stringify(zSel))
-check('…and the revealed folder joined the expansion cache', JSON.stringify(await cache()) === '["/w/d"]', JSON.stringify(await cache()))
-
 /* ── 16. The tree↔preview divider is draggable (2026-10-26): the tree column
           used to be a fixed 40% share; it is now a persisted px width with a
           6px handle straddling the separator, clamped live against the row.
@@ -541,30 +524,6 @@ console.log('\n§16 目录树 ↔ 预览分隔条可拖拽')
   await page.evaluate(() => window.__stores.workbench.setState({ width: 420, treeWidth: 180 }))
 }
 
-/* ── 17. Collapsing a folder under an active selection re-expands it (user
-          ruling: 被折叠了要展开). deep.txt is selected and previewed, then its
-          ancestor is folded with a real switcher click; the reveal walk puts
-          the row back and the selection repaints. ── */
-{
-  // /w/a was deleted in §14 — the survivor /w/d (revealed in §15) is the prop.
-  await nameOf('/w/d').click()
-  await row('/w/d/z.txt').waitFor()
-  await nameOf('/w/d/z.txt').click()
-  await page.waitForFunction(() => document.querySelector('[data-ws-address-path]')?.textContent === '/w/d/z.txt')
-  // Widen the fold window: the reveal's refetch of /w/d stalls 400ms, so the
-  // collapsed frame really paints and the fold assertion is not a race.
-  await page.evaluate(() => { window.__delayDirs = { '/w/d': 400 } })
-  await page.locator('.ant-tree-treenode:has([data-ws-path="/w/d"]) .ant-tree-switcher_open').first().click()
-  await page.waitForFunction(() => !document.querySelector('[data-ws-path="/w/d/z.txt"]'))
-  check('collapsing the ancestor really folded the selected file’s row', (await row('/w/d/z.txt').count()) === 0)
-  await page.evaluate(() => { window.__delayDirs = {} })
-  await row('/w/d/z.txt').waitFor()
-  check('the tree re-expands the folded chain on its own', await row('/w/d/z.txt').isVisible())
-  const reSel = await selectedRowStyle()
-  check('…and the row is still the selected one', reSel.bg === 'rgb(245, 245, 245)' && reSel.ink === 'rgba(0, 0, 0, 0.88)', JSON.stringify(reSel))
-  check('…and the address bar never blinked', (await addressPath()) === '/w/d/z.txt', await addressPath())
-}
-
 /* ── 18. 在系统中打开：树行的 Finder 出口（2026-10-30 裁定——地址栏只认屏上
           文件，被选中的文件夹就没了出口，出口搬到树行；同一颗按钮对文件也可
           用）。点击不得选中/展开该行，也不得打扰正在预览的文件。 ── */
@@ -572,13 +531,16 @@ await page.evaluate(() => {
   window.__openOsCalls = []
 })
 const listedBeforeOs = JSON.stringify(await listed())
+const addrBeforeOs = await addressPath()
 await hover('/w/d')
 await page.locator('.pm-ws-row[data-ws-path="/w/d"] button[title="在系统中打开"]').click()
 await page.waitForTimeout(120)
 const osCalls = await page.evaluate(() => window.__openOsCalls.slice())
 check('在系统中打开 sends one openFolder for the folder’s path', JSON.stringify(osCalls) === '["/w/d"]', JSON.stringify(osCalls))
 check('…without listing anything (the click does not select/expand the row)', JSON.stringify(await listed()) === listedBeforeOs, `${listedBeforeOs} → ${JSON.stringify(await listed())}`)
-check('…and the previewed file is untouched', (await addressPath()) === '/w/d/z.txt', await addressPath())
+// Whatever the on-screen file is at this point (§13's search-hit preview since
+// the reveal walk left), the Finder exit must not disturb it.
+check('…and the previewed file is untouched', (await addressPath()) === addrBeforeOs, `${addrBeforeOs} → ${await addressPath()}`)
 
 /* ── 19. 文件页签条（2026-10-30 裁定）：跨整面板宽、在树列与地址栏之上、切页签
           联动地址栏、脏点、改动点、脏页签关闭先问、空态不塌、溢出横滑。 ── */
@@ -590,7 +552,7 @@ const closeAllTabs = () =>
     for (const t of p.tabsByConversation[k] ?? []) p.closeTab(k, t.path)
   }, CONV)
 
-// Reset to a known set (z.txt is the chip §17 left behind).
+// Reset to a known set (the chips §7 left behind go with it).
 await closeAllTabs()
 await page.waitForTimeout(120)
 const emptyStrip = await stripRowBox()
@@ -620,6 +582,11 @@ const treeToolbarHeight = await page.locator('input[aria-label="搜索文件"]')
 check('…and matches the tree toolbar’s height', Math.abs(addrBox.height - treeToolbarHeight) <= 1, `addr=${Math.round(addrBox.height)} tree-toolbar=${Math.round(treeToolbarHeight)}`)
 
 // 19b. A second file → second chip, newest active, house tab styling.
+// The tree is lazy and the reveal walk is gone (2026-11-01, user: 交互逻辑变
+// 了) — z.txt's row only exists once its folder is expanded, so open /w/d the
+// way a user does: a real click on the folder row.
+await nameOf('/w/d').click()
+await row('/w/d/z.txt').waitFor()
 await nameOf('/w/d/z.txt').click()
 await chip('/w/d/z.txt').waitFor()
 check('a second open file adds a second chip, in open order', JSON.stringify(await tabs()) === '["/w/c.md","/w/d/z.txt"]', JSON.stringify(await tabs()))

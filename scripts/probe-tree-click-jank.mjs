@@ -5,8 +5,10 @@
  * 真 WorkbenchPane（真 WorkspaceTree + 真 PreviewPane）over 桩 electronAPI。
  * 两场实验：
  *   §A 小→小连点：10 个 ~20KB 代码文件轮流点 8 轮，量每击 long task 与帧间隙；
- *   §B 小→大连点：先点亮一个 ~1.5MB 文件（截断后仍是几千行 span 的 <pre>），
- *      再连点小文件——检验「每击同步卸载上一个文件的 DOM」假设。
+ *   §B 单击预算；§C 大文件单开 + 滚动。
+ * 2026-11-01 PLAN-codemirror-view 重基线：预览查看态已迁入 CM 实例——本探针
+ * 的全部数字从「字符串高亮 DOM」换成「CM 视口渲染」口径（挂载 = EditorView
+ * 创建 + 视口渲染；大文件 = 全文 doc + 只渲染可见行；滚动目标 = .cm-scroller）。
  * 判官口径：PerformanceObserver longtask + rAF 帧间隙双路。
  */
 import { build } from 'esbuild'
@@ -181,38 +183,38 @@ const frame = (cf) => `${(cf.functionName || '(anon)')} @ ${(cf.url || '').split
 const top = [...self.entries()].map(([id, t]) => ({ t, f: frame(nodes.get(id)?.callFrame || { functionName: '???' }) })).sort((a, b) => b.t - a.t).slice(0, 20)
 for (const n of top) console.log(`    self=${n.t.toFixed(1).padStart(7)}  ${n.f}`)
 
-/* ── §0f 高亮→纯文本（卸载高亮 DOM 仍在，挂载便宜） ── */
+/* ── §0f CM(ts)→CM(无语法)（卸载上一个编辑器 DOM 仍在，挂载便宜） ── */
 {
   await nameOf('/w/f1.ts').click()
   await page.waitForTimeout(300)
   const m = await clickAndMeasure('/w/plain.xyz')
-  console.log('  §0f 高亮→纯文本(挂载便宜):', summarize(m))
+  console.log('  §0f CM(ts)→CM(无语法)(挂载便宜):', summarize(m))
 }
-/* ── §0e 纯文本→纯文本（无 tokenizer，基线） ── */
+/* ── §0e CM(无语法)→CM(无语法)（无语法解析，基线） ── */
 {
   const m = await clickAndMeasure('/w/plain.xyz') // same file — 0 expected
   console.log('  §0e 同纯文本重复击(基线0):', summarize(m))
-  // Need a second plain file for a real switch; reuse big.ts (plain path, >200K).
+  // Need a second grammar-less file for a real switch; reuse big.ts (no syntax parse).
   const m2 = await clickAndMeasure('/w/big.ts')
   console.log('  §0e 纯文本→大纯文本:', summarize(m2))
 }
 
-/* ── §0g 150K 高亮文件单击挂载 ── */
+/* ── §0g 150K CM(ts) 单击挂载 ── */
 {
   await nameOf('/w/plain.xyz').click()
   await page.waitForTimeout(300)
   const m = await clickAndMeasure('/w/mid.ts')
-  console.log('  §0g 150K高亮单击挂载:', summarize(m))
+  console.log('  §0g 150K CM(ts)单击挂载:', summarize(m))
   const m2 = await clickAndMeasure('/w/plain.xyz')
-  console.log('  §0g 150K→小(卸载大DOM):', summarize(m2))
+  console.log('  §0g 150K→小(卸载大编辑器):', summarize(m2))
 }
 
-/* ── §0h 48K 高亮单击挂载 ── */
+/* ── §0h 48K CM(ts) 单击挂载 ── */
 {
   await nameOf('/w/plain.xyz').click()
   await page.waitForTimeout(300)
   const m = await clickAndMeasure('/w/mid48.ts')
-  console.log('  §0h 48K高亮单击挂载:', summarize(m))
+  console.log('  §0h 48K CM(ts)单击挂载:', summarize(m))
 }
 
 /* ── §0x 差分：间隔 300ms 的单击 vs 背靠背 ── */
@@ -247,31 +249,38 @@ await page.waitForTimeout(400) // settle
   const total = m.long.reduce((s, n) => s + n, 0)
   check('§A 8击连发总阻塞 < 250ms（中间击不排队，只有最终渲染一次）', total < 250, `total=${total}ms long=[${m.long.join(',')}] maxGap=${Math.max(0, ...m.gaps)}ms`)
 }
-/* ── §B 单击预算（去抖 leading 路径，20KB 高亮文件） ── */
+/* ── §B 单击预算（去抖 leading 路径，20KB CM(ts) 视图挂载） ── */
 await page.waitForTimeout(400)
 {
   const m = await clickAndMeasure('/w/f3.ts')
   const worst = Math.max(0, ...m.long)
   check('§B 单击(距上次>150ms)阻塞 < 120ms', worst < 120, summarize(m))
 }
-/* ── §C 大文件：150K 现走分块纯文本，单开 < 100ms ── */
+/* ── §C 大文件：1.6MB doc 走 CM 视口渲染，单开 < 100ms ── */
 await page.waitForTimeout(400)
 {
   const m = await clickAndMeasure('/w/big.ts')
   const worst = Math.max(0, ...m.long)
-  check('§C 1.6MB 分块纯文本单开 < 100ms', worst < 100, summarize(m))
-  const blocks = await page.evaluate(() => document.querySelectorAll('pre').length)
-  console.log(`    （big.ts 分块 pre 数=${blocks}）`)
-  // 滚动（2026-10-31 占位高度钉：准确估计 + 60 行块 → 零停顿）
+  check('§C 1.6MB CM 视口单开 < 100ms（全文 doc + 只渲染可见行）', worst < 100, summarize(m))
+  const info = await page.evaluate(() => {
+    const view = window.__pmPreviewCM
+    return {
+      hosts: document.querySelectorAll('[data-pm-cm-editor]').length,
+      lines: view ? view.state.doc.lines : -1,
+      scroller: !!document.querySelector('.cm-scroller'),
+    }
+  })
+  console.log(`    （CM host 数=${info.hosts} doc 行数=${info.lines} scroller 在场=${info.scroller}）`)
+  // 滚动：CM 的 scroller 自己滚——wrapper 被 height:100% 的 host 占满，滚它没用。
   await page.evaluate(() => window.__meterStart())
   for (let i = 0; i < 25; i++) {
-    await page.evaluate(() => { const el = document.querySelector('.pm-preview-pre, [class*="auto-hide-scroll"]') ; if (el) el.scrollTop += 600; return true })
+    await page.evaluate(() => { const el = document.querySelector('.cm-scroller'); if (el) el.scrollTop += 600; return true })
     await page.waitForTimeout(0)
   }
   await page.waitForTimeout(300)
   const s = await page.evaluate(() => window.__meterStop())
   const sTotal = s.long.reduce((x, y) => x + y, 0)
-  check('§C-滚动 1.6MB 分块纯文本 25 步总阻塞 < 150ms', sTotal < 150, `total=${sTotal}ms long=[${s.long.join(',')}] maxGap=${Math.max(0, ...s.gaps)}ms`)
+  check('§C-滚动 1.6MB CM 视口 25 步总阻塞 < 150ms', sTotal < 150, `total=${sTotal}ms long=[${s.long.join(',')}] maxGap=${Math.max(0, ...s.gaps)}ms`)
 }
 const failed = results.filter((r) => !r).length
 console.log(failed === 0 ? `\n${results.length}/${results.length} checks passed — ALL GREEN` : `\n${results.length - failed}/${results.length} checks passed`)

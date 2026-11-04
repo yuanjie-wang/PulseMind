@@ -116,6 +116,10 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
         }
         store.setDraft(path, { ...entry, baseline: entry.content, diskText: serialized })
         store.clearExternalChange(path)
+        // The user's own text just replaced the disk — any staged/resolved
+        // agent review diff is stale against it (2026-11-01).
+        store.clearAgentDiffBase(path)
+        store.clearAgentDiffCapture(path)
         useHtmlEditStore.getState().forgetFile(path)
         store.bumpReload(path)
       } catch (err) {

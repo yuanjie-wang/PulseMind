@@ -363,3 +363,32 @@ describe('沉浸窗口形态（2026-10-31 用户裁定：页签条收进中列�
     expect(strip.indexOf('data-ws-strip-actions')).toBeGreaterThan(strip.indexOf('<StripEdgeFades'))
   })
 })
+
+describe('浏览器页签的 ▾ 快切（2026-11-01 用户裁定：页面页签交互与文件页签一致）', () => {
+  it('▾ 在条的最左（滚动器之前），与文件条同一枚箭头、同一个空态几何裁定', () => {
+    const pane = src(BROWSER)
+    expect(pane).toContain('data-pane-tabstrip-menu')
+    expect(pane).toContain('<ChevronDown size={13} />')
+    // 「最左」是几何承诺不是形容：触发器在滚动器包装之前。
+    expect(pane.indexOf('data-pane-tabstrip-menu')).toBeLessThan(pane.indexOf('className="pm-pane-tabstrip"'))
+    // 空态灰置但 22px 占位不变——首开不得移动行几何（文件条同款）。
+    expect(pane).toContain('opacity: pane.tabs.length === 0 ? 0.35 : 1')
+  })
+
+  it('菜单行 = 页签芯片的同一个调用：乐观 id + selectTab 恰好两处（芯片 + 菜单行）', () => {
+    const pane = src(BROWSER)
+    expect(pane).toContain('data-pm-tab-menu-item')
+    // 菜单行不是另起一套语义：与芯片同款乐观高亮 + 同一个动作。
+    expect(pane.match(/op: 'selectTab'/g)?.length).toBe(2)
+  })
+
+  it('门户逃逸裁切 + 覆盖层通道两表面合一（dock 只有一个位移数）', () => {
+    const pane = src(BROWSER)
+    // 条行 overflow:hidden 会裁掉内联下拉；门户到 body 才挂得住。
+    expect(pane).toContain('createPortal(')
+    // 单一写者：0 复位 + 上报各一处——两个下拉各写一个 effect 会在
+    // 「后关者」把先开者的高度清零。
+    expect(pane.match(/setChromeOverlayHeight/g)?.length).toBe(2)
+    expect(pane).toContain('dropdownOpen ? dropdownRef.current : menuVisible ? tabMenuRef.current')
+  })
+})

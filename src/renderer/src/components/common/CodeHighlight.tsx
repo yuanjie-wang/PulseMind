@@ -16,6 +16,12 @@ export { LANG_LOOKUP, resolveCodeLang } from '../../../../shared/preview/code-la
 // per preview switch, and rapid tree clicks queue one per click); the string
 // builder mounts the same DOM for a fraction of that and caches repeat mounts.
 // The library stays in the bundle for @ant-design/x's own highlighter.
+//
+// Since PLAN-codemirror-view (2026-11-01) this serves the CHAT code fences
+// and the skill browser preview only — the preview pane's text view moved to
+// the CodeMirror instance (line numbers and reveal went with it; the
+// lineNumbers/revealLine props and the `[data-reveal-line]` contract retired
+// with the preview path).
 
 const FONT_STACK = 'Menlo, Consolas, monospace'
 
@@ -25,15 +31,6 @@ interface CodeHighlightProps {
   lang: string
   /** Code font size; the chat markdown theme uses 14, the skill preview 12. */
   fontSize?: number
-  /** Visible line numbers. Preview-only (PLAN-ide-linkage 1a): read prints
-   *  absolute line numbers and edit errors cite them, so the preview must
-   *  speak the same coordinate system; chat code fences never promised
-   *  coordinates, so they stay numberless. */
-  lineNumbers?: boolean
-  /** 1-based line to scroll into view + flash (PLAN-ide-linkage 1b reveal).
-   *  The per-line spans carry `data-reveal-line` attrs for the reveal window
-   *  only — PreviewContent consumes the target after the flash. */
-  revealLine?: number
 }
 
 /** Prism-highlighted code, rendered through the fast string builder
@@ -46,8 +43,8 @@ interface CodeHighlightProps {
  *
  *  The outer tag is a DIV, not a pre: x-markdown wraps code fences in its own
  *  `<pre>` (no nesting); the code element's `white-space: pre-wrap` gives it
- *  the pre behavior. Standalone callers (preview, skill browser) get the
- *  mode-correct card look from the shell's inline styles.
+ *  the pre behavior. Standalone callers (skill browser) get the mode-correct
+ *  card look from the shell's inline styles.
  *
  *  The two halves of a code block flip by different means, and that split is
  *  the reason this file subscribes to the theme mode at all: the card
@@ -56,34 +53,20 @@ interface CodeHighlightProps {
  *  is `{ '.token.keyword': { color } }`, unreachable from a custom property —
  *  so `oneDark`/`oneLight` must be chosen in JS. `useThemeMode` is the module
  *  store for exactly this shape of consumer (see `theme/mode.ts`). */
-export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12, lineNumbers = false, revealLine }: CodeHighlightProps): React.ReactElement {
+export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12 }: CodeHighlightProps): React.ReactElement {
   const mode = useThemeMode()
-  const containerRef = React.useRef<HTMLDivElement | null>(null)
   // The library's theme type gives each class a CSSProperties value without an
   // index signature, so it never structurally matches a Record — the shape is
   // exactly what fast-code's StyleObj reads, cast at the single selection point.
   const theme = (mode === 'dark' ? oneDark : oneLight) as unknown as ThemeObj
-  // The reveal render commits synchronously with this effect — DOM geometry is
-  // measurable, scrollIntoView needs no paint wait. Long lines wrap (the code
-  // shell is pre-wrap), so the target line may occupy several visual rows; the
-  // span handles that itself.
-  React.useEffect(() => {
-    if (revealLine == null || !containerRef.current) return
-    const el = containerRef.current.querySelector(`[data-reveal-line="${revealLine}"]`)
-    el?.scrollIntoView({ block: 'center' })
-  }, [revealLine])
-  // Reveal is part of the cache key: a flash rebuilds once (a string build is
-  // cheap), a revisit without it is a cache hit.
   const html = React.useMemo(
-    () => highlightToHtml(code, lang, theme, { lineNumbers, revealLine: revealLine ?? null }),
-    [code, lang, theme, lineNumbers, revealLine],
+    () => highlightToHtml(code, lang, theme),
+    [code, lang, theme],
   )
   const shell = React.useMemo(() => codeShellStyles(theme, fontSize, FONT_STACK), [theme, fontSize])
   return (
-    <div ref={containerRef}>
-      <div style={shell.pre}>
-        <code style={shell.code} dangerouslySetInnerHTML={{ __html: html }} />
-      </div>
+    <div style={shell.pre}>
+      <code style={shell.code} dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   )
 })
