@@ -58,14 +58,15 @@ jobs:
     env:
       # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      # 原生模块的编译器 = zig。容器的 g++ 8.3 认不得 better-sqlite3 12.9 的
-      # -std=c++20，而容器 glibc 2.31 编出来的符号又超 2.28 —— zig 的 clang
+      # 原生模块的编译器 = zig（经包装脚本）。容器的 g++ 8.3 认不得 better-sqlite3
+      # 12.9 的 -std=c++20，而容器 glibc 2.31 编出来的符号又超 2.28 —— zig 的 clang
       # 两个都解决：C++20 没问题，-target 的 glibc 后缀把符号下限精确钉在
       # 2.28（libc++ 还静态链接进 .node，不新增运行时依赖）。gyp 的 make 生成器
       # 从环境读 CC/CXX（gyp/generator/make.py 的 GetEnvironFallback），node-gyp
-      # 与 @electron/rebuild 的编译因此都走这里。
-      CC: zig cc -target x86_64-linux-gnu.2.28
-      CXX: zig c++ -target x86_64-linux-gnu.2.28
+      # 与 @electron/rebuild 的编译因此都走这里。包装脚本滤掉 -Wl,--exclude-libs
+      # （zig 至今不支持，见 scripts/zig-cc-wrapper.sh 头注）。
+      CC: /opt/zig/bin/zig-cc cc -target x86_64-linux-gnu.2.28
+      CXX: /opt/zig/bin/zig-cc c++ -target x86_64-linux-gnu.2.28
       # 官方 prebuild 是在新 glibc 上构建的（node-v115 与 electron-v130 的
       # linux-x64 prebuild 都要求 GLIBC_2.29），prebuild-install 的 electron
       # 路径不做加载校验、node 路径在 2.28 上加载失败才回落 —— 无论哪种，都能
@@ -104,19 +105,20 @@ jobs:
           done
           python3 --version
 
+      - uses: actions/checkout@v4
+
       # 唯一镜像外来的工具。钉 0.13.0（自带 clang 17，C++20 够用；这个版本
-      # ziglang.org 的包名还是 arch-last 形态）。解到 /opt/zig 并进 PATH ——
-      # 上面 job 级 env 的 CC/CXX 要靠它在 npm ci 时可执行。
+      # ziglang.org 的包名还是 arch-last 形态）。包装脚本从仓库装（scripts/
+      # zig-cc-wrapper.sh，滤 -Wl,--exclude-libs），所以这一步必须在 checkout 之后。
       - name: Install zig (compiler for native modules)
         run: |
           curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \
             | tar -xJ -C /opt
           mv /opt/zig-linux-x86_64-0.13.0 /opt/zig
-          echo '/opt/zig' >> "$GITHUB_PATH"
+          install -m 755 scripts/zig-cc-wrapper.sh /opt/zig/bin/zig-cc
+          echo '/opt/zig/bin' >> "$GITHUB_PATH"
           # GITHUB_PATH 只对后续步骤生效，本步骤里用全路径自证
-          /opt/zig/zig version
-
-      - uses: actions/checkout@v4
+          ZIG_BIN=/opt/zig/zig /opt/zig/bin/zig-cc version
 
       - name: Cache npm tarballs
         uses: actions/cache@v4
