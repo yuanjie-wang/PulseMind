@@ -83,23 +83,47 @@ describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
     for (const line of cachePaths) expect(line).not.toContain('node_modules')
   })
 
-  it('容器基线 node:20-bullseye，但编译器必须是 zig 且把符号下限钉在 glibc 2.28', () => {
+  it('容器基线 node:20-bullseye，但编译器必须是 zig（经包装脚本）且钉符号下限 2.28', () => {
     // 四轮 CI 实测（2026-11-04/05）：容器自身编译要么符号超 2.28（bullseye 官方
     // prebuild 要 2.29），要么 g++ 8.3 认不得 better-sqlite3 12.9 的 -std=c++20
     //（buster）。zig 的 -target glibc 后缀精确钉符号下限，clang 又吃得下 C++20。
     expect(WORKFLOW).toMatch(/image:\s*node:20-bullseye/)
-    expect(WORKFLOW).toMatch(/CC:\s*zig cc -target x86_64-linux-gnu\.2\.28/)
-    expect(WORKFLOW).toMatch(/CXX:\s*zig c\+\+ -target x86_64-linux-gnu\.2\.28/)
+    expect(WORKFLOW).toMatch(/CC:\s*\/opt\/zig\/bin\/zig-cc cc -target x86_64-linux-gnu\.2\.28/)
+    expect(WORKFLOW).toMatch(/CXX:\s*\/opt\/zig\/bin\/zig-cc c\+\+ -target x86_64-linux-gnu\.2\.28/)
   })
 
-  it('zig 装在 npm ci 之前（job 级 CC/CXX 靠它在 PATH 里）', () => {
+  it('zig（含包装脚本）装在 checkout 之后、npm ci 之前', () => {
     const lines = WORKFLOW.split('\n')
     const zigAt = lines.findIndex((line) => line.includes('zig-linux-x86_64'))
+    const checkoutAt = lines.findIndex((line) => line.includes('actions/checkout@v4'))
     const npmCiAt = lines.findIndex((line) => line.trim() === 'npm ci')
     expect(zigAt).toBeGreaterThan(-1)
     expect(npmCiAt).toBeGreaterThan(-1)
+    // 包装脚本从仓库装（zig-linux-x86_64 那一行在 run 块里，必然晚于 checkout）
+    expect(checkoutAt).toBeLessThan(zigAt)
     expect(zigAt).toBeLessThan(npmCiAt)
     expect(WORKFLOW).toContain('GITHUB_PATH')
+  })
+
+  it('zig 包装脚本滤掉 zig 不支持的 --exclude-libs，其余参数原样透传', () => {
+    // zig 的 lld 封装把不认识的链接参数变成硬错误（ziglang/zig#15113 仍 open），
+    // 而 better-sqlite3 的 binding.gyp 带 -Wl,--exclude-libs,ALL。-Bsymbolic 在
+    // zig 0.13.0 的白名单里，必须原样保留。
+    const out = spawnSync(
+      'sh',
+      [
+        join(ROOT, 'scripts/zig-cc-wrapper.sh'),
+        'cc',
+        '-Wl,-Bsymbolic',
+        '-Wl,--exclude-libs,ALL',
+        '--exclude-libs,ALL',
+        '-o',
+        'a.out',
+      ],
+      { env: { ...process.env, ZIG_BIN: 'echo' }, encoding: 'utf-8' },
+    )
+    expect(out.status).toBe(0)
+    expect(out.stdout.trim()).toBe('cc -Wl,-Bsymbolic -o a.out')
   })
 
   it('官方 prebuild 一律不装（它们是 GLIBC_2.29 的新 glibc 构建，electron 路径还不校验）', () => {
