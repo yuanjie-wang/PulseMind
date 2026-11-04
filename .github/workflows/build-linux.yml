@@ -115,7 +115,9 @@ jobs:
           curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \
             | tar -xJ -C /opt
           mv /opt/zig-linux-x86_64-0.13.0 /opt/zig
-          install -m 755 scripts/zig-cc-wrapper.sh /opt/zig/bin/zig-cc
+          # 0.13.0 的包布局没有 bin/ 子目录（zig 本体就在包根），-D 让 install
+          # 顺手建出 /opt/zig/bin
+          install -D -m 755 scripts/zig-cc-wrapper.sh /opt/zig/bin/zig-cc
           echo '/opt/zig/bin' >> "$GITHUB_PATH"
           # GITHUB_PATH 只对后续步骤生效，本步骤里用全路径自证
           ZIG_BIN=/opt/zig/zig /opt/zig/bin/zig-cc version
