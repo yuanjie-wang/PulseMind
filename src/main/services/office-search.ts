@@ -58,13 +58,17 @@ interface Matcher {
   needleLength: (s: string) => number
 }
 
+/** The one error-message idiom for this file's catch arms — `no-explicit-any`
+ *  is not the price of reading `err.message` (review_20261013 低3). */
+const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
 function buildMatcher(input: OfficeSearchInput): { matcher: Matcher } | { error: string } {
   if (input.regex === true) {
     let re: RegExp
     try {
       re = new RegExp(input.query, input.caseSensitive ? '' : 'i')
-    } catch (err: any) {
-      return { error: `query 不是合法正则: ${err.message}` }
+    } catch (err) {
+      return { error: `query 不是合法正则: ${errMessage(err)}` }
     }
     return {
       matcher: {
@@ -87,15 +91,27 @@ function buildMatcher(input: OfficeSearchInput): { matcher: Matcher } | { error:
   }
 }
 
-/** The match ± context, ellipsized — the anchor, not the whole line. */
+/** The match ± context, ellipsized — the anchor, not the whole line. A long
+ *  match (regex `[\s\S]*`, a fat xlsx cell) makes the naive window unbounded,
+ *  so the body re-windows on the MATCH's own midpoint: the hit itself stays
+ *  centered inside MAX_SNIPPET_CHARS instead of one giant hit eating the
+ *  list. The ellipses track the FINAL window, so a re-windowed snippet still
+ *  honestly marks the omitted tail/head. (review_20261013 低1) */
 function snippetOf(text: string, matcher: Matcher): string {
   const idx = matcher.firstIndex(text)
   if (idx < 0) return text.slice(0, MAX_SNIPPET_CHARS)
   const len = matcher.needleLength(text) || 1
   const start = Math.max(0, idx - SNIPPET_CONTEXT)
   const end = Math.min(text.length, idx + len + SNIPPET_CONTEXT)
-  const body = text.slice(start, end)
-  return `${start > 0 ? '…' : ''}${body}${end < text.length ? '…' : ''}`
+  let bodyStart = start
+  let bodyEnd = end
+  if (end - start > MAX_SNIPPET_CHARS) {
+    const mid = idx - start + len / 2
+    bodyStart = start + Math.max(0, Math.floor(mid - MAX_SNIPPET_CHARS / 2))
+    bodyEnd = start + Math.min(end - start, Math.ceil(mid + MAX_SNIPPET_CHARS / 2))
+  }
+  const body = text.slice(bodyStart, bodyEnd)
+  return `${bodyStart > 0 ? '…' : ''}${body}${bodyEnd < text.length ? '…' : ''}`
 }
 
 export interface OfficeSearchBudgetOpts {
@@ -129,8 +145,9 @@ export async function svcSearchOffice(input: OfficeSearchInput, opts?: OfficeSea
   let buffer: Buffer
   try {
     buffer = await readFile(guard.resolved)
-  } catch (err: any) {
-    return { success: false, format: 'unknown', summary: `无法读取文件: ${err.message}`, details: {}, error: err.message }
+  } catch (err) {
+    const msg = errMessage(err)
+    return { success: false, format: 'unknown', summary: `无法读取文件: ${msg}`, details: {}, error: msg }
   }
   const isZip = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b
   if (!isZip) {
@@ -181,8 +198,9 @@ export async function svcSearchOffice(input: OfficeSearchInput, opts?: OfficeSea
         }
       }
       return envelope('docx', 'Word', hits, totalMatches, timeNote)
-    } catch (err: any) {
-      return { success: false, format: 'docx', summary: `解析失败: ${err.message}`, details: {}, error: err.message }
+    } catch (err) {
+      const msg = errMessage(err)
+      return { success: false, format: 'docx', summary: `解析失败: ${msg}`, details: {}, error: msg }
     }
   }
 
@@ -243,8 +261,9 @@ export async function svcSearchOffice(input: OfficeSearchInput, opts?: OfficeSea
         }
       }
       return envelope('xlsx', 'Excel', hits, totalMatches, scanNote)
-    } catch (err: any) {
-      return { success: false, format: 'xlsx', summary: `解析失败: ${err.message}`, details: {}, error: err.message }
+    } catch (err) {
+      const msg = errMessage(err)
+      return { success: false, format: 'xlsx', summary: `解析失败: ${msg}`, details: {}, error: msg }
     }
   }
 
@@ -290,8 +309,9 @@ export async function svcSearchOffice(input: OfficeSearchInput, opts?: OfficeSea
         }
       }
       return envelope('pptx', 'PowerPoint', hits, totalMatches, timeNote)
-    } catch (err: any) {
-      return { success: false, format: 'pptx', summary: `解析失败: ${err.message}`, details: {}, error: err.message }
+    } catch (err) {
+      const msg = errMessage(err)
+      return { success: false, format: 'pptx', summary: `解析失败: ${msg}`, details: {}, error: msg }
     }
   }
 

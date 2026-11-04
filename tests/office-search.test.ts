@@ -45,8 +45,38 @@ describe('formatOfficeSearchResult', () => {
     })
     expect(text).toContain('- 数据!A2: 甲 ｜ 行: 名称 | 甲 | 10')
     expect(lastLine(text)).toBe(
-      '下一步：精读该行 → office_read sheet="数据" offset=<行号> limit=5；编辑 → office_edit 的 xlsx 算子（单元格地址 = 行号 + 列字母）。',
+      '下一步：精读首条命中 数据!A2 → office_read sheet="数据" offset=2 limit=5；跨工作表命中按各行地址取行号；编辑 → office_edit 的 xlsx 算子（单元格地址 = 行号 + 列字母）。',
     )
+  })
+
+  it('xlsx envelope splices the first hit’s real row from a multi-letter address (review_20261013 低4)', () => {
+    // The envelope used to say `offset=<行号>` and made the model convert
+    // `C12` → 12 itself; the row number lives in the address, so it is
+    // spliced in. Non-vacuous: a two-letter column changes the extracted row.
+    const text = formatOfficeSearchResult({
+      success: true,
+      format: 'xlsx',
+      summary: 'Excel 检索「考核」: 1 处命中',
+      details: {
+        hits: [{ sheet: 'Q4', address: 'C12', snippet: '考核得分' }],
+        totalMatches: 1,
+      },
+    })
+    expect(lastLine(text)).toContain('offset=12')
+    expect(lastLine(text)).toContain('精读首条命中 Q4!C12')
+  })
+
+  it('xlsx envelope falls back to the <行号> placeholder when the address carries no row digits', () => {
+    // Zero hits never reaches the teaching line (the 无命中 early return owns
+    // that path); the placeholder arm is for a malformed digit-less address —
+    // fail-closed honesty instead of `offset=NaN`.
+    const text = formatOfficeSearchResult({
+      success: true,
+      format: 'xlsx',
+      summary: 'Excel 检索「甲」: 1 处命中',
+      details: { hits: [{ sheet: '数据', address: 'C', snippet: '甲' }], totalMatches: 1 },
+    })
+    expect(lastLine(text)).toContain('sheet="数据" offset=<行号>')
   })
 
   it('pptx snippets collapse paragraph line breaks into one display line', () => {
@@ -208,6 +238,48 @@ describe('svcSearchOffice — real fixtures', () => {
       const badRegex = await svcSearchOffice({ filePath: docxPath, query: '(', regex: true })
       expect(badRegex.success).toBe(false)
       expect(badRegex.error).toContain('不是合法正则')
+    } finally {
+      process.env.HOME = prevHome
+      fs.rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+
+  it('a long regex match re-windows its snippet on the match midpoint (review_20261013 低1)', async () => {
+    // MAX_SNIPPET_CHARS only bounded the no-match fallback before — a regex
+    // like 长.*尾 over a 2,000-char paragraph produced a ~2,080-char snippet
+    // that ate the hit list (usable-only degradation: the formatter's char
+    // budget then dropped the hits AFTER it). The body now re-windows on the
+    // match's own midpoint: bounded, hit-centered. Non-vacuous: reverting the
+    // re-window fails the length bound; the all-mid-match ink and the
+    // ellipses prove the window moved to the middle, not just clipped.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const prevHome = process.env.HOME
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-office-snippet-'))
+    process.env.HOME = fixture
+    try {
+      const dir = path.join(fixture, 'docs')
+      fs.mkdirSync(dir)
+      const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:t>长${'x'.repeat(2000)}尾</w:t></w:r></w:p>
+</w:body></w:document>`
+      const docxZip = new AdmZip()
+      docxZip.addFile('word/document.xml', Buffer.from(docXml, 'utf8'))
+      const docxPath = path.join(dir, '长文.docx')
+      fs.writeFileSync(docxPath, docxZip.toBuffer())
+
+      const { svcSearchOffice } = await import('../src/main/services/office-search')
+      const hits = await svcSearchOffice({ filePath: docxPath, query: '长.*尾', regex: true })
+      expect(hits.success).toBe(true)
+      const snippet = hits.details.hits![0].snippet
+      expect(snippet.length).toBeLessThanOrEqual(122) // 120 cap + two ellipses
+      expect(snippet.startsWith('…')).toBe(true)
+      expect(snippet.endsWith('…')).toBe(true)
+      expect(snippet).toContain('xxxxxx')
+      expect(snippet).not.toContain('长')
+      expect(snippet).not.toContain('尾')
     } finally {
       process.env.HOME = prevHome
       fs.rmSync(fixture, { recursive: true, force: true })

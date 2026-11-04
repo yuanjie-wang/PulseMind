@@ -52,7 +52,9 @@ describe('docx_edit service', () => {
     // tmp+rename: no leftover .pm-tmp sibling
     const siblings = readdirSync(join(path, '..'))
     expect(siblings.some((f) => f.includes('.pm-tmp'))).toBe(false)
-  })
+    // Real zip write+re-parse: marginal against the 5s default under
+    // full-suite parallelism — same ceiling treatment as pptx-service.
+  }, 20_000)
 
   it('a refused op leaves the file untouched and reports per-op results', async () => {
     const path = tempFile('simple.docx', CORPUS['simple.docx']())

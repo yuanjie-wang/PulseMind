@@ -28,7 +28,14 @@ const POLL_INTERVAL_MS = 150
  *  becomes the export_document tool's error verbatim. */
 export class DocxToPdfError extends Error {}
 
-export async function docxToPdfBuffer(docx: Buffer): Promise<Buffer> {
+export interface DocxToPdfOptions {
+  /** Fallback PDF Title for a document with no headings of its own (the
+   *  conversion page prefers the first heading); main passes the export
+   *  filename's stem. */
+  title?: string
+}
+
+export async function docxToPdfBuffer(docx: Buffer, options: DocxToPdfOptions = {}): Promise<Buffer> {
   const htmlPath =
     process.env.PM_DOCX2PDF_HTML ?? join(app.getAppPath(), 'out', 'docx2pdf', 'index.html')
 
@@ -47,12 +54,17 @@ export async function docxToPdfBuffer(docx: Buffer): Promise<Buffer> {
   try {
     await win.loadFile(htmlPath)
 
-    // Injection is one executeJavaScript call: a few MB of base64 is well
-    // within V8's limits, and it avoids any custom protocol for a page that
-    // exists for exactly this one document.
+    // Two injections, not one: the source arrives only after did-finish-load,
+    // and the title hint is a separate global the page reads at the end (it
+    // may be absent — then the page keeps the document's own heading).
     await win.webContents.executeJavaScript(
       `window.__pmDocxSource = ${JSON.stringify(docx.toString('base64'))}; undefined`
     )
+    if (options.title && options.title.trim()) {
+      await win.webContents.executeJavaScript(
+        `window.__pmDocxTitle = ${JSON.stringify(options.title.trim())}; undefined`
+      )
+    }
 
     const deadline = Date.now() + CONVERT_TIMEOUT_MS
     for (;;) {
@@ -76,6 +88,12 @@ export async function docxToPdfBuffer(docx: Buffer): Promise<Buffer> {
       // The page carries `@page { size: Wpt Hpt; margin: 0 }` measured from the
       // document's own first page — margins belong to the docx layout.
       preferCSSPageSize: true,
+      // Chromium derives both from real <h1..h6> elements (the page promotes
+      // docx-preview's heading paragraphs before printing): the outline is what
+      // makes the resulting PDF navigable in Preview/Acrobat, the tagging what
+      // makes it readable by screen readers and text extractors.
+      generateDocumentOutline: true,
+      generateTaggedPDF: true,
     })
     return Buffer.from(pdf)
   } finally {

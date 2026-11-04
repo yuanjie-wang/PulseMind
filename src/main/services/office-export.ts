@@ -317,7 +317,13 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
         }
       } else {
         try {
-          buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, mdImages, fontSize: input.fontSize, charts })
+          buffer = await buildBuffer(input.format, {
+            md, csv, docx: docxBytes, mdImages, fontSize: input.fontSize, charts,
+            // PDF metadata Title fallback: the target file's own name. The
+            // conversion page prefers the document's first heading; a document
+            // with none would otherwise carry the converter page's own title.
+            title: basename(safePath, extname(safePath)),
+          })
         } catch (err) {
           return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
         }
@@ -344,7 +350,16 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer; mdImages?: Map<string, Buffer>; fontSize?: number; charts?: Map<number, Buffer> }
+  source: {
+    md?: string
+    csv?: string
+    docx?: Buffer
+    mdImages?: Map<string, Buffer>
+    fontSize?: number
+    charts?: Map<number, Buffer>
+    /** PDF only: fallback document title (the export filename's stem). */
+    title?: string
+  }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -353,7 +368,7 @@ async function buildBuffer(
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
     const { docxToPdfBuffer } = await import('../office-export/docx-to-pdf')
     const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize, charts: source.charts }))
-    return docxToPdfBuffer(docx)
+    return docxToPdfBuffer(docx, { title: source.title })
   }
   if (format === 'docx') {
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
