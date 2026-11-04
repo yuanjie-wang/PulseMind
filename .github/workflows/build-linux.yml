@@ -1,0 +1,104 @@
+# Linux/x64 .deb 打包（目标机：UOS 20 / Debian 10，glibc 2.28）。
+#
+# 为什么整个 job 跑在 node:20-bullseye 容器里，而不是裸 ubuntu-22.04 runner：
+# better-sqlite3 是 Electron ABI 的原生模块，打包时 `npm ci` 的 postinstall
+# （electron-builder install-app-deps）会用**构建机**的 glibc 头文件现场编译。
+# glibc ≥ 2.34 把 pthread 并入 libc，在 2.34+ 上编出来的 .node 会引用
+# GLIBC_2.34 —— 装到 UOS 20（2.28）上是启动即 undefined symbol，而且构建期
+# 一点提示都没有。bullseye（glibc 2.31）既避开 2.34 这个坑、apt 也还能用。
+# 打包完 scripts/check-linux-glibc.js 会把每个 .node 的符号需求实测一遍，
+# 超过 2.28 直接红。若首次跑红：换更老的基线（debian:buster 需把 apt 源指到
+# archive.debian.org，buster 已 EOL），不要靠目标机补库。
+#
+# 两条缓存都是必需的，且都不是省事：
+#   · resources/chromium 是 gitignore 的，构建时由 ensure-chromium.js 从
+#     Playwright 缓存拷进来；它**刻意永不失败**（缺了只 warn），所以 CI 里不装
+#     就等于发一个没有内置 Chromium、浏览器工具静默回落系统 Chrome 的包。
+#   · node_modules 必须来自干净 npm ci：afterPack 的 verify-packed-node-modules
+#     门禁要求纯安装树（见 AGENTS.md「打包两刀」），不要在 CI 里缓存它。
+#
+# 架构：只有 x64。arm64/loongarch 要另立 job + 先补 resources/bin/linux-arm64/rg
+# （现在 filter `linux-${arch}/**` 匹配空不报错，搜索会静默降级成 grep 兜底），
+# 且 GH 的 arm64 runner 只在 ubuntu-24.04-arm 上（公开仓免费）。
+
+name: Build Linux deb
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deb:
+    name: linux/x64 deb
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container:
+      image: node:20-bullseye
+    env:
+      # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - name: Install build toolchain
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 make g++ ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Cache npm tarballs
+        uses: actions/cache@v4
+        with:
+          path: /root/.npm
+          key: npm-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ms-playwright
+          key: playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            /root/.cache/electron
+            /root/.cache/electron-builder
+          key: electron-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: |
+          node -v
+          npm -v
+          npm ci
+
+      - name: Fetch bundled Chromium
+        run: npm run browsers:install
+
+      - name: Build bundles
+        run: npm run build
+
+      - name: Package deb
+        run: npx electron-builder --linux deb --x64 --publish never
+
+      - name: Check glibc ceiling of shipped native modules
+        run: node scripts/check-linux-glibc.js dist/linux-unpacked --ceiling=2.28
+
+      - name: Report artifact
+        run: ls -lh dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pulsemind-deb-${{ github.ref_name }}
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
