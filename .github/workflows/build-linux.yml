@@ -1,30 +1,26 @@
 # Linux/x64 .deb 打包（目标机：UOS 20 / Debian 10，glibc 2.28）。
 #
-# 为什么整个 job 跑在 buildpack-deps:buster 容器里，而不是裸 ubuntu-22.04 runner：
-# better-sqlite3 是 Electron ABI 的原生模块，打包时 `npm ci` 的 postinstall
-# （electron-builder install-app-deps → @electron/rebuild → node-gyp）会用
-# **构建机**的 glibc 头文件现场编译 —— 装到 UOS 20（glibc 2.28）上要能启动，
-# 编译基线就得 ≤ 2.28。这一档是实测钉出来的：
+# better-sqlite3 是 Electron ABI 的原生模块，打进包里的 better_sqlite3.node 必须
+# 在 UOS 20（glibc 2.28）上能加载。这一层是四轮 CI 实测钉出来的（2026-11-04/05）：
 #   · ubuntu runner（glibc 2.35+）→ .node 引用 GLIBC_2.34，启动即 undefined symbol
-#   · bullseye（glibc 2.31）→ 实测编出 better_sqlite3.node 要求 GLIBC_2.29，
-#     门禁红了（2026-11-05 第二次 CI）
-#   · buster（glibc 2.28）→ 与目标机严格同基线，编译期符号版本不可能超出
-# 打包完 scripts/check-linux-glibc.js 会把每个 .node 的符号需求重量一遍，
-# 超过 2.28 直接红。
+#     且构建期毫无提示
+#   · bullseye 容器直接编 → 官方 electron-v130 prebuild（WiseLibs 发在新 glibc 上，
+#     要求 GLIBC_2.29）被 @electron/rebuild 静默装进去 —— 它的 prebuild 路径**不做
+#     加载校验**，编译机 glibc 根本没机会决定产物
+#   · buster 容器（glibc 2.28 与目标机同基线）→ prebuild 在 2.28 上加载失败回落
+#     编译，但 buster 的 g++ 8.3 认不得 better-sqlite3 12.9 要求的 -std=c++20
+#   · 最终形态：bullseye 容器 + **zig 当编译器**（自带 clang，C++20 没问题），
+#     -target x86_64-linux-gnu.2.28 把符号下限精确钉在 2.28；libc++ 静态链接，
+#     连 UOS 的 libstdc++ 版本兼容都不用操心
+# 所以容器回到 node:20-bullseye（python 3.9 过得了 gyp 的 3.8 语法门；官方镜像
+# 没有 buster 变体，而 buster 又养不起 g++ 20/clang），编译完全交给 zig。
+# 打包完 scripts/check-linux-glibc.js 把每个 .node 的符号需求重量一遍，
+# 超过 2.28 直接红 —— 上游 Electron 33.4.11 linux-x64 本体实测只要 GLIBC_2.25。
 #
-# node 官方镜像没有 buster 变体（20 系列从 nodejs/docker-node#1885 起就没出过），
-# 所以基座用 buildpack-deps:buster（自带 python3/make/g++/git/curl 全套工具链），
-# node 本体从 nodejs.org 装官方二进制 —— node ≥18 的官方 Linux 构建目标就是
-# glibc 2.28（RHEL 8 基线），本体不吃亏。两个 EOL 发行版的老坑照旧：
-# **不要在这个容器里跑 apt-get install**（bullseye 那次是 404，buster 的源已整体
-# 搬去 archive.debian.org，一样不可信），一切依赖镜像自带。
-#
-# python 版本：重编链是 @electron/rebuild 4.0.4 硬性携带 node-gyp ^12（12.3.0）。
-# buster 自带的 python 3.7 过得了 find-python.js 的运行时门（`>=3.6.0`，v12.3.0
-# 第 46 行），但 gyp 的代码用了 Python 3.8 的 walrus 语法（`gyp/__init__.py:212`
-# 的 `if flags := ...`），import 即 SyntaxError —— 所以容器里另装 python 3.12
-# （python-build-standalone 独立构建，实测产物符号下限 GLIBC_2.17，buster 吃得下；
-# 哪天它抬高基线，这步会以「python --version 失败」或 gyp 深处的错明确红出来）。
+# **不要在这个容器里跑 apt-get install**（2026-11-04 首次 CI 实测：bullseye 已
+# EOL，`apt-get install ca-certificates` 会顺带升级到一个 Debian 已从
+# deb.debian.org 摘掉的路径，404，job 在 checkout 之前就红）。工具链（python3/
+# make/g++/git/curl）全吃镜像自带，唯一例外是 zig（见步骤注释）。
 #
 # 两条缓存都是必需的，且都不是省事：
 #   · resources/chromium 是 gitignore 的，构建时由 ensure-chromium.js 从
@@ -58,10 +54,25 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     container:
-      image: buildpack-deps:buster
+      image: node:20-bullseye
     env:
       # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # 原生模块的编译器 = zig。容器的 g++ 8.3 认不得 better-sqlite3 12.9 的
+      # -std=c++20，而容器 glibc 2.31 编出来的符号又超 2.28 —— zig 的 clang
+      # 两个都解决：C++20 没问题，-target 的 glibc 后缀把符号下限精确钉在
+      # 2.28（libc++ 还静态链接进 .node，不新增运行时依赖）。gyp 的 make 生成器
+      # 从环境读 CC/CXX（gyp/generator/make.py 的 GetEnvironFallback），node-gyp
+      # 与 @electron/rebuild 的编译因此都走这里。
+      CC: zig cc -target x86_64-linux-gnu.2.28
+      CXX: zig c++ -target x86_64-linux-gnu.2.28
+      # 官方 prebuild 是在新 glibc 上构建的（node-v115 与 electron-v130 的
+      # linux-x64 prebuild 都要求 GLIBC_2.29），prebuild-install 的 electron
+      # 路径不做加载校验、node 路径在 2.28 上加载失败才回落 —— 无论哪种，都能
+      # 绕过编译侧修复或直接装进旧 glibc 都载不动的二进制。这面旗让
+      # prebuild-install 在**下载之前**就退出（bin.js 的 buildFromSource 短路，
+      # 两条调用路径都读它），所有原生模块一律现编译。
+      npm_config_build_from_source: 'true'
       # Playwright 1.63 的 registry 里 debian11-* 是 void 0（这个发行版被从支持
       # 矩阵里摘了），于是 `playwright-core install chromium` 报
       # "ERROR: Playwright does not support chromium on debian11-x64"。
@@ -72,49 +83,37 @@ jobs:
       # 一步就会静默拷不到东西（而 ensure-chromium 永不非零退出）。
       PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: 'debian12-x64'
       # 容器只负责打包，从不启动浏览器 —— Chromium 的运行时依赖要在目标机（UOS）
-      # 上满足。不跳过这层，Playwright 会拿 debian12 的依赖清单校验 buster 容器
-      # （缺 libgbm/libasound 等一串），而补库的唯一工具 install-deps 走 apt，
-      # 已因发行版 EOL 不可用（见下面的工具链步骤）。
+      # 上满足。不跳过这层，Playwright 会拿 debian12 的依赖清单校验容器（缺
+      # libgbm/libasound 等一串），而补库的唯一工具 install-deps 走 apt，已因
+      # bullseye EOL 不可用（见下面的工具链步骤）。
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: '1'
 
     steps:
-      # node 官方镜像没有 buster 变体，node 本体从 nodejs.org 装官方二进制。
-      # 版本钉 v20.19.6 与开发机同款；node ≥18 的官方 Linux 构建目标就是 glibc
-      # 2.28（RHEL 8 基线），本体不在 buster 上吃亏。装到 /usr/local 后
-      # checkout@v4（需要容器里有 node20）才有得用 —— 所以这一步必须在 checkout 前。
-      - name: Install Node 20
-        run: |
-          curl -fsSL https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-x64.tar.xz \
-            | tar -xJ --strip-components=1 -C /usr/local
-          node -v
-          npm -v
-
-      # 不跑 apt（2026-11-04 首次 CI 实测教训）：bullseye 已 EOL，`apt-get install
-      # ca-certificates` 会顺带升级到一个 Debian 已从 deb.debian.org 摘掉的路径
-      # （Debian-security 的 ca-certificates_*~deb11u1 404），job 在 checkout 之前
-      # 就红。buster 更甚：源已整体搬去 archive.debian.org。工具链全部吃镜像自带
-      # （buildpack-deps 基座），这里只做存在性断言：上游镜像哪天真的瘦身，会在这里
-      # 明确报错，而不是在 node-gyp 深处抛一堆看不懂的东西。
+      # 不跑 apt（2026-11-04 首次 CI 实测教训）：python3/make/g++/git/ca-certificates
+      # 镜像里全都有，而 bullseye 已 EOL —— `apt-get install ca-certificates` 会
+      # 顺带升级到一个 Debian 已从 deb.debian.org 摘掉的路径（Debian-security 的
+      # ca-certificates_*~deb11u1 404），job 在 checkout 之前就红。
+      # 这里只做存在性断言：上游镜像哪天真的瘦身，会在这里明确报错，而不是在
+      # node-gyp 深处抛一堆看不懂的东西。
       - name: Verify build toolchain
         run: |
-          for tool in python3 make g++ git curl tar xz; do
+          node -v
+          npm -v
+          for tool in python3 make git curl tar xz; do
             command -v "$tool" > /dev/null || { echo "missing build tool: $tool"; exit 1; }
           done
           python3 --version
-          g++ --version | head -1
 
-      # gyp（node-gyp 12 的构建脚本引擎）用了 Python 3.8 的 walrus 语法，系统自带
-      # 的 3.7 import 即 SyntaxError（find-python 的 ≥3.6 门挡不住语法）。装
-      # python-build-standalone 的独立构建并放进 PATH —— node-gyp 按 PATH 挑
-      # python3，装在 npm ci 之前才来得及被重编链用上。
-      - name: Install Python 3.12
+      # 唯一镜像外来的工具。钉 0.13.0（自带 clang 17，C++20 够用；这个版本
+      # ziglang.org 的包名还是 arch-last 形态）。解到 /opt/zig 并进 PATH ——
+      # 上面 job 级 env 的 CC/CXX 要靠它在 npm ci 时可执行。
+      - name: Install zig (compiler for native modules)
         run: |
-          mkdir -p /opt/python
-          curl -fsSL 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16%2B20261026-x86_64-unknown-linux-gnu-install_only.tar.gz' \
-            | tar -xz -C /opt/python --strip-components=1
-          /opt/python/bin/python3 --version
-          echo '/opt/python/bin' >> "$GITHUB_PATH"
-          python3 --version
+          curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \
+            | tar -xJ -C /opt
+          mv /opt/zig-linux-x86_64-0.13.0 /opt/zig
+          echo '/opt/zig' >> "$GITHUB_PATH"
+          zig version
 
       - uses: actions/checkout@v4
 
