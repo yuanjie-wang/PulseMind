@@ -149,6 +149,35 @@ async function phaseMain() {
 
   const headUse = db.prepare('SELECT use_count FROM memory_pages WHERE id = ?').get('page-head')
   check('排序后的命中照常 touch use_count', Number(headUse.use_count) > 0, String(headUse.use_count))
+
+  // ── ③ 托管会话不进桌面搜索（review_20261103 中1）─────────────────────────
+  // hosted-persistence 落库后托管行有了真消息与标题；搜索 SQL 若只有
+  // type='normal'，桌面搜索中心会命中它们，而点开命中项 agentSessionCreate
+  // 的 UPSERT 会把 origin 改写成 'local'——会话从扩展「历史会话」当场消失。
+  // 与 listConversations 同一条 origin 排除必须也挂在两个搜索上。
+  console.log('\n③ 托管 origin 排除：搜索不召回托管会话')
+  const insHosted = db.prepare(
+    `INSERT INTO conversations (id, title, type, summary, keywords, origin, created_at, updated_at)
+     VALUES (?, ?, 'normal', ?, ?, ?, ?, ?)`
+  )
+  insHosted.run('conv-hosted', 'Muse 体验 扩展会话', '托管会话的功能评测记录', 'muse,评测', 'pulsemind-extension', t0, t0)
+  const insMsg = db.prepare(
+    `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`
+  )
+  insMsg.run('msg-hosted-1', 'conv-hosted', '帮我评测一下 Muse 的功能', t0)
+  // 本地对照行：同样的词必须照常命中（排除只对托管行生效）
+  insConv.run('conv-local', '本地 Muse 评测', '本地会话的功能评测', 'muse,评测', t0, t0)
+  insMsg.run('msg-local-1', 'conv-local', '本地评测一下', t0)
+
+  const qHosted = conv.searchConversationsByKeyword('Muse 评测')
+  check('会话搜索不含托管 origin', !qHosted.some((h) => h.id === 'conv-hosted'), qHosted.map((h) => h.id).join(','))
+  check('会话搜索仍命中本地同词行', qHosted.some((h) => h.id === 'conv-local'), qHosted.map((h) => h.id).join(','))
+  const qMsgHosted = conv.searchMessagesByKeyword('评测')
+  check('消息搜索不含托管会话的消息', !qMsgHosted.some((h) => h.conversationId === 'conv-hosted'), qMsgHosted.map((h) => h.conversationId).join(','))
+  check('消息搜索仍命中本地会话的消息', qMsgHosted.some((h) => h.conversationId === 'conv-local'), qMsgHosted.map((h) => h.conversationId).join(','))
+  // NULL origin（老行 / 未盖章行）不得被误伤
+  const qNull = conv.searchConversationsByKeyword('Muse 体验 评测 功能')
+  check('NULL origin 的行不受排除影响', qNull.some((h) => h.id === 'conv-scatter'), qNull.map((h) => h.id).join(','))
 }
 
 async function launcher() {

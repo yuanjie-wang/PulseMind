@@ -8,7 +8,7 @@ import type { Dirent } from 'node:fs'
 import { spawn } from 'node:child_process'
 import * as path from 'node:path'
 import { patchContent, parseUnifiedDiff } from '../../shared/diff/patch-utils'
-import { editMissError } from '../../shared/diff/edit-similarity'
+import { editAmbiguousError, editMissError } from '../../shared/diff/edit-similarity'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
 import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'
@@ -291,6 +291,14 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
         // verbatim text) so a failed edit does not cost a fresh full read —
         // a whitespace-only mismatch, the most common miss, is named as such.
         return { success: false, replacements: 0, error: editMissError(input.filePath, normalizedContent, oldStr) }
+      }
+
+      // Uniqueness gate (2026-11-01): the schema promises "must match uniquely
+      // (or set multi: true)" — enforce it. This used to fall through to
+      // replace(), which silently rewrote the FIRST occurrence with a
+      // success-shaped result, possibly editing the wrong block.
+      if (count > 1 && !input.multi) {
+        return { success: false, replacements: 0, error: editAmbiguousError(input.filePath, normalizedContent, oldStr) }
       }
 
       const replaced = input.multi ? normalizedContent.replaceAll(oldStr, newStr) : normalizedContent.replace(oldStr, newStr)

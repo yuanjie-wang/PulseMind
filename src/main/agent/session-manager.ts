@@ -19,12 +19,13 @@ import { SkillKeywordAgent } from '../../renderer/src/agent/one-shot-agent'
 import type { PlatformInfo } from '../../shared/types/electron-bridge'
 import { setHost } from '../../renderer/src/agent/host'
 import { mainHost } from './main-host'
+import { bindLiveSkillManager } from './live-skill-registry'
 import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
 import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation } from '../storage/conversation.db'
-import { judgeSweepCandidate, sweepIntervalMs, SWEEP_ACTIVE_WINDOW_MS, SWEEP_BATCH_LIMIT, SWEEP_MIN_DELTA } from '../../shared/memory-sweep'
+import { judgeSweepCandidate, nextSweepDelayMs, sweepIntervalMs, SWEEP_ACTIVE_WINDOW_MS, SWEEP_BATCH_LIMIT, SWEEP_MIN_DELTA } from '../../shared/memory-sweep'
 import { setMemorySweepTrigger, setSopDistillTrigger } from '../ipc/memory.handler'
 import { distillSop as runSopDistill, isSopDistilling } from './sop-runner'
 import { judgeSopCandidate, sortBySopPriority, SOP_SWEEP_BATCH } from '../../shared/sop-sweep'
@@ -41,6 +42,7 @@ import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/exp
 import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
 import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
+import { browserService } from '../browser/BrowserService'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
 import { messageContentSignature } from '../../shared/agent-session/message-content'
 import { setLoopIterationLimit } from '../../renderer/src/agent/agent-utils'
@@ -135,6 +137,20 @@ function sessionPlatformInfo(): PlatformInfo {
     release: release(),
     arch: arch(),
     ripgrepPath: getBundledRipgrepPath(),
+  }
+}
+
+/** The state block's `## Current Page` source for a desktop session
+ *  (2026-11-04): the conversation's OWN built-in browser pane, read live each
+ *  time the block is built. Pulled rather than pushed at ask time because the
+ *  block rebuilds on every tool-loop iteration — a page the agent just
+ *  navigated must not be reported as the one it left. Two values only
+ *  (url + title); `source: 'builtin'` is what makes the section name the
+ *  `browser` tool instead of the extension's `page_*` family. */
+function builtinPageContextProvider(sessionId: string): () => PageContext | null {
+  return () => {
+    const page = browserService.currentPageOf(sessionId)
+    return page ? { url: page.url, title: page.title, source: 'builtin' } : null
   }
 }
 
@@ -372,6 +388,10 @@ export class AgentSessionManagerImpl {
           skillKeywordAgent: new SkillKeywordAgent(),
           platformInfo: sessionPlatformInfo(),
         }
+        // UI zip 导入/删除的活体登记口（live-skill-registry）：共享 manager
+        // 装配完成即绑入——此后 skills.handler 的 import/delete 才能对这份
+        // 注册表做增量，否则只动盘、引擎要重启才看得见。
+        bindLiveSkillManager(this.managers.skillManager)
         const startupSettings = await settingsStore.get()
         await this.syncFeatureToggles(this.managers, startupSettings)
         this.syncRunLimits(startupSettings)
@@ -453,19 +473,33 @@ export class AgentSessionManagerImpl {
   // afterSession/启动回填退役；游标制补课——应用没跑的时段下次启动自然扫掉。
   private sweepTimer: NodeJS.Timeout | null = null
   private sweepInFlight = false
+  /** 最近一次挂表时的调度状态（intervalMs=null = 未挂表：0=仅手动 或 记忆/经验
+   *  双开关全关）。applyFeatureToggles 拿新设置重算同款状态做比对，只有真变了
+   *  才重排——任意 settings 保存（切主题/改排序）都无条件重挂满间隔，曾把
+   *  倒计时一遍遍推回起点（2026-11-01「16h 未提取」的第二根因）。 */
+  private armedSweepState: { intervalMs: number | null; enabled: boolean } | null = null
+  /** 无可用 profile 的早退警告只发一次（补跑锚不动的空转期防日志刷屏）；成功跑过一轮后复位。 */
+  private sweepNoProfileWarned = false
 
-  /** 定时器编排：启动 3 分钟首跑 + 到点循环；设置变更后重排（applyFeatureToggles 调用）。 */
+  /** 定时器编排：到点循环；间隔/开关真变才重排（applyFeatureToggles 调用）。
+   *  等待时长以持久化 memoryLastSweepAt 为锚（nextSweepDelayMs）——重启与重排
+   *  只补剩余时间，已过期 5 分钟内补跑。此前每次启动都重挂满间隔，「游标制
+   *  补课——应用没跑的时段下次启动自然扫掉」的原意从未兑现。 */
   scheduleMemorySweep(): void {
     setMemorySweepTrigger(() => this.triggerMemorySweepNow())
     if (this.sweepTimer) { clearTimeout(this.sweepTimer); this.sweepTimer = null }
     void settingsStore.get().then((settings) => {
-      const ms = sweepIntervalMs(settings.memoryExtractIntervalHours)
-      if (ms === null) return // 0 = 关闭定时，仅手动触发
+      const enabled = (settings.memoryEnabled ?? true) || (settings.experienceEnabled ?? true)
+      const ms = enabled ? sweepIntervalMs(settings.memoryExtractIntervalHours) : null
+      this.armedSweepState = { intervalMs: ms, enabled }
+      if (ms === null) return // 0 = 关闭定时仅手动，或双开关全关：不挂表（锚不动，挂了就是 5min 空转循环）
+      const anchor = settings.memoryLastSweepAt ? Date.parse(settings.memoryLastSweepAt) : 0
+      const delay = nextSweepDelayMs(ms, Number.isFinite(anchor) ? anchor : 0, Date.now())
       this.sweepTimer = setTimeout(() => {
         this.sweepTimer = null
         void this.runMemoryExtractionSweep().catch((e) => console.warn('[memory-sweep] failed:', e))
           .finally(() => this.scheduleMemorySweep()) // 重排下一轮
-      }, Math.min(ms, 3 * 60 * 1000) <= 0 ? ms : ms)
+      }, delay)
       this.sweepTimer.unref?.()
     })
   }
@@ -484,7 +518,13 @@ export class AgentSessionManagerImpl {
       const experienceOn = settings.experienceEnabled ?? true
       if (!memoryOn && !experienceOn) return 0
       const profile = await this.resolveActiveLlmProfile()
-      if (!profile || !profile.apiKey) return 0
+      if (!profile || !profile.apiKey) {
+        if (!this.sweepNoProfileWarned) {
+          this.sweepNoProfileWarned = true
+          console.warn('[memory-sweep] skipped: 没有可用模型（active profile 缺失或无 apiKey）——不落 memoryLastSweepAt，配置模型后按锚自动补跑')
+        }
+        return 0
+      }
 
       // SOP 自动清扫（PLAN-experience-sop 刀四）：搭提取清扫的车——资格门在
       // shared/sop-sweep（recurrence ≥2 / 24h 退避 / 3 次退役 / use_count 优先），
@@ -513,7 +553,10 @@ export class AgentSessionManagerImpl {
       }
       // 上次提取时刻落设置（settings.memoryLastSweepAt，渲染端整存时由
       // SETTINGS_SET 保留）：定时与手动「立即提取」同源同款。早退分支（总开关
-      // 全关/无可用 profile）不算跑过，不落笔——面板显示的必须是真跑过的时刻。
+      // 全关/无可用 profile）不算跑过，不落笔——面板显示的必须是真跑过的时刻；
+      // 它同时是下次挂表的调度锚（nextSweepDelayMs），空跑也如实前移。
+      console.log(`[memory-sweep] run complete: extracted=${extracted}, candidates=${candidates.length}`)
+      this.sweepNoProfileWarned = false
       await settingsStore.update((s) => ({ ...s, memoryLastSweepAt: new Date().toISOString() }))
       return extracted
     } finally {
@@ -572,7 +615,14 @@ export class AgentSessionManagerImpl {
   /** Re-apply the master switches and run limits after a settings save
    *  (settings.handler). */
   async applyFeatureToggles(settings: AppSettings): Promise<void> {
-    this.scheduleMemorySweep() // 间隔设置变更后重排定时器
+    // 只有调度状态真变了（间隔或记忆/经验开关）才重排定时器；挂表状态在
+    // scheduleMemorySweep 的异步段才落，armed 为 null（未挂过/竞态窗口）也重排。
+    const enabled = (settings.memoryEnabled ?? true) || (settings.experienceEnabled ?? true)
+    const next = { intervalMs: enabled ? sweepIntervalMs(settings.memoryExtractIntervalHours) : null, enabled }
+    const armed = this.armedSweepState
+    if (!armed || armed.intervalMs !== next.intervalMs || armed.enabled !== next.enabled) {
+      this.scheduleMemorySweep() // 间隔/开关变更后重排定时器
+    }
     const managers = await this.ensureManagers()
     this.syncFeatureToggles(managers, settings)
     this.syncRunLimits(settings)
@@ -849,6 +899,7 @@ export class AgentSessionManagerImpl {
       // A derived session (prompt override) is not a user conversation: its
       // transcript must not feed the memory/experience pipeline.
       conversationId: sessionId,
+      pageContextProvider: builtinPageContextProvider(sessionId),
       systemPromptOverride: opts.systemPromptOverride,
       allowedTools: opts.allowedTools,
       // D16: an explicitly pinned internal pack (the assistants) rides on top
@@ -891,7 +942,7 @@ export class AgentSessionManagerImpl {
     // allowlist and background-pid registry are per-session mutable state that
     // dies with this object — a new session never inherits either.
     this.sandboxContexts.set(sessionId, { sessionId, workspaceDir, execAllowlist: new Set(), backgroundPids: new Set() })
-    try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
+    try { updateConversationOrigin(sessionId, opts.clientId ?? 'local', opts.tabKey) } catch { /* origin is best-effort */ }
     if (opts.projectId && opts.projectId !== DEFAULT_PROJECT_ID) {
       try { setConversationProject(sessionId, opts.projectId) } catch { /* best-effort */ }
     }
@@ -1055,6 +1106,7 @@ export class AgentSessionManagerImpl {
   /** UI snapshot for (re)activating a session. */
   async snapshot(sessionId: string): Promise<{
     messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null; fileChanges: SessionFileChange[]; lastCompaction: CompactionEvent | null
+    approvalMode?: SandboxApprovalMode
   } | null> {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
@@ -1071,7 +1123,18 @@ export class AgentSessionManagerImpl {
       plan: entry.engine.plan ?? null,
       fileChanges: entry.engine.getFileChanges(),
       lastCompaction: entry.engine.lastCompaction,
+      // The conversation's STORED 授权 choice (the column the composer/panel
+      // write) — the same value session.list used to carry per row. Not the
+      // effective mode: the override is a derived session's unattended pin,
+      // and the picker shows the user's own choice. Undefined when unset —
+      // and best-effort like the origin stamp: a column read must not cost
+      // the client the still-life it actually asked for.
+      approvalMode: this.storedApprovalMode(sessionId),
     }
+  }
+
+  private storedApprovalMode(sessionId: string): SandboxApprovalMode | undefined {
+    try { return getConversationApprovalMode(sessionId) } catch { return undefined }
   }
 
   /** Whitelisted engine method calls from the renderer (approvals, loop control…). */
@@ -1218,6 +1281,10 @@ export class AgentSessionManagerImpl {
       approvalMode: this.effectiveApprovalMode(sessionId, entry),
       locale: settings.locale === 'en' ? 'en' : 'zh',
       conversationId: sessionId,
+      // Re-attached here too: updateOptions replaces the bag wholesale, and a
+      // refresh (settings save, project edit, model switch) must not drop the
+      // page the state block reports.
+      pageContextProvider: builtinPageContextProvider(sessionId),
       // updateOptions replaces the option bag wholesale — re-attach the pins
       // (and the session-review hooks, which the refresh used to drop).
       systemPromptOverride: entry.pinned.systemPromptOverride,

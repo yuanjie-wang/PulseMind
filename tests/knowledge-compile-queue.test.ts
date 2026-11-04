@@ -47,6 +47,13 @@ const until = async (ready: () => boolean, what: string) => {
 
 beforeEach(() => { vi.resetModules(); hooks.effects.length = 0 })
 describe('real KnowledgePanel compile queue', () => {
+  // Both tests ride a ceiling well above the 5s vitest default: the panel
+  // import (panel + x-markdown + preview subtree) costs seconds per worker
+  // under full-suite parallelism, and a test that times out mid-loop leaves
+  // its async continuations racing the NEXT test's module-level queue state
+  // (2026-11-02: 3/3 full-suite reds under 13-worker load, always green
+  // standalone — timeouts tore the loop down mid-flight). The ceiling is not
+  // a sleep; standalone runs stay ~2s.
   it('retains pre-mount entries, deduplicates, and wakes on mounted saves', async () => {
     // The panel's refresh sink rides throttleTrailing (fix C for
     // 「导入大批量文件时会卡死」: enqueue → full list+stats reload per call was one
@@ -90,7 +97,7 @@ describe('real KnowledgePanel compile queue', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+  }, 20_000)
   it('keeps raw queued without a key and compiles after configuration becomes available', async () => {
     const { queue, manager, render } = await mount()
     manager.canCompile = false
@@ -103,7 +110,7 @@ describe('real KnowledgePanel compile queue', () => {
     render()
     await until(() => manager.compileFile.mock.calls.length === 1, 'compile after key arrives')
     expect(manager.compileFile.mock.calls).toEqual([['no-key']])
-  })
+  }, 15_000)
 })
 
 // The queue module exists so the producers do not import the panel — a static

@@ -62,8 +62,11 @@ describe('compaction pipeline stress: a marathon-shaped session stays fitted, ut
       messages.push(...makeRound(pass * 2, pendingReport))
       messages.push(...makeRound(pass * 2 + 1, null))
 
-      // prepareLoopRequest 的管线顺序，overhead 语义一致
-      const nano = compactor.nanoCompact(messages)
+      // prepareLoopRequest 的管线顺序，overhead 语义一致。入口的
+      // applyPersistedDrops 不可省：持久前沿是本次修复的承重件（被丢的循环
+      // 绝不能回填），压力形状正是它唯一能被证伪的地方。
+      const pruned = compactor.applyPersistedDrops(messages)
+      const nano = compactor.nanoCompact(pruned)
       const light = compactor.lightCompact(nano, WINDOW, OVERHEAD)
       const truncated = compactor.hardTruncate(light, WINDOW, OVERHEAD)
       const final = await compactor.injectHistorySummary(messages, truncated)
@@ -92,19 +95,27 @@ describe('compaction pipeline stress: a marathon-shaped session stays fitted, ut
     expect(allInput).toContain('result-0-') // 最早丢弃区被覆盖
     expect(allInput).toMatch(/result-[3-9]\d-/) // 覆盖跟随前沿推进到后期丢弃区
 
-    // 4. 无增长轮次：副本仍拟合、不会向回膨胀，摘要缓存零新增调用。
-    // （副本允许小幅收缩：nano 的压缩标记是累积的——无增长轮里全部块已标记、
-    // nano 零压缩、旧块按既有设计重新膨胀，light 按拟合目标多丢几个循环补回。
-    // 这个震荡是 marks 机制的既有形状，fit 目标把它钉在有界幅度内。）
+    // 4. 无增长轮次：被丢的循环不再回填，摘要缓存零新增调用。
+    // 持久前沿之前，light 每次从全量转写重新推导，丢的循环下一拍全回来、再
+    // 重丢一遍——20K↔120K 的 ping-pong。现在的硬性质是**单调**：上一拍丢掉的
+    // 转写消息在这一拍必须仍然缺席。副本仍允许小幅收缩（nano 的压缩标记是
+    // 累积的：无增长轮里旧块按既有设计重新膨胀，light 按拟合目标补丢几个），
+    // 但绝不允许向回长。
     const callsBefore = runHistorySummary.mock.calls.length
-    const nano2 = compactor.nanoCompact(messages)
+    const pruned2 = compactor.applyPersistedDrops(messages)
+    const nano2 = compactor.nanoCompact(pruned2)
     const light2 = compactor.lightCompact(nano2, WINDOW, OVERHEAD)
     const truncated2 = compactor.hardTruncate(light2, WINDOW, OVERHEAD)
     const final2 = await compactor.injectHistorySummary(messages, truncated2)
     const wireH2 = estimateMessagesTokens(final2) + OVERHEAD
     expect(wireH2).toBeLessThanOrEqual(WINDOW)
+    const kept1 = new Set(lastFinal.map((m) => m.id))
+    const kept2 = new Set(final2.map((m) => m.id))
+    for (const m of messages) {
+      if (kept1.has(m.id)) continue
+      expect(kept2.has(m.id), `${m.id} re-inflated into the next pass's copy`).toBe(false)
+    }
     expect(final2.length).toBeLessThanOrEqual(lastFinal.length)
-    expect(final2.length).toBeGreaterThanOrEqual(lastFinal.length - 16)
     expect(runHistorySummary.mock.calls.length).toBe(callsBefore)
 
     // 最近的工作逐字保留；跨丢弃区的用户意图以重放形式在场

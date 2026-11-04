@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   judgeSweepCandidate,
+  nextSweepDelayMs,
   sweepIntervalMs,
   DEFAULT_MEMORY_EXTRACT_INTERVAL_HOURS,
   SWEEP_ACTIVE_WINDOW_MS,
+  SWEEP_CATCHUP_DELAY_MS,
 } from '../src/shared/memory-sweep'
 
 /** 定时清扫调度器（PLAN-memory-wiki M2c，用户裁定 2026-10-25：主时机 = 定时，
@@ -47,6 +49,25 @@ describe('sweepIntervalMs（间隔语义）', () => {
   })
 })
 
+describe('nextSweepDelayMs（锚定补跑：重启/重排只能提前、不能推迟期限）', () => {
+  const H = 3600_000
+
+  it('无锚（首装/旧档/垃圾值）→ 完整间隔', () => {
+    expect(nextSweepDelayMs(6 * H, 0, NOW)).toBe(6 * H)
+    expect(nextSweepDelayMs(6 * H, Number.NaN, NOW)).toBe(6 * H)
+    expect(nextSweepDelayMs(6 * H, -1, NOW)).toBe(6 * H)
+  })
+  it('未到期 → 只等剩余时长（重启不重置倒计时）', () => {
+    expect(nextSweepDelayMs(6 * H, NOW - H, NOW)).toBe(5 * H)
+    expect(nextSweepDelayMs(6 * H, NOW - 6 * H + 60_000, NOW)).toBe(60_000) // 差 1 分钟就只等 1 分钟
+  })
+  it('已过期 → 补跑延迟，不随过期深度放大', () => {
+    expect(nextSweepDelayMs(6 * H, NOW - 6 * H - 1, NOW)).toBe(SWEEP_CATCHUP_DELAY_MS)
+    expect(nextSweepDelayMs(6 * H, NOW - 16 * H, NOW)).toBe(SWEEP_CATCHUP_DELAY_MS)
+    expect(nextSweepDelayMs(6 * H, NOW - 6 * H, NOW)).toBe(SWEEP_CATCHUP_DELAY_MS) // 恰好到点
+  })
+})
+
 describe('接线（wiring 扫描）', () => {
   const read = (p: string) => readFileSync(p, 'utf8')
 
@@ -56,7 +77,14 @@ describe('接线（wiring 扫描）', () => {
     expect(src).toContain('runMemoryExtractionSweep')
     expect(src).toContain('judgeSweepCandidate')
     expect(src).toContain('setMemorySweepTrigger')
-    expect(src).toContain('this.scheduleMemorySweep() // 间隔设置变更后重排定时器')
+  })
+  it('定时锚定补跑接线（2026-11-01：挂表以 memoryLastSweepAt 为锚；重排须状态真变）', () => {
+    const src = read('src/main/agent/session-manager.ts')
+    expect(src).toContain('nextSweepDelayMs(ms,')
+    expect(src).toContain('settings.memoryLastSweepAt')
+    // 任意 settings 保存都无条件重挂满间隔曾把倒计时推回起点——重排必须比对挂表状态
+    expect(src).toContain('armed.intervalMs !== next.intervalMs')
+    expect(src).toContain('armed.enabled !== next.enabled')
   })
   it('afterSession 与启动回填不再触发 LLM 提取（两条退役路径）', () => {
     const sm = read('src/main/agent/session-manager.ts')

@@ -576,8 +576,8 @@ const electronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.POPOUT_EVENT, listener)
     }
   },
-  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void): (() => void) => {
-    const listener = (_e: unknown, event: { id: string; title: string }): void => callback(event)
+  onConversationTitleChanged: (callback: (event: { id: string; title: string; projectId?: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { id: string; title: string; projectId?: string }): void => callback(event)
     ipcRenderer.on(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
@@ -587,6 +587,15 @@ const electronAPI = {
   // ── Project (immersive) window ──
   projectWindowOpen: (projectId: string, name?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),
   secondaryWatch: (sessionId: string | null): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SECONDARY_WATCH, sessionId),
+  projectWindowFocusConversation: (projectId: string, convId: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_FOCUS_CONV, projectId, convId),
+  onPopoutSwitch: (callback: (event: { sessionId: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { sessionId: string }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.POPOUT_SWITCH, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.POPOUT_SWITCH, listener)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

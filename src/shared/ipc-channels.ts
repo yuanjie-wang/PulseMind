@@ -249,6 +249,16 @@ export const IPC_CHANNELS = {
    *  the watch and rebroadcasts POPOUT_EVENT itself, so the renderer never has
    *  to emit popout events. */
   SECONDARY_WATCH: 'secondary:watch',
+  /** Renderer → main: focus the project's immersive window and switch it onto
+   *  a conversation (main-window click on one of the project's conversations).
+   *  Resolves false when the project has no open window — the caller then
+   *  opens the conversation in-window as usual. */
+  PROJECT_WINDOW_FOCUS_CONV: 'project-window:focus-conv',
+  /** Main → the holding project window ONLY (targeted send, not a broadcast):
+   *  switch the immersive window onto this conversation. The main window's
+   *  POPOUT_EVENT handler must never see this — its else-branch would drop the
+   *  conversation from the popped registry. */
+  POPOUT_SWITCH: 'popout:switch',
   // ── Hosted (reverse-RPC) page tools (PLAN-browser-extension M0.2) ──
   HOSTED_TOOL_CALL: 'hosted:tool-call',
 

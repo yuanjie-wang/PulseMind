@@ -179,7 +179,7 @@ describe('built-in skills — every referenced file ships', () => {
     }
   })
 
-  it('the coding-workflow skill ships the six route disciplines its body routes to', () => {
+  it('the coding-workflow skill ships the six route disciplines plus the project-instructions discipline its body names', () => {
     const coding = BUILT_IN_SKILLS.find((s) => s.name === 'coding-workflow')
     expect(coding).toBeDefined()
     expect(Object.keys(coding!.resources!).sort()).toEqual([
@@ -188,6 +188,7 @@ describe('built-in skills — every referenced file ships', () => {
       'references/feature-delivery.md',
       'references/migration.md',
       'references/performance.md',
+      'references/project-instructions.md',
       'references/refactor-large.md',
     ])
     // Same non-stub bar as the office rule sets.

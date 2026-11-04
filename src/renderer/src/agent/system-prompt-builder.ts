@@ -316,7 +316,7 @@ async function buildStateBlock(params: {
   const summonSection = formatSummonForPrompt(summon ?? null)
   if (summonSection) sections.push(summonSection)
 
-  const pageSection = buildPageSection(opts.pageContext)
+  const pageSection = buildPageSection(resolvePageContext(opts))
   if (pageSection) sections.push(pageSection)
 
   const hints = await buildTurnHints(params)
@@ -759,12 +759,47 @@ export function buildContextWindowSection(usage: { tokens: number; window: numbe
 - context_compact at a phase boundary, with a handover note, is how you deliberately free room for what comes next; calls with nothing droppable are refused.`
 }
 
+/** Which page this turn is about, two sources with a fixed precedence
+ *  (2026-11-04): a client-pushed `pageContext` (the browser extension sent its
+ *  own tab with the message) is the user's explicit context and wins; the
+ *  provider is the desktop session's own built-in browser, consulted live at
+ *  build time. A provider that throws or returns null is simply "no page" —
+ *  the state block must never take a request down over a browsing detail. */
+function resolvePageContext(opts: AgentEngineOptions): AgentEngineOptions['pageContext'] {
+  if (opts.pageContext) return opts.pageContext
+  if (!opts.pageContextProvider) return undefined
+  try {
+    return opts.pageContextProvider() ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The state block rebuilds on every tool-loop iteration, so the section is
+ *  capped: a `data:`/`blob:` URL or a pathological title must not be re-sent
+ *  once per iteration. Two values, no content — reading the page is a tool
+ *  call by design. */
+const PAGE_URL_MAX_CHARS = 300
+const PAGE_TITLE_MAX_CHARS = 120
+
+function clipForPrompt(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
+
 function buildPageSection(pageContext?: AgentEngineOptions['pageContext']): string | null {
   if (!pageContext?.url && !pageContext?.title) return null
   const lines = ['## Current Page']
-  if (pageContext.title) lines.push(`- Title: ${pageContext.title}`)
-  if (pageContext.url) lines.push(`- URL: ${pageContext.url}`)
-  lines.push('The user is looking at this page right now. Read or act on it with the `page_*` tools; do not assume its content from the URL alone.')
+  if (pageContext.title) lines.push(`- Title: ${clipForPrompt(pageContext.title, PAGE_TITLE_MAX_CHARS)}`)
+  if (pageContext.url) lines.push(`- URL: ${clipForPrompt(pageContext.url, PAGE_URL_MAX_CHARS)}`)
+  // The hint names the tool family that can actually reach the page: `page_*`
+  // only exists while a browser-extension client is bound (an app-pane session
+  // has none of them in its toolset), while `browser` drives both backends —
+  // including the app-view tabs listed here.
+  lines.push(
+    pageContext.source === 'builtin'
+      ? "This conversation's built-in browser has this page open. Read it with the `browser` tool (agent.browsers.tabs.list() → tab.domSnapshot()); do not assume its content from the URL alone."
+      : 'The user is looking at this page right now. Read or act on it with the `page_*` tools; do not assume its content from the URL alone.',
+  )
   return lines.join('\n')
 }
 

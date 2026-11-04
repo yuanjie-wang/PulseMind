@@ -1,10 +1,11 @@
 /**
- * The coding-workflow skill's per-scenario disciplines — the files SKILL.md
+ * The coding-workflow skill's reference disciplines — the files SKILL.md
  * names but does not inline, seeded to
  * `~/.pulsemind/skills/coding-workflow/references/` by ensureBuiltInSkills so
  * the `read` tool can reach them (pick_skill only ever returns the SKILL.md
  * body). Split from coding-workflow.ts on the office skill's pattern
- * (office-route.ts / office-references.ts).
+ * (office-route.ts / office-references.ts). Six are per-scenario; the
+ * project-instructions discipline (AGENTS.md usage) holds on every route.
  *
  * Discipline mirrors the office rule sets: every rule here must be decidable
  * by the model from the workspace itself (commands that exist, output it can
@@ -178,6 +179,31 @@ export const CODING_WORKFLOW_REFERENCES: Record<string, string> = {
 - 没做完的部分明说（「X 场景未处理，因为…」），不让用户在验证时替你发现——未完成被藏起来，代价是用户对整份交付失去信任。
 - 交付说明带上三件事：改动面（动了哪些既有路径）、新增依赖、需要用户做的操作（迁移/配置/重启）。
 - 有后续迭代的空间，列成「下一步可选」交给用户挑，不自动开下一个工程。
+`,
+  'references/project-instructions.md': `# 项目指令（AGENTS.md）的使用纪律
+
+目标：项目指令文件是踩过坑之后沉淀下来的团队记忆——先读它、信它、用它的命令验证，再把新约定沉淀回去；不要每次都用通用习惯把同样的坑重新踩一遍。
+
+## 1. 先读，且当真
+- 会话状态块里的 \`## Project Instructions\` 就是本工作区的项目指令（\`.pulsemind/AGENTS.md\`，缺席时回落仓库根 \`AGENTS.md\`），随每回合自动注入，不必再 read 原文。要做的是把它当项目契约执行：其中写明的命令、目录结构、命名约定与明确禁令，优先于你的默认习惯。
+- 「红线 / 禁止 / 勿恢复 / 刻意 / 不要简化」一类标记是真实事故钉出来的硬约束，不是文风。按默认做法绕过去，等于把原事故重新引入一遍——先照做，有异议再向用户提出。
+- 文件与用户当下明确指令冲突时，当下的指令赢；把冲突指出来，由用户决定要不要更新文件，不自行取舍。
+- 指令常指向配套文档（CLAUDE.md、设计/计划记录、子目录的 AGENTS.md）。要动的代码落在某份文档的覆盖范围内，先读那一份再动手；monorepo 先 search 确认子目录有没有各自的 AGENTS.md——离目标文件最近的同名文件管局部约定，与仓库根冲突时以更近的为准并指出冲突。
+
+## 2. 验证命令优先取自它
+- Engineering Workflow #2 的「项目自己的验证命令」第一出处就是项目指令：文件写明的 build/test/lint/打包命令直接用，不再从 package.json 或框架默认重新拼一套——名字、参数、执行目录都可能不同，「必须先 cd 到仓库根」「打包前先跑构建」这类纪律往往只写在文件里。
+- 文件与仓库现状不符（脚本已改名/删除）时以仓库为准，并向用户指出漂移、提议更新文件——过期指令本身就是要修的问题，但裁决属于用户，不悄悄按自己的理解替文件「续命」。
+
+## 3. 写回的纪律
+- \`.pulsemind/AGENTS.md\` 与仓库根 \`AGENTS.md\` 都是受保护文件：任何写入都会被拦下走审批，这是刻意的——项目契约不该被顺手修改。被拦下不是故障，不要反复重试硬闯。
+- 用户说出一条可复用的项目约定（命令、结构、命名、数据规则、踩坑结论）时，提议记录进 \`.pulsemind/AGENTS.md\`，确认后再写；首次创建也要先确认。
+- 仓库根 \`AGENTS.md\` 是多个编码工具共享的面，归用户维护：要改它，把建议的改动整段给出，由用户落笔。
+- 更新只增不删：既有行是别人或过去的你留下的约束，改写措辞等于悄悄改契约；要改先提议，获批后做最小改动。
+- 只沉淀可复用规则：一次性任务细节、当下对话的上下文不进文件——它是跨会话长期生效的契约，不是会议纪要。
+
+## 何时不适用
+- 临时工作区的纯问答、不落盘的几行小改动，没有项目契约可言，不必套用本节。
+- 仓库没有 AGENTS.md、用户也没给约定时，不要凭空发明一套「项目规范」；工程契约（读后写、先验证、不发明 API、随 surroundings）照常生效。
 `,
   'references/performance.md': `# 性能问题：先测量，后动手
 

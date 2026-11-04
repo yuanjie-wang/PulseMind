@@ -31,8 +31,16 @@ import type { AgentSessionCreateOptions, StatusSnapshot } from '../agent-protoco
  *  keeps it in a registry that dies with the popout window; nothing here is
  *  ever persisted. */
 export interface PopoutWorkbenchSeed {
-  /** The donor's frontmost workbench tab; present only when the pane was open. */
-  workbenchTab?: 'workspace' | 'browser' | 'plan'
+  /** 本窗的主视图模式（2026-11-04 用户裁定「对话在主窗是什么视图模式，弹出独立
+   *  弹窗后要保持一致」）：弹窗是独立渲染进程，`primaryByConversation` 刻意不
+   *  持久化（各窗口一份内存态），不携带就恒 boot 成对话优先。缺省/缺席 = 'chat'
+   *  （无条目即对话优先，与 store 的读法同一条）。 */
+  primary?: 'chat' | 'files' | 'browser'
+  /** The donor's frontmost workbench tab; present only when the pane was open.
+   *  视图模式（PLAN-layout-modes）下 donor 可能停在 'chat' tab（对话降级到
+   *  侧栏）——popout 强制对话优先，应用侧的 openTab reconcile 会把它落回
+   *  'workspace'，这里按全集类型放宽。 */
+  workbenchTab?: 'workspace' | 'browser' | 'plan' | 'chat'
   /** The donor's open preview file tabs (paths, verbatim order). Carried even
    *  when the pane was closed — opening the workbench later restores them. */
   previewPaths?: string[]
@@ -639,8 +647,11 @@ export interface ElectronAPI {
    *  read receipt + eviction/unread bookkeeping); popout windows ignore it. */
   onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void) => () => void
   /** A conversation's title changed in the DB (rename or title generation in
-   *  another window): update this window's in-memory sidebar list. */
-  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void) => () => void
+   *  another window): update this window's in-memory sidebar list. `projectId`
+   *  rides along ('default' when unbound) — a conversation created in a
+   *  secondary window is unknown to this window's list, and its first-sighting
+   *  re-add must not mint the entry without the binding. */
+  onConversationTitleChanged: (callback: (event: { id: string; title: string; projectId?: string }) => void) => () => void
 
   // ── Project (immersive) window (2026-10-30) ──
   /** Open the immersive window for a project — a project-scoped secondary
@@ -651,6 +662,15 @@ export interface ElectronAPI {
    *  when it has none yet). Main rebroadcasts it on POPOUT_EVENT, so the main
    *  window adopts/saves it exactly as it does a popped-out conversation. */
   secondaryWatch: (sessionId: string | null) => Promise<void>
+  /** Focus the project's immersive window and switch it onto a conversation
+   *  (main-window click on one of the project's conversations). Resolves false
+   *  when the project has no open window — the caller opens the conversation
+   *  in-window as usual. */
+  projectWindowFocusConversation: (projectId: string, convId: string) => Promise<boolean>
+  /** Main → the holding project window only: switch the immersive window onto
+   *  this conversation (the main window clicked it). Sent targeted, never
+   *  broadcast — the main window's POPOUT_EVENT handler must not see it. */
+  onPopoutSwitch: (callback: (event: { sessionId: string }) => void) => () => void
 
   // SubAgent
   expertList: () => Promise<ExpertProfile[]>

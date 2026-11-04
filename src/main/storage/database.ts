@@ -205,7 +205,10 @@ function createTables(): void {
 
     CREATE TABLE IF NOT EXISTS skill_preferences (
       id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK(id = 1),
+      -- enabled_skills is a legacy snapshot kept for read-back/diagnostics only;
+      -- the authoritative switch is disabled_skills (empty = all skills on).
       enabled_skills          TEXT NOT NULL DEFAULT '[]',
+      disabled_skills         TEXT NOT NULL DEFAULT '[]',
       skill_keywords           TEXT NOT NULL DEFAULT '{}',
       processed_conversations TEXT NOT NULL DEFAULT '[]'
     );
@@ -368,6 +371,11 @@ function createTables(): void {
   // read by the envelope tail / panel. Never touched by save() (the upsert's
   // column list omits it, so revisions preserve the counters).
   try { database.exec('ALTER TABLE experiences ADD COLUMN outcome_json TEXT') } catch {}
+  // 2026-11-04: skills default to ON (user ruling 「把缺省当作打开就行」). The
+  // old `enabled_skills` list stops driving state — an imported/template skill
+  // missing from it used to come up disabled on every fresh install. The new
+  // authoritative column is the explicit opt-OUT list; absent/NULL = all on.
+  try { database.exec("ALTER TABLE skill_preferences ADD COLUMN disabled_skills TEXT NOT NULL DEFAULT '[]'") } catch {}
 
   // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
   // Projects are named fixed workspaces picked on the welcome page (the

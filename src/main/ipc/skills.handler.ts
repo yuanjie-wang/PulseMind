@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { skillStore } from '../storage/skill-store'
 import { listSkillUses, recordSkillUse } from '../storage/skill-use-store'
+import { registerLiveSkills, unregisterLiveSkill } from '../agent/live-skill-registry'
 import { SKILLS_DIR } from '../storage'
 import type { SkillDefinition, SkillPreferencesPatch } from '../../shared/types/skill-types'
 
@@ -60,7 +61,13 @@ export function registerSkillHandlers(): void {
       properties: ['openFile']
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    return skillStore.importFromZip(result.filePaths[0])
+    const imported = await skillStore.importFromZip(result.filePaths[0])
+    // 盘上落定 ≠ 引擎可见：主进程共享 SkillManager 只在首个会话创建时扫一
+    // 次盘（ensureManagers），这里必须同步登记，否则 pick_skill 要到重启才
+    // 能找到新导入的技能（live-skill-registry；渲染端 importSkill 的注册只
+    // 服务 UI 列表，够不到引擎）。
+    if (imported.imported.length > 0) registerLiveSkills(imported.imported)
+    return imported
   })
 
   // List imported skills (called on app startup)
@@ -71,6 +78,10 @@ export function registerSkillHandlers(): void {
   // Delete an imported skill
   ipcMain.handle(IPC_CHANNELS.SKILLS_DELETE_IMPORTED, async (_event, name: string) => {
     await skillStore.deleteImported(name)
+    // 镜像摘除：注册表若还留着，pick_skill 会在文件已删后经
+    // freshSkillDefinition 的回落臂拿到旧全文——已删除的技能在对话里继续
+    // 「可用」。渲染端的 removeSkill prefs 补丁只清启用名单，够不到注册表。
+    unregisterLiveSkill(name)
   })
 
   // Ensure built-in skills exist on disk (called on app startup)

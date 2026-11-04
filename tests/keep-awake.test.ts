@@ -204,8 +204,9 @@ describe('keep-awake wiring', () => {
   it('both locales carry the toggle copy', () => {
     for (const locale of ['zh', 'en']) {
       const src = source(`src/renderer/src/i18n/locales/${locale}.ts`)
-      expect(src, locale).toContain('keepAwake: "')
-      expect(src, locale).toContain('keepAwakeHelp: "')
+      // prettier 会统一键值引号并折行长字符串——钉内容存在，不钉引号/行形态。
+      expect(src, locale).toMatch(/keepAwake: ["']/)
+      expect(src, locale).toMatch(/keepAwakeHelp:\s*["']/)
     }
   })
 })

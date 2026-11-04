@@ -71,8 +71,8 @@ function applyNativeThemeChange(): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setBackgroundColor(WINDOW_BACKGROUND[bootThemeMode])
       }
-      // Popped-out windows follow the main window's own refresh.
-      refreshPopoutTitleBarTheme()
+      // Popped-out windows follow the main window's own refresh (same mode).
+      refreshPopoutTitleBarTheme(bootThemeMode)
     })
     .catch(() => {})
 }

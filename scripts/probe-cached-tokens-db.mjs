@@ -59,7 +59,11 @@ function guardHome(dataDir) {
 }
 
 const dbPath = (dataDir) => join(dataDir, 'db', 'pulsemind.db')
-const columns = (db, table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
+const columns = (db, table) =>
+  db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((c) => c.name)
 
 /** better-sqlite3 is `external` to the bundle and lives in the repo — require
  *  it through a repo-anchored resolver, like probe-project-color-db. */
@@ -101,11 +105,14 @@ async function phaseLegacy() {
     );
   `)
   seed.prepare("INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, '旧任务', ?, ?)").run(CONV, STAMP, STAMP)
-  seed.prepare('INSERT INTO messages (id, conversation_id, role, content, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  seed
+    .prepare('INSERT INTO messages (id, conversation_id, role, content, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run('msg_legacy_1', CONV, 'assistant', '历史回复', 70, 5, STAMP)
-  seed.prepare('INSERT INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)')
-    .run('tu_msg_legacy_1', 70, 5, STAMP)
-  check('fixture: the pre-upgrade tables have no cached_tokens', !columns(seed, 'messages').includes('cached_tokens') && !columns(seed, 'token_usage').includes('cached_tokens'))
+  seed.prepare('INSERT INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)').run('tu_msg_legacy_1', 70, 5, STAMP)
+  check(
+    'fixture: the pre-upgrade tables have no cached_tokens',
+    !columns(seed, 'messages').includes('cached_tokens') && !columns(seed, 'token_usage').includes('cached_tokens'),
+  )
   seed.close()
 
   ensureDataDir()
@@ -116,7 +123,11 @@ async function phaseLegacy() {
   check('migration adds cached_tokens to the existing messages table', columns(db, 'messages').includes('cached_tokens'))
   check('migration adds cached_tokens to the existing token_usage table', columns(db, 'token_usage').includes('cached_tokens'))
   const row = db.prepare('SELECT input_tokens, output_tokens, cached_tokens FROM messages WHERE id = ?').get('msg_legacy_1')
-  check('the legacy row survives with its tokens and NULL cached', row.input_tokens === 70 && row.output_tokens === 5 && row.cached_tokens === null, JSON.stringify(row))
+  check(
+    'the legacy row survives with its tokens and NULL cached',
+    row.input_tokens === 70 && row.output_tokens === 5 && row.cached_tokens === null,
+    JSON.stringify(row),
+  )
   const tu = db.prepare('SELECT input_tokens, cached_tokens FROM token_usage WHERE id = ?').get('tu_msg_legacy_1')
   check('the legacy ledger row reads 0 cached (NOT NULL DEFAULT 0)', tu.input_tokens === 70 && tu.cached_tokens === 0, JSON.stringify(tu))
 
@@ -124,7 +135,11 @@ async function phaseLegacy() {
   const { getHourlyTokenStats } = await import('../src/main/storage/stats.db')
   const hourly = getHourlyTokenStats()
   const stamped = hourly.find((h) => h.inputTokens >= 70)
-  check('stats SUM works over a database that mixes legacy and new rows', Array.isArray(hourly) && stamped && stamped.cachedTokens === 0, JSON.stringify(stamped))
+  check(
+    'stats SUM works over a database that mixes legacy and new rows',
+    Array.isArray(hourly) && stamped && stamped.cachedTokens === 0,
+    JSON.stringify(stamped),
+  )
 }
 
 // ── phase 2 · write→read round trip through the real functions ────────────
@@ -138,18 +153,30 @@ async function phasePersist() {
   const { saveConversation, appendConversationMessages, getConversation } = await import('../src/main/storage/conversation.db')
 
   const base = {
-    id: 'msg_probe_save', role: 'assistant', content: '全量保存', createdAt: STAMP,
-    inputTokens: 69643, outputTokens: 922, promptCacheHitTokens: 65412,
+    id: 'msg_probe_save',
+    role: 'assistant',
+    content: '全量保存',
+    createdAt: STAMP,
+    inputTokens: 69643,
+    outputTokens: 922,
+    promptCacheHitTokens: 65412,
   }
   saveConversation({
-    id: CONV, title: 'cached 探针', createdAt: STAMP, updatedAt: STAMP,
+    id: CONV,
+    title: 'cached 探针',
+    createdAt: STAMP,
+    updatedAt: STAMP,
     messages: [base],
   })
   const db = getDb()
   let row = db.prepare('SELECT input_tokens, cached_tokens FROM messages WHERE id = ?').get('msg_probe_save')
   check('saveConversation writes messages.cached_tokens', row.cached_tokens === 65412, JSON.stringify(row))
   let tu = db.prepare('SELECT input_tokens, output_tokens, cached_tokens FROM token_usage WHERE id = ?').get('tu_msg_probe_save')
-  check('saveConversation writes the ledger row with cached_tokens', tu && tu.input_tokens === 69643 && tu.output_tokens === 922 && tu.cached_tokens === 65412, JSON.stringify(tu))
+  check(
+    'saveConversation writes the ledger row with cached_tokens',
+    tu && tu.input_tokens === 69643 && tu.output_tokens === 922 && tu.cached_tokens === 65412,
+    JSON.stringify(tu),
+  )
 
   appendConversationMessages(CONV, 'cached 探针', [
     { id: 'msg_probe_append', role: 'assistant', content: '增量保存', createdAt: STAMP, inputTokens: 40, outputTokens: 5, promptCacheHitTokens: 33 },
@@ -165,12 +192,13 @@ async function phasePersist() {
 
   // A message without the field (user turns, pre-upgrade shapes) must persist NULL, not 0 —
   // NULL says "provider did not report", 0 would say "provider reported zero hits".
-  appendConversationMessages(CONV, 'cached 探针', [
-    { id: 'msg_probe_nofield', role: 'user', content: '没有缓存数字的消息', createdAt: STAMP },
-  ])
+  appendConversationMessages(CONV, 'cached 探针', [{ id: 'msg_probe_nofield', role: 'user', content: '没有缓存数字的消息', createdAt: STAMP }])
   row = db.prepare('SELECT input_tokens, cached_tokens FROM messages WHERE id = ?').get('msg_probe_nofield')
   check('a message without the field persists NULL (not reported ≠ zero hits)', row.cached_tokens === null && row.input_tokens === null, JSON.stringify(row))
-  check('…and writes no ledger row for it (same rule as input/output)', db.prepare('SELECT COUNT(*) AS c FROM token_usage WHERE id = ?').get('tu_msg_probe_nofield').c === 0)
+  check(
+    '…and writes no ledger row for it (same rule as input/output)',
+    db.prepare('SELECT COUNT(*) AS c FROM token_usage WHERE id = ?').get('tu_msg_probe_nofield').c === 0,
+  )
 
   // The audit this whole change exists for: one SQL line answers "what did the
   // task actually cost" without a single dump file.
@@ -247,13 +275,19 @@ async function launcher() {
   const one = run('legacy', home)
   total += one.checks.length
   failed += one.checks.filter((c) => !c.pass).length
-  if (one.status !== 0) { failed++; console.log(`  ✗ phase legacy exited with ${one.status}`) }
+  if (one.status !== 0) {
+    failed++
+    console.log(`  ✗ phase legacy exited with ${one.status}`)
+  }
 
   console.log('\n② write→read round trip through the real functions')
   const two = run('persist', home)
   total += two.checks.length
   failed += two.checks.filter((c) => !c.pass).length
-  if (two.status !== 0) { failed++; console.log(`  ✗ phase persist exited with ${two.status}`) }
+  if (two.status !== 0) {
+    failed++
+    console.log(`  ✗ phase persist exited with ${two.status}`)
+  }
 
   if (KEEP) console.log(`\nkept: ${homes.join(' ')}`)
   else for (const h of homes) rmSync(h, { recursive: true, force: true })

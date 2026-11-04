@@ -547,6 +547,32 @@ function emitEntry(key: string, value: unknown, indent: string, out: string[]): 
   out.push(`${indent}${keyText}: ${emitScalar(String(value))}`)
 }
 
+/**
+ * Provenance matching for a PARSED SKILL.md against recorded seed signatures
+ * (the manifest entry and/or a retired skill's frozen contentHash — both were
+ * taken from the DEFINITION at seed/record time, not from the file).
+ *
+ * The asymmetry this tolerates: `parseSkillMarkdown` `.trim()`s the body, and
+ * shipped definitions have historically ended their prompt with a trailing
+ * newline (browser, office) — `formatSkillMd` wrote it, the parse dropped it,
+ * so the parsed signature could never equal the recorded definition signature.
+ * That dead-ended the seed upgrade arm AND the retirement sweep for every
+ * such skill: text updates stranded on disk forever (hit for real 2026-11-04 —
+ * the browser manual's login-wall edit would never have reached any install).
+ * Besides the exact signature, try reconstructing the shipped prompt by
+ * appending back the trailing newline(s) the trim could have eaten.
+ */
+export function skillProvenanceMatches(parsed: ParsedFrontmatter, ...recorded: (string | undefined | null)[]): boolean {
+  const records = recorded.filter((r): r is string => typeof r === 'string' && r.length > 0)
+  if (records.length === 0) return false
+  const candidates = [skillContentSignature(parsed)]
+  for (const tail of ['\n', '\n\n']) {
+    const candidate = skillContentSignature({ ...parsed, systemPrompt: parsed.systemPrompt + tail })
+    if (!candidates.includes(candidate)) candidates.push(candidate)
+  }
+  return candidates.some((sig) => records.includes(sig))
+}
+
 /** Format a skill as a valid SKILL.md document with YAML frontmatter. */
 export function formatSkillMd(skill: SkillDefinition): string {
   const lines: string[] = ['---']
@@ -610,7 +636,7 @@ export function skillContentSignature(skill: SkillDefinition | ParsedFrontmatter
       metadata: skill.metadata ?? null,
       sourceConversationId: skill.sourceConversationId ?? null,
       createdAt: skill.createdAt ?? null,
-      extra: skill.extra ?? null
-    })
+      extra: skill.extra ?? null,
+    }),
   )
 }

@@ -133,7 +133,7 @@ check('没有残留的「收藏」「内置工具」「工具中心」入口', s
 const wash = (key) => page.evaluate((k) => getComputedStyle(document.querySelector(`[data-settings-menu="${k}"]`)).backgroundColor, key)
 const paneText = () => page.evaluate(() => document.querySelector('.settings-scroll').textContent)
 check('默认落在常规（选中态在常规上）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
-check('未点开时页面里没有高级分区的内容', !(await paneText()).includes('记录 LLM 请求报文'))
+check('未点开时页面里没有高级分区的内容', !(await paneText()).includes('记录 LLM 请求与响应报文'))
 await page.screenshot({ path: join(SHOTS, 'settings-default.png') })
 
 // ── 3. 默认工作区 is the ONE path surface on 常规: the read-only OS/time and
@@ -205,7 +205,7 @@ check('「自动清理会话」只改动 autoCleanup', JSON.stringify(cleanup.di
 check('自动清理写入 true，providers 原样带过（不被写路径搅动）',
   cleanup.write.autoCleanup === true && JSON.stringify(cleanup.write.providers) === JSON.stringify(FIXTURE_PROVIDERS) && cleanup.write.locale === 'zh')
 
-// ── 3.7 Both retention selects offer the SAME four choices (shared retention-options) ──
+// ── 3.7 Both retention selects offer the SAME choices (shared retention-options) ──
 const selectIndex = (label) => page.evaluate((l) => [...document.querySelectorAll('.ant-select')]
   .findIndex((el) => el.previousElementSibling?.textContent?.trim() === l), label)
 const openSelect = async (label) => {
@@ -216,8 +216,8 @@ const openSelect = async (label) => {
     .map((el) => el.textContent.trim()))
 }
 const conversationOptions = await openSelect('会话最长保留')
-check('会话保留选项 = 永久保留 / 保留 7 天 / 保留 30 天 / 保留 90 天',
-  JSON.stringify(conversationOptions) === JSON.stringify(['永久保留', '保留 7 天', '保留 30 天', '保留 90 天']),
+check('会话保留选项 = 永久保留 / 保留 7 天 / 保留 30 天 / 保留 90 天 / 保留 180 天',
+  JSON.stringify(conversationOptions) === JSON.stringify(['永久保留', '保留 7 天', '保留 30 天', '保留 90 天', '保留 180 天']),
   JSON.stringify(conversationOptions))
 
 // A positive window deletes old conversations, so it must ask before it writes.
@@ -256,7 +256,7 @@ check('开机自启说明点名与托盘菜单同步', generalText.includes('托
 
 // ── 4. 高级 (原数据与运行): the power-user toggles stay live writers ──
 await page.locator('[data-settings-menu="data"]').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('记录 LLM 请求报文'))
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('记录 LLM 请求与响应报文'))
 await page.waitForFunction(() => {
   const t = document.querySelector('[role="switch"][aria-label="注入 Git 状态"]')
   return t !== null && !t.disabled
@@ -268,8 +268,8 @@ check('选中态从常规移到了高级',
 await page.screenshot({ path: join(SHOTS, 'settings-data.png') })
 check('高级面板正好四个开关（休眠 / 调试 / Git / 自动编译）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 4,
   String(await page.evaluate(() => document.querySelectorAll('button.ant-switch').length)))
-const debug = await toggle('记录 LLM 请求报文')
-check('「记录 LLM 请求报文」只改动 debugLlmRequests', JSON.stringify(debug.diff) === '["debugLlmRequests"]', JSON.stringify(debug.diff))
+const debug = await toggle('记录 LLM 请求与响应报文')
+check('「记录 LLM 请求与响应报文」只改动 debugLlmRequests', JSON.stringify(debug.diff) === '["debugLlmRequests"]', JSON.stringify(debug.diff))
 const git = await toggle('注入 Git 状态')
 check('「注入 Git 状态」只改动 git，且仍是对象（不是散字段）',
   JSON.stringify(git.diff) === '["git"]' && git.write.git?.contextInjection === false, JSON.stringify(git.write.git))

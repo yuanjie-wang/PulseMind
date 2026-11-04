@@ -12,11 +12,11 @@ function escapeXml(s: string): string {
 }
 
 export class SkillManager extends FeatureManager<SkillDefinition> {
-  private prefs: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
+  private prefs: SkillPreferences = { enabledSkills: [], disabledSkills: [] }
 
   constructor() {
     super()
-    this.registry.registerBuiltIn(BUILT_IN_SKILLS, new Set(['create_skill', 'create_mcp']))
+    this.registry.registerBuiltIn(BUILT_IN_SKILLS)
     this.applyPreferences()
   }
 
@@ -26,43 +26,73 @@ export class SkillManager extends FeatureManager<SkillDefinition> {
   getEnabledSkills() { return this.getEnabled() }
   getSkill(name: string) { return this.get(name) }
 
-  /** Register a user-installed skill with auto-enable. */
+  /**
+   * Register a user-installed skill. New skills default to ON (2026-11-04
+   * ruling 「把缺省当作打开」) — a template-carried or zip-imported skill must be
+   * usable without the user hunting for a toggle. An explicit opt-out recorded
+   * in prefs stays sticky across re-registration (disk refresh, live import).
+   */
   registerSkill(definition: SkillDefinition): boolean {
-    return this.register(definition, true)
+    const registered = this.register(definition, true)
+    if (registered) {
+      if ((this.prefs.disabledSkills || []).includes(definition.name)) {
+        this.registry.disable(definition.name)
+      }
+      this.seedTriggers()
+    }
+    return registered
   }
 
   // --- Initialization ---
 
+  /**
+   * Apply persisted preferences. `disabledSkills` is the AUTHORITY: everything
+   * registered is enabled unless it appears there, and built-ins are never
+   * disabled at all. `enabledSkills` from old installs is ignored on purpose —
+   * it used to be an exact allow-list, so every skill missing from it (all
+   * template/imported skills on a fresh machine) came up off.
+   */
   applyPreferences(prefs?: SkillPreferences): void {
-    if (prefs) this.prefs = prefs
-    // Ensure all built-in skills are always in the enabled list
-    for (const skill of BUILT_IN_SKILLS) {
-      if (!this.prefs.enabledSkills.includes(skill.name)) {
-        this.prefs.enabledSkills.push(skill.name)
-      }
-    }
-    this.registry.applyPreferences(this.prefs.enabledSkills)
+    if (prefs) this.prefs = { ...prefs, disabledSkills: prefs.disabledSkills || [] }
+    const disabled = new Set(this.prefs.disabledSkills)
+    for (const skill of BUILT_IN_SKILLS) disabled.delete(skill.name)
+    const enabledNames = this.getAll()
+      .map((s) => s.definition.name)
+      .filter((name) => !disabled.has(name))
+    this.registry.applyPreferences(enabledNames)
+    this.seedTriggers()
+  }
 
-    // Ensure built-in skill triggers are always seeded as keywords for auto-activation.
-    for (const skill of BUILT_IN_SKILLS) {
-      if (skill.triggers && skill.triggers.length > 0) {
-        if (!this.prefs.skillKeywords) this.prefs.skillKeywords = {}
-        if (!this.prefs.skillKeywords[skill.name]) {
-          this.prefs.skillKeywords[skill.name] = [...skill.triggers]
-        } else {
-          for (const t of skill.triggers) {
-            if (!this.prefs.skillKeywords[skill.name].includes(t)) {
-              this.prefs.skillKeywords[skill.name].push(t)
-            }
-          }
+  /**
+   * Seed each registered skill's frontmatter `triggers` as its keyword list so
+   * keyword-based auto-activation works without an LLM backfill round. Union,
+   * never overwrite: backfilled/edited keywords win over the declaration.
+   * Runs over ALL skills, not just built-ins — a template skill's triggers are
+   * the only auto-activation signal it has on a fresh install.
+   */
+  private seedTriggers(): void {
+    for (const skill of this.getAll()) {
+      const triggers = skill.definition.triggers
+      if (!triggers || triggers.length === 0) continue
+      if (!this.prefs.skillKeywords) this.prefs.skillKeywords = {}
+      const existing = this.prefs.skillKeywords[skill.definition.name]
+      if (!existing) {
+        this.prefs.skillKeywords[skill.definition.name] = [...triggers]
+      } else {
+        for (const t of triggers) {
+          if (!existing.includes(t)) existing.push(t)
         }
       }
     }
   }
 
   getPreferences(): SkillPreferences {
+    const all = this.getAll()
+    const enabledNames = all.filter((s) => s.enabled).map((s) => s.definition.name)
     const prefs: SkillPreferences = {
-      enabledSkills: this.registry.getPreferences()
+      // Legacy/diagnostic snapshot; `disabledSkills` is what drives state.
+      enabledSkills: enabledNames,
+      disabledSkills: all.filter((s) => !s.enabled).map((s) => s.definition.name),
     }
     if (this.prefs.skillKeywords && Object.keys(this.prefs.skillKeywords).length > 0) {
       prefs.skillKeywords = { ...this.prefs.skillKeywords }

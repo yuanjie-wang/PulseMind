@@ -54,8 +54,8 @@ async function main() {
     check('pre-row write stub-inserts a row carrying the profile', () => {
       assert.equal(getConversationProfileId(id), 'prof_writer')
     })
-    check('the stub row is listable (type normal, no origin)', () => {
-      assert.ok(listConversations().some((c) => c.id === id && c.profileId === 'prof_writer'))
+    check('the zero-message stub is not a 历史会话 entry yet', () => {
+      assert.equal(listConversations().some((c) => c.id === id), false)
     })
 
     // The first message materializes the row through the REAL write channel.
@@ -64,6 +64,9 @@ async function main() {
     ])
     check('the first message upsert does not touch profile_id', () => {
       assert.equal(getConversationProfileId(id), 'prof_writer')
+    })
+    check('…and it becomes listable with its pinned profile (type normal, no origin)', () => {
+      assert.ok(listConversations().some((c) => c.id === id && c.profileId === 'prof_writer'))
     })
     check('the first message upsert does not touch the other bindings either', () => {
       assert.equal(getConversationProjectId(id), 'default')

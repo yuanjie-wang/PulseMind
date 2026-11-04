@@ -166,9 +166,9 @@ export function useChatManagers(options: UseChatManagersOptions) {
     if (!prefsLoadedRef.current || !skillsReadyRef.current) return
     const persist = async (): Promise<void> => {
       const enabledPrefs = skillManagerRef.current.getPreferences()
-      // Patch-shaped (PLAN-parallel-experts T10): only the enabled list is
+      // Patch-shaped (PLAN-parallel-experts T10): only the disabled list is
       // ours to replace — keywords and processed ids stay as stored.
-      await window.electronAPI.updateSkillPreferences({ replaceEnabledSkills: enabledPrefs.enabledSkills })
+      await window.electronAPI.updateSkillPreferences({ replaceDisabledSkills: enabledPrefs.disabledSkills })
     }
     persist().catch((e) => {
       console.error('[persist] Failed to save skill prefs:', e)
