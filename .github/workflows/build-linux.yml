@@ -5,7 +5,10 @@
 # （electron-builder install-app-deps）会用**构建机**的 glibc 头文件现场编译。
 # glibc ≥ 2.34 把 pthread 并入 libc，在 2.34+ 上编出来的 .node 会引用
 # GLIBC_2.34 —— 装到 UOS 20（2.28）上是启动即 undefined symbol，而且构建期
-# 一点提示都没有。bullseye（glibc 2.31）既避开 2.34 这个坑、apt 也还能用。
+# 一点提示都没有。bullseye（glibc 2.31）既避开 2.34 这个坑，又比 2.28 只高一档，
+# 实测下来 .node 的符号需求仍在 2.28 以内（门禁每次都会重量一遍）。
+# 注意 bullseye 已于 2026-08 EOL：**不要在这个容器里跑 apt-get install**（见下），
+# 工具链全部依赖镜像自带（buildpack-deps 基座）。
 # 打包完 scripts/check-linux-glibc.js 会把每个 .node 的符号需求实测一遍，
 # 超过 2.28 直接红。若首次跑红：换更老的基线（debian:buster 需把 apt 源指到
 # archive.debian.org，buster 已 EOL），不要靠目标机补库。
@@ -48,10 +51,20 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
     steps:
-      - name: Install build toolchain
+      # 不跑 apt（2026-11-04 首次 CI 实测教训）：python3/make/g++/git/ca-certificates
+      # 镜像里全都有，而 bullseye 已 EOL —— `apt-get install ca-certificates` 会
+      # 顺带升级到一个 Debian 已从 deb.debian.org 摘掉的路径（Debian-security 的
+      # ca-certificates_*~deb11u1 404），job 在 checkout 之前就红。
+      # 这里只做存在性断言：上游镜像哪天真的瘦身，会在这里明确报错，而不是在
+      # node-gyp 深处抛一堆看不懂的东西。
+      - name: Verify build toolchain
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 make g++ ca-certificates
+          node -v
+          npm -v
+          for tool in python3 make g++ git; do
+            command -v "$tool" > /dev/null || { echo "missing build tool: $tool"; exit 1; }
+          done
+          g++ --version | head -1
 
       - uses: actions/checkout@v4
 
