@@ -49,6 +49,20 @@ jobs:
     env:
       # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # Playwright 1.63 的 registry 里 debian11-* 是 void 0（这个发行版被从支持
+      # 矩阵里摘了），于是 `playwright-core install chromium` 报
+      # "ERROR: Playwright does not support chromium on debian11-x64"。
+      # 但 debian12/debian13 与 ubuntu22.04/24.04 那几格指向的是**同一个**
+      # `linux64/chrome-linux64.zip` —— 这个 override 只绕开一张支持性表格，不会
+      # 换来一个「别的二进制」。必须作用到 `npm run build`：ensure-chromium.js 用
+      # executablePath() 走同一张表解析缓存路径，只在 install 步骤设它，build 那
+      # 一步就会静默拷不到东西（而 ensure-chromium 永不非零退出）。
+      PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: 'debian12-x64'
+      # 容器只负责打包，从不启动浏览器 —— Chromium 的运行时依赖要在目标机（UOS）
+      # 上满足。不跳过这层，Playwright 会拿 debian12 的依赖清单校验 bullseye 容器
+      # （缺 libgbm/libasound 等一串），而补库的唯一工具 install-deps 走 apt，
+      # 已因 bullseye EOL 不可用（见下面的工具链步骤）。
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: '1'
 
     steps:
       # 不跑 apt（2026-11-04 首次 CI 实测教训）：python3/make/g++/git/ca-certificates
@@ -100,11 +114,46 @@ jobs:
       - name: Build bundles
         run: npm run build
 
+      # ensure-chromium.js 的设计契约是「永不非零退出」（缺了只 warn，让没有
+      # Chromium 的开发机也能打包），代价是**任何**取浏览器失败都会静默变成
+      # 「一个没有内置浏览器的包」。CI 里没有这个让步的必要：资源没落下就是红。
+      - name: Verify bundled Chromium landed
+        run: |
+          chrome=resources/chromium/chrome-linux/chrome
+          if [ ! -x "$chrome" ]; then
+            echo "::error::$chrome missing — ensure-chromium never fails, so this step is the only browser-less-package gate"
+            find resources/chromium -maxdepth 3 -print 2>/dev/null || true
+            exit 1
+          fi
+          du -sh resources/chromium
+          file "$chrome"
+
       - name: Package deb
         run: npx electron-builder --linux deb --x64 --publish never
 
       - name: Check glibc ceiling of shipped native modules
         run: node scripts/check-linux-glibc.js dist/linux-unpacked --ceiling=2.28
+
+      # 只报告、不判红：这个二进制由 Google 的 Chrome for Testing 构建，glibc 下限
+      # 我们改不了（既不能重编，也没有更老的 Linux 版本可换）。而它决定「浏览器工具
+      # 在 UOS 20 上到底能不能启动」，所以这个数字值得每次打印出来，而不是等到目标机
+      # 上 undefined symbol 才被发现。
+      - name: Report bundled Chromium glibc floor (informational)
+        run: |
+          node -e '
+            const fs = require("node:fs")
+            const { scan, formatVersion } = require("./scripts/check-linux-glibc.js")
+            const file = "resources/chromium/chrome-linux/chrome"
+            const row = scan([file])[0]
+            const shown = row.max ? formatVersion(row.max) : "static (no glibc refs)"
+            console.log(`bundled Chromium requires up to GLIBC_${shown} (UOS 20 = 2.28)`)
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(
+                process.env.GITHUB_STEP_SUMMARY,
+                `### bundled Chromium glibc floor\n\n\`${file}\` → max GLIBC **${shown}**（目标机 UOS 20 = 2.28）\n`,
+              )
+            }
+          '
 
       - name: Report artifact
         run: ls -lh dist/*.deb
