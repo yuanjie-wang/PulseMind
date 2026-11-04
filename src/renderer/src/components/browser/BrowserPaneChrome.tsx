@@ -7,9 +7,18 @@
 // belong to WorkbenchPane; this component fills its parent. The tab strip's two
 // edges fade while a tab sits beyond them — the same affordance the file tab
 // strip carries (common/StripEdgeFades, 2026-10-30 用户裁定).
+//
+// The far-left ▾ quick-switcher (2026-11-01, 用户裁定「页面页签交互与文件页签
+// 一致」) mirrors WorkspaceTabStrip's: one dropdown listing every open tab,
+// reachable no matter where the strip is scrolled. Picking a row is the very
+// call a chip's click makes. It portals to body (the strip row clips overflow)
+// and — because a WebContentsView paints above all DOM — the open menu rides
+// the SAME overlay channel as the address suggestions dropdown, so the dock
+// folds the webview away while either surface is open.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff, ChevronDown } from 'lucide-react'
 import { StripEdgeFades, useStripFades } from '../common/StripEdgeFades'
 import {
   hostLabel,
@@ -50,10 +59,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // 外开按钮全部读它，点击的视觉反馈不再等一个 IPC 往返。
   const optimisticActiveId = useBrowserPaneStore((s) => s.optimisticActiveId)
   const setOptimisticActive = useBrowserPaneStore((s) => s.setOptimisticActive)
-  const activeId =
-    optimisticActiveId && pane.tabs.some((t) => t.id === optimisticActiveId)
-      ? optimisticActiveId
-      : (active?.id ?? '')
+  const activeId = optimisticActiveId && pane.tabs.some((t) => t.id === optimisticActiveId) ? optimisticActiveId : (active?.id ?? '')
   const activeTab = activeId ? (pane.tabs.find((t) => t.id === activeId) ?? null) : null
   // Address-bar draft, scoped to the tab it was typed in — switching tabs
   // naturally shows the new tab's URL without a reset effect.
@@ -104,19 +110,33 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
       return
     }
     let alive = true
-    window.electronAPI.browserFavoriteHas(normalizeFavoriteUrl(activeUrl))
-      .then((has) => { if (alive) setStarred(!!has) })
-      .catch(() => { if (alive) setStarred(false) })
-    return () => { alive = false }
+    window.electronAPI
+      .browserFavoriteHas(normalizeFavoriteUrl(activeUrl))
+      .then((has) => {
+        if (alive) setStarred(!!has)
+      })
+      .catch(() => {
+        if (alive) setStarred(false)
+      })
+    return () => {
+      alive = false
+    }
   }, [activeUrl, starTick])
   const toggleStar = () => {
     const url = normalizeFavoriteUrl(activeUrl)
     if (!url) return
     if (starred) {
-      window.electronAPI.browserFavoriteRemove(url).then(() => { setStarred(false); setStarTick((t) => t + 1) }).catch(() => {})
+      window.electronAPI
+        .browserFavoriteRemove(url)
+        .then(() => {
+          setStarred(false)
+          setStarTick((t) => t + 1)
+        })
+        .catch(() => {})
     } else {
       const title = activeTab?.title || activeUrl
-      window.electronAPI.browserFavoriteAdd(url, title)
+      window.electronAPI
+        .browserFavoriteAdd(url, title)
         .then((r) => {
           if (r?.ok) setStarred(true)
           setStarTick((t) => t + 1)
@@ -127,6 +147,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const inputWrapRef = useRef<HTMLDivElement | null>(null)
+  // The chrome's bottom line (the address row's border-bottom): both floating
+  // surfaces measure their overhang past it for the dock's webview shift.
+  const addressRowRef = useRef<HTMLDivElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const suggestSeq = useRef(0)
   const lastQueryRef = useRef('')
@@ -145,16 +168,22 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   useEffect(() => {
     if (!showEmpty) return
     let alive = true
-    window.electronAPI.browserHistoryQuery('')
+    window.electronAPI
+      .browserHistoryQuery('')
       .then((rows) => {
         if (alive) setRecents((rows ?? []).slice(0, 6))
       })
-      .catch(() => { /* history is best-effort — the guidance copy still shows */ })
-    window.electronAPI.browserFavoriteList()
+      .catch(() => {
+        /* history is best-effort — the guidance copy still shows */
+      })
+    window.electronAPI
+      .browserFavoriteList()
       .then((rows) => {
         if (alive) setFavorites(rows ?? [])
       })
-      .catch(() => { /* favorites are best-effort too */ })
+      .catch(() => {
+        /* favorites are best-effort too */
+      })
     return () => {
       alive = false
     }
@@ -172,10 +201,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
     const seq = ++suggestSeq.current
     // 收藏先于历史（PLAN-browser-favorites M2）：两个来源并发查，mergeSuggestions
     // 置顶收藏（去重），历史按原 rank 填满 limit。
-    Promise.all([
-      window.electronAPI.browserFavoriteQuery(query, 8).catch(() => []),
-      window.electronAPI.browserHistoryQuery(query).catch(() => []),
-    ])
+    Promise.all([window.electronAPI.browserFavoriteQuery(query, 8).catch(() => []), window.electronAPI.browserHistoryQuery(query).catch(() => [])])
       .then(([favRows, histRows]) => {
         if (seq !== suggestSeq.current) return // a newer draft superseded this
         const ranked = rankHistorySuggestions(query, histRows ?? [], 8)
@@ -184,7 +210,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         setSelectedIdx(-1)
         if (open) setDropdownOpen(merged.length > 0)
       })
-      .catch(() => { /* history is best-effort — the typed text still navigates */ })
+      .catch(() => {
+        /* history is best-effort — the typed text still navigates */
+      })
   }
 
   // 收藏行的删除入口（PLAN-browser-favorites M2 review 补）：下拉行与空态行
@@ -192,13 +220,16 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const removeFavoriteUrl = (url: string) => {
     const key = normalizeFavoriteUrl(url)
     if (!key) return
-    window.electronAPI.browserFavoriteRemove(key)
+    window.electronAPI
+      .browserFavoriteRemove(key)
       .then(() => {
         setStarTick((t) => t + 1)
         setFavorites((rows) => rows.filter((r) => normalizeFavoriteUrl(r.url) !== key))
         refreshSuggestions(lastQueryRef.current, true)
       })
-      .catch(() => { /* favorites are best-effort — the row stays until reload */ })
+      .catch(() => {
+        /* favorites are best-effort — the row stays until reload */
+      })
   }
 
   const closeDropdown = () => {
@@ -229,20 +260,76 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
     setRecentsTick((t) => t + 1) // the empty state's 最近访问 list reads the same table
   }
 
-  // Report the dropdown's actual height so the dock can make room for it.
+  // ── Far-left ▾ quick-switcher (2026-11-01 用户裁定「页面页签与文件页签
+  // 一致」) ── One dropdown listing every open tab, in open order — reachable
+  // no matter where the strip is scrolled (WorkspaceTabStrip's ruling,
+  // mirrored here). Picking a row is the very call a chip's click makes:
+  // optimistic id + selectTab. The menu portals to body — the strip row clips
+  // overflow, and a fixed-positioned portal is immune to that and to any
+  // ancestor containing block. Viewport coords are captured at open; a resize
+  // closes the menu rather than let it drift.
+  const [tabMenuOpen, setTabMenuOpen] = useState(false)
+  const [tabMenuPos, setTabMenuPos] = useState({ top: 0, left: 0 })
+  const tabButtonRef = useRef<HTMLButtonElement | null>(null)
+  const tabMenuRef = useRef<HTMLDivElement | null>(null)
+  const openTabMenu = () => {
+    const r = tabButtonRef.current?.getBoundingClientRect()
+    setTabMenuPos({ top: (r?.bottom ?? 0) + 4, left: r?.left ?? 0 })
+    setTabMenuOpen(true)
+  }
+  // Open = asked-for AND still meaningful: tabs can close elsewhere (an agent
+  // page tool, another window) while the menu sits open. An empty list hides
+  // it by derivation — no state churn — and a list that refills shows it again.
+  const menuVisible = tabMenuOpen && pane.tabs.length > 0
+
+  // Click-outside / Escape / resize close it — the file strip's ▾ gets these
+  // from antd Dropdown; the portaled menu carries its own.
   useEffect(() => {
-    const el = dropdownRef.current
-    if (!dropdownOpen || !el) {
+    if (!menuVisible) return
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (tabButtonRef.current?.contains(target) || tabMenuRef.current?.contains(target)) return
+      setTabMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTabMenuOpen(false)
+    }
+    const onResize = () => setTabMenuOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [menuVisible])
+
+  // Report the open surface's actual height so the dock can make room for it.
+  // ONE channel for BOTH floating surfaces (the dock holds a single shift
+  // number; two writers would clobber each other whenever one closed after
+  // the other opened): whichever dropdown is open reports how far it extends
+  // past the chrome's bottom line. The address dropdown hangs from that very
+  // row (+4 gap → height + 4, the old formula); the ▾ menu hangs from the
+  // strip row, so only the part reaching past the line into the webview area
+  // counts. A WebContentsView paints above all DOM — this number is what
+  // keeps the menu's lower half visible (PLAN-browser-pane-ux T3.5).
+  const tabSignature = pane.tabs.map((t) => `${t.id}:${t.title}`).join('|')
+  useEffect(() => {
+    const el = dropdownOpen ? dropdownRef.current : menuVisible ? tabMenuRef.current : null
+    const row = addressRowRef.current
+    if (!el || !row) {
       useBrowserPaneStore.getState().setChromeOverlayHeight(0)
       return
     }
-    const report = () => useBrowserPaneStore.getState().setChromeOverlayHeight(el.getBoundingClientRect().height + 4)
+    const report = () =>
+      useBrowserPaneStore.getState().setChromeOverlayHeight(Math.max(0, el.getBoundingClientRect().bottom - row.getBoundingClientRect().bottom))
     report()
     if (typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(report)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [dropdownOpen, suggestions, confirmingClear])
+  }, [dropdownOpen, menuVisible, suggestions, confirmingClear, tabSignature])
 
   // Click-outside closes the dropdown.
   useEffect(() => {
@@ -305,7 +392,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
       }}
     >
       {/* 滚动条隐藏写不了内联伪元素——组件自带一小段 style（Composer 先例）。 */}
-      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; } .pm-pane-empty-item:hover { background: var(--pm-separator-faint); }`}</style>
+      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; } .pm-pane-empty-item:hover { background: var(--pm-separator-faint); } .pm-pane-tab-menu { width: 22px; height: 22px; padding: 0; border: none; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: var(--pm-text-quiet); cursor: pointer; flex: none; } .pm-pane-tab-menu:hover { background: var(--pm-hover); color: var(--pm-graph-ink); } .pm-pane-tab-item:hover { background: var(--pm-tile-soft); }`}</style>
       {/* Tab strip (32px) */}
       <div
         style={{
@@ -320,6 +407,26 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           overflow: 'hidden',
         }}
       >
+        {/* The ▾ quick-switcher trigger (2026-11-01 用户裁定「与文件页签一致」):
+            the WorkspaceTabStrip's far-left affordance. Greyed but 22px-kept
+            with nothing open — the row's geometry must not shift when the
+            first tab opens (the file strip's ruling, mirrored). */}
+        <button
+          type="button"
+          ref={tabButtonRef}
+          className="pm-pane-tab-menu"
+          data-pane-tabstrip-menu
+          aria-label="全部标签页"
+          title="全部标签页"
+          onClick={() => {
+            if (pane.tabs.length === 0) return
+            if (menuVisible) setTabMenuOpen(false)
+            else openTabMenu()
+          }}
+          style={{ opacity: pane.tabs.length === 0 ? 0.35 : 1, cursor: pane.tabs.length === 0 ? 'default' : 'pointer' }}
+        >
+          <ChevronDown size={13} />
+        </button>
         <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
           <div
             ref={stripRef}
@@ -368,15 +475,17 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
               </div>
             ))}
           </div>
-        <StripEdgeFades fades={fades} />
+          <StripEdgeFades fades={fades} />
         </div>
         <div style={{ ...ICON_BUTTON }} onClick={() => onAction({ op: 'newTab' })} title="新建标签页">
           <Plus size={13} />
         </div>
       </div>
 
-      {/* Address row (36px) */}
+      {/* Address row (36px) — its bottom IS the chrome line the dock docks
+          the webview below; both dropdowns measure their overhang from it. */}
       <div
+        ref={addressRowRef}
         style={{
           height: 36,
           flexShrink: 0,
@@ -391,7 +500,11 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'back', tabId: activeTab.id })} title="后退">
           <ArrowLeft size={13} />
         </div>
-        <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'forward', tabId: activeTab.id })} title="前进">
+        <div
+          style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }}
+          onClick={() => activeTab && onAction({ op: 'forward', tabId: activeTab.id })}
+          title="前进"
+        >
           <ArrowRight size={13} />
         </div>
         {activeUrl && !isFreshTabUrl(activeUrl) && (
@@ -403,7 +516,11 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
             <Star size={12} fill={starred ? 'currentColor' : 'none'} />
           </div>
         )}
-        <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'reload', tabId: activeTab.id })} title="刷新">
+        <div
+          style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }}
+          onClick={() => activeTab && onAction({ op: 'reload', tabId: activeTab.id })}
+          title="刷新"
+        >
           <RotateCw size={12} />
         </div>
         <div ref={inputWrapRef} style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex', alignItems: 'center', alignSelf: 'stretch' }}>
@@ -498,12 +615,18 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                       background: i === selectedIdx ? 'var(--pm-tile-soft)' : 'transparent',
                     }}
                   >
-                    {s.favorite
-                      ? <Star size={12} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
-                      : <Clock size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />}
+                    {s.favorite ? (
+                      <Star size={12} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
+                    ) : (
+                      <Clock size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />
+                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
-                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</div>
+                      <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {s.title}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {s.url}
+                      </div>
                     </div>
                     {s.favorite && i === selectedIdx && (
                       <div
@@ -604,10 +727,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 {favorites.length > 0 && (
                   <>
                     <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', margin: '2px 0 6px 10px' }}>收藏</div>
-                    <div
-                      style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 8 }}
-                      onMouseLeave={() => setHoverFav(null)}
-                    >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 8 }} onMouseLeave={() => setHoverFav(null)}>
                       {favorites.slice(0, 4).map((f) => (
                         <div
                           key={f.url}
@@ -620,7 +740,17 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Star size={10} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
-                            <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                fontSize: 12,
+                                color: 'var(--pm-text-strong)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
                               {f.title || hostLabel(f.url)}
                             </div>
                             {hoverFav === f.url && (
@@ -670,6 +800,85 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           </div>
         ) : null}
       </div>
+      {/* ▾ quick-switcher menu — portaled to body: the strip row clips
+          overflow, and a fixed-positioned portal is immune to that and to any
+          ancestor containing block. Its open height rides the unified overlay
+          channel above (the webview paints above all DOM). Rows wear the same
+          active treatment as the chips; picking one is the chip's own call. */}
+      {menuVisible &&
+        createPortal(
+          <div
+            ref={tabMenuRef}
+            data-pm-tab-menu
+            style={{
+              position: 'fixed',
+              top: tabMenuPos.top,
+              left: tabMenuPos.left,
+              width: 280,
+              maxHeight: 264,
+              overflowY: 'auto',
+              padding: 4,
+              background: 'var(--pm-elevated)',
+              border: '1px solid var(--pm-pop-border)',
+              borderRadius: 10,
+              boxShadow: 'var(--pm-shadow-dropdown)',
+              zIndex: 1000,
+            }}
+          >
+            {pane.tabs.map((tab) => {
+              const active = tab.id === activeId
+              const hasPage = tab.url !== '' && tab.url !== 'about:blank'
+              return (
+                <div
+                  key={tab.id}
+                  data-pm-tab-menu-item={tab.id}
+                  className="pm-pane-tab-item"
+                  title={tab.title || tab.url}
+                  onClick={() => {
+                    if (!active) {
+                      setOptimisticActive(tab.id)
+                      onAction({ op: 'selectTab', tabId: tab.id })
+                    }
+                    setTabMenuOpen(false)
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    // Row-level weight (the chip's own shape): the probe reads
+                    // the row, and the title inherits instead of re-stating.
+                    fontWeight: active ? 600 : 400,
+                    background: active ? 'var(--pm-tile-soft)' : 'transparent',
+                  }}
+                >
+                  <Globe size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--pm-text-strong)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {tab.title || tab.url || '新标签页'}
+                    </div>
+                    {hasPage && (
+                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {hostLabel(tab.url)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

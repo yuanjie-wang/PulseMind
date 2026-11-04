@@ -30,10 +30,13 @@
  * AND Enter: it is a real <button>) reaches the create modal without writing
  * anything.
  *
- * The 试试 row is asserted last (user request 2026-09-18): the project view now
- * carries the same example-prompt chips the plain chat welcome shows, and the
- * chips are inline-styled spans whose onClick hands the prompt to the composer
- * draft store — a real mouse click is the only layer that can see the handoff.
+ * The 试试 row is asserted last (2026-09-18 introduced it; 2026-11-04 追加裁定
+ * scoped it to the compressed form): the selection form has NO starters — with
+ * the composer hidden there is nothing to send from — and the compressed strip
+ * form carries them beside the mounted composer. The chips are inline-styled
+ * spans whose onClick hands the prompt to the host's send channel (2026-11-04
+ * 二次裁定：点一下即发送，不再是落草稿）— a real mouse click is the only layer
+ * that can see the handoff.
  *
  * What this mounts is the production `ProjectCards` behind a stubbed
  * `window.electronAPI` (project list + last-user-message lookups) and the real
@@ -61,7 +64,6 @@ import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { ProjectCards } from './src/renderer/src/components/welcome/ProjectCards'
 import { useProjectStore } from './src/renderer/src/stores/projectStore'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
-import { useComposerDraftStore } from './src/renderer/src/stores/composerDraftStore'
 // The welcome band is migrated onto the theme sheet (PLAN-dark-mode M3/T1), so
 // the page needs the variable table injected before the components render —
 // a var() with no sheet paints nothing, and the ink assertions below would
@@ -106,8 +108,9 @@ window.electronAPI = new Proxy({}, {
 })
 
 window.__opened = null
+window.__sent = []
 let root = null
-window.__mount = ({ locale = 'zh', projects } = {}) => {
+window.__mount = ({ locale = 'zh', projects, withSend = true } = {}) => {
   window.__projects = projects ?? PROJECTS
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
@@ -120,6 +123,7 @@ window.__mount = ({ locale = 'zh', projects } = {}) => {
               <ProjectCards
                 conversations={CONVERSATIONS}
                 onOpenConversation={(key) => { window.__opened = key }}
+                onStarterSend={withSend ? (text) => { window.__sent.push(text) } : undefined}
               />
             </div>
           </TranslationProvider>
@@ -189,15 +193,17 @@ window.__modal = () => {
 }
 
 window.__selected = () => useNewTaskStore.getState().projectId
-window.__draft = () => useComposerDraftStore.getState().draft
-window.__clearDraft = () => { useComposerDraftStore.getState().clearDraft(); return true }
-/** The 试试 row: the element right below the grid (the picker and the starters
- *  are the only two things inside the scroll region), read as label + chips. */
+/** Drive the compressed strip form directly (evaluate has no module scope). */
+window.__pick = (id) => { useNewTaskStore.getState().setProjectId(id); return true }
+/** The 试试 row of the compressed strip form (2026-11-04 两形态：starters 只
+ *  属于已选形态，横条列的下一个兄弟就是它；选择形态刻意不渲染——没有输入框，
+ *  chips 点了无处可发；宿主不传发送通道时同理整行退场）。读作 label + chips；
+ *  没有行时返回 null。 */
 window.__starters = () => {
-  const createBtn = document.querySelector('[data-action="create-project"]')
-  if (!createBtn) return null
-  const grid = createBtn.parentElement
-  const row = grid.nextElementSibling?.firstElementChild
+  const strip = document.querySelector('[data-welcome-project-strip]')
+  if (!strip) return null
+  const stripCol = strip.parentElement
+  const row = stripCol.nextElementSibling?.firstElementChild
   if (!row) return null
   const gb = (el) => {
     const r = el.getBoundingClientRect()
@@ -207,7 +213,7 @@ window.__starters = () => {
   return {
     label: row.firstElementChild?.textContent.trim() ?? null,
     texts: chips.map((c) => c.textContent.trim()),
-    gridBox: gb(grid),
+    stripBox: gb(stripCol),
     rowBox: gb(row),
     chips: chips.map((c) => ({
       text: c.textContent.trim(),
@@ -262,9 +268,7 @@ await page.waitForFunction(() => window.__ready)
 /** One card's box, its two rows and its trailing button — the layout facts. */
 const cardState = (name) =>
   page.evaluate((projectName) => {
-    const card = [...document.querySelectorAll('div[role="button"]')].find((c) =>
-      c.textContent.includes(projectName)
-    )
+    const card = [...document.querySelectorAll('div[role="button"]')].find((c) => c.textContent.includes(projectName))
     if (!card) return null
     const box = card.getBoundingClientRect()
     const cs = getComputedStyle(card)
@@ -293,24 +297,18 @@ const cardState = (name) =>
       bgImage: cs.backgroundImage,
       contentRight: box.right - parseFloat(cs.paddingRight),
       rows,
-      line: lb
-        ? { top: lb.top, bottom: lb.bottom, height: lb.height, right: lb.right, text: line.textContent }
-        : null,
+      line: lb ? { top: lb.top, bottom: lb.bottom, height: lb.height, right: lb.right, text: line.textContent } : null,
       textRight,
       textColor,
       buttonColor,
-      button: bb
-        ? { label: button?.textContent, left: bb.left, right: bb.right, top: bb.top, height: bb.height }
-        : null,
+      button: bb ? { label: button?.textContent, left: bb.left, right: bb.right, top: bb.top, height: bb.height } : null,
     }
   }, name)
 
 /** Text of the card whose name matches — the line's content, never its box. */
 const lineText = (name) =>
   page.evaluate((projectName) => {
-    const card = [...document.querySelectorAll('div[role="button"]')].find((c) =>
-      c.textContent.includes(projectName)
-    )
+    const card = [...document.querySelectorAll('div[role="button"]')].find((c) => c.textContent.includes(projectName))
     return card?.children[1]?.textContent ?? null
   }, name)
 
@@ -333,7 +331,7 @@ check('…and carries a play button like every other card', (await startPlay.cou
 check('a project with one keeps the quote line', /^1天前：把周报整理一下/.test(usedLine ?? ''), usedLine)
 check(
   '…with the plain continue button, and no 立即开始',
-  (await continuePlay.count()) === 1 && usedLine?.includes('立即开始') === false && (await startPlay.count()) === 1
+  (await continuePlay.count()) === 1 && usedLine?.includes('立即开始') === false && (await startPlay.count()) === 1,
 )
 
 // ── 2 · the row still fits the card (this is why the probe exists) ──
@@ -343,31 +341,31 @@ check('the fallback line renders one row', empty.rows.length === 2, `${empty.row
 check(
   'text and button share the row',
   Math.abs(empty.button.top - empty.rows[1].top) < 12 && empty.button.height <= empty.rows[1].height + 1,
-  `button top ${empty.button.top.toFixed(1)} in row ${empty.rows[1].top.toFixed(1)}..${empty.rows[1].bottom.toFixed(1)}`
+  `button top ${empty.button.top.toFixed(1)} in row ${empty.rows[1].top.toFixed(1)}..${empty.rows[1].bottom.toFixed(1)}`,
 )
 check('the line stays inside the card', empty.line.right <= empty.contentRight + 0.5, `${empty.line.right.toFixed(1)} <= ${empty.contentRight.toFixed(1)}`)
 check(
   'the button follows the text (neither stretches)',
   empty.button.left - empty.textRight < 6 && empty.button.right < empty.contentRight - 20,
-  `text ends ${empty.textRight.toFixed(1)}, button ${empty.button.left.toFixed(1)}..${empty.button.right.toFixed(1)} of ${empty.contentRight.toFixed(1)}`
+  `text ends ${empty.textRight.toFixed(1)}, button ${empty.button.left.toFixed(1)}..${empty.button.right.toFixed(1)} of ${empty.contentRight.toFixed(1)}`,
 )
 check('the empty card keeps the 72px floor', Math.abs(empty.height - 72) < 0.5, `${empty.height.toFixed(1)}px`)
 check('both cards are the same height', Math.abs(empty.height - used.height) < 0.5, `${empty.height.toFixed(1)} vs ${used.height.toFixed(1)}`)
 check(
   'both rows carry the same 20px play button',
   Math.abs(empty.button.height - used.button.height) < 0.5 && Math.abs(empty.button.height - 20) < 0.5,
-  `${empty.button.height.toFixed(1)} vs ${used.button.height.toFixed(1)}`
+  `${empty.button.height.toFixed(1)} vs ${used.button.height.toFixed(1)}`,
 )
 check('neither card is washed before anything is picked', empty.bgImage === 'none' && empty.bg === 'rgb(247, 247, 248)', `${empty.bg} / ${empty.bgImage}`)
 check(
   '立即开始 wears the play button’s ink',
   empty.textColor === 'rgb(153, 153, 153)' && empty.textColor === empty.buttonColor,
-  `text ${empty.textColor} vs button ${empty.buttonColor}`
+  `text ${empty.textColor} vs button ${empty.buttonColor}`,
 )
 check(
   'a quote stays darker than the button that acts on it',
   used.textColor === 'rgb(136, 136, 136)' && used.buttonColor === 'rgb(153, 153, 153)',
-  `text ${used.textColor} vs button ${used.buttonColor}`
+  `text ${used.textColor} vs button ${used.buttonColor}`,
 )
 
 // ── 3 · the play button opens the conversation, and only that ──
@@ -375,7 +373,11 @@ await page.evaluate(() => window.__reset())
 await continuePlay.click()
 await page.waitForTimeout(120)
 check('play opens the project’s latest conversation', (await page.evaluate(() => window.__opened)) === 'c1')
-check('play does not also target the project', (await page.evaluate(() => window.__selected())) === null, String(await page.evaluate(() => window.__selected())))
+check(
+  'play does not also target the project',
+  (await page.evaluate(() => window.__selected())) === null,
+  String(await page.evaluate(() => window.__selected())),
+)
 
 // ── 4 · the empty card's play targets the project — once, and nothing else ──
 await page.evaluate(() => window.__reset())
@@ -385,17 +387,27 @@ const afterStart = await page.evaluate(() => ({ selected: window.__selected(), w
 check('play on a 立即开始 row targets that project', afterStart.selected === 'p_empty', String(afterStart.selected))
 check('the card’s own click does not also fire', afterStart.writes === 1, `${afterStart.writes} store write(s)`)
 check('it opens nothing (there is nothing to open)', afterStart.opened === null, String(afterStart.opened))
-const lit = await cardState('空白项目')
+// 两形态（2026-11-04 裁定）：targeting 不再点亮网格里的卡——选中即压缩，wash
+// 挪到横条上（同一 selectedWash 配方），网格整组退场。
+const strip = await page.evaluate(() => {
+  const el = document.querySelector('[data-welcome-project-strip]')
+  if (!el) return null
+  const cs = getComputedStyle(el)
+  return { bg: cs.backgroundColor, bgImage: cs.backgroundImage, name: el.textContent ?? '' }
+})
 check(
-  'the targeted card wears the wash',
-  lit.bgImage.includes('linear-gradient') && lit.bg === 'rgba(0, 0, 0, 0)',
-  `${lit.bg} / ${lit.bgImage.slice(0, 40)}…`
+  'the targeted project compresses into the wash-wearing strip',
+  strip !== null && strip.bgImage.includes('linear-gradient') && strip.name.includes('空白项目'),
+  strip ? `${strip.bg} / ${strip.bgImage.slice(0, 40)}…` : 'null',
 )
-check('the other card stays plain', (await cardState('在用的项目')).bgImage === 'none')
+check('the grid leaves with the selection', await page.evaluate(() => document.querySelector('[data-action="create-project"]') === null))
 await page.screenshot({ path: join(SHOTS, 'zh.png'), clip: { x: 0, y: 0, width: 1000, height: 300 } })
 
 // ── 5 · EN fits the same card ──
-await page.evaluate(() => { window.__reset(); window.__mount({ locale: 'en' }) })
+await page.evaluate(() => {
+  window.__reset()
+  window.__mount({ locale: 'en' })
+})
 await page.waitForSelector('div[role="button"]')
 await page.waitForTimeout(150)
 const enLine = await lineText('空白项目')
@@ -414,20 +426,16 @@ const withProjects = await page.evaluate(() => window.__createCard())
 check(
   'with projects: the create card is the grid’s last cell',
   !!withProjects && withProjects.last && withProjects.siblings === 3 && withProjects.columnCount === 3,
-  withProjects ? `${withProjects.siblings} cells in ${withProjects.columnCount} columns, last=${withProjects.last}` : 'no card'
+  withProjects ? `${withProjects.siblings} cells in ${withProjects.columnCount} columns, last=${withProjects.last}` : 'no card',
 )
-check(
-  'with projects: no 还没有项目 panel (there are projects to show)',
-  withProjects?.emptyBox == null,
-  String(withProjects?.emptyText)
-)
+check('with projects: no 还没有项目 panel (there are projects to show)', withProjects?.emptyBox == null, String(withProjects?.emptyText))
 // The three-column grid's cell width: (952 - 2*14) / 3, and a project card is
 // exactly that wide — the create card must read as one of them.
 const threeColWidth = (952 - 2 * 14) / 3
 check(
   'with projects: it takes a project card’s own cell width',
   !!withProjects && Math.abs(withProjects.box.width - threeColWidth) < 0.5,
-  `${withProjects?.box.width.toFixed(1)} vs ${threeColWidth.toFixed(1)}`
+  `${withProjects?.box.width.toFixed(1)} vs ${threeColWidth.toFixed(1)}`,
 )
 
 // ── 7 · the empty state: ONE card (the merge) ──
@@ -444,7 +452,10 @@ check(
 // behaviour and is tested with a real mouse further down; this line only makes
 // the resting-state read deterministic.
 await page.mouse.move(0, 0)
-await page.evaluate(() => { window.__calls = []; window.__mount({ projects: [] }) })
+await page.evaluate(() => {
+  window.__calls = []
+  window.__mount({ projects: [] })
+})
 // No waitForSelector: the card's absence IS one of the things under test, so it
 // has to come back as a FAIL line rather than a 30s timeout that kills the run.
 await page.waitForTimeout(250)
@@ -452,60 +463,67 @@ const emptyState = await page.evaluate(() => window.__createCard())
 check(
   'no projects: explanation and create action are ONE element (the merge)',
   !!emptyState && emptyState.emptyIsCard === true && emptyState.siblings === 1 && emptyState.last,
-  emptyState ? `sameEl=${emptyState.emptyIsCard} cells=${emptyState.siblings} last=${emptyState.last}` : 'no card'
+  emptyState ? `sameEl=${emptyState.emptyIsCard} cells=${emptyState.siblings} last=${emptyState.last}` : 'no card',
 )
 check(
   'no projects: it spans the whole grid row',
-  !!emptyState && emptyState.emptyColumns === 'span 3' &&
+  !!emptyState &&
+    emptyState.emptyColumns === 'span 3' &&
     Math.abs(emptyState.box.width - emptyState.gridBox.width) < 0.5 &&
     Math.abs(emptyState.box.left - emptyState.gridBox.left) < 0.5 &&
     Math.abs(emptyState.box.right - emptyState.gridBox.right) < 0.5,
-  emptyState
-    ? `${emptyState.emptyColumns} / ${emptyState.box.width.toFixed(1)} of ${emptyState.gridBox.width.toFixed(1)}`
-    : 'no card'
+  emptyState ? `${emptyState.emptyColumns} / ${emptyState.box.width.toFixed(1)} of ${emptyState.gridBox.width.toFixed(1)}` : 'no card',
 )
 check(
   'no projects: the title reads 立即创建项目, with the hint under it',
-  !!emptyState && emptyState.emptyLines.length === 2 &&
+  !!emptyState &&
+    emptyState.emptyLines.length === 2 &&
     emptyState.emptyLines[0].text === '立即创建项目' &&
     emptyState.emptyLines[1].text.includes('给项目一个专属文件夹') &&
     emptyState.emptyLines[1].top >= emptyState.emptyLines[0].bottom - 0.5,
-  emptyState ? emptyState.emptyLines.map((l) => l.text).join(' | ') : 'no card'
+  emptyState ? emptyState.emptyLines.map((l) => l.text).join(' | ') : 'no card',
 )
 check(
   'no projects: the card is a real <button>, not a clickable div',
   emptyState?.tag === 'BUTTON' && emptyState?.type === 'button',
-  `${emptyState?.tag}:${emptyState?.type} "${emptyState?.text}"`
+  `${emptyState?.tag}:${emptyState?.type} "${emptyState?.text}"`,
 )
 // Both lines sit on the card's horizontal centre (the full-row card reads as
 // one centred affordance, not a left-aligned paragraph).
 check(
   'no projects: both lines are centred on the card’s axis',
-  !!emptyState && emptyState.paint.textAlign === 'center' &&
+  !!emptyState &&
+    emptyState.paint.textAlign === 'center' &&
     emptyState.emptyLines.every((l) => Math.abs((l.left + l.right) / 2 - (emptyState.box.left + emptyState.box.right) / 2) <= 1),
   emptyState
-    ? `${emptyState.paint.textAlign} · ` + emptyState.emptyLines.map((l) => ((l.left + l.right) / 2).toFixed(1)).join(' | ') +
-      ` vs ${((emptyState.box.left + emptyState.box.right) / 2).toFixed(1)}`
-    : 'no card'
+    ? `${emptyState.paint.textAlign} · ` +
+        emptyState.emptyLines.map((l) => ((l.left + l.right) / 2).toFixed(1)).join(' | ') +
+        ` vs ${((emptyState.box.left + emptyState.box.right) / 2).toFixed(1)}`
+    : 'no card',
 )
 check(
   'no projects: the dashed recipe + the page’s own type scale',
   !!emptyState &&
-    emptyState.paint.borderStyle === 'dashed' && emptyState.paint.borderWidth === '1px' &&
-    emptyState.paint.borderColor === 'rgb(200, 200, 204)' && emptyState.paint.radius === '16px' &&
-    emptyState.paint.minHeight === '72px' && emptyState.paint.background === 'rgba(0, 0, 0, 0)' &&
-    emptyState.fontMatchesPage && emptyState.paint.cursor === 'pointer',
+    emptyState.paint.borderStyle === 'dashed' &&
+    emptyState.paint.borderWidth === '1px' &&
+    emptyState.paint.borderColor === 'rgb(200, 200, 204)' &&
+    emptyState.paint.radius === '16px' &&
+    emptyState.paint.minHeight === '72px' &&
+    emptyState.paint.background === 'rgba(0, 0, 0, 0)' &&
+    emptyState.fontMatchesPage &&
+    emptyState.paint.cursor === 'pointer',
   emptyState
     ? `${emptyState.paint.borderStyle} ${emptyState.paint.borderColor} r${emptyState.paint.radius} min${emptyState.paint.minHeight} fontInherited=${emptyState.fontMatchesPage} on ${emptyState.paint.background}`
-    : 'no card'
+    : 'no card',
 )
 // The floor, not a fixed height: the card is alone in the row, so it takes the
 // height its two lines want — never below the 72px floor.
 check(
   'no projects: the card clears the 72px floor with both lines inside',
-  !!emptyState && emptyState.box.height >= 71.5 &&
+  !!emptyState &&
+    emptyState.box.height >= 71.5 &&
     emptyState.emptyLines.every((l) => l.top >= emptyState.box.top - 0.5 && l.bottom <= emptyState.box.bottom + 0.5),
-  emptyState ? `${emptyState.box.height.toFixed(1)}px, ${emptyState.emptyLines.length} line(s) inside` : 'no card'
+  emptyState ? `${emptyState.box.height.toFixed(1)}px, ${emptyState.emptyLines.length} line(s) inside` : 'no card',
 )
 // A real mouse: the dashed recipe darkens on hover (inline handlers, so this is
 // the only layer that can see it). The title inherits the button's color, so it
@@ -528,7 +546,7 @@ const createHover = await page.evaluate(() => {
 check(
   'no projects: it answers the pointer (border and title darken)',
   createHover.borderColor === 'rgb(102, 102, 102)' && createHover.color === 'rgb(68, 68, 68)',
-  `${createHover.borderColor} / ${createHover.color}`
+  `${createHover.borderColor} / ${createHover.color}`,
 )
 await page.mouse.move(0, 0)
 await page.waitForTimeout(200)
@@ -541,15 +559,11 @@ if (emptyState) {
   await page.waitForTimeout(400)
 }
 const modalByMouse = await page.evaluate(() => window.__modal())
-check(
-  'no projects: a click opens the create modal',
-  !!modalByMouse && modalByMouse.inputs.some((p) => p.includes('my-app')),
-  JSON.stringify(modalByMouse)
-)
+check('no projects: a click opens the create modal', !!modalByMouse && modalByMouse.inputs.some((p) => p.includes('my-app')), JSON.stringify(modalByMouse))
 check(
   'no projects: …and writes nothing (the modal’s 保存 is what creates)',
   !(await page.evaluate(() => window.__calls)).includes('projectCreate'),
-  (await page.evaluate(() => window.__calls)).join(', ')
+  (await page.evaluate(() => window.__calls)).join(', '),
 )
 await page.keyboard.press('Escape')
 await page.waitForTimeout(300)
@@ -563,11 +577,7 @@ if (focusable) {
   await page.keyboard.press('Enter')
   await page.waitForTimeout(400)
 }
-check(
-  'no projects: Enter opens it too (the card is focusable)',
-  focusable && (await page.evaluate(() => window.__modal())) != null,
-  `focusable=${focusable}`
-)
+check('no projects: Enter opens it too (the card is focusable)', focusable && (await page.evaluate(() => window.__modal())) != null, `focusable=${focusable}`)
 await page.keyboard.press('Escape')
 await page.waitForTimeout(300)
 
@@ -577,72 +587,102 @@ await page.waitForTimeout(250)
 const enEmpty = await page.evaluate(() => window.__createCard())
 check(
   'EN no projects: the merged card is translated, not hard-coded',
-  !!enEmpty && enEmpty.emptyIsCard === true && enEmpty.emptyLines[0]?.text === 'Create a project now' &&
+  !!enEmpty &&
+    enEmpty.emptyIsCard === true &&
+    enEmpty.emptyLines[0]?.text === 'Create a project now' &&
     (enEmpty.emptyLines[1]?.text ?? '').includes('own folder'),
-  enEmpty ? enEmpty.emptyLines.map((l) => l.text).join(' | ') : 'no card'
+  enEmpty ? enEmpty.emptyLines.map((l) => l.text).join(' | ') : 'no card',
 )
 check(
   'EN no projects: it still spans the row',
   !!enEmpty && Math.abs(enEmpty.box.width - enEmpty.gridBox.width) < 0.5 && enEmpty.emptyColumns === 'span 3',
-  enEmpty ? `${enEmpty.box.width.toFixed(1)} / ${enEmpty.emptyColumns}` : 'no card'
+  enEmpty ? `${enEmpty.box.width.toFixed(1)} / ${enEmpty.emptyColumns}` : 'no card',
 )
 await page.screenshot({ path: join(SHOTS, 'no-projects-en.png'), clip: { x: 0, y: 0, width: 1000, height: 300 } })
 
-// ── 9 · the 试试 row in the project view ──
-// The user asked for the same 「试试」 affordance the plain welcome page has
-// (2026-09-18): chat mode shows three example prompts, project mode showed none.
-// The chips are spans with an inline onClick, so the draft handoff is invisible
+// ── 9 · the 试试 row lives ONLY in the compressed form ──
+// 2026-09-18: project mode gained the same 「试试」 affordance chat mode has.
+// 2026-11-04 追加裁定：选择形态（无输入框）撤掉——chips 点了无处可发，点了
+// 就是「没反应」；已选形态（压缩横条）composer 已挂载，chips 才有用。The
+// chips are spans with an inline onClick, so the send handoff is invisible
 // to jsdom and to reading the source — it has to be clicked for real.
-const ZH_STARTERS = [
-  '看一下这个项目里的文件，给我讲讲整体结构',
-  '根据项目里的资料，帮我写一份项目说明',
-  '找出项目里值得改进的地方，给出建议',
-]
+// 二次裁定（同日）：点击即发送，不再经草稿。
+const ZH_STARTERS = ['看一下这个项目里的文件，给我讲讲整体结构', '根据项目里的资料，帮我写一份项目说明', '找出项目里值得改进的地方，给出建议']
 const EN_STARTERS = [
   'Look through this project’s files and walk me through its structure',
   'Write a project overview from the material in this folder',
   'Find what is worth improving in this project and suggest fixes',
 ]
-await page.evaluate(() => { window.__clearDraft(); window.__mount({}) })
+await page.evaluate(() => {
+  window.__sent = []
+  window.__reset()
+  window.__mount({})
+})
 await page.waitForSelector('[data-action="create-project"]')
+await page.waitForTimeout(200)
+check(
+  'the selection form has no 试试 row (no composer to send from)',
+  await page.evaluate(() => !(document.querySelector('[data-welcome-shake="projectPicker"]')?.textContent ?? '').includes('试试')),
+)
+// Selecting compresses to the strip, whose composers-adjacent starters appear.
+await page.evaluate(() => window.__pick('p_empty'))
+await page.waitForSelector('[data-welcome-project-strip]')
 await page.waitForTimeout(200)
 const zhStarters = await page.evaluate(() => window.__starters())
 check(
-  'the 试试 row renders under the project grid',
+  'the compressed form carries the 试试 row',
   !!zhStarters && zhStarters.label === '试试' && JSON.stringify(zhStarters.texts) === JSON.stringify(ZH_STARTERS),
-  zhStarters ? `${zhStarters.label} / ${zhStarters.texts.length} chip(s)` : 'no row'
+  zhStarters ? `${zhStarters.label} / ${zhStarters.texts.length} chip(s)` : 'no row',
 )
 check(
-  '…strictly below the grid, inside the scroll region',
-  !!zhStarters && zhStarters.rowBox.top >= zhStarters.gridBox.bottom - 0.5,
-  zhStarters ? `row ${zhStarters.rowBox.top.toFixed(1)} >= grid ${zhStarters.gridBox.bottom.toFixed(1)}` : 'no row'
+  '…strictly below the strip',
+  !!zhStarters && zhStarters.rowBox.top >= zhStarters.stripBox.bottom - 0.5,
+  zhStarters ? `row ${zhStarters.rowBox.top.toFixed(1)} >= strip ${zhStarters.stripBox.bottom.toFixed(1)}` : 'no row',
 )
 check(
   'each starter is a pill from the shared chip',
   !!zhStarters && zhStarters.chips.every((c) => c.radius === '999px' && c.fontSize === '13px'),
-  zhStarters ? zhStarters.chips.map((c) => `${c.radius}/${c.fontSize}`).join(', ') : 'no row'
+  zhStarters ? zhStarters.chips.map((c) => `${c.radius}/${c.fontSize}`).join(', ') : 'no row',
 )
 if (zhStarters?.chips[1]) {
   const c = zhStarters.chips[1]
   await page.mouse.click(c.box.left + c.box.width / 2, c.box.top + c.box.height / 2)
   await page.waitForTimeout(120)
 }
+// 2026-11-04 用户裁定（翻转「只落草稿」）：点一下就是发送，不再要求按第二次。
 check(
-  'clicking a project starter writes it into the composer draft',
-  (await page.evaluate(() => window.__draft())) === ZH_STARTERS[1],
-  String(await page.evaluate(() => window.__draft()))
+  'clicking a project starter SENDS it (one click, no draft pass-through)',
+  JSON.stringify(await page.evaluate(() => window.__sent)) === JSON.stringify([ZH_STARTERS[1]]),
+  `sent=${JSON.stringify(await page.evaluate(() => window.__sent))}`,
 )
 await page.screenshot({ path: join(SHOTS, 'starters-zh.png'), clip: { x: 0, y: 0, width: 1000, height: 380 } })
 
+// ── 9b · no send channel, no chips (dead pills are worse than none) ──
+// 未配置 API 密钥时宿主不传 onStarterSend（composer 也不挂）：这时整行退场。
+await page.evaluate(() => {
+  window.__sent = []
+  window.__mount({ withSend: false })
+  window.__pick('p_empty')
+})
+await page.waitForSelector('[data-welcome-project-strip]')
+await page.waitForTimeout(200)
+check(
+  'without a send channel the 试试 row is not rendered at all',
+  (await page.evaluate(() => window.__starters())) === null,
+)
+
 // ── 10 · the starters are translated, not hard-coded ──
-await page.evaluate(() => { window.__clearDraft(); window.__mount({ locale: 'en' }) })
-await page.waitForSelector('[data-action="create-project"]')
+await page.evaluate(() => {
+  window.__mount({ locale: 'en' })
+  window.__pick('p_empty')
+})
+await page.waitForSelector('[data-welcome-project-strip]')
 await page.waitForTimeout(200)
 const enStarters = await page.evaluate(() => window.__starters())
 check(
   'EN: the 试试 row is “Try” over the translated prompts',
   !!enStarters && enStarters.label === 'Try' && JSON.stringify(enStarters.texts) === JSON.stringify(EN_STARTERS),
-  enStarters ? `${enStarters.label} / ${enStarters.texts.join(' | ')}` : 'no row'
+  enStarters ? `${enStarters.label} / ${enStarters.texts.join(' | ')}` : 'no row',
 )
 await page.screenshot({ path: join(SHOTS, 'starters-en.png'), clip: { x: 0, y: 0, width: 1000, height: 380 } })
 

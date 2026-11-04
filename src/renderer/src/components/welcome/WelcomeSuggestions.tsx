@@ -4,31 +4,18 @@
 // 开始日常 (how the last routine run went), 知识沉淀 (what just entered the
 // knowledge base). Each slice loads independently, so a slow or failed one
 // shows a skeleton or its own guidance instead of blanking the band. Starter
-// prompts stay underneath, prefilling the composer in one click.
+// prompts stay underneath and send in one click (2026-11-04 裁定).
 
 import React, { useEffect, useState } from 'react'
 import { Button, Tooltip } from 'antd'
-import {
-  ArrowRightOutlined,
-  ClockCircleOutlined,
-  DatabaseOutlined,
-  ImportOutlined,
-  MessageOutlined,
-  PlayCircleOutlined,
-} from '@ant-design/icons'
+import { ArrowRightOutlined, ClockCircleOutlined, DatabaseOutlined, ImportOutlined, MessageOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { StarterPrompts } from './StarterPrompts'
 import { useRoutineRunNow } from '../routine/RoutineRunModal'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { describeCron } from '../../utils/schedule-text'
-import {
-  isRunOverdue,
-  pickLatestRun,
-  pickNewestKnowledge,
-  pickNextScheduledRoutine,
-  pickResumeConversation,
-} from '../../utils/welcome-slices'
+import { isRunOverdue, pickLatestRun, pickNewestKnowledge, pickNextScheduledRoutine, pickResumeConversation } from '../../utils/welcome-slices'
 import type { Routine, RoutineRun, RoutineRunStatus } from '../../../../shared/types/routine'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 import type { ConversationLight } from '../../hooks/useConversationEngine'
@@ -44,7 +31,7 @@ const LINE_CLAMP: React.CSSProperties = {
   WebkitLineClamp: 2,
   WebkitBoxOrient: 'vertical',
   overflow: 'hidden',
-}/** Relative stamp for a card's meta line, or null when the stamp is unusable. */
+} /** Relative stamp for a card's meta line, or null when the stamp is unusable. */
 function relativeText(timestamp: string | null | undefined, now: number, t: (p: string, v?: Record<string, string | number>) => string): string | null {
   return describeRelativeTimeText(timestamp ?? undefined, now, t)
 }
@@ -79,11 +66,21 @@ const RUN_STATUS_COLOR: Record<RoutineRunStatus, string> = {
  * a real button — pointer plus Enter/Space — so the whole surface is the hit
  * target rather than a trailing arrow.
  */
-function CardShell({ icon, label, onClick, badge, children }: {
+export function CardShell({
+  icon,
+  label,
+  onClick,
+  badge,
+  flush,
+  children,
+}: {
   icon: React.ReactNode
   label: string
   onClick?: () => void
   badge?: React.ReactNode
+  /** 右 padding 收零：内容区（如带滚动条的列表）贴住卡右缘，滚动条不再隔
+   *  着 20px 内缩悬空；行 hover 也随之通到边缘（flush 通栏观感）。 */
+  flush?: boolean
   children: React.ReactNode
 }): React.ReactElement {
   const activate = onClick
@@ -97,12 +94,24 @@ function CardShell({ icon, label, onClick, badge, children }: {
         e.preventDefault()
         activate()
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = activate ? CARD_BG_HOVER : CARD_BG }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = CARD_BG }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = activate ? CARD_BG_HOVER : CARD_BG
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = CARD_BG
+      }}
       style={{
-        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10,
-        background: CARD_BG, borderRadius: 16, padding: '18px 20px 16px',
-        textAlign: 'left', userSelect: 'none', cursor: activate ? 'pointer' : 'default',
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        background: CARD_BG,
+        borderRadius: 16,
+        padding: flush ? '18px 0 16px 20px' : '18px 20px 16px',
+        textAlign: 'left',
+        userSelect: 'none',
+        cursor: activate ? 'pointer' : 'default',
         transition: 'background 0.15s',
       }}
     >
@@ -118,7 +127,12 @@ function CardShell({ icon, label, onClick, badge, children }: {
 }
 
 /** Card body: a one-line headline, an optional clamped second line, and a meta line. */
-function CardBody({ headline, detail, meta, muted = false }: {
+function CardBody({
+  headline,
+  detail,
+  meta,
+  muted = false,
+}: {
   headline: string
   detail?: string | null
   meta?: string | null
@@ -126,10 +140,17 @@ function CardBody({ headline, detail, meta, muted = false }: {
 }): React.ReactElement {
   return (
     <>
-      <div style={{
-        fontSize: 16, fontWeight: 600, lineHeight: '22px', color: muted ? 'var(--pm-text-muted)' : 'var(--pm-text-strong)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>
+      <div
+        style={{
+          fontSize: 16,
+          fontWeight: 600,
+          lineHeight: '22px',
+          color: muted ? 'var(--pm-text-muted)' : 'var(--pm-text-strong)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
         {headline}
       </div>
       <div style={{ ...LINE_CLAMP, flex: 1, fontSize: 13, lineHeight: '19px', color: muted ? 'var(--pm-text-haze)' : 'var(--pm-text-quiet)', minHeight: 38 }}>
@@ -148,13 +169,24 @@ function CardBody({ headline, detail, meta, muted = false }: {
 /** Loading placeholder shaped like a card, so the band doesn't jump when data lands. */
 function SkeletonCard(): React.ReactElement {
   const bar = (width: number | string, height: number): React.CSSProperties => ({
-    width, height, borderRadius: 5, background: 'var(--pm-skeleton)',
+    width,
+    height,
+    borderRadius: 5,
+    background: 'var(--pm-skeleton)',
   })
   return (
-    <div style={{
-      flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10,
-      background: CARD_BG, borderRadius: 16, padding: '18px 20px 16px',
-    }}>
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        background: CARD_BG,
+        borderRadius: 16,
+        padding: '18px 20px 16px',
+      }}
+    >
       <div style={bar(64, 12)} />
       <div style={bar('100%', 14)} />
       <div style={bar('72%', 14)} />
@@ -174,13 +206,19 @@ interface ChatSlice {
   quote: string | null
 }
 
-export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
+export function WelcomeSuggestions({
+  convLights = {},
+  onOpenConversation,
+  onStarterSend,
+}: {
   /** Per-conversation sidebar light — the card badge lights while running. */
   convLights?: Record<string, ConversationLight>
   onOpenConversation: (key: string) => void
+  /** 试试 chips 的发送通道（2026-11-04 裁定：点一下即发送）。缺省 = 整行不渲染。 */
+  onStarterSend?: (text: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
-  
+
   const [now, setNow] = useState(() => Date.now())
   // undefined = still loading, null = nothing to suggest; the two render differently.
   const [chat, setChat] = useState<ChatSlice | null | undefined>(undefined)
@@ -198,7 +236,8 @@ export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
   // index decides which conversation the card offers.
   useEffect(() => {
     let cancelled = false
-    window.electronAPI.listConversations()
+    window.electronAPI
+      .listConversations()
       .then((list) => {
         const latest = pickResumeConversation(list)
         if (!latest) {
@@ -206,12 +245,21 @@ export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
           return
         }
         if (!cancelled) setChat({ key: latest.id, title: latest.title, updatedAt: latest.updatedAt, quote: null })
-        window.electronAPI.getConversationLastUserMessage(latest.id)
-          .then((quote) => { if (!cancelled) setChat((prev) => (prev ? { ...prev, quote } : prev)) })
-          .catch(() => { /* the card still works without the quote */ })
+        window.electronAPI
+          .getConversationLastUserMessage(latest.id)
+          .then((quote) => {
+            if (!cancelled) setChat((prev) => (prev ? { ...prev, quote } : prev))
+          })
+          .catch(() => {
+            /* the card still works without the quote */
+          })
       })
-      .catch(() => { if (!cancelled) setChat(null) })
-    return () => { cancelled = true }
+      .catch(() => {
+        if (!cancelled) setChat(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -222,16 +270,27 @@ export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
         setRoutines(list)
         setRuns(runList)
       })
-      .catch(() => { if (!cancelled) setRoutines(null) })
-    return () => { cancelled = true }
+      .catch(() => {
+        if (!cancelled) setRoutines(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
     let cancelled = false
-    window.electronAPI.knowledgeListFiles()
-      .then((files) => { if (!cancelled) setKnowledge(files) })
-      .catch(() => { if (!cancelled) setKnowledge(null) })
-    return () => { cancelled = true }
+    window.electronAPI
+      .knowledgeListFiles()
+      .then((files) => {
+        if (!cancelled) setKnowledge(files)
+      })
+      .catch(() => {
+        if (!cancelled) setKnowledge(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // 立即运行 via the shared entry (RoutineRunModal): params → fill-in dialog,
@@ -252,15 +311,20 @@ export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
         <KnowledgeCard files={knowledge} now={now} />
       </div>
 
-      {/* Starter prompts: one click drops the question into the composer. */}
-      <StarterPrompts labels={starters} />
+      {/* Starter prompts: one click sends the question (2026-11-04 裁定). */}
+      <StarterPrompts labels={starters} onSend={onStarterSend} />
     </div>
   )
 }
 
 // ── 继续对话 ──
 
-function ChatCard({ chat, now, running, onOpenConversation }: {
+function ChatCard({
+  chat,
+  now,
+  running,
+  onOpenConversation,
+}: {
   chat: ChatSlice | null | undefined
   now: number
   running: boolean
@@ -279,18 +343,21 @@ function ChatCard({ chat, now, running, onOpenConversation }: {
       icon={<MessageOutlined />}
       label={t('welcome.cardChat')}
       onClick={() => onOpenConversation(chat.key)}
-      badge={running ? (
-        <span style={{
-          width: 6, height: 6, borderRadius: '50%', background: 'var(--pm-link)',
-          animation: 'ant-status-processing 1.2s infinite ease-in-out',
-        }} />
-      ) : undefined}
+      badge={
+        running ? (
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: 'var(--pm-link)',
+              animation: 'ant-status-processing 1.2s infinite ease-in-out',
+            }}
+          />
+        ) : undefined
+      }
     >
-      <CardBody
-        headline={chat.title}
-        detail={chat.quote ? t('welcome.lastYouSaid', { text: chat.quote }) : null}
-        meta={elapsed}
-      />
+      <CardBody headline={chat.title} detail={chat.quote ? t('welcome.lastYouSaid', { text: chat.quote }) : null} meta={elapsed} />
     </CardShell>
   )
 }
@@ -299,7 +366,12 @@ function ChatCard({ chat, now, running, onOpenConversation }: {
 
 type RoutineRunLike = Pick<RoutineRun, 'routineId' | 'conversationId' | 'status' | 'startedAt' | 'error'>
 
-function RoutineCard({ routines, runs, now, onRunNow }: {
+function RoutineCard({
+  routines,
+  runs,
+  now,
+  onRunNow,
+}: {
   routines: Routine[] | null | undefined
   runs: RoutineRunLike[]
   now: number
@@ -310,12 +382,18 @@ function RoutineCard({ routines, runs, now, onRunNow }: {
 
   if (routines === undefined) return <SkeletonCard />
 
-  const goRoutines = (): void => { navigate({ kind: 'routines' }) }
+  const goRoutines = (): void => {
+    navigate({ kind: 'routines' })
+  }
   /** Latest run exists → the run-history workspace for its task (the newest
    *  run is preselected and streams live when still running). */
-  const goRunHistory = (routineId: string): void => { navigate({ kind: 'routines', runHistoryOf: routineId }) }
+  const goRunHistory = (routineId: string): void => {
+    navigate({ kind: 'routines', runHistoryOf: routineId })
+  }
   const goRoutinesLink = (
-    <a onClick={goRoutines} style={{ cursor: 'pointer' }}>{t('welcome.createRoutine')}</a>
+    <a onClick={goRoutines} style={{ cursor: 'pointer' }}>
+      {t('welcome.createRoutine')}
+    </a>
   )
   if (routines === null || routines.length === 0) {
     return (
@@ -335,18 +413,14 @@ function RoutineCard({ routines, runs, now, onRunNow }: {
         icon={<ClockCircleOutlined />}
         label={t('welcome.cardRoutine')}
         onClick={() => goRunHistory(latestRun.routineId)}
-        badge={(
+        badge={
           <>
             <RunStatusBadge status={latestRun.status} />
             <RunNowButton routine={runRoutine} onRunNow={onRunNow} />
           </>
-        )}
+        }
       >
-        <CardBody
-          headline={`${runRoutine.icon ? `${runRoutine.icon} ` : ''}${runRoutine.name}`}
-          detail={runResultText(latestRun, t)}
-          meta={when}
-        />
+        <CardBody headline={`${runRoutine.icon ? `${runRoutine.icon} ` : ''}${runRoutine.name}`} detail={runResultText(latestRun, t)} meta={when} />
       </CardShell>
     )
   }
@@ -361,12 +435,12 @@ function RoutineCard({ routines, runs, now, onRunNow }: {
       icon={<ClockCircleOutlined />}
       label={t('welcome.cardRoutine')}
       onClick={goRoutines}
-      badge={(
+      badge={
         <>
           {overdue && <span style={{ color: RUN_STATUS_COLOR.running }}>{t('welcome.dueRun')}</span>}
           {routine.enabled && <RunNowButton routine={routine} onRunNow={onRunNow} />}
         </>
-      )}
+      }
     >
       <CardBody
         headline={`${routine.icon ? `${routine.icon} ` : ''}${routine.name}`}
@@ -392,10 +466,7 @@ function runResultText(run: RoutineRunLike, t: (p: string, v?: Record<string, st
 }
 
 /** Secondary action: start this routine now, without leaving the welcome page. */
-function RunNowButton({ routine, onRunNow }: {
-  routine: Routine
-  onRunNow: (routine: Routine) => void
-}): React.ReactElement {
+function RunNowButton({ routine, onRunNow }: { routine: Routine; onRunNow: (routine: Routine) => void }): React.ReactElement {
   const { t } = useTranslation()
   const label = t('welcome.runNow')
   return (
@@ -406,7 +477,10 @@ function RunNowButton({ routine, onRunNow }: {
         aria-label={label}
         icon={<PlayCircleOutlined />}
         style={{ width: 22, height: 22, minWidth: 22, padding: 0, color: 'var(--pm-text-muted)', fontSize: 13 }}
-        onClick={(e) => { e.stopPropagation(); onRunNow(routine) }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onRunNow(routine)
+        }}
       />
     </Tooltip>
   )
@@ -414,10 +488,7 @@ function RunNowButton({ routine, onRunNow }: {
 
 // ── 知识沉淀 ──
 
-function KnowledgeCard({ files, now }: {
-  files: KnowledgeFile[] | null | undefined
-  now: number
-}): React.ReactElement {
+function KnowledgeCard({ files, now }: { files: KnowledgeFile[] | null | undefined; now: number }): React.ReactElement {
   const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
 
@@ -437,23 +508,13 @@ function KnowledgeCard({ files, now }: {
   }
 
   const wikiCount = newest.wikiOutputs?.length ?? 0
-  const detail = newest.status === 'compiled'
-    ? t('welcome.knowledgeCompiled', { count: wikiCount })
-    : t('welcome.knowledgePending')
+  const detail = newest.status === 'compiled' ? t('welcome.knowledgeCompiled', { count: wikiCount }) : t('welcome.knowledgePending')
   const source = t(`welcome.source.${newest.sourceType}`)
   const elapsed = relativeText(newest.createdAt, now, t)
 
   return (
-    <CardShell
-      icon={<DatabaseOutlined />}
-      label={t('welcome.cardKnowledge')}
-      onClick={() => navigate({ kind: 'knowledge' })}
-    >
-      <CardBody
-        headline={newest.title}
-        detail={detail}
-        meta={elapsed ? `${source} · ${elapsed}` : source}
-      />
+    <CardShell icon={<DatabaseOutlined />} label={t('welcome.cardKnowledge')} onClick={() => navigate({ kind: 'knowledge' })}>
+      <CardBody headline={newest.title} detail={detail} meta={elapsed ? `${source} · ${elapsed}` : source} />
     </CardShell>
   )
 }

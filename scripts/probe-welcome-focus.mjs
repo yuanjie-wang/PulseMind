@@ -62,7 +62,10 @@ import { useNavigationStore } from './src/renderer/src/stores/navigationStore'
 // undefined there would throw before the composer ever mounts.
 const TABLE = {
   expertList: [],
-  projectList: [],
+  // §2 的落点项目（projectCreate 回 proj_new，setProjectId 落它）必须在列表里：
+  // ProjectCards 的陈旧选择自愈（两形态裁定配套）会把不在已加载列表里的选中清
+  // 回 null，composer 随之退场，后续焦点/摇晃断言全部落空。
+  projectList: [{ id: 'proj_new', name: 'pm-probe-project', workspaceDir: '/tmp/proj-new', createdAt: '', updatedAt: '' }],
   listConversations: [],
   routineList: [],
   routineRuns: [],
@@ -226,11 +229,17 @@ window.__ready = true
 
 await build({
   stdin: { contents: HARNESS, resolveDir: process.cwd(), loader: 'tsx', sourcefile: 'harness.tsx' },
-  bundle: true, format: 'iife', platform: 'browser', target: 'chrome114',
-  outfile: OUT, tsconfig: 'tsconfig.web.json', jsx: 'automatic',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'chrome114',
+  outfile: OUT,
+  tsconfig: 'tsconfig.web.json',
+  jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"production"' },
   loader: { '.css': 'text', '.ttf': 'text', '.woff': 'text', '.woff2': 'text', '.png': 'dataurl' },
-  logLevel: 'warning', treeShaking: false,
+  logLevel: 'warning',
+  treeShaking: false,
 })
 
 const results = []
@@ -265,10 +274,13 @@ const token = async (value) => {
   await page.waitForTimeout(150)
 }
 const setState = (path, value) =>
-  page.evaluate(([p, v]) => {
-    const [store, action] = p
-    window.__stores[store].getState()[action](v)
-  }, [path, value])
+  page.evaluate(
+    ([p, v]) => {
+      const [store, action] = p
+      window.__stores[store].getState()[action](v)
+    },
+    [path, value],
+  )
 const composerFocused = async (caseId) => {
   const f = await focusNow()
   return f.isTextarea && f.caseId === caseId
@@ -384,6 +396,46 @@ check('旧 token 摇不起新挂载的选项目区域（宽限窗拒绝迟到请
 await setState(['newTask', 'requestShake'], 'projectPicker')
 await mount('chat')
 check('同点击的 bump 摇晃刚挂载的区域（bump→mount 在同一 handler）', (await shakeState('projectPicker')) === 'running')
+
+console.log('\n§2.6 形态切换入场 — 快捷区随 mode 变化播一次淡入+位移（对话/项目/浏览器）')
+// 用户 2026-11-04: 「项目的 welcome 块的切换动效不错，对话和浏览器这两个能加吗」
+// ——三档共用 playWelcomeEnter 配方，锚点是快捷区 root（换档时不卸载）。
+// 读动画状态的方式与 shakeState 相同：fill:none 的一次性动画结束后会从
+// getAnimations 里消失。
+const bandState = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('[data-welcome-band]')
+    if (!el) return 'missing'
+    const anims = el.getAnimations()
+    if (!anims.length) return 'idle'
+    return anims.some((a) => a.playState === 'running') ? 'running' : 'settling'
+  })
+// 新挂载必须在 220ms 窗口内读——mount 辅助函数等 250ms，播错的入场会先结束
+// 再被检查，断言就空转了。
+await setState(['newTask', 'setMode'], 'chat')
+await page.evaluate(() => window.__mount('chat', {}))
+await page.waitForTimeout(80)
+const freshBand = await bandState()
+check('欢迎页新挂载静止（入场是换档过渡，不是挂载动画）', freshBand === 'idle', freshBand)
+
+await setState(['newTask', 'setMode'], 'project')
+await page.waitForTimeout(60)
+const toProject = await bandState()
+check('切到项目形态：快捷区淡入+位移在播', toProject === 'running', toProject)
+await page.waitForTimeout(320)
+check('一次性动画自行收尾（不常驻）', (await bandState()) === 'idle')
+
+await setState(['newTask', 'setMode'], 'browser')
+await page.waitForTimeout(60)
+const toBrowser = await bandState()
+check('切到浏览器形态：同一配方在播', toBrowser === 'running', toBrowser)
+await page.waitForTimeout(320)
+
+await setState(['newTask', 'setMode'], 'chat')
+await page.waitForTimeout(60)
+const backToChat = await bandState()
+check('切回对话形态：同一配方在播', backToChat === 'running', backToChat)
+await page.waitForTimeout(320)
 
 console.log('\n§3 ProjectModal — 关闭后不把焦点从输入框抢回触发按钮')
 await mount('modal')

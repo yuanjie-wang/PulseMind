@@ -37,11 +37,21 @@ class AppViewDock {
    *  the webview shifts down while it is open (T3.5), because a
    *  WebContentsView paints above all DOM. */
   private chromeOverlay = 0
+  /** 原生 view 头顶的 chrome 基础行高。侧栏形态 = PANE_CHROME_HEIGHT(100，
+   *  工作台页签条 32 + pane 页签条 32 + 地址行 36)；浏览器主视图卡没有工作台
+   *  页签条，推送 chromeHeight=68 覆盖（PLAN-layout-modes 2026-11-03）。
+   *  缺省 100 = 主窗侧栏与 popout 的旧几何逐字节不变。 */
+  private chromeBase = PANE_CHROME_HEIGHT
   // 沉浸窗口几何补偿（2026-10-31）：右卡是圆角卡片 + 顶部面板切换器行，原生
   // view 要收进卡的内容盒。缺省全 0 = 主窗/popout 的旧几何逐字节不变。
   private topInset = 0
   private rightInset = 0
   private bottomInset = 0
+  // 浮窗让位（PLAN-layout-modes 十三期）：DOM 浮窗（侧边栏/工具面板的下拉
+  // 菜单）画不过原生 view，浮窗打开期间把 view 的左/右缘临时内收让出浮窗。
+  // 裁剪不缩放——zoomForWidth 仍按 this.width 算，页面不 reflow。
+  private leftOverlay = 0
+  private rightOverlay = 0
 
   attach(win: BrowserWindow): void {
     if (this.window === win) return
@@ -113,6 +123,26 @@ class AppViewDock {
     this.layout()
   }
 
+  /** 浏览器主视图模式的 chrome 基础行高（68）；侧栏形态的推送缺省回落
+   *  PANE_CHROME_HEIGHT——调用方始终传有效值，这里防御非正数。 */
+  setChromeBase(px: number | undefined): void {
+    const next = px == null || px <= 0 ? PANE_CHROME_HEIGHT : Math.round(px)
+    if (next === this.chromeBase) return
+    this.chromeBase = next
+    this.layout()
+  }
+
+  /** 浮窗让位：浮窗打开期间 view 左/右缘的内收 px（渲染端量浮窗矩形算出）。
+   *  只裁剪不缩放，随浮窗关闭归零。 */
+  setSideOverlays(left: number, right: number): void {
+    const l = Math.max(0, Math.round(left))
+    const r = Math.max(0, Math.round(right))
+    if (l === this.leftOverlay && r === this.rightOverlay) return
+    this.leftOverlay = l
+    this.rightOverlay = r
+    this.layout()
+  }
+
   /** 沉浸窗口的卡片几何（2026-10-31）：原生 view 收进右卡内容盒所需的三向
    *  inset，随 pane 状态推送更新。任一变化即重排。 */
   setInsets(top: number, right: number, bottom: number): void {
@@ -145,12 +175,18 @@ class AppViewDock {
       const [w, h] = win.getContentSize()
       const paneTop = TITLE_BAR_HEIGHT + this.topInset
       const paneHeight = Math.max(0, h - paneTop - this.bottomInset)
-      const box = webviewBox(this.width, paneTop, paneHeight, PANE_CHROME_HEIGHT + this.chromeOverlay)
+      const box = webviewBox(this.width, paneTop, paneHeight, this.chromeBase + this.chromeOverlay)
       // webviewBox's x is pane-relative (inset past the DOM-drawn divider); the
       // pane spans the rightmost `width` px of the content area — pulled in by
       // rightInset for the immersive card (its border is absorbed by
       // webviewBox's own 2px left inset and 1px right gap).
       box.x = Math.max(0, w - this.width - this.rightInset) + box.x
+      // 浮窗让位（十三期）：左右缘内收让出 DOM 浮窗；zoom 仍按 this.width
+      // 计算（下方 setZoomFactor），浮窗开关不引发页面 reflow。
+      if (this.leftOverlay > 0 || this.rightOverlay > 0) {
+        box.x += this.leftOverlay
+        box.width = Math.max(0, box.width - this.leftOverlay - this.rightOverlay)
+      }
       this.attached.setBounds(box)
       // Pages lay out at the design width and scale down to fit the 16:9 box —
       // the whole page stays visible (等比缩放) instead of cropping a 1:1 render.
@@ -211,6 +247,16 @@ class AppViewDockRegistry {
 
   setChromeOverlay(win: BrowserWindow, px: number): void {
     this.dockFor(win).setChromeOverlay(px)
+  }
+
+  /** 浏览器主视图模式的 chrome 基础行高，按窗口路由（PLAN-layout-modes）。 */
+  setChromeBase(win: BrowserWindow, px: number | undefined): void {
+    this.dockFor(win).setChromeBase(px)
+  }
+
+  /** 浮窗让位，按窗口路由（PLAN-layout-modes 十三期）。 */
+  setSideOverlays(win: BrowserWindow, left: number, right: number): void {
+    this.dockFor(win).setSideOverlays(left, right)
   }
 
   /** 沉浸窗口的三向 inset（2026-10-31），按窗口路由。 */
