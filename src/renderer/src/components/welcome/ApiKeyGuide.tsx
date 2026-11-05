@@ -25,19 +25,24 @@ export function ApiKeyGuide({ compact }: { compact?: boolean }): React.ReactElem
 
   // 模板包导入：一次性入口（团队从配置好的机器拷 settings.json + 技能进
   // zip）。settings 落盘后的 hasApiKey 翻转由广播链驱动，这里只反馈结果。
+  // 重名技能（skipped）是幂等重复导入的预期行为——保持沉默，只有真实
+  // 问题（解析失败、密文密钥等）才弹警告。
   const importTemplate = async () => {
     try {
       const result = await window.electronAPI.importTemplate()
       if (!result) return
-      if (result.settingsApplied || result.skills.imported.length > 0) {
-        const skillNote = result.skills.imported.length > 0
-          ? ' ' + t('welcome.templateImportSkills', { count: result.skills.imported.length })
+      const { settingsApplied, warnings, skills } = result
+      if (settingsApplied || skills.imported.length > 0) {
+        const skillNote = skills.imported.length > 0
+          ? ' ' + t('welcome.templateImportSkills', { count: skills.imported.length })
           : ''
         antdMessage.success(t('welcome.templateImportSuccess') + skillNote)
-      } else {
+      } else if (skills.skipped.length === 0) {
+        // 包里没有 settings.json、没有 skills/，且没有任何被跳过的技能——
+        // 才是「选错文件」。全重复的纯技能包静默返回。
         antdMessage.warning(t('welcome.templateImportEmpty'))
       }
-      const issues = [...result.warnings, ...result.skills.errors]
+      const issues = [...warnings, ...skills.errors]
       if (issues.length > 0) {
         antdMessage.warning(issues.join('；'), 6)
       }

@@ -129,11 +129,15 @@ describe('template import wiring', () => {
     expect(src).toContain('registerLiveSkills(')
     expect(src).toContain('IPC_CHANNELS.SETTINGS_CHANGED')
     expect(src).toContain('IPC_CHANNELS.SKILLS_CHANGED')
+    // 重名跳过分流进 skipped（幂等重复导入是预期行为，UI 不提示）
+    expect(src).toContain('already exists — skipped')
+    expect(src).toContain('skipped: dups')
   })
 
   it('preload and the bridge contract expose importTemplate', () => {
     expect(read('src/shared/types/electron-bridge.ts')).toContain('importTemplate:')
     expect(read('src/shared/types/electron-bridge.ts')).toContain('interface TemplateImportResult')
+    expect(read('src/shared/types/electron-bridge.ts')).toContain('skipped: string[]')
     expect(read('src/preload/index.ts')).toContain('importTemplate:')
     expect(read('src/preload/index.ts')).toContain('IPC_CHANNELS.TEMPLATE_IMPORT')
   })
@@ -145,6 +149,17 @@ describe('template import wiring', () => {
     expect(src).toContain('welcome.importTemplate')
     // 成功后的翻转靠既有广播链，不手动 reload
     expect(src).not.toContain('reloadSettings')
+  })
+
+  it('duplicate skips stay silent: skipped feeds no toast, empty-pack warning is the only fallthrough', () => {
+    const src = read('src/renderer/src/components/welcome/ApiKeyGuide.tsx')
+    // issues 只收 warnings + errors，不含 skipped
+    expect(src).toContain('[...warnings, ...skills.errors]')
+    expect(src).not.toContain('skills.skipped.join')
+    // 全重复（零导入、零 settings、只有 skipped）静默返回；「包空」提示
+    // 只在 skipped 也是零时才走
+    expect(src).toContain('skills.skipped.length === 0')
+    expect(src).toContain('templateImportEmpty')
   })
 
   it('the renderer skill list refreshes on the skills:changed broadcast', () => {

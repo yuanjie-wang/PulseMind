@@ -29,7 +29,7 @@ export function registerTemplateHandlers(): void {
     const result: TemplateImportResult = {
       settingsApplied: false,
       warnings: [],
-      skills: { imported: [], errors: [], warnings: [] }
+      skills: { imported: [], skipped: [], errors: [], warnings: [] }
     }
 
     await withZipExtraction(picked.filePaths[0], async (extractDir) => {
@@ -68,6 +68,17 @@ export function registerTemplateHandlers(): void {
       try {
         await access(skillsRoot)
         result.skills = await skillStore.importSkillsFromDirectory(skillsRoot)
+        // 重名跳过是幂等重复导入的预期行为，不是错误：分流进 skipped，
+        // UI 对它保持沉默（用户裁定 2026-11-05：重复内容不弹提示）。
+        const dupPattern = / already exists — skipped$/
+        const dups = result.skills.errors.filter((e) => dupPattern.test(e))
+        if (dups.length > 0) {
+          result.skills = {
+            ...result.skills,
+            skipped: dups,
+            errors: result.skills.errors.filter((e) => !dupPattern.test(e))
+          }
+        }
         // 盘上落定 ≠ 引擎可见：主进程共享 SkillManager 只在首个会话创建时扫
         // 一次盘（ensureManagers），必须同步登记（与技能 zip 导入同一对调用）。
         if (result.skills.imported.length > 0) registerLiveSkills(result.skills.imported)
