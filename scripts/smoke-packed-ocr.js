@@ -82,7 +82,16 @@ cpSync(repoOrt, join(staged, 'onnxruntime-node'), {
 cpSync(repoCommon, join(staged, 'onnxruntime-common'), { recursive: true })
 cpSync(join(binRoot, platform), join(staged, 'onnxruntime-node', 'bin', 'napi-v6', platform), { recursive: true })
 
-process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
+// 清理尽力而为：Windows 会锁住已映射的 DLL（onnxruntime.dll 在进程退出前删不掉，
+// rimraf 抛 EPERM）。曾因此把已经跑通的冒烟判成失败 —— 清理失败不该影响结论，
+// 临时目录本来也在 runner 的 Temp 里。
+process.on('exit', () => {
+  try {
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 3 })
+  } catch (e) {
+    console.log(`[smoke-packed-ocr] note: temp dir left behind (${e.code || 'ERR'}) — harmless`)
+  }
+})
 
 // 3) 真建会话：三个模型各跑一次
 main().catch((e) => fail(e && e.message ? e.message : String(e)))
