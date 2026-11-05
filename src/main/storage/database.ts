@@ -88,6 +88,7 @@ function createTables(): void {
       experience_extracted_count INTEGER NOT NULL DEFAULT 0,
       history_summary TEXT,
       history_summary_frontier TEXT,
+      tab_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -302,6 +303,9 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN origin TEXT') } catch {}
+  // 2026-11-03 扩展面板按 Chrome 页签隔离历史：tab_key 与 origin 同由
+  // updateConversationOrigin 盖章（NULL = 未归属，由第一个打开的页签收养）。
+  try { database.exec('ALTER TABLE conversations ADD COLUMN tab_key TEXT') } catch {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch {}
   // P0 (PLAN-memory-extraction-dedup): memories carry a normalized-content hash for
   // the save-layer dedup gate; existing rows are backfilled once here.
