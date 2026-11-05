@@ -174,6 +174,12 @@ jobs:
       - name: Check glibc ceiling of shipped native modules
         run: node scripts/check-linux-glibc.js dist/linux-unpacked --ceiling=2.28
 
+      # afterPack 删掉了 352MB 的执行提供器库（CUDA/TensorRT/shared）与异平台二进制。
+      # 退出码 0 只说明打包完成，不说明裁完的二进制还能加载 —— 这里用**打包产物**
+      # 的 onnxruntime 真建三个会话，缺库会当场 failed to load。
+      - name: Smoke packed OCR runtime
+        run: node scripts/smoke-packed-ocr.js --app-out dist/linux-unpacked --platform linux --arch x64
+
       # 只报告、不判红：这个二进制由 Google 的 Chrome for Testing 构建，glibc 下限
       # 我们改不了（既不能重编，也没有更老的 Linux 版本可换）。而它决定「浏览器工具
       # 在 UOS 20 上到底能不能启动」，所以这个数字值得每次打印出来，而不是等到目标机

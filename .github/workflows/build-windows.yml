@@ -125,6 +125,11 @@ jobs:
       - name: Package portable exe
         run: npx electron-builder --win portable --x64 --publish never
 
+      # afterPack 删掉了执行提供器库（CUDA/TensorRT/shared）与异平台二进制。
+      # 文件存在 ≠ 能加载：这里拿打包后的 onnxruntime 真建 det/rec/cls 三个会话。
+      - name: Smoke packed OCR runtime
+        run: node scripts/smoke-packed-ocr.js --app-out dist/win-unpacked --platform win32 --arch x64
+
       # 「electron-builder 退出码 0」不等于「产物能用」——0.4.2 那次就是这么发出去的。
       # 三条断言对应三个曾经/可能真出事的点：依赖树完整性（afterPack 门禁已跑，
       # 这里复核 win-unpacked 真的产出了）、OCR 模型随包（extraResources 的模型是

@@ -12,10 +12,33 @@
 // 时把 symlink 实体化成了两份。删带完整版本号那份是安全的：binding.node 的
 // install_name 是 @rpath/libonnxruntime.1.dylib（otool -L 实测，1.31.1）。
 //
+// 第三处冗余（2026-11-06 实测）：**本架构目录内**还躺着三个执行提供器
+// （Execution Provider）动态库，跨平台/跨架构的裁剪管不到它们：
+//   linux/x64  libonnxruntime_providers_cuda.so   351.4MB 未压缩
+//              libonnxruntime_providers_tensorrt.so  0.8MB
+//              libonnxruntime_providers_shared.so    0.0MB
+// 合计 352MB —— deb 从 234MB（无 OCR）涨到 370MB 的主因，OCR 本体（模型 15MB +
+// ORT 31MB）只该贡献 46MB。win32 下同构（onnxruntime_providers_*.dll）。
+//
+// 安全性依据不是"应该没事"，是 ELF64 DT_NEEDED 实测：libonnxruntime.so.1 的
+// NEEDED 只有 libdl/librt/libpthread/libstdc++/libm/libgcc_s/libc/ld-linux，
+// onnxruntime_binding.node 只要 libonnxruntime.so.1 —— 没有一条指向
+// providers_*。它们在 ORT 注册对应 EP 时才 dlopen 按名加载，而 services/ocr.ts
+// 从不传 executionProviders（走默认 CPU EP），因此永不被加载。
+// 需要 GPU 加速时置 PULSEMIND_ORT_KEEP_PROVIDERS=1 跳过本步。
+//
 // 纯机械操作；OCR 依赖未安装时静默跳过，不影响正常构建。
 
 const { existsSync, readdirSync, rmSync, statSync } = require('node:fs')
 const { join } = require('node:path')
+
+// 本架构目录里必须仍在场的主库（缺了说明目录不完整，此时不动手）
+// 两种命名都要认：linux `libonnxruntime.so.1`（版本号在扩展名后）、
+// darwin `libonnxruntime.1.dylib`（版本号在扩展名前）、win32 `onnxruntime.dll`
+const MAIN_ORT_LIB = /^(libonnxruntime(\.\d+)*\.(so|dylib)(\.\d+)*|onnxruntime\.dll)$/i
+// 执行提供器动态库：linux .so / darwin .dylib / win32 .dll，含带版本号形态
+const PROVIDER_LIB = /providers?.*\.(so|dylib|dll)(\.\d+)*$/i
+const KEEP_PROVIDERS = process.env.PULSEMIND_ORT_KEEP_PROVIDERS === '1'
 
 // electron-builder 的 Arch 枚举（ia32=0 x64=1 armv7l=2 arm64=3 universal=4）
 const ARCH_DIR = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }
@@ -89,6 +112,20 @@ exports.default = async function stripOrtForeignArch (context) {
       if (!existsSync(join(archDir, CANONICAL_DYLIB))) continue
       for (const file of readdirSync(archDir)) {
         if (VERSIONED_DYLIB.test(file)) drop(join(archDir, file), 'duplicate versioned dylib')
+      }
+    }
+  }
+
+  // 4) 本架构目录内的执行提供器库（CUDA / TensorRT / shared）——见文件头注释
+  if (!KEEP_PROVIDERS && existsSync(platformDir)) {
+    for (const entry of readdirSync(platformDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const archDir = join(platformDir, entry.name)
+      const files = readdirSync(archDir)
+      // 前提：主库在场。目录不完整时不动手，避免把残缺目录改得更残缺。
+      if (!files.some((f) => MAIN_ORT_LIB.test(f))) continue
+      for (const file of files) {
+        if (PROVIDER_LIB.test(file)) drop(join(archDir, file), 'unused execution provider')
       }
     }
   }
