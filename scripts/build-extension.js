@@ -17,7 +17,10 @@ function browserTarget() {
     bundle: true,
     minify: false,
     platform: 'browser',
-    target: ['chrome114'],
+    // Matches manifest.json's minimum_chrome_version: syntax the target can't
+    // emit is transpiled down, so future ES features cannot silently raise the
+    // engine floor past 360 浏览器 (Chromium fork, declared floor 108).
+    target: ['chrome108'],
     format: 'iife',
     tsconfig: 'tsconfig.extension.json',
     // The panel injects its stylesheet into a Shadow Root, so the CSS is needed
