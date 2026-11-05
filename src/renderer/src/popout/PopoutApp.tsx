@@ -35,6 +35,7 @@ import { SubAgentSessionView } from '../components/subagent/SubAgentSessionView'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { InstallNotifier } from '../components/chat/InstallNotifier'
 import { useChatController } from '../hooks/useChatController'
+import { useFloatOverlayShift } from '../hooks/useFloatOverlayShift'
 import { SettingsProvider, useSettings } from '../hooks/SettingsContext'
 import { TranslationProvider, useTranslation } from '../i18n/useTranslation'
 import { useWorkbenchStore, useConversationPrimary } from '../stores/workbenchStore'
@@ -52,6 +53,7 @@ import { ConversationLightDot, ConversationLightDotStyle } from '../components/l
 import { CONVERSATION_PAGE_SIZE } from '../components/layout/ConversationRows'
 import { resolvePlanNodeTarget, planNodeIdForSession } from '../agent/plan-node-target'
 import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from '../utils/context-window'
+import { reportSilentFailure } from '../utils/notify-core'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../../shared/sandbox/policy'
@@ -197,6 +199,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
     activateConversation,
     seedSessionSnapshot,
     createNewConversation,
+    createBrowserTask,
   } = useChatController({
     apiKey,
     baseURL,
@@ -543,6 +546,35 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   // 本窗的主视图模式（2026-11-04 裁定：弹出窗口也要循环钮）。项目沉浸窗口
   // 由 PRIMARY_MODE_CLAMPED 钳在 'chat'，这里的读法对它恒返回 'chat'。
   const primary = useConversationPrimary(wbKey)
+  // 浮窗让位（review_20261105 中3）：弹窗自 2026-11-04 起也有 browser 主视图
+  // （循环钮 + 种子组 D），dock 下拉浮窗左/右侵进原生 view 的遮挡在弹窗同样
+  // 发生——本窗补挂同一测量点。弹窗无换页视图（viewKind 恒 chat），主窗那道
+  // viewKind 门在这里没有对应物；项目沉浸窗口被钳位恒 false，零开销。
+  useFloatOverlayShift(primary === 'browser')
+  // ── welcome 浏览器任务（review_20261105 中1）：与主窗 App 同一条通道 ──
+  // URL 表单回车/点历史项 → createBrowserTask 铸容器会话（乐观列表 + browser
+  // 主视图绑定）→ pane 快照报到「提交目标」会话名下再开页签。此前 prop 缺省
+  // 落到 `?? (() => {})` 的静默 noop——弹窗 welcome 切到浏览器档后提交什么都
+  // 不发生。handlePaneAction 按 event.sender 解析窗口，弹窗内调用落弹窗自己
+  // 的 pane，通道与主窗完全同构。
+  const pendingBrowserUrl = useRef<{ convId: string; url: string } | null>(null)
+  const handleBrowserTaskStart = useCallback(
+    (url: string) => {
+      const convId = createBrowserTask(url)
+      pendingBrowserUrl.current = { convId, url }
+    },
+    [createBrowserTask],
+  )
+  const browserPaneConversationId = useBrowserPaneStore((s) => s.update.conversationId)
+  useEffect(() => {
+    const pending = pendingBrowserUrl.current
+    if (!pending) return
+    // 双匹配（review_20261104 中1）：比对提交目标而非当前活跃会话，回声未到
+    // 时切走不误导航。
+    if (browserPaneConversationId !== pending.convId) return
+    pendingBrowserUrl.current = null
+    window.electronAPI.browserPaneAction({ op: 'navigate', url: pending.url }).catch((err: unknown) => reportSilentFailure('browser-task-tab', err))
+  }, [browserPaneConversationId])
   // welcome 门控与主窗同款：零消息的 chat 优先态不出现（那里没有可换的视图，
   // 头部只留侧栏开关）。流式中 messages 仍可能为空，isRequesting 兜住。
   const showPrimaryCycle = !isProjectWindow && (primary !== 'chat' || messages.length > 0 || isRequesting)
@@ -831,6 +863,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       welcomeHint={draftHint}
       canOpenNode={canOpenNode}
       onSendMessage={handleRequest}
+      onBrowserTaskStart={handleBrowserTaskStart}
       onSendStaged={sendStagedNow}
       onSteer={(text: string) => steer(text) as Promise<SteerOutcome>}
       onCancel={abort}

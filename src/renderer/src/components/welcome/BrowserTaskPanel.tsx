@@ -194,12 +194,15 @@ export function BrowserTaskPanel({
 
       {/* 历史卡：近期访问——两栏网格（minmax(0,1fr)：1fr 的 auto 最小尺寸会被
           长 URL 的 nowrap min-content 撑歪，两栏不等宽——必须钳到 0）。wrapper
-          flex:1 + minHeight 0：空间不够时本卡收缩、列表自己滚。
+          flex '0 1 auto' + minHeight 0（2026-11-05 用户裁定「历史记录较少的
+          时候不用撑满至底部，看上去太空了」）：grow 0 = 卡片贴合内容高度，
+          少历史时下方留白而不是一张半空的灰卡；shrink 1 = 历史多/短窗时本卡
+          收缩、列表自己滚（grow 臂与 shrink 臂缺一不可，勿改回 flex:1）。
           **零历史时整卡退场**（2026-11-04 用户裁定「如果没有访问记录，那么在
           浏览器的 welcome 中，不需要近期访问区」）：没有「暂无访问记录」空壳，
           URL 区就地留在原位、下方留白——空文案不是更好的空态，半屏空卡才更糟。 */}
       {history.length > 0 && (
-        <div data-pm-browser-task-history style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        <div data-pm-browser-task-history style={{ flex: '0 1 auto', minHeight: 0, display: 'flex' }}>
           <CardShell icon={<ClockCircleOutlined />} label={t('welcome.browserHistoryTitle')} flush>
             <div
               data-pm-browser-task-grid

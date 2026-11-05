@@ -17,6 +17,7 @@ import type {
   DataPaths,
   ServiceStatus,
   PopoutWorkbenchSeed,
+  TemplateImportResult,
 } from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
@@ -196,6 +197,7 @@ const electronAPI = {
 
   // Skills - Import
   importSkill: (): Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT),
+  importTemplate: (): Promise<TemplateImportResult | null> => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_IMPORT),
   listImportedSkills: (): Promise<SkillDefinition[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_IMPORTED),
   deleteImportedSkill: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE_IMPORTED, name),
   ensureBuiltInSkills: (skills: SkillDefinition[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_ENSURE_BUILT_IN, skills),

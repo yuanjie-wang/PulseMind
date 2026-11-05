@@ -407,6 +407,20 @@ describe('renderer: PopoutApp', () => {
     expect(pop).toContain('<SubAgentSessionView')
   })
 
+  it('wires the browser task entry + float overlay for its browser primary (review_20261105 中1/中3)', () => {
+    // 中1：循环钮把 browser 主视图送进弹窗后，welcome 切到浏览器档必须有真
+    // 通道——与主窗 App 同构：createBrowserTask 铸容器，pane 快照报到「提交
+    // 目标」会话名下再 browserPaneAction 开页签（handlePaneAction 按
+    // event.sender 解析窗口，落弹窗自己的 pane）。prop 已改必填，漏传编译失败。
+    expect(pop).toContain('createBrowserTask,')
+    expect(pop).toContain('onBrowserTaskStart={handleBrowserTaskStart}')
+    expect(pop).toContain("browserPaneAction({ op: 'navigate', url: pending.url })")
+    expect(pop).toContain('useBrowserPaneStore((s) => s.update.conversationId)')
+    // 中3：dock 下拉浮窗左/右侵进原生 view 的遮挡在弹窗同样发生——补挂同一
+    // 测量点；弹窗无换页视图，主窗的 viewKind 门在这里没有对应物。
+    expect(pop).toContain("useFloatOverlayShift(primary === 'browser')")
+  })
+
   it('keeps the boot flag module as the single per-window mode detector', () => {
     const boot = read('renderer/src/popout/boot.ts')
     expect(boot).toContain('new URLSearchParams(window.location.search).get')
@@ -502,7 +516,7 @@ describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
     const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
     const electron = (globalThis as unknown as { window: { electronAPI?: unknown } }).window
     electron.electronAPI = {
-      popoutSeed: (id: string) => Promise.resolve({ workbenchTab: 'plan', previewPaths: [] }),
+      popoutSeed: (_id: string) => Promise.resolve({ workbenchTab: 'plan', previewPaths: [] }),
     }
     await expect(seed.loadAndApplyPopoutSeed('conv_ipc')).resolves.toBeUndefined()
     expect(useWorkbenchStore.getState().openByConversation['conv_ipc']).toBe(true)

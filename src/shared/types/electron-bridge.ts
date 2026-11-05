@@ -170,6 +170,15 @@ export interface MCPToolCallResult {
   error?: string
 }
 
+/** 一次性模板包导入结果（2026-11-05）。zip = 整份 settings.json + 可选
+ *  skills/；settingsApplied=false 表示包里没有（或没有有效的）settings.json，
+ *  settings 原样未动。warnings 含 `enc:v1:` 密钥不可迁移提示等非致命项。 */
+export interface TemplateImportResult {
+  settingsApplied: boolean
+  warnings: string[]
+  skills: { imported: SkillDefinition[]; errors: string[]; warnings: string[] }
+}
+
 export interface ElectronAPI {
   // Debug
   dbCheck: () => Promise<string>
@@ -241,6 +250,9 @@ export interface ElectronAPI {
 
   // Skills - Import
   importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null>
+  /** 一次性模板包导入（2026-11-05，无密钥 welcome 引导卡入口）：主进程开
+   *  zip 文件对话框；null = 用户取消。settings.json 整份替换 + skills/ 落盘。 */
+  importTemplate: () => Promise<TemplateImportResult | null>
   listImportedSkills: () => Promise<SkillDefinition[]>
   deleteImportedSkill: (name: string) => Promise<void>
   ensureBuiltInSkills: (skills: SkillDefinition[]) => Promise<void>

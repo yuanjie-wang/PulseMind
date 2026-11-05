@@ -280,6 +280,16 @@ export function useChatManagers(options: UseChatManagersOptions) {
     }
   }, [apiKey, options.adapter, options.baseURL, options.model])
 
+  // 主进程侧的技能落盘（welcome 模板包导入、install 工具等）以 skills:changed
+  // 广播收尾——UI 列表必须跟着重扫盘，否则这些技能要到重启才出现在技能中心。
+  // registerSkill 对已注册同名返回 false，重复广播天然去重。
+  useEffect(() => {
+    const unsub = window.electronAPI.onSkillsChanged(() => {
+      void refreshSkillsFromDisk()
+    })
+    return unsub
+  }, [refreshSkillsFromDisk])
+
     /* eslint-disable react-hooks/refs -- the stable manager instances are exposed through their refs; each is fixed for the hook's lifetime and read only after commit */
   return {
     memoryManager: memoryManagerRef.current,

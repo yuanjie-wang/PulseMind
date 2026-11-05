@@ -67,9 +67,10 @@ export function WelcomeContent({
   /** Per-conversation sidebar light — the recent list's status lights. */
   convLights?: Record<string, ConversationLight>
   onOpenConversation: (key: string) => void
-  /** browser 模式的任务入口：URL 回车/点历史项（App 物化 + 开页签）。缺省 =
-   *  面板无从提交——所有挂浏览器面板的宿主都必须传（ChatView 贯穿）。 */
-  onBrowserTaskStart?: (url: string) => void
+  /** browser 模式的任务入口：URL 回车/点历史项（宿主铸容器会话 + 开页签）。
+   *  必填（review_20261105 中1）：可选 + 空转函数兜底曾把接线缺口变成静默
+   *  死提交——摆一个点了没反应的表单比不摆更糟，让 TS 兜住所有宿主。 */
+  onBrowserTaskStart: (url: string) => void
   /** 试试 chips 的发送通道（2026-11-04 裁定：点一下即发送，不是落草稿）。
    *  缺省 = 整行不渲染（没有 API 密钥就没有可发的地方）。 */
   onStarterSend?: (text: string) => void
@@ -201,7 +202,7 @@ export function WelcomeContent({
           // 撤了，welcome 只剩一张密钥卡，用户看不出这个形态本来能做什么。
           // 现在 URL 输入框与打开钮 disabled、历史行不可点（面板自己收指针/
           // hover），下方密钥卡给出去处。
-          <BrowserTaskPanel disabled={!hasApiKey} onBrowserTaskStart={onBrowserTaskStart ?? (() => {})} />
+          <BrowserTaskPanel disabled={!hasApiKey} onBrowserTaskStart={onBrowserTaskStart} />
         ) : (
           <ProjectCards conversations={conversations} onOpenConversation={onOpenConversation} onStarterSend={onStarterSend} />
         )}
@@ -212,7 +213,7 @@ export function WelcomeContent({
           welcome 分支），这里给出去处。卡本身见 ApiKeyGuide（与 dock 窄面
           共用一份）。 */}
       {!hasApiKey && (
-        <div ref={guideShakeRef} data-welcome-shake="apiKeyGuide" style={{ alignSelf: 'center', width: '100%', maxWidth: 520, flexShrink: 0, marginBottom: 8 }}>
+        <div ref={guideShakeRef} data-welcome-shake="apiKeyGuide" style={{ alignSelf: 'center', width: '100%', maxWidth: 560, flexShrink: 0, marginBottom: 8 }}>
           <ApiKeyGuide />
         </div>
       )}

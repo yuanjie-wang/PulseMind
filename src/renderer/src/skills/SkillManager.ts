@@ -27,6 +27,22 @@ export class SkillManager extends FeatureManager<SkillDefinition> {
   getSkill(name: string) { return this.get(name) }
 
   /**
+   * Built-in skills are ALWAYS on (2026-11-04 ruling 「内置恒不可关」,
+   * review_20261105 中4): applyPreferences strips them from the disabled set,
+   * so a toggle that flipped one would only fake-disable it — the panel shows
+   * off, the name lands in persisted disabledSkills as a stale entry, and the
+   * next load silently re-enables. Refuse the flip here so every caller (the
+   * settings panel today, any future second caller) gets the engine truth:
+   * built-ins return their unchanged (enabled) state.
+   */
+  toggle(name: string): boolean | null {
+    const item = this.get(name)
+    if (!item) return null
+    if (item.definition.builtIn) return item.enabled
+    return super.toggle(name)
+  }
+
+  /**
    * Register a user-installed skill. New skills default to ON (2026-11-04
    * ruling 「把缺省当作打开」) — a template-carried or zip-imported skill must be
    * usable without the user hunting for a toggle. An explicit opt-out recorded

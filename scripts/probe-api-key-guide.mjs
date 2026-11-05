@@ -180,8 +180,12 @@ check('卡片带 1px 边框(veil 语言)', g !== null && g.border === '1px solid
 check('图标座淡蓝 wash(--pm-link-bg)', g !== null && g.badgeBg === 'rgba(22, 119, 255, 0.08)', g?.badgeBg)
 check('按钮是 antd primary', g !== null && g.buttonKind.includes('ant-btn-primary'), g?.buttonKind ?? '')
 check('标题文案在卡上', g !== null && g.text.includes('还差一步'), g?.text?.slice(0, 40))
-check('正文说明在卡上', g !== null && g.text.includes('密钥只保存在本机'))
+check('正文说明在卡上', g !== null && g.text.includes('填入一个模型提供商的密钥即可开始对话'))
 check('CTA 文案在卡上', g !== null && g.text.includes('配置 API 密钥'))
+// 2026-11-05 一次性模板包入口：次级导入按钮与主 CTA 并排（compact 竖排），
+// DOM 顺序主 CTA 在前——上面的 buttonKind 取 first() 不受影响。
+check('导入模板包按钮在卡上', await page.evaluate(() => document.querySelector('[data-pm-api-key-guide] [data-pm-template-import]') !== null))
+check('导入按钮文案在卡上', g !== null && g.text.includes('导入模板包'))
 // 几何：卡片顶替的是 composer 原来的位置——welcome 区不因引导卡出垂直
 // 滚动条，卡片贴住列的底部（原来输入框所在处），不是飘在中间。
 const layout = await page.evaluate(() => {

@@ -244,22 +244,27 @@ export function ChatBody({
 
   // ── 紧凑 welcome（侧栏对话的空态；主卡 welcome 在 ChatView 的早退分支）──
   if (welcome) {
+    // 窄面只提供有出口的档位（review_20261105 中2）：BrowserTaskPanel 只存在
+    // 于整页 welcome（ChatView 的早退分支），窄面没有 URL 表单——「浏览器」
+    // 档在这里是点了没反应的死档。主卡 welcome 若把 mode 留在 browser（store
+    // 是全局单例），窄面按 chat 显示——composer 本就以 chat 形态工作，点任
+    // 一档即把真实档位写回 store。
+    const narrowMode = taskMode === 'browser' ? 'chat' : taskMode
     return (
       <>
-        {/* Task form switcher: 与主卡 welcome 同款（新任务形态必须可达，
-            否则 project 模式的 sendBlocked 无处解开）。task-switch 的胶囊
-            样式是全局 CSS——主卡早退分支渲染同一张 <style>，两处各自携带
-            保证哪个宿主先挂载都有样式。 */}
+        {/* Task form switcher: 对话/项目两档（browser 只在整页 welcome 有
+            出口，见上方 narrowMode）。task-switch 的胶囊样式是全局 CSS——
+            主卡早退分支渲染同一张 <style>，两处各自携带保证哪个宿主先挂载
+            都有样式。 */}
         <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
           <Segmented
             className="task-switch"
             size="large"
-            value={taskMode}
+            value={narrowMode}
             onChange={(v) => onTaskModeChange(v as NewTaskMode)}
             options={[
               { label: t('welcome.modeChat'), value: 'chat' },
               { label: t('welcome.modeProject'), value: 'project' },
-              { label: t('welcome.modeBrowser'), value: 'browser' },
             ]}
           />
         </div>

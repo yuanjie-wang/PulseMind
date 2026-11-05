@@ -188,50 +188,76 @@ export class SkillStore {
     warnings: string[]
   }> {
     await this.ensureSkillsDir()
+    return withZipExtraction(zipPath, (extractDir) => this.importSkillsFromRoot(extractDir))
+  }
+
+  /**
+   * Import skills from an already-extracted directory whose immediate children
+   * are skill directories (SKILL.md + optional reference/ etc.). The template
+   * pack import walks this path — the zip is extracted once for the whole
+   * pack, so re-entering zip extraction per source would be wasted work. Same
+   * behavior as the zip route: duplicates are skipped into errors, never
+   * overwritten.
+   */
+  async importSkillsFromDirectory(skillsRoot: string): Promise<{
+    imported: SkillDefinition[]
+    errors: string[]
+    warnings: string[]
+  }> {
+    await this.ensureSkillsDir()
+    return this.importSkillsFromRoot(skillsRoot)
+  }
+
+  /** Shared body of both import routes: find SKILL.md files under `root` and
+   *  install each enclosing directory (whole-directory copy preserves
+   *  reference/scripts companions). */
+  private async importSkillsFromRoot(root: string): Promise<{
+    imported: SkillDefinition[]
+    errors: string[]
+    warnings: string[]
+  }> {
     const imported: SkillDefinition[] = []
     const errors: string[] = []
     const warnings: string[] = []
 
-    await withZipExtraction(zipPath, async (extractDir) => {
-      const skillFiles = await findSkillFiles(extractDir)
+    const skillFiles = await findSkillFiles(root)
 
-      if (skillFiles.length === 0) {
-        errors.push('No SKILL.md files found in the .zip')
-        return
+    if (skillFiles.length === 0) {
+      errors.push('No SKILL.md files found')
+      return { imported, errors, warnings }
+    }
+
+    for (const filePath of skillFiles) {
+      const content = await readFile(filePath, 'utf-8')
+      let parsed
+      try {
+        parsed = parseSkillMarkdown(content, basename(filePath))
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : `Failed to parse ${basename(filePath)}`)
+        continue
+      }
+      warnings.push(
+        ...validateSkillSpec(parsed, basename(dirname(filePath))).map((w) => `${parsed.name}: ${w}`)
+      )
+
+      // Check for duplicate
+      const skillDir = join(SKILLS_DIR, parsed.name)
+      try {
+        await readdir(skillDir)
+        errors.push(`Skill "${parsed.name}" already exists — skipped`)
+        continue
+      } catch {
+        // Directory doesn't exist, good to proceed
       }
 
-      for (const filePath of skillFiles) {
-        const content = await readFile(filePath, 'utf-8')
-        let parsed
-        try {
-          parsed = parseSkillMarkdown(content, basename(filePath))
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : `Failed to parse ${basename(filePath)}`)
-          continue
-        }
-        warnings.push(
-          ...validateSkillSpec(parsed, basename(dirname(filePath))).map((w) => `${parsed.name}: ${w}`)
-        )
+      // Write skill file — copy the entire directory containing SKILL.md
+      // so that supporting files (scripts, configs, assets) are preserved.
+      await mkdir(skillDir, { recursive: true })
+      const skillSrcDir = dirname(filePath)
+      await cp(skillSrcDir, skillDir, { recursive: true })
 
-        // Check for duplicate
-        const skillDir = join(SKILLS_DIR, parsed.name)
-        try {
-          await readdir(skillDir)
-          errors.push(`Skill "${parsed.name}" already exists — skipped`)
-          continue
-        } catch {
-          // Directory doesn't exist, good to proceed
-        }
-
-        // Write skill file — copy the entire directory containing SKILL.md
-        // so that supporting files (scripts, configs, assets) are preserved.
-        await mkdir(skillDir, { recursive: true })
-        const skillSrcDir = dirname(filePath)
-        await cp(skillSrcDir, skillDir, { recursive: true })
-
-        imported.push(toDefinition(parsed))
-      }
-    })
+      imported.push(toDefinition(parsed))
+    }
 
     return { imported, errors, warnings }
   }

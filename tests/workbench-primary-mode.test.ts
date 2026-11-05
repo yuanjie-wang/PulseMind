@@ -228,11 +228,17 @@ describe('接线扫描 — welcome 浏览器任务链路（模式跟任务走）
     expect(toggleIdx).toBeGreaterThan(popoutIdx)
   })
 
-  it('welcome 切换器三档：对话/项目/浏览器（ChatView 主卡 + ChatBody 窄侧栏）', () => {
+  it('welcome 切换器：主卡三档，窄面两档（review_20261105 中2：browser 只在主卡有出口）', () => {
     const view = read(CHAT_VIEW)
     expect(view).toContain("{ label: t('welcome.modeBrowser'), value: 'browser' }")
     const body = read(CHAT_BODY)
-    expect(body).toContain("{ label: t('welcome.modeBrowser'), value: 'browser' }")
+    // 窄面没有 BrowserTaskPanel（URL 表单只存在于整页 welcome）——「浏览器」
+    // 档在那里是点了没反应的死档，切换器必须过滤掉它；主卡 welcome 留在
+    // browser 档时窄面按 chat 显示（narrowMode 派生）。
+    expect(body).not.toContain("{ label: t('welcome.modeBrowser'), value: 'browser' }")
+    expect(body).toContain("{ label: t('welcome.modeChat'), value: 'chat' }")
+    expect(body).toContain("{ label: t('welcome.modeProject'), value: 'project' }")
+    expect(body).toContain("taskMode === 'browser' ? 'chat' : taskMode")
     // i18n 键两语齐备。
     expect(read('src/renderer/src/i18n/locales/zh.ts')).toContain("modeBrowser: '浏览器'")
     expect(read('src/renderer/src/i18n/locales/en.ts')).toContain("modeBrowser: 'Browser'")
@@ -252,6 +258,10 @@ describe('接线扫描 — welcome 浏览器任务链路（模式跟任务走）
     const panel = read(BROWSER_TASK_PANEL)
     expect(panel).toContain('data-pm-browser-task-url')
     expect(panel).toContain('data-pm-browser-task-history-item')
+    // 历史卡高度贴合内容（2026-11-05 裁定「历史少不用撑满至底部，看上去太空
+    // 了」）：wrapper flex '0 1 auto'——grow 0 贴内容、shrink 1 仍在历史多/
+    // 短窗时收缩自滚。改回 flex:1 半空灰卡就回来，勿动。
+    expect(panel).toContain("flex: '0 1 auto'")
     // 禁用面三处必须齐：输入框、打开钮、历史行——只撤一处等于留死路。
     const urlStart = panel.indexOf('data-pm-browser-task-url')
     const urlInput = panel.slice(urlStart, panel.indexOf('onPressEnter', urlStart))
@@ -319,8 +329,14 @@ describe('接线扫描 — welcome 浏览器任务链路（模式跟任务走）
     expect(src).not.toContain('useBrowserPaneStore((s) => s.update)\n')
     // 交接给 ChatView。
     expect(src).toContain('onBrowserTaskStart={handleBrowserTaskStart}')
-    expect(read(CHAT_VIEW)).toContain('onBrowserTaskStart?: (url: string) => void')
+    // prop 必填（review_20261105 中1）：可选 + `?? (() => {})` 兜底曾让
+    // PopoutApp 漏传静默成 noop——编译器兜底，两个宿主都必须传真通道。
+    expect(read(CHAT_VIEW)).toContain('onBrowserTaskStart: (url: string) => void')
+    expect(read(CHAT_VIEW)).not.toContain('onBrowserTaskStart?:')
     expect(read(CHAT_VIEW)).toContain('<WelcomeContent')
+    const welcomeContent = read(WELCOME_CONTENT)
+    expect(welcomeContent).toContain('onBrowserTaskStart: (url: string) => void')
+    expect(welcomeContent).not.toContain('?? (() => {})')
   })
 
   it('welcome 浏览器模式无自由输入框（四期修正裁定）：composer wrapper 退场', () => {

@@ -162,8 +162,10 @@ interface ChatViewProps {
    *  means anything inside a pinned project. The composer below stays as-is. */
   welcomeHint?: React.ReactNode
   /** browser 模式任务入口（PLAN-layout-modes 二期）：welcome URL 表单回车/
-   *  点历史项 → App 物化 + 绑定浏览器主视图 + 开页签。缺省 = 表单无从提交。 */
-  onBrowserTaskStart?: (url: string) => void
+   *  点历史项 → 宿主铸容器会话 + 绑定浏览器主视图 + 开页签。必填
+   *  （review_20261105 中1）：可选曾让 PopoutApp 漏传静默成 noop，编译器
+   *  兜底——所有宿主（App / PopoutApp）都必须提供真通道。 */
+  onBrowserTaskStart: (url: string) => void
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---

@@ -133,6 +133,10 @@ export const IPC_CHANNELS = {
   SKILL_USE_RECORD: 'skill-use:record',
   SKILL_USE_LIST: 'skill-use:list',
 
+  // ── Template pack (2026-11-05 一次性导入：无密钥 welcome 引导卡上的
+  // 「导入模板包」。zip = 整份 settings.json + 可选 skills/，整份替换语义) ──
+  TEMPLATE_IMPORT: 'template:import',
+
   // ── Experiences ──
   EXPERIENCES_LIST: 'experiences:list',
   EXPERIENCES_SAVE: 'experiences:save',

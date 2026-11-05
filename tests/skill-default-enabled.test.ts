@@ -78,6 +78,19 @@ describe('skills default to enabled', () => {
     for (const name of builtInNames) expect(enabledNames(manager)).toContain(name)
   })
 
+  it('toggle refuses to flip a built-in (review_20261105 中4: no fake-off)', () => {
+    // 假关链：面板点了 → 内存态翻回 → 内置名写进 disabledSkills → 重载静默
+    // 复开 + DB 残留。引擎侧 toggle 必须拒绝翻转、返回未变的（开）状态——
+    // 面板 disabled 开关之外的任何第二调用方也翻不动它。
+    const manager = new SkillManager()
+    for (const name of builtInNames) {
+      expect(manager.toggle(name)).toBe(true)
+      expect(enabledNames(manager)).toContain(name)
+    }
+    // 拒绝翻转 = getPreferences().disabledSkills 不携带内置名，落库零残留。
+    expect(manager.getPreferences().disabledSkills).toEqual([])
+  })
+
   it('seeds triggers as keywords for every skill, not just built-ins', () => {
     // 自动激活（system-prompt-builder 的 matchSkills）读 skillKeywords，
     // 旧实现只给 BUILT_IN_SKILLS 播种——模板技能即使开了也不会被关键词唤起。
@@ -112,5 +125,19 @@ describe('default-open wiring', () => {
     expect(hook).toContain('replaceDisabledSkills')
     // 技能面板的开关写穿到同一列：切 off 走 getPreferences().disabledSkills。
     expect(read('src/renderer/src/skills/SkillManager.ts')).toMatch(/disabledSkills: all\.filter/)
+  })
+
+  it('the panel switch is disabled for built-ins, with the always-on tooltip (review_20261105 中4)', () => {
+    const panel = read('src/renderer/src/components/settings/SkillsPanel.tsx')
+    const switchIdx = panel.indexOf('<CapabilitySwitch')
+    expect(switchIdx).toBeGreaterThan(-1)
+    const switchBlock = panel.slice(switchIdx, switchIdx + 420)
+    expect(switchBlock).toContain('disabled={definition.builtIn}')
+    expect(switchBlock).toContain("t('skills.builtInAlwaysOn')")
+    // 引擎半边同在：SkillManager.toggle 的内置守卫（返回未变状态，不翻转）。
+    expect(read('src/renderer/src/skills/SkillManager.ts')).toContain('if (item.definition.builtIn) return item.enabled')
+    // i18n 键两语齐备（TranslationDict 编译期锁之外的双语扫描）。
+    expect(read('src/renderer/src/i18n/locales/zh.ts')).toContain("builtInAlwaysOn: '内置技能恒启用，不可关闭'")
+    expect(read('src/renderer/src/i18n/locales/en.ts')).toContain("builtInAlwaysOn: 'Built-in skills are always on'")
   })
 })

@@ -6,6 +6,8 @@
  * Source scans pin the wiring; this probe pins what only a real mount shows:
  *   1. welcome 三档切换器 + browser 快捷区（URL 输入 + 历史项真点击/回车），
  *      提交走 onBrowserTaskStart 且 URL 归一化。
+ *   1.45 历史卡高度贴合内容（2026-11-05）：少历史不撑满至底部，多历史收缩
+ *      自滚 + 页面零滚动。
  *   2. 浏览器任务的布局：主卡 = 浏览器 chrome（行高 68 实测），dock = 对话/
  *      工作区/计划，推送契约（chromeHeight/insets/paneWidth vs 实测 reserve）。
  *   2.5 零消息浏览器任务的空态开场（2026-11-04）：命名当前页、落在 dock 卡
@@ -410,6 +412,60 @@ await page.evaluate(() => {
 })
 await page.waitForSelector('[data-pm-browser-task-history-item]')
 check('零历史恢复: 有记录后历史卡回来', await page.locator('[data-pm-browser-task-history]').isVisible())
+
+/* ── 1.45 历史卡高度贴合内容（2026-11-05 用户裁定「历史少不用撑满至底部，
+      看上去太空了」）：wrapper flex '0 1 auto'——少历史时卡底悬在半空、下方
+      留白（不是一张半空的灰卡）；历史多/短窗时 shrink 收缩贴底、列表内部滚。
+      两臂都要钉：改回 flex:1 时第一臂红，改掉 minHeight:0 时第二臂红。 ── */
+const hugGap = await page.evaluate(() => {
+  const card = document.querySelector('[data-pm-browser-task-history]')
+  const band = document.querySelector('[data-welcome-band]')
+  if (!card || !band) return null
+  return Math.round(band.getBoundingClientRect().bottom - card.getBoundingClientRect().bottom)
+})
+check('1.45: 少历史卡片贴合内容（卡底不贴 band 底）', hugGap !== null && hugGap > 24, String(hugGap))
+await page.evaluate(() => {
+  for (let i = 0; i < 30; i++) {
+    window.__historyFixture.push({
+      url: `https://example.com/page/${i}`,
+      title: `页面 ${i}`,
+      visitCount: 1,
+      lastVisitAt: 1699999000000 + i,
+    })
+  }
+  window.__mountWelcomeTask()
+})
+await page.waitForSelector('[data-pm-browser-task-history-item]')
+await page.waitForTimeout(100)
+const overflowInfo = await page.evaluate(() => {
+  const card = document.querySelector('[data-pm-browser-task-history]')
+  const band = document.querySelector('[data-welcome-band]')
+  const grid = document.querySelector('[data-pm-browser-task-grid]')
+  const region = document.querySelector('[data-welcome-region]')
+  if (!card || !band || !grid) return null
+  return {
+    glued: Math.round(band.getBoundingClientRect().bottom - card.getBoundingClientRect().bottom),
+    scrolls: grid.scrollHeight - grid.clientHeight,
+    pageOverflow: region ? region.scrollHeight - region.clientHeight : null,
+  }
+})
+check(
+  '1.45: 多历史卡片收缩贴底 + 列表内部滚动 + 页面零滚动',
+  overflowInfo !== null && Math.abs(overflowInfo.glued) <= 2 && overflowInfo.scrolls > 0 && overflowInfo.pageOverflow <= 0,
+  JSON.stringify(overflowInfo),
+)
+await page.evaluate(() => {
+  window.__historyFixture.length = 2
+  window.__mountWelcomeTask()
+})
+await page.waitForSelector('[data-pm-browser-task-history-item]')
+const rehug = await page.evaluate(() => {
+  const card = document.querySelector('[data-pm-browser-task-history]')
+  const band = document.querySelector('[data-welcome-band]')
+  if (!card || !band) return null
+  return Math.round(band.getBoundingClientRect().bottom - card.getBoundingClientRect().bottom)
+})
+check('1.45: 回到少历史重新贴合（动态，非一次性形态）', rehug !== null && rehug > 24, String(rehug))
 
 /* ── 1.5 真键盘回车物化链路：dock composer 不得带入换行（keypress 串场）── */
 await page.evaluate(() => window.__mountWelcomeTask())
