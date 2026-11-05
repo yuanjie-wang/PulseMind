@@ -570,6 +570,46 @@ export async function svcConvertToMarkdown(filePath: string): Promise<{ content:
   }
 }
 
+/**
+ * 图片文字识别（PP-OCRv4 本地模型，无网络）。
+ *
+ * 与 convertToMarkdown 同过 deny-roots 门，但**不返回 null**：这个入口的调用方
+ * 是 LLM，它必须能分清「路径被拒」「不是图片」「模型没装」「识别失败」——一律
+ * 抛出可读原因，让 ocr 工具的 is_error 携带真实话术。
+ *
+ * 模型目录与扩展名判断复用提取链那一份（storage/extractors/ocr-extractor），
+ * 免得工具与提取器对「什么算图片」出现两套答案。
+ */
+export async function svcOcrImage(filePath: string): Promise<{ text: string; lines: Array<{ text: string; score: number }>; dropped: Array<{ text: string; score: number }>; width: number; height: number; ms: number }> {
+  const guard = await checkFsTarget(filePath, 'read')
+  if (!guard.ok) throw new Error(`ocr denied: ${guard.reason}`)
+
+  const { IMAGE_EXTENSIONS, MAX_OCR_BYTES } = await import('../storage/extractors/ocr-extractor')
+  const ext = path.extname(guard.resolved).toLowerCase()
+  if (!IMAGE_EXTENSIONS.includes(ext)) {
+    throw new Error(`ocr 只接受图片（${IMAGE_EXTENSIONS.join(' / ')}），收到 "${ext || path.basename(guard.resolved)}"。文本 PDF 请用 read，扫描件 PDF 请先转成图片。`)
+  }
+  const size = (await stat(guard.resolved)).size
+  if (size > MAX_OCR_BYTES) {
+    throw new Error(`图片 ${(size / 1024 / 1024).toFixed(1)}MB，超过 OCR 上限 ${MAX_OCR_BYTES / 1024 / 1024}MB`)
+  }
+
+  const ocr = await import('./ocr')
+  if (!ocr.isOcrSupported()) {
+    // 开发态常见：仓库 resources/ocr-models 缺失。点名路径，别让模型去猜。
+    throw new Error(`OCR 模型未安装：${ocr.resolveModelsDir()} 下缺少 det.onnx / rec.onnx / cls.onnx / keys.txt`)
+  }
+  const result = await ocr.recognizeImage(guard.resolved)
+  return {
+    text: result.text,
+    lines: result.lines,
+    dropped: result.dropped,
+    width: result.width,
+    height: result.height,
+    ms: result.ms,
+  }
+}
+
 export async function svcFileStat(filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> {
   try {
     const guard = await checkFsTarget(filePath, 'read')

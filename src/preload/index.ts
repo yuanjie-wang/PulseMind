@@ -424,6 +424,14 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
+  ocrImage: (filePath: string): Promise<{
+    text: string
+    lines: Array<{ text: string; score: number }>
+    dropped: Array<{ text: string; score: number }>
+    width: number
+    height: number
+    ms: number
+  }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_OCR_IMAGE, filePath),
   registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),

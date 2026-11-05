@@ -41,6 +41,7 @@ export const HOST_METHOD_KEYS = [
   'patchFiles',
   'getFileStat',
   'convertFileToMarkdown',
+  'ocrImage',
   'copyFileToTmp',
   'saveBase64Image',
   // git

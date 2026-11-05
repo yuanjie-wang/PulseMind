@@ -42,6 +42,28 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
   },
 
+  // ── ocr ───────────────────────────────────────────────────────────
+  {
+    name: 'ocr',
+    description:
+      'Recognize text in an IMAGE (screenshot / phone photo / scan) with a bundled PP-OCRv4 model — runs fully offline, no network and no API key. Returns the recognized lines with per-line confidence, plus image size and elapsed time. Use this for .png/.jpg/.jpeg/.webp/.bmp/.tif/.tiff — `read` has no image extractor and would dump binary. NOT for PDFs: text PDFs go through `read`, and a scanned PDF must be turned into images first.',
+    category: 'file',
+    triggers: ['ocr', '图片文字', '文字识别', 'recognize', 'scan'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Absolute path to the image file.' },
+        include_dropped: {
+          type: 'boolean',
+          description: 'Also list the lines filtered out as interface noise — use it when the result looks incomplete and real content may have been dropped.',
+        },
+      },
+      required: ['file_path'],
+    },
+    instructions: toolInstructions.ocr,
+    builtIn: true,
+  },
+
   // ── write ─────────────────────────────────────────────────────────
   {
     name: 'write',
@@ -884,6 +906,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         objective: {
           type: 'string',
           description: 'What the list as a whole aims to achieve; required on the first call.',
+        },
+        fresh: {
+          type: 'boolean',
+          description: 'Start an UNRELATED list, discarding the current one (numbering restarts at n1). Omit to CONTINUE the existing list — including a settled one, whose next entry keeps counting on from the last number.',
         },
         items: {
           type: 'array',

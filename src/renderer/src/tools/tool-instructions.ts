@@ -48,6 +48,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - Every content line carries its ABSOLUTE line-number prefix (\`N\t\`, cat -n style) — it is a coordinate for referencing (\`read\` around line 350, point the user at a line), never part of the file. \`edit\`'s \`old_str\`/\`new_str\` and \`write\`'s \`content\` must be the raw file text WITHOUT the prefixes.
 - Document formats (PDF, DOCX, XLSX, …) are auto-converted to markdown — the header's \`Note:\` names the full conversion file (a plain .md file: readable AND searchable)
 - Find the right file with \`search\`/\`find\` before reading blindly
+- **Images are not readable here**: a .png/.jpg/.webp/.bmp/.tif has no extractor, so \`read\` falls through to a shell \`cat\` and dumps binary. Call \`ocr { file_path }\` instead — it returns the text with per-line confidence.
 
 ### Large files — locate first, read second
 Never page through a big file 200 lines at a time hoping to stumble on the answer. Derive the range from the TASK first, then read only that range:
@@ -55,6 +56,17 @@ Never page through a big file 200 lines at a time hoping to stumble on the answe
 - **Excel**: don't scan rows. \`office_read\` without \`sheet\` lists sheets + sizes first; \`office_search\` finds the rows matching your condition (cell addresses); \`office_read { sheet, offset }\` reads only that neighborhood.
 - **Long text / code**: \`search\` the keyword first, then \`read\` the hit's neighborhood.
 Read what the question needs, not what the file contains.
+`,
+
+  ocr: `## ocr
+
+### Guidelines
+- 图片一律走本工具：\`read\` 对图片没有提取器，会落到 shell \`cat\` 输出二进制乱码。
+- 每行带置信度，但**低分不等于错字**：手写、印章压字、透视畸变的行会掉到 0.6–0.8 而文字仍然对；反过来 0.95 以上也可能是「它」「小」这类界面碎片。判断看上下文，不看单行分数。
+- 界面噪声（导航栏、按钮、返回箭头）已按双条件过滤（score<0.90 且去空白长度≤2）；被丢的行数写在头部，怀疑误杀时加 \`include_dropped\` 把被丢的行取回来核对。
+- 只认图片，不认 PDF：文本 PDF 用 \`read\`，扫描件 PDF 先转成图片。
+- 成本是真实的：A4 300dpi 约 1.4–1.8s、RSS +235MB；手机截图 500–700ms。一次一张，别为了「多识别一点」反复调用同一张图。
+- 首跑含模型加载（约 650ms），之后同进程内复用。
 `,
 
   write: `## write
@@ -393,8 +405,8 @@ Your progress checklist for work you execute YOURSELF. It is visible to the user
 2. **Exactly one in_progress.** Mark the step you are ACTIVELY working on now; everything else is pending, blocked, or completed. Never two in_progress, never zero while you are mid-task.
 3. **Blocked is for waiting, not for stalling.** A step that is live but pinned on something outside your control (an external reply, a long-running check, user input) is \`blocked\` with a \`note\` saying what it waits on — NOT in_progress, NOT dropped. In-progress stays whatever you are actually hands-on with. When the wait resolves, mark it in_progress (resume) or completed — blocked decays only if you stop listing it, and the result will call that out by name (a forgotten wait is a lost task): re-send it with its id to bring it back.
 4. **Update immediately on every settle.** The moment a step finishes, call todo_write again (that step completed, the next one in_progress). Do not batch three steps of progress into one update — the panel and your context go stale between calls. A \`note\` on the settle call is where a one-line result or pointer lives.
-5. **Rescope freely.** Discovered work: append it. Obsolete steps: just drop them from the list (they retire as skipped, visible in the panel); an empty array retires every open step and closes the list. Settled steps are fully immutable — status, wording and note alike: you cannot un-complete, reword, or re-note them; a correction re-opens the work as a new entry.
-6. **Finish = list fully settled.** When the last open step (pending, blocked or in_progress) resolves, the list closes by itself; then write your final answer to the user as a normal message.
+5. **Rescope freely.** Discovered work: append it. Obsolete steps: just drop them from the list (they retire as skipped, visible in the panel); an empty array retires every open step and closes the list. Settled steps are fully immutable — status, wording and note alike: you cannot un-complete, reword, or re-note them; a correction re-opens the work as a new entry. Up to 20 entries may be OUTSTANDING at once — settled rows never count against that cap, and once the list grows long the oldest settled rows drop off on their own.
+6. **Finish = list fully settled.** When the last open step (pending, blocked or in_progress) resolves, the list closes by itself; then write your final answer to the user as a normal message. A closed list is still shown to you with its numbering, and it stays CONTINUABLE: an item without an id appends (the next number keeps counting on from the last one), an item naming an existing n-number revives that entry. Pass \`fresh: true\` only when the new work is UNRELATED to the closed list — that discards it and restarts numbering at n1.
 7. **Call messages carry intent, never results** (the Tool Call Format rule, applied double here): never pre-write what the tool will return — no counts (+N added / N retired), no settled tallies (N/M settled), no snapshot lines. The tool computes those; a pre-written copy is fabricated evidence in the most trusted format. Narrate what happened only AFTER the result arrives, quoting it.
 
 ### Example

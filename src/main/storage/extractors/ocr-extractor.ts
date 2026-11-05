@@ -11,7 +11,7 @@ import { basename } from 'node:path'
 import type { ExtractionResult } from './index'
 
 /** 超过这个体积基本是照片/原图，OCR 的成本（+126~235MB RSS）不划算 */
-const MAX_OCR_BYTES = 30 * 1024 * 1024
+export const MAX_OCR_BYTES = 30 * 1024 * 1024
 
 export const IMAGE_EXTENSIONS = [
   '.png',

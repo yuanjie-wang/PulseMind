@@ -13,6 +13,7 @@ import {
   svcPatchFile,
   svcPatchFiles,
   svcConvertToMarkdown,
+  svcOcrImage,
   svcSaveBase64Image,
   svcCopyFileToTmp,
   svcCopyFile,
@@ -107,6 +108,7 @@ export function registerFileOpsHandlers(): void {
 
   // ── Convert file to markdown via markitdown (cached in tmp/read-cache) ──
   ipcMain.handle(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, (_event, filePath: string) => svcConvertToMarkdown(filePath))
+  ipcMain.handle(IPC_CHANNELS.UTIL_OCR_IMAGE, (_event, filePath: string) => svcOcrImage(filePath))
 
   // ── Element-edit preview nonce (M10): per-mount secret for the served
   //    picker copy — kept in a main-process registry, never in the frame URL ──

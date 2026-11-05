@@ -623,6 +623,33 @@ export class ToolExecutor implements ToolExecContext {
           await this.execWorkspaceTool(t)
           return
         }
+        // ── ocr: bundled offline image text recognition ────────────────
+        // read 的 CONVERTIBLE_EXTS 里没有任何图片扩展名，图片走 read 会落到
+        // shell `cat` 吐出二进制乱码；这条分支才是模型拿到图片文字的唯一入口。
+        // 主进程侧（svcOcrImage）负责校验：路径门、是否图片、体积、模型是否就位。
+        if (t.name === 'ocr') {
+          const raw = String(t.input?.file_path || '')
+          if (!raw) throw new Error('file_path is required')
+          const filePath = this.resolveWorkspacePath(raw)
+          const result = await getHost().ocrImage(filePath)
+          t.status = 'completed'; t.exitCode = 0
+          t.output = result.text
+          const minScore = result.lines.length ? Math.min(...result.lines.map(l => l.score)) : 0
+          const header = [
+            '--- OCR Metadata ---',
+            `path: ${filePath}`,
+            `image: ${result.width}x${result.height}`,
+            `lines: ${result.lines.length}${result.dropped.length ? ` (${result.dropped.length} noise lines dropped)` : ''}`,
+            `elapsed: ${result.ms}ms`,
+            result.lines.length ? `minScore: ${minScore.toFixed(3)}` : 'minScore: —',
+          ].join('\n')
+          // 误杀只能靠人看被丢的东西才能发现，所以按需原样列出，不折叠成计数
+          const droppedPart = t.input?.include_dropped === true && result.dropped.length
+            ? `\n\n### Dropped as noise\n${result.dropped.map(l => `- ${l.text} (${l.score.toFixed(3)})`).join('\n')}`
+            : ''
+          this.addToolResult(t.id, `${header}\n\n${result.text.trim() || '_图片中未检测到文字_'}${droppedPart}`, false, undefined, MAX_READ_RESULT_TOKENS)
+          return
+        }
         // ── `read` tool: metadata header + content ────────────────────
         if (t.name === 'read') {
           // 相对路径挂 workspace、~ 原样（audit 2026-10-10 #6）：stat/markitdown

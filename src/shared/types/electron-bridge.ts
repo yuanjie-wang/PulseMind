@@ -525,6 +525,16 @@ export interface ElectronAPI {
     filePath: string
   }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
+  /** 图片文字识别（PP-OCRv4 本地模型，无网络）：按行返回文本与置信度，
+   *  外加尺寸/耗时/被当作界面碎片丢弃的行。非图片或模型缺失一律 reject。 */
+  ocrImage: (filePath: string) => Promise<{
+    text: string
+    lines: Array<{ text: string; score: number }>
+    dropped: Array<{ text: string; score: number }>
+    width: number
+    height: number
+    ms: number
+  }>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */
   registerPreviewNonce: (input: { filePath: string; nonce: string }) => Promise<void>

@@ -27,6 +27,7 @@ export const READ_TIER_TOOLS = new Set([
   'office_inspect',
   'office_read',
   'office_search',
+  'ocr',
 ])
 /** Built-in tools that change the workspace on disk. */
 export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'office_edit', 'export_document'])
