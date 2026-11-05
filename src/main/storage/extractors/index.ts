@@ -43,6 +43,19 @@ registerExtractor([
   '.patch', '.diff'
 ], (fp, buf) => extractText(fp, buf))
 
+// Images → OCR (PP-OCRv4). Lazily imported: the model load costs ~650ms and
+// +126~235MB RSS, so it must never run on the import path. Before this
+// registration .png/.jpg had no extractor at all — scanned contracts, phone
+// photos of receipts and code screenshots fell through to tryMarkitdown and
+// produced nothing.
+registerExtractor(
+  ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff'],
+  async fp => {
+    const { extractImage } = await import('./ocr-extractor')
+    return extractImage(fp)
+  }
+)
+
 /** Detect whether buffer starts with HTML markup */
 function isHtml(buffer: Buffer): boolean {
   const head = buffer.slice(0, 100).toString('utf-8').trimStart()
