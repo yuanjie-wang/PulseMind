@@ -67,7 +67,10 @@ export function registerTemplateHandlers(): void {
       const skillsRoot = join(extractDir, 'skills')
       try {
         await access(skillsRoot)
-        result.skills = await skillStore.importSkillsFromDirectory(skillsRoot)
+        // store 的返回形状没有 skipped（重名串按错误返回，分流在下面）——
+        // 先补齐 TemplateImportResult.skills 的字段再交给分流臂。
+        const storeResult = await skillStore.importSkillsFromDirectory(skillsRoot)
+        result.skills = { ...storeResult, skipped: [] }
         // 重名跳过是幂等重复导入的预期行为，不是错误：分流进 skipped，
         // UI 对它保持沉默（用户裁定 2026-11-05：重复内容不弹提示）。
         const dupPattern = / already exists — skipped$/
