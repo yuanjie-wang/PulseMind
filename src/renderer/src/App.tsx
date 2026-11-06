@@ -25,7 +25,7 @@ import zhCN from 'antd/locale/zh_CN'
 import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
-import { useWorkbenchStore, useConversationPrimary, conversationPrimaryOf, autoOpenTab } from './stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, conversationPrimaryOf, autoOpenTab } from './stores/workbenchStore'
 import { useBrowserPaneStore } from './stores/browserPaneStore'
 import { clampPaneWidth, WORKBENCH_CARD_MARGIN } from '../../shared/browser/pane'
 import { IMMERSIVE_CARD_RADIUS } from '../../shared/ui/layout-widths'
@@ -580,7 +580,7 @@ function AppContent(): React.ReactElement {
   // closing the dock FROM the sub-agent session re-cuts the overlay live.
   const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
   const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
-  const workbenchWidth = useWorkbenchStore((s) => s.width)
+  const workbenchWidth = useWorkbenchWidth()
   // 视图模式：非 chat 主视图下对话住在右侧工作台卡，drill-in 覆盖层跟着
   // 对话卡走（见下方 overlay 盒的两分支）。模式跟任务走，按会话读。
   const primary = useConversationPrimary(wbKey)

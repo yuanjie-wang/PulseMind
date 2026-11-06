@@ -97,12 +97,12 @@ describe('layout width wiring', () => {
     expect(src).toMatch(/direction: 1,/)
   })
 
-  it('workbenchStore persists treeWidth with the pane width', () => {
+  it('workbenchStore persists treeWidth with the per-tab pane widths', () => {
     const src = read('src/renderer/src/stores/workbenchStore.ts')
     expect(src).toContain('WORKBENCH_DEFAULT_TREE_WIDTH')
-    // 视图模式二期「模式跟任务走」：primaryByConversation 按会话存内存、
-    // 不落盘（重启回归对话优先，与 openByConversation 同裁定）。
-    expect(src).toMatch(/partialize: \(s\) =>\s*\(\{ width: s\.width, activeTab: s\.activeTab, treeWidth: s\.treeWidth \}\)/)
+    // 2026-11-06：宽度按 tab 分开（widthByTab），落盘形状随之改名。
+    expect(src).toContain('partialize: workbenchPersistShape')
+    expect(src).toContain('return { widthByTab: s.widthByTab, activeTab: s.activeTab, treeWidth: s.treeWidth } as WorkbenchState')
   })
 
   it('both drags share the pointer guards the workbench handle paid for', () => {

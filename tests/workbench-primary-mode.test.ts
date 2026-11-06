@@ -138,9 +138,12 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
 
   it('persist 不携带 primaryByConversation（重启回归对话优先，与 openByConversation 同裁定）', () => {
     const src = read(STORE)
-    expect(src).toMatch(/partialize: \(s\) =>/)
-    expect(src).toContain('treeWidth: s.treeWidth')
-    expect(src).not.toMatch(/partialize[\s\S]{0,200}(primaryByConversation|openByConversation)/)
+    // 2026-11-06 起落盘形状提成具名纯函数（宽度按 tab 分开），断言口径从
+    // 「partialize 的字面写法」改为「落盘字段就这三个」。
+    expect(src).toContain('partialize: workbenchPersistShape')
+    expect(src).toContain('return { widthByTab: s.widthByTab, activeTab: s.activeTab, treeWidth: s.treeWidth } as WorkbenchState')
+    expect(src).not.toContain('primaryByConversation: s.')
+    expect(src).not.toContain('openByConversation: s.')
   })
 
   it('只有项目沉浸窗口恒按 chat 消费；弹出窗口按本窗生效（2026-11-04 裁定）', async () => {

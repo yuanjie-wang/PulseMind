@@ -79,6 +79,31 @@ export function nextPrimary(primary: PrimaryPane): PrimaryPane {
 }
 
 export const WORKBENCH_DEFAULT_WIDTH = 420
+
+/** 每个 tab 一份 pane 宽度（2026-11-06 用户裁定「按 tab 分开」）。此前是
+ *  一个全局单标量：浏览器被拖宽到 800 之后，工作计划/工作区的面板被同一
+ *  个数字撑开——浏览器确实需要宽，计划面板不需要。缺键 = 该 tab 从未拖过，
+ *  回落 WORKBENCH_DEFAULT_WIDTH；仍是「用户机器上的几何」而非会话属性，
+ *  所以会话之间共享（与 openByConversation 的按会话恰好相反）。 */
+export type WorkbenchWidthByTab = Partial<Record<WorkbenchTab, number>>
+
+/** 某个 tab 的生效宽度（per-tab 之后唯一的读数口子）。 */
+export function widthForTab(widthByTab: WorkbenchWidthByTab, tab: WorkbenchTab): number {
+  const w = widthByTab[tab]
+  return typeof w === 'number' && Number.isFinite(w) ? w : WORKBENCH_DEFAULT_WIDTH
+}
+
+/** hook 形态：pane 宽度按当前 activeTab 取。**五个消费点必须全部走这一个
+ *  口子**——面板自身宽、对话列 paddingRight 预留、drill-in 覆盖层（主窗 +
+ *  会话弹出窗）、原生 webview 的 rightInset；任何一处读到别的 tab 的宽度，
+ *  reserve 与面板就错位（多一条缝，或覆盖层压到 pane 上）。
+ *  按**原始** activeTab 取（不是 WorkbenchPane 里 reconcile 后的渲染 tab）：
+ *  调和差异只出现在「持久化的 activeTab 不在当前模式侧栏集合里」的首帧，
+ *  此时只需五个点彼此一致，渲染的是哪张 body 不影响几何。 */
+export function useWorkbenchWidth(): number {
+  return useWorkbenchStore((s) => widthForTab(s.widthByTab, s.activeTab))
+}
+
 /** 工作区 tab's tree column (px) — the tree↔preview divider drag persists
  *  here, global like the pane width (pane geometry is about the user, not
  *  the conversation). Clamped at consumption: clampTreeWidth against the
@@ -93,11 +118,14 @@ interface WorkbenchState {
   openByConversation: Record<string, boolean>
   /** 主视图归属 per conversation（视图模式跟任务走）；absent = 'chat'。 */
   primaryByConversation: Record<string, PrimaryPane>
-  width: number
+  /** 每个 tab 的 pane 宽度；缺键 = 默认值（见 widthForTab）。 */
+  widthByTab: WorkbenchWidthByTab
   activeTab: WorkbenchTab
   treeWidth: number
   setOpen: (convKey: string, open: boolean) => void
-  setWidth: (width: number) => void
+  /** 写入某个 tab 的宽度；`tab` 缺省 = 当前 activeTab（拖拽手的天然语义：
+   *  拖的是眼前这一张面板）。 */
+  setWidth: (width: number, tab?: WorkbenchTab) => void
   setTreeWidth: (treeWidth: number) => void
   setActiveTab: (tab: WorkbenchTab) => void
   /** 绑定一个会话的主视图模式（welcome 浏览器任务物化时调用），并按新模式
@@ -105,6 +133,26 @@ interface WorkbenchState {
   setConversationPrimary: (convKey: string, primary: PrimaryPane) => void
   /** Bring a tab to the front, opening this conversation's workbench if closed. */
   openTab: (convKey: string, tab: WorkbenchTab) => void
+}
+
+/** v1 → v2 持久化迁移（2026-11-06 width 单标量 → widthByTab）。旧值**只继承
+ *  给 browser**——用户裁定「浏览器保留调过的宽带，工作计划/工作区回默认」；
+ *  其余 tab 无键即回落 WORKBENCH_DEFAULT_WIDTH，历史那次拖宽不再把计划面板
+ *  撑开。导出成纯函数：测试直接跑迁移，不依赖 persist 的运行时 API。 */
+export function migrateWorkbenchPersisted(persisted: unknown, version: number): WorkbenchState {
+  if (version >= 2) return persisted as WorkbenchState
+  const old = persisted as Omit<Partial<WorkbenchState>, 'width'> & { width?: number }
+  const { width: legacy, ...rest } = old
+  const kept = typeof legacy === 'number' && Number.isFinite(legacy) ? { browser: legacy } : {}
+  return { ...rest, widthByTab: kept } as WorkbenchState
+}
+
+/** 落盘形状（2026-11-06 起是 widthByTab；单标量 width 不再写）。同样导出成
+ *  纯函数供测试断言「旧字段没有被写回去」。 */
+export function workbenchPersistShape(s: WorkbenchState): WorkbenchState {
+  // primaryByConversation 刻意不持久化——重启后浏览器页签本就不在，布局回归
+  // 对话优先与 openByConversation 的「重启无活面板」裁定一致。
+  return { widthByTab: s.widthByTab, activeTab: s.activeTab, treeWidth: s.treeWidth } as WorkbenchState
 }
 
 /** Re-insert `convKey` as most-recently-used, then prune beyond the cap —
@@ -154,11 +202,11 @@ export const useWorkbenchStore = create<WorkbenchState>()(
     (set) => ({
       openByConversation: {},
       primaryByConversation: {},
-      width: WORKBENCH_DEFAULT_WIDTH,
+      widthByTab: {},
       activeTab: 'workspace',
       treeWidth: WORKBENCH_DEFAULT_TREE_WIDTH,
       setOpen: (convKey, open) => set((s) => ({ openByConversation: touchMap(s.openByConversation, convKey, open) })),
-      setWidth: (width) => set({ width }),
+      setWidth: (width, tab) => set((s) => ({ widthByTab: { ...s.widthByTab, [tab ?? s.activeTab]: width } })),
       setTreeWidth: (treeWidth) => set({ treeWidth }),
       setActiveTab: (activeTab) => set({ activeTab }),
       setConversationPrimary: (convKey, primary) =>
@@ -176,9 +224,9 @@ export const useWorkbenchStore = create<WorkbenchState>()(
     }),
     {
       name: 'pulsemind-workbench',
-      // primaryByConversation 刻意不持久化——重启后浏览器页签本就不在，布局
-      // 回归对话优先与 openByConversation 的「重启无活面板」裁定一致。
-      partialize: (s) => ({ width: s.width, activeTab: s.activeTab, treeWidth: s.treeWidth }) as WorkbenchState,
+      version: 2,
+      migrate: migrateWorkbenchPersisted,
+      partialize: workbenchPersistShape,
     },
   ),
 )

@@ -20,7 +20,7 @@ import { useCallback, useEffect, type RefObject } from 'react'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
 import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
-import { useWorkbenchStore, useConversationPrimary } from '../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary } from '../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
 import { IS_PROJECT_WINDOW } from '../popout/boot'
 import {
@@ -78,7 +78,7 @@ export function useBrowserPaneBinding(
   // 视图模式（PLAN-layout-modes）：浏览器主视图时浏览器恒在前（它就是主卡），
   // 侧栏集合里没有浏览器 tab，workbenchTab 判定不适用。
   const primary = useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)
-  const workbenchWidth = useWorkbenchStore((s) => s.width)
+  const workbenchWidth = useWorkbenchWidth()
   const primaryPaneWidth = useBrowserPaneStore((s) => s.primaryPaneWidth)
   // 浮窗让位（十三期）：useFloatOverlayShift 量出的左右内收 px。
   const floatOverlay = useBrowserPaneStore((s) => s.floatOverlay)

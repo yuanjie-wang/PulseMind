@@ -18,7 +18,7 @@ const chatView = readFileSync(join(ROOT, 'src/renderer/src/components/layout/Cha
 
 describe('persisted workbench width is clamped at consumption', () => {
   it('non-vacuity: the scans read the real persisted-width consumers', () => {
-    expect(workbench).toContain('const width = useWorkbenchStore((s) => s.width)')
+    expect(workbench).toContain('const width = useWorkbenchWidth()')
     expect(workbench).toContain('clampPaneWidth(d.startWidth + (d.startX - e.clientX), chatAreaWidth)')
     expect(chatView).toContain('paddingRight: workbenchOpen ?')
   })

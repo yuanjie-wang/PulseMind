@@ -25,7 +25,7 @@ import { startBottomPin } from '../../utils/bottom-pin'
 import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
-import { useWorkbenchStore, useConversationPrimary, autoOpenTab } from '../../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, autoOpenTab } from '../../stores/workbenchStore'
 import { WorkbenchPane } from '../workbench/WorkbenchPane'
 import { WorkspacePane } from '../workbench/WorkspacePane'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
@@ -318,6 +318,29 @@ function ChatView({
     })
   }, [antdMessage, t])
 
+  // 重发 (2026-11-05): the user bubble's hover toolbar hands its prompt text
+  // back up here and it goes out as a NEW turn. Lightweight by design — the
+  // transcript is never rewound, so the original turn stays in place (a rewind
+  // would need an engine primitive; session-manager's whitelist only offers
+  // retryLastTurn). A live turn refuses with a toast instead of queueing: the
+  // engine would accept the ask, and the same prompt answered twice is never
+  // what 重发 means.
+  const handleResendUserMessage = useCallback(
+    (text: string) => {
+      if (!text.trim()) return
+      const busy =
+        isRequesting ||
+        agentStatus.status === 'awaiting_approval' ||
+        agentStatus.status === 'awaiting_user_input'
+      if (busy) {
+        antdMessage.open({ key: 'resend-busy', type: 'warning', content: t('chatView.resendBusy') })
+        return
+      }
+      sendMessageAndPin(text)
+    },
+    [isRequesting, agentStatus.status, antdMessage, t, sendMessageAndPin],
+  )
+
   // ── Windowed rendering ──
   // Only the latest PAGE_SIZE segments render initially; older segments are
   // prepended lazily on scroll-up (extraTop = extra segments above the tail).
@@ -410,7 +433,9 @@ function ChatView({
   // the auto-open effects below (the store read stays unconditional — rules of
   // hooks; the flag is static per window either way).
   const workbenchOpen = workbenchOpenRaw && !hideWorkbench
-  const workbenchWidth = useWorkbenchStore((s) => s.width)
+  // 与面板自身同一个读数口子（useWorkbenchWidth）：reserve 和 pane 宽度必须
+  // 取同一个 tab 的值，否则会出现缝或覆盖。
+  const workbenchWidth = useWorkbenchWidth()
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   // 视图模式（PLAN-layout-modes 二期裁定「模式跟任务走」）：主视图归属决定
   // 这张 ChatView 的主卡放什么（对话 / 工作区 / 浏览器），以及对话降级到侧栏
@@ -956,6 +981,7 @@ function ChatView({
         conversationTitle={conversationTitle}
         onOpenSubAgent={onOpenSubAgent}
         onExtractRoutine={routineEntryIndex === index ? onExtractRoutine : undefined}
+        onResendUserMessage={handleResendUserMessage}
         aboveActions={aboveActions}
       />
     ),
@@ -973,6 +999,7 @@ function ChatView({
       conversationTitle,
       routineEntryIndex,
       onExtractRoutine,
+      handleResendUserMessage,
       onOpenSubAgent,
     ],
   )

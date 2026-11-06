@@ -15,7 +15,7 @@ import React, { useRef } from 'react'
 import { X } from 'lucide-react'
 import { WORKBENCH_CARD_MARGIN, clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
 import { IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
-import { useWorkbenchStore, useConversationPrimary, reconcileActiveTab, sideTabsFor, type WorkbenchTab } from '../../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, reconcileActiveTab, sideTabsFor, type WorkbenchTab } from '../../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { PlanGraphView } from './PlanGraphView'
@@ -75,7 +75,8 @@ export function WorkbenchPane({
   onBrowserWidth,
   chatSlot,
 }: Props): React.ReactElement {
-  const width = useWorkbenchStore((s) => s.width)
+  // 宽度按 tab 取（2026-11-06）：浏览器被拖宽不会再把计划面板一起撑开。
+  const width = useWorkbenchWidth()
   // The persisted width predates every window it renders into (a drag under
   // one monitor survives onto a smaller one; this instance also predates the
   // 2026-10-06 zoom fix, whose 3× CSS viewport stored an 1854px drag) — the
