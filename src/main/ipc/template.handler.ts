@@ -13,6 +13,7 @@ import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { skillStore } from '../storage/skill-store'
 import { registerLiveSkills } from '../agent/live-skill-registry'
+import { logMain, describeError } from '../main-log'
 import { withZipExtraction } from '../utils/zip-extractor'
 import { validateTemplateSettings, sanitizeTemplateSettings } from '../services/template-import'
 import type { TemplateImportResult } from '../../shared/types/electron-bridge'
@@ -64,28 +65,53 @@ export function registerTemplateHandlers(): void {
       }
 
       // 2) skills/ — same on-disk shape as a skill zip; duplicates skip.
+      // 「无 skills/ = 纯配置包」只由 access 判定（settings 臂同形）：walk/
+      // readFile/cp/活体登记的真实故障必须落 issues 面 + 主日志，不得吞成
+      // 「选错文件」（review_20261106 中2：旧写法一个 catch 包住全部）。
       const skillsRoot = join(extractDir, 'skills')
+      let hasSkills = false
       try {
         await access(skillsRoot)
-        // store 的返回形状没有 skipped（重名串按错误返回，分流在下面）——
-        // 先补齐 TemplateImportResult.skills 的字段再交给分流臂。
-        const storeResult = await skillStore.importSkillsFromDirectory(skillsRoot)
-        result.skills = { ...storeResult, skipped: [] }
-        // 重名跳过是幂等重复导入的预期行为，不是错误：分流进 skipped，
-        // UI 对它保持沉默（用户裁定 2026-11-05：重复内容不弹提示）。
-        const dupPattern = / already exists — skipped$/
-        const dups = result.skills.errors.filter((e) => dupPattern.test(e))
-        if (dups.length > 0) {
-          result.skills = {
-            ...result.skills,
-            skipped: dups,
-            errors: result.skills.errors.filter((e) => !dupPattern.test(e))
-          }
-        }
-        // 盘上落定 ≠ 引擎可见：主进程共享 SkillManager 只在首个会话创建时扫
-        // 一次盘（ensureManagers），必须同步登记（与技能 zip 导入同一对调用）。
-        if (result.skills.imported.length > 0) registerLiveSkills(result.skills.imported)
+        hasSkills = true
       } catch { /* 无 skills/ 目录 = 纯配置包 */ }
+      if (hasSkills) {
+        try {
+          // store 的返回形状没有 skipped（重名串按错误返回，分流在下面）——
+          // 先补齐 TemplateImportResult.skills 的字段再交给分流臂。
+          const storeResult = await skillStore.importSkillsFromDirectory(skillsRoot)
+          result.skills = { ...storeResult, skipped: [] }
+          // 重名跳过是幂等重复导入的预期行为，不是错误：分流进 skipped，
+          // UI 对它保持沉默（用户裁定 2026-11-05：重复内容不弹提示）。
+          const dupPattern = / already exists — skipped$/
+          const dups = result.skills.errors.filter((e) => dupPattern.test(e))
+          if (dups.length > 0) {
+            result.skills = {
+              ...result.skills,
+              skipped: dups,
+              errors: result.skills.errors.filter((e) => !dupPattern.test(e))
+            }
+          }
+          // 盘上落定 ≠ 引擎可见：主进程共享 SkillManager 只在首个会话创建时扫
+          // 一次盘（ensureManagers），必须同步登记（与技能 zip 导入同一对调用）。
+          if (result.skills.imported.length > 0) {
+            try {
+              registerLiveSkills(result.skills.imported)
+            } catch (err) {
+              // 落盘已成功、只差引擎登记：如实告知重启后生效，不与落盘故障混淆
+              //（review_20261106 中2 ②：被吞时该批技能对 pick_skill 隐形到重启）。
+              const message = err instanceof Error ? err.message : String(err)
+              result.skills.errors.push(`技能已导入，但引擎登记失败（重启后生效）：${message}`)
+              logMain('ERROR', 'template', `live skill registration failed: ${describeError(err)}`)
+            }
+          }
+        } catch (err) {
+          // 权限/EBUSY/半截解压等真实故障：issues 面接住 + 主日志留痕
+          //（打包态 GUI 无终端，console 不可见——logMain 是唯一落盘诊断面）。
+          const message = err instanceof Error ? err.message : String(err)
+          result.skills.errors.push(`skills/ 导入失败：${message}`)
+          logMain('ERROR', 'template', `skills import failed: ${describeError(err)}`)
+        }
+      }
     })
 
     // 两者皆无 = 不是模板包，如实告诉调用方。

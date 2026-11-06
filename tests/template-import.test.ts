@@ -174,6 +174,20 @@ describe('template import wiring', () => {
     expect(src).toContain('importSkillsFromRoot')
   })
 
+  it('skills-arm failures surface: only access() means "no skills/", real errors reach issues + main.log', () => {
+    // review_20261106 中2：旧写法一个 catch 包住 access 之后的全部 throw
+    //（walk/readFile/cp/活体登记），权限/EBUSY/半截解压被吞成「选错文件」
+    // 且零日志。修法 = access 单独 try 定「纯配置包」，其余进 errors 面 + logMain。
+    const src = read('src/main/ipc/template.handler.ts')
+    expect(src).toContain('let hasSkills = false')
+    expect(src).toContain('if (hasSkills)')
+    expect(src).toContain('result.skills.errors.push(')
+    expect(src).toContain("logMain('ERROR', 'template'")
+    expect(src).toContain("from '../main-log'")
+    // 活体登记单独兜：落盘已成功时如实告知重启生效，不与落盘故障混淆
+    expect(src).toContain('重启后生效')
+  })
+
   it('the i18n keys exist in both locales', () => {
     const zh = read('src/renderer/src/i18n/locales/zh.ts')
     const en = read('src/renderer/src/i18n/locales/en.ts')

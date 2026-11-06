@@ -4,6 +4,7 @@ import os from 'node:os'
 import { DATA_DIR, HOOKS_DIR, WORKSPACE_DIR, SKILLS_DIR, KNOWLEDGE_DIR } from './storage/index'
 import { getUserPath, initUserPath } from './utils/user-path'
 import { closeAllHookWindows, openBuiltInWindow } from './hook-browser'
+import { logMain, describeError } from './main-log'
 import type { HookContext, HookResult } from '../shared/types/hooks'
 
 const PLATFORM_NAMES: Record<string, string> = {
@@ -82,6 +83,7 @@ export function ensureLaunchHooks(): Promise<void> {
     launchPromise = Promise.race([
       runLaunchHooks().catch((err) => {
         console.error('[Hooks] launch hooks crashed:', err)
+        logMain('ERROR', 'hooks', `launch hooks crashed: ${describeError(err)}`)
       }),
       skip,
     ])
@@ -95,6 +97,7 @@ export async function runLaunchHooks(): Promise<void> {
   const userPathPromise = initUserPath()
 
   if (!existsSync(HOOKS_DIR)) {
+    logMain('INFO', 'hooks', 'no hooks dir — nothing to run')
     await userPathPromise
     return
   }
@@ -107,6 +110,7 @@ export async function runLaunchHooks(): Promise<void> {
       const hookFn = require(filePath)
       if (typeof hookFn !== 'function') {
         console.warn(`[Hooks] ${event}.js does not export a function, skipping`)
+        logMain('WARN', 'hooks', `${event}.js does not export a function, skipping`)
         continue
       }
 
@@ -142,22 +146,26 @@ export async function runLaunchHooks(): Promise<void> {
         if (outcome === 'timeout') {
           closeAllHookWindows()
           console.warn(`[Hooks] ${event}.js exceeded its ${timeoutMs}ms watchdog — abandoned; startup continues`)
+          logMain('WARN', 'hooks', `${event}.js exceeded its ${timeoutMs}ms watchdog — abandoned; startup continues`)
           continue
         }
         const result: HookResult = outcome as HookResult
         if (result?.env) {
           hookEnv = { ...hookEnv, ...result.env }
           console.log(`[Hooks] ${event}.js returned ${Object.keys(result.env).length} env var(s)`)
+          logMain('INFO', 'hooks', `${event}.js returned ${Object.keys(result.env).length} env var(s)`)
         }
       } finally {
         if (watchdogTimer) clearTimeout(watchdogTimer)
       }
     } catch (err) {
       console.error(`[Hooks] ${event}.js failed:`, err)
+      logMain('ERROR', 'hooks', `${event}.js failed: ${describeError(err)}`)
     }
   }
 
   console.log('[Hooks] All hooks completed')
+  logMain('INFO', 'hooks', 'all launch hooks completed')
 
   await userPathPromise
 }
