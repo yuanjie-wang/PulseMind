@@ -716,4 +716,17 @@ describe('todo_write wiring', () => {
     expect(read('src/shared/types/plan.ts')).toMatch(/currentNodeId\?: string/)
     expect(read('src/shared/plan/graph.ts')).toMatch(/export \{ isTodoPlan \}/)
   })
+
+  it('fresh is forwarded end-to-end: schema declares it, the manual teaches it, the executor passes it (2026-11-06)', () => {
+    // review_20261106 中1：声明（schema）、教学（manual 第 6 条）、引擎门
+    // （reconcileTodo 的 !fix?.fresh）三处齐备，唯独执行器没转发——模型传了
+    // fresh:true 却被静默按「继续」处理。四段链缺一段即红。
+    expect(read('src/renderer/src/agent/plan-manager.ts')).toMatch(
+      /reconcileTodo\([\s\S]{0,300}input\?\.fresh === true/,
+    )
+    const def = BUILT_IN_TOOLS.find(t => t.name === 'todo_write')
+    expect((def?.input_schema.properties as Record<string, unknown>).fresh).toBeDefined()
+    expect(toolInstructions.todo_write).toContain('`fresh: true`')
+    expect(read('src/shared/plan/graph.ts')).toContain('!fix?.fresh')
+  })
 })
