@@ -247,6 +247,13 @@ const en: TranslationDict = {
     promptCacheHit: 'Cache hit rate',
     error: 'Error',
     dismiss: 'Dismiss',
+    selectionToolbar: {
+      label: 'Selection actions',
+      copy: 'Copy',
+      copied: 'Copied',
+      ask: 'Ask',
+      removeQuote: 'Remove quote',
+    },
     navigator: {
       toBottom: 'Back to bottom',
       prev: 'My previous message',

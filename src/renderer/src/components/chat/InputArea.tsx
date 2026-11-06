@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Tooltip } from 'antd'
 import {
   PlusOutlined,
@@ -88,6 +88,8 @@ function InputAreaImpl({
   staging,
   onAboveCardReserve,
   onCardBand,
+  quoteRequest,
+  onQuoteConsumed,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -197,6 +199,16 @@ function InputAreaImpl({
    *  so the host must reserve the MEASURED value or the newest message slides
    *  under the card — and under the staged strip above it. */
   onCardBand?: (height: number) => void
+  /** 「提问」通道（选中文字工具栏，2026-11-06）：宿主把一段选中文字按 token
+   *  递进来，Composer 把它写成引用块并交还焦点。token 幂等——同一个对象重传
+   *  不重复插入，只有 token 变了才算新的一次请求。 */
+  quoteRequest?: { token: number; text: string } | null
+  /** 引用请求被吃下之后的回调，宿主在这里把它清成 null。这不是可选项：
+   *  「是否已消费」只靠本组件内部的 ref 记，而本组件带 key={conversationId}
+   *  会被换会话重建，ref 随之归零——宿主那边残留的旧请求就会被当成新请求
+   *  再消费一次，A 会话的引用跑到 B 会话里去（2026-11-06 实测）。请求消费
+   *  完就收回，重建后便无物可重放。 */
+  onQuoteConsumed?: () => void
 }): React.ReactElement {
   // Everything on when the prop is absent (the chat); a reuse site lists only
   // what it exposes.
@@ -207,6 +219,33 @@ function InputAreaImpl({
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
   const composerRef = useRef<ComposerHandle>(null)
+
+  // ── 选中文字引用（2026-11-06）──
+  // 工具栏的「提问」不把选中文字塞进草稿：草稿里一段 markdown 引用块既看不出
+  // 边界、也删不干净。改成输入框上沿的一枚引用 chip —— 与文件/文件夹引用同一
+  // 套形态：悬停读全文，点 × 摘掉，发送时才落成引用块交出去。所以「输入框里
+  // 看到什么」和「模型收到什么」分开了，和 [file:…] chip 完全同构。
+  // token 幂等：宿主重渲染会原样重传同一个对象，只有 token 变了才算新的一次，
+  // 否则同一段引用会被叠进来两遍。
+  const consumedQuoteRef = useRef(0)
+  const quoteIdRef = useRef(0)
+  const [quotes, setQuotes] = useState<Array<{ id: number; text: string }>>([])
+  useEffect(() => {
+    if (!quoteRequest || quoteRequest.token === consumedQuoteRef.current) return
+    consumedQuoteRef.current = quoteRequest.token
+    quoteIdRef.current += 1
+    const id = quoteIdRef.current
+    setQuotes((prev) => [...prev, { id, text: quoteRequest.text }])
+    // 吃下就收回：宿主清掉请求后，本组件被 key 换会话重建时无物可重放。
+    // 顺序不能反——先记 token 再回调，否则回调引起的重渲染会让守卫失效。
+    onQuoteConsumed?.()
+    // 焦点交还输入框：用户下一步就是写问题，不该再点一次。
+    requestAnimationFrame(() => composerRef.current?.focus())
+  }, [quoteRequest, onQuoteConsumed])
+
+  const removeQuote = useCallback((id: number): void => {
+    setQuotes((prev) => prev.filter((q) => q.id !== id))
+  }, [])
 
   // The autoFocus rule, made re-runnable: on mount (Sender's own autoFocus
   // covers that, this is idempotent) and again on every focusToken change.
@@ -366,6 +405,13 @@ function InputAreaImpl({
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
 
   const getFileName = (path: string) => path.replace(/^.*[\\/]/, '')
+
+  /** 引用 chip 的一行摘要：换行与连续空白压成单空格，过长截断——完整内容在
+   *  Tooltip 里。多行选中若原样铺开，一条 chip 会长到把输入框挤变形。 */
+  const quoteSummary = (text: string): string => {
+    const flat = text.replace(/\s+/g, ' ').trim()
+    return flat.length > 40 ? `${flat.slice(0, 40)}…` : flat
+  }
 
   /** [file:…] 标记把路径原样拼进 prompt、解析侧把 `]` 当结束符 `|` 当分隔符
    *  （full_20261011 M1-P1-2）——名字里带这两个字符的合法文件名曾让 chip 解析
@@ -596,6 +642,7 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
     }
     const outcome = onSteer ? await onSteer(outgoing) : { ok: false as const, reason: 'not_streaming' as const }
     if (outcome?.ok) {
@@ -673,6 +720,7 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
       return false
     }
     // 流中转向（B7 方案 A，PLAN-mid-stream-steer M1）：veto（return false）让
@@ -684,10 +732,22 @@ function InputAreaImpl({
       return false
     }
     history.onKeyDown(e, inputValue, setInputValue)
-  } /** Compose the outgoing message: attachment refs first, then the typed text. */
+  } /** Compose the outgoing message: attachment refs, then the quoted excerpts,
+   *  then the typed text. The chips are a UI layer only — what the model gets
+   *  is still plain markdown, exactly as if the refs had been typed out. */
   const buildMessage = (text: string): string => {
     const parts = [...selectedFiles.map((p) => `[file:${p}]`), ...selectedFolders.map((p) => `[folder:${p}]`)]
-    return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
+    const refs = parts.join('\n')
+    const quoted = quotes
+      .map((q) =>
+        q.text
+          .split('\n')
+          .map((line) => (line.trim() ? `> ${line}` : '>'))
+          .join('\n'),
+      )
+      .join('\n\n')
+    const head = [refs, quoted].filter(Boolean).join('\n\n')
+    return head ? (text ? `${head}\n\n${text}` : head) : text
   }
 
   /** Send one staged row now. The take IS the commit — the row leaves the
@@ -725,6 +785,7 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
     }
     // Belt: the Sender routes submits through its loading flag, so this branch
     // is unreachable in practice — but a submit during a run must stage, never
@@ -975,7 +1036,7 @@ function InputAreaImpl({
           )
         }
         header={
-          boundExpert || hasAttachments ? (
+          boundExpert || hasAttachments || quotes.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
               {/* Bound-expert chip: the conversation's summoned expert config pack. */}
               {boundExpert && (
@@ -1055,6 +1116,55 @@ function InputAreaImpl({
                     <CloseOutlined style={{ fontSize: 12 }} />
                   </span>
                 </span>
+              ))}
+              {/* 选中文字引用：与文件引用同一排、同一套形态。落在这排末尾，
+                  因为它是「关于对话本身」的上下文，和附加的文件是两回事——
+                  悬停读全文，点 × 摘掉；发送时才在 buildMessage 里落成
+                  markdown 引用块。 */}
+              {quotes.map((q) => (
+                <Tooltip
+                  key={`q-${q.id}`}
+                  title={
+                    <div style={{ whiteSpace: 'pre-wrap', maxHeight: 260, overflow: 'auto', fontSize: 12, lineHeight: 1.55 }}>
+                      {q.text}
+                    </div>
+                  }
+                >
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 3,
+                      background: 'var(--pm-pill-strong)',
+                      borderRadius: 12,
+                      padding: '2px 6px',
+                      fontSize: 12,
+                      maxWidth: 240,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'Georgia, "Times New Roman", serif',
+                        fontSize: 15,
+                        lineHeight: 1,
+                        color: 'var(--pm-text-secondary)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      &rdquo;
+                    </span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: 170 }}>
+                      {quoteSummary(q.text)}
+                    </span>
+                    <span
+                      onClick={() => removeQuote(q.id)}
+                      style={{ cursor: 'pointer', color: 'var(--pm-text-muted)', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                      title={t('chatView.selectionToolbar.removeQuote')}
+                    >
+                      <CloseOutlined style={{ fontSize: 12 }} />
+                    </span>
+                  </span>
+                </Tooltip>
               ))}
             </div>
           ) : undefined

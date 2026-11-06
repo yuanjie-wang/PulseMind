@@ -241,6 +241,13 @@ const zh = {
     promptCacheHit: '缓存命中率',
     error: '错误',
     dismiss: '关闭',
+    selectionToolbar: {
+      label: '选中文字操作',
+      copy: '复制',
+      copied: '已复制',
+      ask: '提问',
+      removeQuote: '移除引用',
+    },
     navigator: {
       toBottom: '回到底部',
       prev: '上一条我的消息',

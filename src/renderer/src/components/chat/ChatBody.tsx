@@ -37,6 +37,7 @@ import { ExtensionPrompt, SubAgentStopPrompt } from './ExtensionPrompt'
 import { TurnDeliverablesCard } from './TurnDeliverablesCard'
 import type { collectTurnDeliverables, segmentTurnPlacement } from './deliverables'
 import { InputArea } from './InputArea'
+import { SelectionToolbar } from './SelectionToolbar'
 import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { NewTaskMode } from '../../stores/newTaskStore'
@@ -203,6 +204,32 @@ export function ChatBody({
   // content and reports height+gap here; the spacer below adds it to the
   // composer reserve. Hooks sit before the welcome early-return so the hook
   // order stays stable across the two arms.
+  // ── 选中文字工具栏的「提问」通道（2026-11-06）──
+  // 选中文字 → 引用 chip 挂到 Composer 上沿。InputArea 的引用是自己 state，
+  // 外部只能靠一个 token 化的请求对象递进去（token 变了才消费一次，否则
+  // 每次宿主重渲染都会重新插入同一段引用）。
+  const [quoteRequest, setQuoteRequest] = useState<{ token: number; text: string; conv: string | undefined } | null>(
+    null,
+  )
+  const quoteTokenRef = useRef(0)
+  const handleAskSelection = useCallback(
+    (text: string) => {
+      quoteTokenRef.current += 1
+      setQuoteRequest({ token: quoteTokenRef.current, text, conv: conversationId })
+    },
+    [conversationId],
+  )
+  /** 请求被吃下之后立刻收回。这条不是锦上添花：InputArea 带着
+   *  key={conversationId}，换会话会重建，它内部「已消费」的 ref 随之归零——
+   *  宿主这边若还留着旧请求，重建后的新实例就会把它当成新请求再消费一遍，
+   *  A 会话摘下的引用于是跑到 B 会话里去了（2026-11-06 用户实测）。请求是
+   *  一次性事件，用完即弃，重建后便无物可重放。 */
+  const handleQuoteConsumed = useCallback((): void => setQuoteRequest(null), [])
+  /** 引用属于它被摘下的那段对话：只把「属于当前会话」的请求递下去。写进对象
+   *  而不是在渲染期比对/清状态，是因为状态要能跨渲染存活——派生出来的这个
+   *  值天然跟着 conversationId 变，换会话那一帧就已经是 null 了。 */
+  const activeQuoteRequest = quoteRequest && quoteRequest.conv === conversationId ? quoteRequest : null
+
   const [aboveCardReserve, setAboveCardReserve] = useState(0)
   // The composer card's own band (root padding + card height), measured by
   // Composer. 160 was a one-line card plus slack and is the FLOOR, not the
@@ -452,9 +479,16 @@ export function ChatBody({
         </div>
       </div>
 
+      {/* 选中文字工具栏（portal 到 body，位置相对视口）：「复制」人人都有，
+          「提问」把选中文字递进 Composer——它只在这个宿主里有落点
+          （TranscriptView 的复用宿主没有输入框，那里不传 onAsk）。 */}
+      <SelectionToolbar containerRef={scrollRef} onAsk={handleAskSelection} />
+
       <InputArea
         key={conversationId ?? 'new'}
         hidden={hideComposer}
+        quoteRequest={activeQuoteRequest}
+        onQuoteConsumed={handleQuoteConsumed}
         isRequesting={isRequesting}
         isStreaming={agentStatus.status === 'streaming'}
         isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
