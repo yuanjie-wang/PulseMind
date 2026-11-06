@@ -172,6 +172,18 @@
         "to": "resources/pulseMind_tray@2x.png"
       },
       {
+        "from": "resources/pulseMind-window.png",
+        "to": "resources/pulseMind-window.png"
+      },
+      {
+        "from": "resources/pulseMind-win-tray.ico",
+        "to": "resources/pulseMind-win-tray.ico"
+      },
+      {
+        "from": "resources/pulseMind-tray-color.png",
+        "to": "resources/pulseMind-tray-color.png"
+      },
+      {
         "from": "templates",
         "to": "templates",
         "filter": [
@@ -238,7 +250,7 @@
       ]
     },
     "linux": {
-      "icon": "resources/pulseMind.png",
+      "icon": "resources/icons-linux",
       "target": [
         "AppImage",
         "deb"

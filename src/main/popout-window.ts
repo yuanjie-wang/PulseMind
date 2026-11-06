@@ -33,6 +33,7 @@ import { resolveThemePreference } from '../shared/theme'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { installPopupMotionGuard } from './motion-guard'
 import { safeExternalUrl } from './utils/external-url'
+import { windowIconName } from './app-icon'
 import { DATA_DIR } from './storage/index'
 import { settingsStore } from './storage/settings-store'
 import type { PopoutWorkbenchSeed } from '../shared/types/electron-bridge'
@@ -68,7 +69,7 @@ const CASCADE_WRAP = 6
 let cascadeCount = 0
 
 function appIconPath(): string {
-  const name = process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'
+  const name = windowIconName()
   const prodBase = process.resourcesPath
   if (prodBase) {
     const prodPath = join(prodBase, 'resources', name)
