@@ -88,6 +88,32 @@ describe('turn duration: user send → last output character', () => {
     expect(engine.turnClock.isActive()).toBe(false) // consumed, so the next turn starts fresh
   })
 
+  it('stamps the last ASSISTANT message when a delivery entry trails the tail', () => {
+    // Plan mode: a wave's delivery / a tool result lands as a `role: 'user'`
+    // entry right after the round that produced it, so the turn's own answer is
+    // no longer `messages[len - 1]`. Reading the tail and requiring it to be an
+    // assistant skipped the stamp silently — a 13-sub-agent review came back as
+    // its final round's 11s (用户反馈 2026-11-06).
+    const engine = makeEngine()
+    const first = assistant('a1', 9_000)
+    const final = assistant('a2', 12_000)
+    const delivery: AgentMessage = { id: 'd1', role: 'user', contentBlocks: [block('子代理交付')], createdAt: NOW }
+    engine.messages = [user(), first, final, delivery]
+
+    let clock = 1_000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      engine.turnClock.start() // send
+      clock = 601_000 // …ten minutes of rounds and waves later
+      engine.handleEndTurnResponse('end_turn')
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(engine.messages[2].processingMs).toBe(600_000) // the answer carries the whole turn
+    expect(engine.messages[3].processingMs).toBeUndefined() // the delivery entry is left alone
+  })
+
   it('does not count the wait for a held approval', () => {
     const engine = makeEngine()
     const final = assistant('a2', 20_000)

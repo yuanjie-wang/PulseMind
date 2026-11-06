@@ -24,7 +24,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation, updateMessageStats } from '../storage/conversation.db'
 import { judgeSweepCandidate, nextSweepDelayMs, sweepIntervalMs, SWEEP_ACTIVE_WINDOW_MS, SWEEP_BATCH_LIMIT, SWEEP_MIN_DELTA } from '../../shared/memory-sweep'
 import { setMemorySweepTrigger, setSopDistillTrigger } from '../ipc/memory.handler'
 import { distillSop as runSopDistill, isSopDistilling } from './sop-runner'
@@ -347,7 +347,23 @@ export class AgentSessionManagerImpl {
     const updates = diffMessageStats(registry, messages)
     if (registry.size > 4000) registry.clear() // runaway guard, as above
     this.messageStatsRegistry.set(sessionId, registry)
-    if (updates.length > 0) this.emit(sessionId, { type: 'message_stats', updates })
+    if (updates.length > 0) {
+      // Persist, don't just announce. The turn total is stamped on an assistant
+      // message AFTER that row was inserted, and `upsertMsg` only runs on a full
+      // save — one a finished turn no longer triggers — so the number used to
+      // reach the renderer's mirror and die there: reopening the conversation
+      // read the single-round value straight back out of the DB
+      // (用户反馈 2026-11-06，「处理时间只算了一部分」).
+      for (const u of updates) {
+        updateMessageStats(u.messageId, {
+          processingMs: u.processingMs,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          promptCacheHitTokens: u.promptCacheHitTokens,
+        })
+      }
+      this.emit(sessionId, { type: 'message_stats', updates })
+    }
   }
 
 

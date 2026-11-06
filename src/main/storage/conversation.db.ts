@@ -6,7 +6,7 @@ import { extractSnippet } from '../../shared/search/snippet'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { buildSearchNeedles } from '../../shared/memory-pages'
 import { escapeLikePattern } from '../../shared/memory/like-pattern'
-import { getDb } from './database'
+import { getDb, isDbHealthy } from './database'
 import { perfTime } from '../perf/perf-log'
 
 /** Guard for the setters below.
@@ -547,6 +547,34 @@ export function updateMessageMetadata(
   const params: unknown[] = []
   if (data.liked !== undefined) { updates.push('liked = ?'); params.push(data.liked ? 1 : 0) }
   if (data.favorited !== undefined) { updates.push('favorited = ?'); params.push(data.favorited ? 1 : 0) }
+  if (updates.length === 0) return
+  params.push(msgId)
+  database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+}
+
+/** Targeted runtime-stats update for the turn clock and token counts.
+ *
+ *  `upsertMsg` already carries these columns, but it only runs on a FULL save —
+ *  and a finished turn never triggers one. The engine stamps the turn's total on
+ *  its final assistant message long after that message was INSERTed, so without
+ *  this write the number reached the renderer's mirror and died there: reopening
+ *  the conversation read the single-round value straight back out of the DB
+ *  (user report 2026-11-06, 「处理时间只算了一部分」). */
+export function updateMessageStats(
+  msgId: string,
+  data: { processingMs?: number; inputTokens?: number; outputTokens?: number; promptCacheHitTokens?: number }
+): void {
+  // Nowhere to write when no DB is open: this runs from the session-manager's
+  // per-notify diff, which the vitest harness exercises without initializing one
+  // (`getDb()` would throw there).
+  if (!isDbHealthy()) return
+  const database = getDb()
+  const updates: string[] = []
+  const params: unknown[] = []
+  if (data.processingMs !== undefined) { updates.push('processing_ms = ?'); params.push(data.processingMs) }
+  if (data.inputTokens !== undefined) { updates.push('input_tokens = ?'); params.push(data.inputTokens) }
+  if (data.outputTokens !== undefined) { updates.push('output_tokens = ?'); params.push(data.outputTokens) }
+  if (data.promptCacheHitTokens !== undefined) { updates.push('cached_tokens = ?'); params.push(data.promptCacheHitTokens) }
   if (updates.length === 0) return
   params.push(msgId)
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
