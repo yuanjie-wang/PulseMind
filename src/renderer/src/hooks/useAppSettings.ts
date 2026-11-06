@@ -6,9 +6,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   providers: [],
   profiles: [],
   // Renderer-side default shown only while settings load over IPC (the real
-  // default lives in main's settings-store, also 'dark'; the theme mirror in
+  // default lives in main's settings-store, also 'light'; the theme mirror in
   // theme/dom.ts carries the previous session's choice across this window).
-  theme: 'dark',
+  theme: 'light',
   myName: '',
   soul: '',
   yourName: '',
