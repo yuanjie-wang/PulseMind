@@ -1,26 +1,13 @@
+#!/usr/bin/env node
+// 打包态 OCR 冒烟：Resources/ort-web 三件套能加载、三个模型能建会话。
+// 用 plain node 而非 ELECTRON_RUN_AS_NODE —— onnxruntime-web 是纯 WASM，不绑
+// Electron ABI；plain node 跑得起来恰好证明它真的没有原生依赖（这正是换掉
+// onnxruntime-node 的目的：它的 Windows 二进制静态带 DirectML EP，dlopen 阶段
+// 就要加载 DirectML.dll，Win10 1809 上 1114 且无法用 executionProviders 规避）。
 'use strict'
 
-// 打包产物的 OCR 运行时冒烟：验证 afterPack 剥离后的 onnxruntime 二进制**仍能跑**。
-//
-// 为什么需要：strip-ort-foreign-arch 会删掉 352MB 的执行提供器库（CUDA/TensorRT/
-// shared），并把异平台/异架构/冗余 dylib 一并清掉。electron-builder 退出码 0 只说明
-// 打包完成，不说明裁完的二进制还能加载 —— 0.4.2 win portable 就是这么发出去的。
-//
-// 为什么不直接 require 打包目录：app.asar.unpacked 里只有 .node/.dylib（asarUnpack
-// 命中的部分），JS 包装层（index.js）在 app.asar 内部，plain node 读不了 asar。
-// 因此拼一个临时包：JS 包装层取自本仓 node_modules（与 lock 同版本），bin/ 目录
-// **整体使用打包产物**——被测的正是那份被裁过的二进制。
-//
-// 用 plain node 而非 ELECTRON_RUN_AS_NODE：onnxruntime-node 走 N-API（napi-v6，
-// ABI 稳定），Node 20 与 Electron 33 都能加载；而 Electron 二进制在 CI 容器里
-// 依赖 libgtk/libnss，缺库会失败得与本次改动无关（假阴性）。
-//
-// 用法：node scripts/smoke-packed-ocr.js --app-out dist/linux-unpacked \
-//          --platform linux --arch x64
-
-const { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } = require('node:fs')
-const { tmpdir } = require('node:os')
-const { join, resolve } = require('node:path')
+const { existsSync, readdirSync, readFileSync } = require('node:fs')
+const { join, resolve, sep } = require('node:path')
 
 function parseArgs (argv) {
   const out = {}
@@ -41,82 +28,60 @@ if (!existsSync(appOut) || !platform || !arch) {
   process.exit(2)
 }
 
-const resDirOf = (base) => ['resources', 'Resources'].map((d) => join(base, d)).find((p) => existsSync(p)) || join(base, 'resources')
-const unpacked = join(resDirOf(appOut), 'app.asar.unpacked')
-const ortPacked = join(unpacked, 'node_modules', 'onnxruntime-node')
-const modelsDir = join(resDirOf(appOut), 'ocr-models')
+// mac 的资源在 <out>/PulseMind.app/Contents/Resources，win/linux 在 <out>/resources
+const resDirOf = (base) => {
+  const apps = existsSync(base) ? readdirSync(base).filter((d) => d.endsWith('.app')) : []
+  const candidates = [
+    ...apps.map((d) => join(base, d, 'Contents', 'Resources')),
+    ...['resources', 'Resources'].map((d) => join(base, d))
+  ]
+  return candidates.find((p) => existsSync(p)) || join(base, 'resources')
+}
+const resDir = resDirOf(appOut)
+const ortDir = join(resDir, 'ort-web')
+const modelsDir = join(resDir, 'ocr-models')
 const fail = (msg) => {
   console.error(`[smoke-packed-ocr] FAIL: ${msg}`)
   process.exit(1)
 }
-if (!existsSync(ortPacked)) fail(`onnxruntime-node not unpacked at ${ortPacked}`)
-if (!existsSync(modelsDir)) fail(`ocr-models missing at ${modelsDir}`)
 
-// 1) 打包产物自洽：bin 下不得残留异平台/异架构目录，也不得残留 provider 库
-const binRoot = join(ortPacked, 'bin', 'napi-v6')
-const leftOver = readdirSync(binRoot, { withFileTypes: true })
-  .filter((e) => e.isDirectory() && e.name !== platform)
-  .map((e) => e.name)
-if (leftOver.length) fail(`foreign platform dir(s) left in napi-v6: ${leftOver.join(', ')}`)
+// 1) 依赖已彻底换掉：onnxruntime-node 若还在包内就是 59MB 白背 + DirectML 崩点
+const legacy = join(resDir, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node')
+if (existsSync(legacy)) fail(`onnxruntime-node still packed at ${legacy} — dependency switch is incomplete`)
 
-const archDir = join(binRoot, platform, arch)
-if (!existsSync(archDir)) fail(`no binary dir for ${platform}/${arch}`)
-const archFiles = readdirSync(archDir)
-const providerLeft = archFiles.filter((f) => /providers?/i.test(f))
-if (providerLeft.length) fail(`execution-provider lib(s) not stripped: ${providerLeft.join(', ')}`)
-console.log(`[smoke-packed-ocr] packed bin ok: ${platform}/${arch} -> ${archFiles.join(', ')}`)
-
-// 2) 拼临时包：JS 包装层取本仓，bin/ 用打包产物
-const repoOrt = resolve(__dirname, '..', 'node_modules', 'onnxruntime-node')
-const repoCommon = resolve(__dirname, '..', 'node_modules', 'onnxruntime-common')
-if (!existsSync(repoOrt) || !existsSync(repoCommon)) {
-  fail('repo node_modules lacks onnxruntime-node/onnxruntime-common (run npm ci first)')
+// 2) WASM 运行时三件套：引擎 js + glue mjs + wasm 本体必须同目录
+const required = ['ort.node.min.js', 'ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm']
+for (const f of required) {
+  if (!existsSync(join(ortDir, f))) fail(`missing ${f} in ${ortDir}`)
 }
-const scratch = mkdtempSync(join(tmpdir(), 'pm-ocr-smoke-'))
-const staged = join(scratch, 'node_modules')
-mkdirSync(staged, { recursive: true })
-cpSync(repoOrt, join(staged, 'onnxruntime-node'), {
-  recursive: true,
-  filter: (src) => !src.includes(`${join('onnxruntime-node', 'bin')}`),
-})
-cpSync(repoCommon, join(staged, 'onnxruntime-common'), { recursive: true })
-cpSync(join(binRoot, platform), join(staged, 'onnxruntime-node', 'bin', 'napi-v6', platform), { recursive: true })
+for (const f of ['det.onnx', 'rec.onnx', 'cls.onnx', 'keys.txt']) {
+  if (!existsSync(join(modelsDir, f))) fail(`missing ${f} in ${modelsDir}`)
+}
 
-// 清理尽力而为：Windows 会锁住已映射的 DLL（onnxruntime.dll 在进程退出前删不掉，
-// rimraf 抛 EPERM）。曾因此把已经跑通的冒烟判成失败 —— 清理失败不该影响结论，
-// 临时目录本来也在 runner 的 Temp 里。
-process.on('exit', () => {
-  try {
-    rmSync(scratch, { recursive: true, force: true, maxRetries: 3 })
-  } catch (e) {
-    console.log(`[smoke-packed-ocr] note: temp dir left behind (${e.code || 'ERR'}) — harmless`)
-  }
-})
+console.log(`[smoke-packed-ocr] ${platform}/${arch}  res=${resDir}`)
+console.log(`  ort-web: ${required.join(', ')}`)
 
-// 3) 真建会话：三个模型各跑一次
-main().catch((e) => fail(e && e.message ? e.message : String(e)))
-
-async function main () {
-  const ort = require(join(staged, 'onnxruntime-node'))
-  const keys = readFileSync(join(modelsDir, 'keys.txt'), 'utf8').split('\n')
-  const charCount = keys.filter((k) => k.length > 0).length
-  console.log(`[smoke-packed-ocr] ort ${ort.version || ort.env?.versions?.common || '?'} | keys ${charCount}`)
-  if (charCount < 6000) fail(`keys.txt looks truncated (${charCount} entries)`)
-
-  for (const name of ['det', 'rec', 'cls']) {
-    const modelPath = join(modelsDir, `${name}.onnx`)
-    if (!existsSync(modelPath)) fail(`model missing: ${modelPath}`)
+// 3) 真建会话：只断言「能加载」，不校验精度（精度由 tests/ocr-core.test.ts 钉）
+;(async () => {
+  const ort = require(join(ortDir, 'ort.node.min.js'))
+  ort.env.wasm.wasmPaths = ortDir + sep
+  ort.env.wasm.numThreads = 1 // CI 单线程最稳，避免 SharedArrayBuffer 差异
+  ort.env.wasm.proxy = false
+  for (const m of ['det.onnx', 'rec.onnx', 'cls.onnx']) {
     const t0 = Date.now()
-    // 用静态工厂 create()：与 src/main/services/ocr.ts:120 的调用形态一致。
-    // （`new ort.InferenceSession()` 返回的是 Promise，属性要 await 后才有，
-    // 直接读 inputNames 会拿到 undefined —— 本地自检踩过一次。）
-    const session = await ort.InferenceSession.create(modelPath, { executionProviders: ['cpu'] })
-    const ms = Date.now() - t0
-    const input = session.inputNames.join(',')
-    const size = (statSync(modelPath).size / 1048576).toFixed(1)
-    console.log(`[smoke-packed-ocr]   ${name}.onnx  ${size}MB  ok ${ms}ms  in[${input}]  out[${session.outputNames.join(',')}]`)
-    session.release?.()
+    const session = await ort.InferenceSession.create(
+      readFileSync(join(modelsDir, m)),
+      { executionProviders: ['wasm'] }
+    )
+    const outs = session.outputNames
+    if (!outs || !outs.length) fail(`${m} created but exposes no outputs`)
+    console.log(`  ${m.padEnd(9)} ok  ${String(Date.now() - t0).padStart(4)}ms  out[${outs.join(',')}]`)
   }
-
-  console.log('[smoke-packed-ocr] PACKED-ORT-OK')
-}
+  const chars = readFileSync(join(modelsDir, 'keys.txt'), 'utf8').split('\n').filter(Boolean).length
+  if (chars < 6000) fail(`keys.txt has only ${chars} chars — dictionary is truncated`)
+  console.log(`  keys.txt  ${chars} chars`)
+  console.log('PACKED-ORT-OK')
+})().catch((e) => {
+  console.error(`[smoke-packed-ocr] FAIL: ${e && e.stack ? e.stack : e}`)
+  process.exit(1)
+})

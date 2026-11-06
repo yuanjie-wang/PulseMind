@@ -39,7 +39,6 @@
     "highlight.js": "^11.12.0",
     "jsdom": "^26.1.0",
     "markitdown-js": "^0.0.14",
-    "onnxruntime-node": "1.23.2",
     "parse5": "^7.3.0",
     "playwright-core": "^1.63.0",
     "pptxgenjs": "^4.0.1",
@@ -49,6 +48,7 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "onnxruntime-web": "1.23.2",
     "@ant-design/icons": "^5.5.0",
     "@ant-design/x": "^2.6.0",
     "@ant-design/x-markdown": "^2.5.0",
@@ -127,8 +127,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*",
-      "node_modules/@img/**/*",
-      "node_modules/onnxruntime-node/**/*"
+      "node_modules/@img/**/*"
     ],
     "icon": "resources/pulseMind.png",
     "compression": "maximum",
@@ -202,6 +201,15 @@
         "to": "ocr-models",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/onnxruntime-web/dist",
+        "to": "ort-web",
+        "filter": [
+          "ort.node.min.js",
+          "ort-wasm-simd-threaded.mjs",
+          "ort-wasm-simd-threaded.wasm"
         ]
       },
       {

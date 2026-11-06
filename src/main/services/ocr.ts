@@ -1,17 +1,24 @@
 /**
- * OCR 服务（PP-OCRv4 / onnxruntime-node）。
+ * OCR 服务（PP-OCRv4 / onnxruntime-web WASM）。
  *
  * 三个约束决定了这里的写法：
  *  1. 内存：RSS 增量实测短图 +126MB、A4 300dpi +226MB。所以 session 懒加载，
  *     空闲 5 分钟释放；同时只允许一个任务在跑（无闸时两页并发直接翻倍）。
- *  2. 启动：onnxruntime-node + 15.4MB 模型不该在没人 OCR 的启动里付钱，
- *     因此 ORT 用动态 import，与 markitdown-js 的处理一致。
- *  3. 路径：InferenceSession.create() 走原生 open()，不认 asar 路径，
- *     模型必须落在真实文件系统（extraResources → process.resourcesPath）。
+ *  2. 启动：ORT + 15.4MB 模型不该在没人 OCR 的启动里付钱，因此 ORT 用
+ *     require 懒加载（CJS 才能落到 asar.unpacked，见文件内注释）。
+ *  3. 路径：WASM 版要两样真实文件——模型 .onnx 与 ort-wasm-*.wasm 引擎，
+ *     都落在 extraResources → process.resourcesPath，不能进 asar。
+ *  4. 为什么不用 onnxruntime-node：它的 Windows 二进制把 DirectML EP 静态编进
+ *     onnxruntime.dll，onnxruntime_binding.node 在 dlopen 阶段就要能加载
+ *     DirectML.dll 并让它的 DllMain 成功。Windows 10 1809(17763) 等系统上报
+ *     1114（DLL init failed），**换 executionProviders 无用**——那是装载期错误，
+ *     早于任何 Session 存在（实测：1.20.1 的 DirectML.dll 同样失败）。WASM 版
+ *     没有任何原生依赖，代价是 A4 约 1.0~1.3s（native 实测 0.5s）。
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpus } from 'node:os'
+import { join, sep } from 'node:path'
 import {
   computeSegments,
   cropRgb,
@@ -40,8 +47,16 @@ interface Sessions {
 }
 
 interface OrtModule {
-  InferenceSession: { create (path: string): Promise<SessionLike> }
+  InferenceSession: {
+    create (
+      model: Uint8Array,
+      options?: { executionProviders?: string[] }
+    ): Promise<SessionLike>
+  }
   Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => unknown
+  env: {
+    wasm: { wasmPaths?: string; numThreads?: number; proxy?: boolean }
+  }
 }
 
 export interface OcrLine {
@@ -108,6 +123,57 @@ function touchIdleTimer (): void {
   idleTimer.unref?.()
 }
 
+/**
+ * 定位 onnxruntime-web 的 dist 目录（ort.node.min.js + ort-wasm-simd-threaded.wasm
+ * 必须同目录）。打包态在 Resources/ort-web（extraResources，不能进 asar：Emscripten
+ * 要真实文件）；开发态在 node_modules。__dirname 在 bundle 后是 out/main（主进程）
+ * 或 out/main/storage/extractors（extract-worker），所以逐级向上找。
+ */
+function resolveOrtWebDir (): string {
+  const candidates: string[] = []
+  const override = process.env.PULSEMIND_ORT_WEB
+  if (override) candidates.push(override)
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+  if (resourcesPath) candidates.push(join(resourcesPath, 'ort-web'))
+  let dir = __dirname
+  for (let i = 0; i < 5; i++) {
+    candidates.push(join(dir, 'node_modules', 'onnxruntime-web', 'dist'))
+    dir = join(dir, '..')
+  }
+  for (const d of candidates) {
+    if (existsSync(join(d, 'ort.node.min.js'))) return d
+  }
+  throw new Error(
+    `onnxruntime-web not found — looked for ort.node.min.js in: ${candidates.join(' | ')}`
+  )
+}
+
+let ortModule: OrtModule | null = null
+
+/**
+ * 懒加载 WASM 版 ORT（CJS require：Electron 打补丁后能落到 asar.unpacked，
+ * ESM 动态 import 不行 —— 与本项目其他主进程依赖一致）。
+ * 用 ort.node.min.js（package.json 的 node 入口）而非 ort.min.js：多线程走
+ * worker_threads 而不是 Web Worker。numThreads 实测 1→4 提速约 2.6 倍。
+ */
+function loadOrtWeb (): OrtModule {
+  if (ortModule) return ortModule
+  const dir = resolveOrtWebDir()
+  const ort = require(join(dir, 'ort.node.min.js')) as OrtModule
+  ort.env.wasm.wasmPaths = dir + sep
+  ort.env.wasm.numThreads = Math.max(1, Math.min(4, cpus().length))
+  // proxy:true 会把推理塞进 worker 线程并复制张量，主进程反而不阻塞但多一层拷贝。
+  // 这里的并发闸已经保证单任务，保持直接调用。
+  ort.env.wasm.proxy = false
+  ortModule = ort
+  return ort
+}
+
+/** WASM 下模型必须以字节喂入：Emscripten 的虚拟 FS 看不到宿主路径 */
+function createSession (ort: OrtModule, file: string): Promise<SessionLike> {
+  return ort.InferenceSession.create(readFileSync(file), { executionProviders: ['wasm'] })
+}
+
 async function loadSessions (): Promise<Sessions> {
   const dir = resolveModelsDir()
   if (!isOcrSupported()) {
@@ -115,11 +181,11 @@ async function loadSessions (): Promise<Sessions> {
       `OCR models missing in "${dir}". Expected det.onnx / rec.onnx / cls.onnx / keys.txt.`
     )
   }
-  const ort = require('onnxruntime-node') as OrtModule
+  const ort = loadOrtWeb()
   const [det, rec, cls] = await Promise.all([
-    ort.InferenceSession.create(join(dir, 'det.onnx')),
-    ort.InferenceSession.create(join(dir, 'rec.onnx')),
-    ort.InferenceSession.create(join(dir, 'cls.onnx'))
+    createSession(ort, join(dir, 'det.onnx')),
+    createSession(ort, join(dir, 'rec.onnx')),
+    createSession(ort, join(dir, 'cls.onnx'))
   ])
   // 末尾空行会让类别索引整体错位：0=blank, 1..N=字典, N+1=space
   const chars = readFileSync(join(dir, 'keys.txt'), 'utf8')
@@ -202,10 +268,7 @@ export async function recognizeImage (filePath: string): Promise<OcrResult> {
     const s = await getSessions()
     touchIdleTimer()
 
-    // 原生模块必须走 require：CJS 的 require 被 Electron 打过补丁，能落到
-    // app.asar.unpacked；而 ESM 动态 import 在打包态解析不到 unpacked 里的
-    // binding.node，这正是本项目所有主进程依赖都用 require 的原因。
-    const ort = require('onnxruntime-node') as OrtModule
+    const ort = loadOrtWeb()
     // 运行时：require('sharp') 就是构造函数本身（实测 .default 是 undefined）。
     // 类型：sharp 的声明走 ESM 形态（命名空间不可调用，只有 default 可调用），
     // 两边形态不一致，只能断言。⚠️ 不要"顺着类型"改成取 .default —— 运行时会

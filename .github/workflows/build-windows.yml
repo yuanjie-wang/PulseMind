@@ -103,9 +103,10 @@ jobs:
           $sharp = Get-ChildItem "node_modules\@img" -Directory | Where-Object { $_.Name -like '*win32*' }
           if (-not $sharp) { throw "sharp 的 win32 变体没装上（@img 下只有 $((Get-ChildItem node_modules\@img -Directory).Name -join ', ')）—— 图片链路会在运行期崩" }
           $sharp | ForEach-Object { Write-Host "sharp variant: $($_.Name)" }
-          $ort = "node_modules\onnxruntime-node\bin\napi-v6\win32\x64\onnxruntime_binding.node"
-          if (-not (Test-Path $ort)) { throw "onnxruntime-node 的 win32/x64 二进制缺失 —— OCR 不可用" }
-          Get-Item $ort | Select-Object Length | Format-List
+          $wasm = "node_modules\onnxruntime-web\dist\ort-wasm-simd-threaded.wasm"
+          if (-not (Test-Path $wasm)) { throw "onnxruntime-web 的 wasm 引擎缺失 —— OCR 不可用" }
+          Get-Item $wasm | Select-Object Length | Format-List
+          if (Test-Path "node_modules\onnxruntime-node") { throw "onnxruntime-node 仍在依赖树 —— 它会带入 DirectML.dll，Win10 1809 上 OCR 必崩（1114）" }
 
       - name: Fetch bundled Chromium
         run: npm run browsers:install
@@ -170,7 +171,7 @@ jobs:
           Show-Tree (Join-Path $root "resources") "resources"
 
           # ORT 递归清单：这是 187.3MB 悬案的核心，剥完到底还剩什么、各多大
-          $ort = Join-Path $root "resources\app.asar.unpacked\node_modules\onnxruntime-node"
+          $ort = Join-Path $root "resources\ort-web"
           $ortFiles = @()
           $ortBytes = 0
           if (Test-Path $ort) {
