@@ -226,6 +226,8 @@ const en: TranslationDict = {
   },
   chatView: {
     copy: 'Copy',
+    resend: 'Resend',
+    resendBusy: 'The current turn is still running — resend once it ends',
     download: 'Download',
     like: 'Like',
     liked: 'Liked',

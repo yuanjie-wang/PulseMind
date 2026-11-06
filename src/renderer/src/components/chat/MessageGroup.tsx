@@ -19,7 +19,8 @@ import {
   EyeOutlined,
   ScheduleOutlined,
   EllipsisOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  ReloadOutlined
 } from '@ant-design/icons'
 import { Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
@@ -66,6 +67,25 @@ const assistantBubbleStyle: React.CSSProperties = {
   width: '100%',
   fontSize: 14,
   lineHeight: 1.6
+}
+
+/** 用户气泡悬停工具条 (2026-11-05): 复制 / 重发 glyph buttons — the assistant
+ *  row's recipe one size down, so a bubble does not carry a second full-height
+ *  action row. Reveal and opacity live in the global `.pm-user-tools` rules
+ *  (src/renderer/index.html), not here. */
+const userToolBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  cursor: 'pointer',
+  color: 'var(--pm-text-faint)',
+  fontSize: 13,
+  padding: '2px 6px',
+  borderRadius: 6,
+  lineHeight: 1,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  transition: 'color 0.2s, background 0.15s'
 }
 
 /** User-bubble markdown config. The bubble's `whiteSpace: pre-wrap` inherits into
@@ -328,6 +348,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   conversationTitle,
   onOpenSubAgent,
   onExtractRoutine,
+  onResendUserMessage,
   awaitingApproval = true
 }: {
   msg: AgentMessage
@@ -353,6 +374,15 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  without the entry — the sub-agent preview, the extension panel's mirror —
    *  render the row without the button, exactly as before. */
   onExtractRoutine?: () => void | Promise<void>
+  /** 重发 (2026-11-05): re-send this user message's text as a NEW turn. The
+   *  bubble's hover toolbar renders the button only when a host hands a send
+   *  channel down (ChatView — and PopoutApp/embedded chats through it); the
+   *  sub-agent preview, the expert editor and tool studio render 复制 alone,
+   *  exactly as before. Lightweight by design: the transcript is never touched,
+   *  so this APPENDS a turn rather than rewinding one. A true rewind would need
+   *  an engine primitive — session-manager's whitelist only offers
+   *  retryLastTurn, which covers the last turn alone. */
+  onResendUserMessage?: (text: string) => void
   /** The engine is parked awaiting approval (see CollapsibleToolBlock). */
   awaitingApproval?: boolean
 }): React.ReactElement | null {
@@ -388,17 +418,20 @@ export const MessageGroup = React.memo(function MessageGroup({
   // row lookup misses.
   const persistedMsgId = stripMessageIdSuffix(msg.id)
 
-  const assistantText = isUser
-    ? ''
-    : msg.contentBlocks
-        .filter((b) => b.type === 'text')
-        .map((b) => (b as any).text)
-        .join('\n')
+  // The message's own text: a user bubble carries text blocks too, and the
+  // hover toolbar's 复制 needs them. `assistantText` stays '' for a user message
+  // on purpose — 下载, the knowledge save and the metadata actions all key off
+  // it and must never act on a prompt.
+  const messageText = msg.contentBlocks
+    .filter((b) => b.type === 'text')
+    .map((b) => (b as any).text)
+    .join('\n')
+  const assistantText = isUser ? '' : messageText
 
   const handleCopy = async () => {
-    if (!assistantText) return
+    if (!messageText) return
     try {
-      await navigator.clipboard.writeText(assistantText)
+      await navigator.clipboard.writeText(messageText)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch (err) {
@@ -538,11 +571,18 @@ export const MessageGroup = React.memo(function MessageGroup({
 
   return (
     <div
+      // The user side stacks bubble → hover toolbar in a right-aligned COLUMN
+      // (2026-11-05): a column with alignItems is what puts the toolbar under
+      // the bubble at the same right edge, where the old row + justifyContent
+      // had no second line to place it on. The class is the hover scope for the
+      // `.pm-user-tools` CSS rules — no React state, so MessageGroup's memo
+      // boundary stands and a pointer crossing bubbles re-renders nothing.
+      // Assistant bubbles keep the left-aligned column unchanged.
+      className={isUser ? 'pm-user-msg' : undefined}
       style={{
         display: 'flex',
-        flexDirection: isUser ? 'row' : 'column',
-        alignItems: isUser ? undefined : 'flex-start',
-        justifyContent: isUser ? 'flex-end' : undefined,
+        flexDirection: 'column',
+        alignItems: isUser ? 'flex-end' : 'flex-start',
         marginBottom: isUser ? 16 : 0
       }}
     >
@@ -644,6 +684,41 @@ export const MessageGroup = React.memo(function MessageGroup({
           return null
         })}
       </div>
+
+      {/* 用户气泡悬停工具条 (2026-11-05): 复制 / 重发. Always MOUNTED at a fixed
+          22px and only its opacity flips (the global .pm-user-tools rules) —
+          mounting it on demand shoved everything below down a row every time
+          the pointer crossed a bubble. 重发 needs a host send channel, so hosts
+          without one (sub-agent preview, expert editor, tool studio) render
+          复制 alone. The 22px is also what keeps the toolbar's hover zone
+          contiguous with the bubble's bottom edge. */}
+      {isUser && (
+        <div className="pm-user-tools" style={{ display: 'flex', alignItems: 'center', gap: 2, height: 22, marginTop: 2 }}>
+          <button
+            style={userToolBtnStyle}
+            onClick={handleCopy}
+            title={t('chatView.copy')}
+            aria-label={t('chatView.copy')}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+          >
+            {copied ? <CheckOutlined /> : <CopyOutlined />}
+          </button>
+          {onResendUserMessage && (
+            <button
+              data-testid="user-msg-resend"
+              style={userToolBtnStyle}
+              onClick={() => onResendUserMessage(messageText)}
+              title={t('chatView.resend')}
+              aria-label={t('chatView.resend')}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <ReloadOutlined />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages.
           Narrow-column collapse (2026-10-31): the stats group always stays fully visible and the buttons
