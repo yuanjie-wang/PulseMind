@@ -130,6 +130,76 @@ jobs:
       - name: Smoke packed OCR runtime
         run: node scripts/smoke-packed-ocr.js --app-out dist/win-unpacked --platform win32 --arch x64
 
+      # 一条悬案要定：afterPack 报「freed 187.3MB」，但 portable exe 两次构建都是
+      # 256.90MB、字节数只差 10KB（269,221,526 → 269,232,183）。看 win-unpacked
+      # 自己减了没有即可定性：
+      #   - 减了 187MB 而 exe 没减 → 问题在 7z 压缩环节（afterPack 与 target 的先后）
+      #   - 没减 → 删掉的 187MB 不是包内文件，freed 数字虚高
+      # 只产出日志 + 几 KB CSV，不传大文件：256MB 的 zip 在这条网络上已两次超时。
+      # 故意排在 Assert 之前——断言会 throw，而清单在失败时才有诊断价值。
+      - name: Report unpacked tree
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path "dist\win-unpacked").Path
+          function MB($b) { if ($null -eq $b) { 0 } else { [math]::Round($b / 1MB, 1) } }
+
+          $all = Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue
+          $total = ($all | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("=== win-unpacked total: {0:N1} MB / {1} files ===" -f (MB $total), $all.Count)
+
+          function Show-Tree([string]$path, [string]$label) {
+            Write-Host ""
+            Write-Host "=== $label ==="
+            Get-ChildItem $path -ErrorAction SilentlyContinue | ForEach-Object {
+              $b = if ($_.PSIsContainer) {
+                (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                  Measure-Object -Property Length -Sum).Sum
+              } else { $_.Length }
+              [PSCustomObject]@{ Item = $_.Name; MB = (MB $b) }
+            } | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
+          }
+
+          Show-Tree $root "top level"
+          Show-Tree (Join-Path $root "resources") "resources"
+
+          # ORT 递归清单：这是 187.3MB 悬案的核心，剥完到底还剩什么、各多大
+          $ort = Join-Path $root "resources\app.asar.unpacked\node_modules\onnxruntime-node"
+          $ortFiles = @()
+          $ortBytes = 0
+          if (Test-Path $ort) {
+            $ortFiles = Get-ChildItem $ort -Recurse -File
+            $ortBytes = ($ortFiles | Measure-Object -Property Length -Sum).Sum
+            Write-Host ""
+            Write-Host ("=== onnxruntime-node: {0:N1} MB / {1} files ===" -f (MB $ortBytes), $ortFiles.Count)
+            $ortFiles | Sort-Object Length -Descending |
+              Select-Object @{n='MB';e={ MB $_.Length }},
+                            @{n='Rel';e={ $_.FullName.Substring($ort.Length + 1) }} |
+              Format-Table -AutoSize | Out-String | Write-Host
+          } else {
+            Write-Host ""
+            Write-Host "WARNING: onnxruntime-node 未 unpack"
+          }
+
+          $csv = "dist\win-unpacked-manifest.csv"
+          $all | Select-Object @{n='Bytes';e={$_.Length}},
+                                @{n='Rel';e={$_.FullName.Substring($root.Length + 1)}} |
+            Sort-Object Bytes -Descending | Export-Csv -NoTypeInformation -Encoding utf8 $csv
+          Write-Host ("manifest -> {0} ({1:N0} bytes)" -f $csv, (Get-Item $csv).Length)
+
+          $exe = Get-ChildItem "dist\*.exe" | Select-Object -First 1
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $rows = @(
+              "### win-unpacked 体积清单",
+              "",
+              "| 项 | 大小 |",
+              "|---|---|",
+              ("| win-unpacked 总计 | **{0:N1} MB** / {1} files |" -f (MB $total), $all.Count),
+              ("| onnxruntime-node | **{0:N1} MB** / {1} files |" -f (MB $ortBytes), $ortFiles.Count),
+              ("| portable exe | **{0:N1} MB** |" -f (MB $exe.Length))
+            )
+            $rows | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
       # 「electron-builder 退出码 0」不等于「产物能用」——0.4.2 那次就是这么发出去的。
       # 三条断言对应三个曾经/可能真出事的点：依赖树完整性（afterPack 门禁已跑，
       # 这里复核 win-unpacked 真的产出了）、OCR 模型随包（extraResources 的模型是

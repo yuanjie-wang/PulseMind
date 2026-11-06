@@ -180,6 +180,25 @@ jobs:
       - name: Smoke packed OCR runtime
         run: node scripts/smoke-packed-ocr.js --app-out dist/linux-unpacked --platform linux --arch x64
 
+      # Windows 侧有个悬案：afterPack 报 freed 187.3MB，portable exe 却几乎没变。
+      # 这里输出同样的清单当对照组——deb 已知从 370M 降到 256M，若 linux-unpacked
+      # 也同步缩了 443.7MB，就说明「删了不缩」是 Windows/portable 独有。
+      - name: Report unpacked tree
+        run: |
+          echo "=== linux-unpacked total ==="
+          du -sh dist/linux-unpacked
+          echo ""
+          echo "=== top level ==="
+          du -sh dist/linux-unpacked/* 2>/dev/null | sort -rh
+          echo ""
+          echo "=== resources/ ==="
+          du -sh dist/linux-unpacked/resources/* 2>/dev/null | sort -rh
+          echo ""
+          echo "=== onnxruntime-node ==="
+          du -sh dist/linux-unpacked/resources/app.asar.unpacked/node_modules/onnxruntime-node
+          find dist/linux-unpacked/resources/app.asar.unpacked/node_modules/onnxruntime-node \
+            -type f -printf '%10s  %P\n' | sort -rn
+
       # 只报告、不判红：这个二进制由 Google 的 Chrome for Testing 构建，glibc 下限
       # 我们改不了（既不能重编，也没有更老的 Linux 版本可换）。而它决定「浏览器工具
       # 在 UOS 20 上到底能不能启动」，所以这个数字值得每次打印出来，而不是等到目标机
