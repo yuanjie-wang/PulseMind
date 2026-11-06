@@ -43,6 +43,7 @@ import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
   adoptUnscopedConversations,
+  claimLegacyScopeConversations,
   getConversationApprovalMode,
   getConversationOrigin,
   getConversationTitle,
@@ -82,6 +83,17 @@ export interface AgentServiceConversations {
    *  so every old stamp is dead and the row strands in every UI. Released rows
    *  become adoptable by the next tab. Optional like `adoptUnscoped`. */
   releaseDeadScopes?(origin: string, liveScopes: string[]): void
+  /** Move pre-instance-id rows of the base origin onto this install's origin
+   *  (2026-11-05). Chrome and 360 load the same extension binary, so before
+   *  `instanceId` they shared one origin; history written under the bare
+   *  `pulsemind-extension` origin must follow the install that opens the panel,
+   *  or it is stranded in an origin no instance lists. `liveScopes` bounds what
+   *  may be claimed: rows of ANOTHER browser's live tabs (or any scope this
+   *  install does not hold live) stay put — a still-running old-version install
+   *  must not have its current history stolen. Rows with dead scopes stay with
+   *  the legacy origin (unreachable either way; the conservative trade-off is
+   *  deliberate). Optional like the two scope hooks. */
+  claimLegacyScopes?(fromOrigin: string, toOrigin: string, liveScopes: string[]): void
   origin(id: string): string | null
   /** The conversation's STORED 授权 level (undefined = never chosen / row
    *  gone) — `session.create` echoes it so a panel can seed its cache even
@@ -106,6 +118,7 @@ const storageConversations: AgentServiceConversations = {
   listByOrigin: (origin, limit, tabKey) => listConversationsByOrigin(origin, limit, tabKey),
   adoptUnscoped: (origin, tabKey) => adoptUnscopedConversations(origin, tabKey),
   releaseDeadScopes: (origin, liveScopes) => releaseDeadScopeConversations(origin, liveScopes),
+  claimLegacyScopes: (fromOrigin, toOrigin, liveScopes) => claimLegacyScopeConversations(fromOrigin, toOrigin, liveScopes),
   origin: (id) => getConversationOrigin(id),
   approvalMode: (id) => getConversationApprovalMode(id),
   title: (id) => getConversationTitle(id),
@@ -126,12 +139,31 @@ export interface AgentServiceHandle {
 
 interface ClientConn {
   socket: WebSocket
+  /** Protocol clientId, base form: capability gates read THIS (the hosted
+   *  registry keys on the binary's identity, not the install's). */
   clientId: string
+  /** Sanitized per-install suffix from hello (undefined = legacy client). */
+  instanceId?: string
+  /** Conversation namespace stamped on rows this connection creates. Same as
+   *  `clientId` for legacy clients, `clientId:instanceId` otherwise — two
+   *  installs of the same binary must not share one history. */
+  origin: string
+  /** `byClient` key: clientId plus instanceId, so installs that share a binary
+   *  coexist (2026-11-05) while a reconnect of the SAME install still replaces
+   *  its own ghost. */
+  key: string
   /** Session ids this client created or addressed (event routing). */
   sessions: Set<string>
   /** Transports minted for in-flight asks — dropped together on disconnect. */
   transports: Set<ClientTransport>
   alive: boolean
+}
+
+/** Accept only the same charset the DB origin can carry. Anything else is
+ *  treated as absent: a malformed suffix must degrade to legacy behaviour, not
+ *  create an origin nobody else can ever name. */
+function sanitizeInstanceId(raw: unknown): string | undefined {
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? raw : undefined
 }
 
 function parseEnvelopes(raw: WebSocket.RawData): JsonRpcRequest[] {
@@ -224,8 +256,11 @@ export async function startAgentService(
 
   const wss = new WebSocketServer({ server: httpServer })
   const conns = new Set<ClientConn>()
-  /** clientId → current connection. A newer connection with the same clientId
-   *  (browser restart, profile duplicate) replaces — kicks — the old one. */
+  /** connection identity (clientId + instanceId) → current connection. A newer
+   *  connection from the same INSTALL replaces — kicks — the old one (browser
+   *  restart / duplicate content scripts); another install sharing the same
+   *  binary id lives alongside (2026-11-05: Chrome and 360 otherwise kicked
+   *  each other in an endless reconnect loop). */
   const byClient = new Map<string, ClientConn>()
 
   wss.on('connection', (socket, req: IncomingMessage) => {
@@ -242,7 +277,15 @@ export async function startAgentService(
       return
     }
 
-    const conn: ClientConn = { socket, clientId: 'unknown', sessions: new Set(), transports: new Set(), alive: true }
+    const conn: ClientConn = {
+      socket,
+      clientId: 'unknown',
+      origin: 'unknown',
+      key: 'unknown',
+      sessions: new Set(),
+      transports: new Set(),
+      alive: true,
+    }
     conns.add(conn)
 
     const send = (res: JsonRpcResponse): void => {
@@ -279,21 +322,30 @@ export async function startAgentService(
         const params = (msg.params ?? {}) as Record<string, unknown>
         switch (msg.method) {
           case Methods.hello: {
-            conn.clientId = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
-            // Same-clientId replacement: kick the ghost connection (M2.2).
-            const prior = byClient.get(conn.clientId)
+            const base = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
+            const instanceId = sanitizeInstanceId(params.instanceId)
+            if (conn.key !== 'unknown' && byClient.get(conn.key) === conn) byClient.delete(conn.key)
+            conn.clientId = base
+            conn.instanceId = instanceId
+            // The namespace split is what keeps two installs' histories apart;
+            // the identity split is what keeps their connections apart. Both
+            // come from the same hello field so they can never disagree.
+            conn.origin = instanceId ? `${base}:${instanceId}` : base
+            conn.key = `${base}\u0000${instanceId ?? ''}`
+            // Same-INSTALL replacement: kick the ghost connection (M2.2).
+            const prior = byClient.get(conn.key)
             if (prior && prior !== conn) {
               prior.socket.close(4409, 'replaced by a newer connection')
               conns.delete(prior)
             }
-            byClient.set(conn.clientId, conn)
+            byClient.set(conn.key, conn)
             if (params.protocolVersion !== PROTOCOL_VERSION) {
               send(makeError(msg.id ?? null, ErrorCodes.protocolVersionMismatch,
                 `protocol version mismatch: client ${String(params.protocolVersion)}, service ${PROTOCOL_VERSION}`))
               // Close instead of leaving the socket half-alive: the client has
               // its answer, and a connection that can never speak the protocol
               // must not sit in `conns` (it would be kicked only by the NEXT
-              // hello of the same clientId).
+              // hello of the same install).
               socket.close(CloseCodes.protocolMismatch, 'protocol version mismatch')
               break
             }
@@ -319,7 +371,7 @@ export async function startAgentService(
                   // conversation so a desktop restart or a fresh SW keeps the
                   // thread going. Same fill-in of tool_result content the
                   // desktop "continue conversation" path uses.
-                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.clientId, tabKey })
+                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.origin, tabKey })
                   await sessions.hydrate(
                     sessionId,
                     conv.messages,
@@ -332,7 +384,7 @@ export async function startAgentService(
               }
               if (!sessionId) {
                 sessionId = `ws_${Date.now()}_${shortUuid(8)}`
-                await sessions.createSession(sessionId, { agentId, title, clientId: conn.clientId, tabKey })
+                await sessions.createSession(sessionId, { agentId, title, clientId: conn.origin, tabKey })
               }
               conn.sessions.add(sessionId)
               // Bind here too (2026-10-10): agentAsk was the ONLY bind site, so
@@ -370,7 +422,19 @@ export async function startAgentService(
               : []
             if (tabKey && liveScopes.length > 0) {
               try {
-                store.releaseDeadScopes?.(conn.clientId, liveScopes)
+                store.releaseDeadScopes?.(conn.origin, liveScopes)
+              } catch {
+                /* best effort */
+              }
+            }
+            // Pre-instance-id rows sit under the bare client id: an install
+            // that now has its own origin takes them along — otherwise its
+            // upgrade would show an empty 历史会话 while the old rows stay in a
+            // namespace nothing lists (2026-11-05). Live other-install scopes
+            // are NOT claimable (see claimLegacyScopes).
+            if (conn.instanceId && tabKey) {
+              try {
+                store.claimLegacyScopes?.(conn.clientId, conn.origin, liveScopes)
               } catch {
                 /* best effort */
               }
@@ -379,9 +443,9 @@ export async function startAgentService(
             // side stamped with an extension origin) carry no scope. Hand them to
             // this tab on first sight instead of hiding the user's history.
             if (tabKey) {
-              try { store.adoptUnscoped?.(conn.clientId, tabKey) } catch { /* best effort */ }
+              try { store.adoptUnscoped?.(conn.origin, tabKey) } catch { /* best effort */ }
             }
-            const rows = store.listByOrigin(conn.clientId, limit, tabKey)
+            const rows = store.listByOrigin(conn.origin, limit, tabKey)
             // The conversation store's rows are `{ id, title, updatedAt, … }`;
             // the protocol's list items are `{ sessionId, … }` like every other
             // session.* payload. Shipping the raw row made every panel row's
@@ -439,7 +503,7 @@ export async function startAgentService(
             void (async () => {
               if (!sessionId) throw new Error('sessionId is required')
               const origin = store.origin(sessionId)
-              if (origin && origin !== conn.clientId) {
+              if (origin && origin !== conn.origin) {
                 send(makeError(msg.id ?? null, ErrorCodes.forbidden, 'not your session'))
                 return
               }
@@ -458,7 +522,7 @@ export async function startAgentService(
               break
             }
             const origin = store.origin(sessionId)
-            if (origin && origin !== conn.clientId) {
+            if (origin && origin !== conn.origin) {
               send(makeError(msg.id ?? null, ErrorCodes.forbidden, 'not your session'))
               break
             }
@@ -581,7 +645,7 @@ export async function startAgentService(
 
     const drop = (): void => {
       conns.delete(conn)
-      if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId)
+      if (byClient.get(conn.key) === conn) byClient.delete(conn.key)
       // Settle everything this connection owed: in-flight tool calls reject,
       // pending confirmations are rejected/answered per timeout semantics.
       for (const transport of conn.transports) {
@@ -598,7 +662,7 @@ export async function startAgentService(
   // ── Heartbeat: terminate half-open connections ──
   const heartbeat = setInterval(() => {
     for (const conn of conns) {
-      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId); continue }
+      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); if (byClient.get(conn.key) === conn) byClient.delete(conn.key); continue }
       conn.alive = false
       conn.socket.ping()
     }
@@ -713,7 +777,10 @@ export async function startAgentService(
     clients: () =>
       [...conns.values()]
         .filter((conn) => conn.clientId !== 'unknown')
-        .map((conn) => ({ clientId: conn.clientId, sessions: conn.sessions.size })),
+        // The ORIGIN, not the base id: two installs of the same extension
+        // binary are two clients and must be distinguishable in 已连接的客户端
+        // (legacy clients have origin === clientId, unchanged).
+        .map((conn) => ({ clientId: conn.origin, sessions: conn.sessions.size })),
     close: async () => {
       clearInterval(heartbeat)
       unsubEvents()

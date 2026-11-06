@@ -9,6 +9,15 @@ import type { ExpertProfile } from '../types/expert'
 
 export interface HelloParams {
   clientId: string
+  /** Per-INSTALL identity, minted and persisted by a client whose binary id is
+   *  shared by every install (the browser extension: Chrome and 360 both load
+   *  `pulsemind-extension`). Two installs must NOT kick each other off the
+   *  service, and their conversation histories must not share an origin — the
+   *  pair `(clientId, instanceId)` is the connection identity and the
+   *  conversation origin becomes `clientId:instanceId`. Omitted by clients
+   *  that are unique per machine (CLI, single-install extensions) — their
+   *  behaviour is byte-identical to before. */
+  instanceId?: string
   clientVersion: string
   protocolVersion: number
 }

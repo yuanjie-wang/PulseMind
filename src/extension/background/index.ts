@@ -13,6 +13,7 @@ import { isPanelRequest, OPEN_OPTIONS_MESSAGE_TYPE, type ConnectionState } from 
 import { resetCspVerdict } from './cdp'
 import { loadConfig, saveConfig, type ExtensionConfig } from './config'
 import { discoverService } from './discovery'
+import { getInstanceId } from './instance'
 import { PanelBridge } from './panel-bridge'
 import { routeToolCall } from './tool-router'
 import { WsClient } from './ws-client'
@@ -135,6 +136,11 @@ async function runEnsureClient(forceRediscover: boolean): Promise<void> {
       wsUrl: state.discovery.wsUrl,
       token,
       clientId: CLIENT_ID,
+      // Chrome and 360 load the very same extension: the constant clientId used
+      // to make their connections replace each other (close 4409) in a loop,
+      // and their histories shared one origin. The per-install id — persisted
+      // across restarts — is what keeps them apart (2026-11-05).
+      instanceId: await getInstanceId(),
       clientVersion: chrome.runtime.getManifest().version,
       // 单一来源（full_20261011 M12-P1-3/X9）：字面量曾与共享常量各走各的——
       // 抬一次 PROTOCOL_VERSION，扩展面板就因握手被拒且 fatal 而致命断连。

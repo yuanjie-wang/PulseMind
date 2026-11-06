@@ -114,6 +114,37 @@ export function releaseDeadScopeConversations(origin: string, liveScopes: string
     .run(origin, ...liveScopes)
 }
 
+/** Hand the legacy origin's rows to the install that now owns its own origin
+ *  (2026-11-05, Chrome + 360 sharing one extension binary).
+ *
+ *  Rows written before `instanceId` carry the bare base origin; once an
+ *  install lists with an instance id, those rows would otherwise live in a
+ *  namespace no connection ever queries again (the panel lists its own origin
+ *  only) — and the desktop's hosted exclusion hides them too, so the user's
+ *  whole pre-upgrade history vanishes. The claim moves them.
+ *
+ *  Conservative by construction: only rows with NO scope (the classic legacy
+ *  shape, adopted by the first tab as before) or with a scope THIS install
+ *  holds live move. A still-running old-version install's live scopes are not
+ *  in the caller's `liveScopes`, so its current history is never stolen; rows
+ *  left behind by a dead browser session keep the legacy origin (unreachable
+ *  from every UI either way — the accepted trade-off). */
+export function claimLegacyScopeConversations(
+  fromOrigin: string,
+  toOrigin: string,
+  liveScopes: string[],
+): void {
+  if (fromOrigin === toOrigin) return
+  const live = liveScopes.length > 0 ? `OR tab_key IN (${liveScopes.map(() => '?').join(',')})` : ''
+  getDb()
+    .prepare(
+      `UPDATE conversations SET origin = ?
+       WHERE origin = ? AND (tab_key IS NULL ${live})
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)`
+    )
+    .run(toOrigin, fromOrigin, ...liveScopes)
+}
+
 /** Read a conversation's client origin (null when never stamped). */
 export function getConversationOrigin(id: string): string | null {
   const row = getDb().prepare('SELECT origin FROM conversations WHERE id = ?').get(id) as { origin: string | null } | undefined
@@ -256,6 +287,14 @@ function newestMessageAt(messages: ReadonlyArray<{ createdAt?: string }>, fallba
  *  free of agent-module imports). */
 const HOSTED_ORIGINS = ['pulsemind-extension', 'anywhere-extension']
 
+/** Origins carry a per-install suffix since 2026-11-05 (`base:instanceId` —
+ *  Chrome and 360 load the same extension binary, so the bare base id named
+ *  both installs at once). The exclusion must therefore catch the prefix
+ *  family too, not just the exact base rows. The suffixes are matched with
+ *  LIKE, whose wildcards (`%`/`_`) the base ids do not contain; the instance
+ *  charset is `[A-Za-z0-9_-]`, so `base:%` cannot over-match a sibling origin. */
+const HOSTED_ORIGIN_PREFIXES = HOSTED_ORIGINS.map((o) => `${o}:`)
+
 /** The hosted-origin exclusion `listConversations` applies, shareable by the
  *  keyword searches (review_20261103 中1): hosted sessions now carry REAL
  *  messages and titles (hosted-persistence), so a LIKE hit let the desktop
@@ -266,12 +305,12 @@ const HOSTED_ORIGINS = ['pulsemind-extension', 'anywhere-extension']
 function hostedOriginExclusion(alias?: string): string {
   const col = alias ? `${alias}.origin` : 'origin'
   const placeholders = HOSTED_ORIGINS.map(() => '?').join(', ')
-  return `(${col} IS NULL OR ${col} NOT IN (${placeholders}))`
+  const prefixGuards = HOSTED_ORIGIN_PREFIXES.map((p) => `${col} NOT LIKE '${p}%'`).join(' AND ')
+  return `(${col} IS NULL OR (${col} NOT IN (${placeholders}) AND ${prefixGuards}))`
 }
 
 export function listConversations(): ConversationIndexEntry[] {
   const database = getDb()
-  const originPlaceholders = HOSTED_ORIGINS.map(() => '?').join(', ')
   const rows = database
     .prepare(
       `SELECT
@@ -280,7 +319,7 @@ export function listConversations(): ConversationIndexEntry[] {
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
       WHERE c.type = 'normal'
-        AND (c.origin IS NULL OR c.origin NOT IN (${originPlaceholders}))
+        AND ${hostedOriginExclusion('c')}
         -- 零消息行不是历史会话（2026-11-04 用户裁定「走克制版」）。任何 binding
         -- 写入（workspace mint / 授权 / 模型 / 项目 / 专家）都会经
         -- stubInsertConversation 铸一行 title='新对话' 的空存根，重启后它会以

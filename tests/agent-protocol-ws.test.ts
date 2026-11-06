@@ -60,8 +60,15 @@ class TestClient {
     this.ws.send(JSON.stringify({ jsonrpc: '2.0', method, params }))
   }
 
-  async hello(clientId: string): Promise<Frame> {
-    return this.request('hello', { clientId, clientVersion: 'test', protocolVersion: PROTOCOL_VERSION })
+  async hello(clientId: string, instanceId?: string): Promise<Frame> {
+    return this.request('hello', {
+      clientId,
+      // Omitted, not empty: an empty suffix must be indistinguishable from a
+      // legacy client (see HelloParams.instanceId).
+      ...(instanceId ? { instanceId } : {}),
+      clientVersion: 'test',
+      protocolVersion: PROTOCOL_VERSION,
+    })
   }
 
   /** Wait for the first notification matching `method`. */
@@ -243,6 +250,15 @@ function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRo
         if (r.origin === origin && r.tabKey && !liveScopes.includes(r.tabKey)) r.tabKey = undefined
       }
     },
+    // Mirrors the real UPDATE's predicate: no scope (legacy shape) or a scope
+    // THIS install holds live. Another install's live scopes stay put.
+    claimLegacyScopes: (fromOrigin, toOrigin, liveScopes) => {
+      if (fromOrigin === toOrigin) return
+      for (const [, r] of rows) {
+        if (r.origin !== fromOrigin) continue
+        if (!r.tabKey || liveScopes.includes(r.tabKey)) r.origin = toOrigin
+      }
+    },
     origin: (id) => rows.get(id)?.origin ?? null,
     approvalMode: (id) => rows.get(id)?.approvalMode,
     title: (id) => rows.get(id)?.title ?? null,
@@ -271,10 +287,10 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 }
 
 /** Open, hello, create a session — the common preamble. */
-async function openWithSession(handle: AgentServiceHandle, clientId = 'pulsemind-extension'): Promise<{ client: TestClient; sessionId: string }> {
+async function openWithSession(handle: AgentServiceHandle, clientId = 'pulsemind-extension', instanceId?: string): Promise<{ client: TestClient; sessionId: string }> {
   const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
   await client.open()
-  await client.hello(clientId)
+  await client.hello(clientId, instanceId)
   const created = await client.request('session.create', {})
   return { client, sessionId: (created.result as { sessionId: string }).sessionId }
 }
@@ -892,6 +908,178 @@ describe('M0.4 session surface', () => {
   })
 })
 
+// ── per-install identity (2026-11-05): Chrome + 360 load the same binary ──
+// The extension's clientId is the constant `pulsemind-extension` in every
+// browser. Before this split, the same-clientId replacement rule (close 4409)
+// made two installs kick each other in an endless reconnect loop, and both
+// writes landed on one conversation origin (one browser's dead-scope release
+// rolled up the other's live tabs). `instanceId` — minted once per browser
+// profile, persisted in chrome.storage.local — splits BOTH: the identity key
+// keeps connections apart, the origin keeps histories apart.
+
+describe('per-install identity: two installs of one binary coexist', () => {
+  const url = (handle: AgentServiceHandle): string => `ws://127.0.0.1:${handle.port}/?token=${handle.token}`
+
+  it('different instanceIds do not kick each other; both are listed', async () => {
+    const { handle } = await start()
+    try {
+      const chrome = new TestClient(url(handle))
+      await chrome.open()
+      await chrome.hello('pulsemind-extension', 'inst_chrome')
+
+      const b360 = new TestClient(url(handle))
+      await b360.open()
+      await b360.hello('pulsemind-extension', 'inst_b360')
+
+      // Neither connection was replaced: both still answer. (Pre-fix the
+      // second hello closed the first with 4409 — the reported 互踢.)
+      expect((await chrome.request('ping')).result).toMatchObject({ pong: true })
+      expect((await b360.request('ping')).result).toMatchObject({ pong: true })
+
+      // 已连接的客户端 distinguishes the installs by origin.
+      expect(handle.clients()).toHaveLength(2)
+      expect(handle.clients()).toEqual(expect.arrayContaining([
+        { clientId: 'pulsemind-extension:inst_chrome', sessions: 0 },
+        { clientId: 'pulsemind-extension:inst_b360', sessions: 0 },
+      ]))
+
+      chrome.close()
+      b360.close()
+      await waitUntil(() => handle.clients().length === 0)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('reconnecting the SAME install still replaces its own ghost', async () => {
+    const { handle } = await start()
+    try {
+      const first = new TestClient(url(handle))
+      await first.open()
+      await first.hello('pulsemind-extension', 'inst_same')
+      const firstClosed = first.closed()
+
+      const second = new TestClient(url(handle))
+      await second.open()
+      await second.hello('pulsemind-extension', 'inst_same')
+
+      // The replacement rule survives — keyed by (clientId, instanceId), so an
+      // SW wake-up race still leaves exactly one connection per install.
+      expect(await firstClosed).toBe(4409)
+      await waitUntil(() => handle.clients().length === 1)
+      expect(handle.clients()).toEqual([{ clientId: 'pulsemind-extension:inst_same', sessions: 0 }])
+
+      second.close()
+      await waitUntil(() => handle.clients().length === 0)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('each install sees only its own history (origin is base:instanceId)', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      const a = new TestClient(url(handle))
+      await a.open()
+      await a.hello('pulsemind-extension', 'inst_a')
+      const created = await a.request('session.create', { tabKey: 'tab_a' })
+      const idA = (created.result as { sessionId: string }).sessionId
+      // The real manager stamps the row; the in-memory fake needs it seeded.
+      expect(sessions.created.at(-1)?.opts?.clientId).toBe('pulsemind-extension:inst_a')
+      store.rows.set(idA, { title: 'Chrome 的会话', origin: 'pulsemind-extension:inst_a', updatedAt: new Date().toISOString(), tabKey: 'tab_a' })
+
+      const b = new TestClient(url(handle))
+      await b.open()
+      await b.hello('pulsemind-extension', 'inst_b')
+      const listB = (await b.request('session.list', { tabKey: 'tab_a' })).result as { sessions: Array<{ sessionId: string }> }
+      expect(listB.sessions).toHaveLength(0)
+
+      const listA = (await a.request('session.list', { tabKey: 'tab_a' })).result as { sessions: Array<{ sessionId: string }> }
+      expect(listA.sessions.map((s) => s.sessionId)).toEqual([idA])
+
+      // Cross-install mutation is refused like any foreign origin.
+      expect((await b.request('session.delete', { sessionId: idA })).error?.code).toBe(-32005)
+      expect((await b.request('session.rename', { sessionId: idA, title: 'X' })).error?.code).toBe(-32005)
+      expect(store.rows.get(idA)?.title).toBe('Chrome 的会话')
+
+      a.close()
+      b.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('a malformed instanceId degrades to the legacy identity', async () => {
+    const { handle } = await start()
+    try {
+      const first = new TestClient(url(handle))
+      await first.open()
+      // Illegal charset: treated as absent, never as an origin nobody can name.
+      await first.hello('pulsemind-extension', 'bad id!')
+      const firstClosed = first.closed()
+
+      const second = new TestClient(url(handle))
+      await second.open()
+      await second.hello('pulsemind-extension')
+
+      // Both resolve to the bare legacy identity → ordinary replacement.
+      expect(await firstClosed).toBe(4409)
+      expect(handle.clients()).toEqual([{ clientId: 'pulsemind-extension', sessions: 0 }])
+
+      second.close()
+      await waitUntil(() => handle.clients().length === 0)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('claims pre-instance legacy history for the install that opens the panel', async () => {
+    const { handle, store } = await start()
+    try {
+      // Pre-upgrade rows: one unscoped, one scoped to a tab this install holds
+      // live, one scoped to ANOTHER install's live tab.
+      store.rows.set('ws_legacy_unscoped', { title: '旧未带戳', origin: 'pulsemind-extension', updatedAt: '2026-11-01T00:00:00.000Z' })
+      store.rows.set('ws_legacy_mine', { title: '本安装活页签', origin: 'pulsemind-extension', updatedAt: '2026-11-02T00:00:00.000Z', tabKey: 'tab_live' })
+      store.rows.set('ws_legacy_other', { title: '另一安装活页签', origin: 'pulsemind-extension', updatedAt: '2026-11-03T00:00:00.000Z', tabKey: 'tab_other' })
+
+      const ext = new TestClient(url(handle))
+      await ext.open()
+      await ext.hello('pulsemind-extension', 'inst_upgraded')
+
+      const list = (await ext.request('session.list', { tabKey: 'tab_live', liveScopes: ['tab_live'] })).result as {
+        sessions: Array<{ sessionId: string }>
+      }
+      const ids = list.sessions.map((s) => s.sessionId)
+      expect(ids).toContain('ws_legacy_unscoped')
+      expect(ids).toContain('ws_legacy_mine')
+      expect(ids).not.toContain('ws_legacy_other')
+
+      // Claimed rows move to this install's origin (the unscoped one is then
+      // adopted by the listing tab); the other install's live scope stays put.
+      expect(store.rows.get('ws_legacy_unscoped')?.origin).toBe('pulsemind-extension:inst_upgraded')
+      expect(store.rows.get('ws_legacy_unscoped')?.tabKey).toBe('tab_live')
+      expect(store.rows.get('ws_legacy_mine')?.origin).toBe('pulsemind-extension:inst_upgraded')
+      expect(store.rows.get('ws_legacy_other')?.origin).toBe('pulsemind-extension')
+      expect(store.rows.get('ws_legacy_other')?.tabKey).toBe('tab_other')
+
+      // And a second install cannot take them now.
+      const other = new TestClient(url(handle))
+      await other.open()
+      await other.hello('pulsemind-extension', 'inst_second')
+      const otherList = (await other.request('session.list', { tabKey: 'tab_x', liveScopes: ['tab_x'] })).result as {
+        sessions: Array<{ sessionId: string }>
+      }
+      expect(otherList.sessions).toHaveLength(0)
+      expect(store.rows.get('ws_legacy_other')?.origin).toBe('pulsemind-extension')
+
+      ext.close()
+      other.close()
+    } finally {
+      await handle.close()
+    }
+  })
+})
+
 // ── M4.5: 模型切换 (global, mirrors the desktop's own picker) ────────────
 
 describe('M4.5 模型切换', () => {
@@ -1156,9 +1344,31 @@ describe('M0.4 Current Page prompt section', () => {
 // native module we cannot load under plain Node ──
 
 describe('M0.4 desktop list excludes hosted sessions', () => {
-  it('listConversations filters hosted origins in SQL', () => {
+  it('listConversations filters hosted origins in SQL — the per-install family too', () => {
     const src = readFileSync(join(process.cwd(), 'src', 'main', 'storage', 'conversation.db.ts'), 'utf-8')
-    expect(src).toMatch(/c\.origin IS NULL OR c\.origin NOT IN/)
+    // 2026-11-05: hosted rows carry `base:instanceId` (Chrome and 360 load the
+    // same extension binary), so an exact base-id comparison would leak every
+    // instance session into the desktop list. The shared helper must emit the
+    // LIKE guards, and the list must call it.
+    expect(src).toMatch(/const HOSTED_ORIGIN_PREFIXES = HOSTED_ORIGINS\.map/)
+    expect(src).toMatch(/function hostedOriginExclusion\(alias\?: string\): string/)
+    expect(src).toMatch(/NOT LIKE '\$\{p\}:?%'/)
+    expect(src).toMatch(/AND \$\{hostedOriginExclusion\('c'\)\}/)
+  })
+
+  it('claimLegacyScopes migrates only unscoped or live-scoped legacy rows', () => {
+    // The migration that hands pre-instance history to the upgraded install;
+    // the DB layer cannot be loaded here, so the predicate is pinned by scan.
+    const src = readFileSync(join(process.cwd(), 'src', 'main', 'storage', 'conversation.db.ts'), 'utf-8')
+    const at = src.indexOf('export function claimLegacyScopeConversations')
+    expect(at).toBeGreaterThan(-1)
+    const fn = src.slice(at, src.indexOf('\n}', at))
+    expect(fn).toMatch(/UPDATE conversations SET origin = \?/)
+    expect(fn).toMatch(/WHERE origin = \? AND \(tab_key IS NULL/)
+    // Another install's LIVE scope is not claimable: only the caller's list.
+    expect(fn).toMatch(/tab_key IN/)
+    // A message-less stub is not history and must not ride the migration.
+    expect(fn).toMatch(/EXISTS \(SELECT 1 FROM messages/)
   })
 
   // The stamp must create the row: a session exists before its first message is
@@ -1188,8 +1398,8 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
   // written (the G84 double-writer/UPSERT trap).
   /** The row the real session-manager stamps at session.create — the fake
    *  sessions above do not touch the store, so each test seeds it itself. */
-  const seedRow = (store: ReturnType<typeof makeFakeStore>, sessionId: string, title = ''): void => {
-    store.rows.set(sessionId, { title, origin: 'pulsemind-extension', updatedAt: new Date().toISOString() })
+  const seedRow = (store: ReturnType<typeof makeFakeStore>, sessionId: string, title = '', origin = 'pulsemind-extension'): void => {
+    store.rows.set(sessionId, { title, origin, updatedAt: new Date().toISOString() })
   }
 
   it('a hosted transcript lands on the idle status; the title follows the first text', async () => {
@@ -1216,6 +1426,25 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
   // 摘要 = 每回合把列抹成 NULL，压缩过的会话重启后拿全量转写、首拍重新压一遍
   // （多一次 LLM 调用）。桌面写者保存前赋 engine.getHistorySummary()；托管
   // 写者走同一值经 engineCall，best-effort（读失败 → 无摘要照常落转写）。
+  it('a per-install origin still counts as hosted and persists (2026-11-05)', async () => {
+    // isHostedClientId reads the BASE id: the instance suffix changed the
+    // conversation origin, not the client's capabilities. If this gate read the
+    // exact origin, every upgraded install would silently stop saving history.
+    const { handle, sessions, store } = await start()
+    try {
+      const { sessionId } = await openWithSession(handle, 'pulsemind-extension', 'inst_persist')
+      seedRow(store, sessionId, '', 'pulsemind-extension:inst_persist')
+      sessions.state.messages.push({
+        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '页面总结' }], createdAt: '2026-11-05T00:00:00.000Z',
+      })
+      sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
+      await waitUntil(() => store.savedConversations.size === 1)
+      expect(store.savedConversations.has(sessionId)).toBe(true)
+    } finally {
+      await handle.close()
+    }
+  })
+
   it('the history summary rides the turn-end save instead of being NULLed', async () => {
     const { handle, sessions, store } = await start()
     try {

@@ -37,6 +37,7 @@
     "src/shared/tool-display/edit-diff.ts",
     "src/shared/preview/html-inject.ts",
     "src/shared/ui/message-stats.ts",
+    "src/shared/ui/ime.ts",
     "src/shared/diff/**/*.ts",
     "src/renderer/src/agent/engine/engine-constants.ts"
   ]

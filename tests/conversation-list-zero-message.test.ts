@@ -30,9 +30,11 @@ describe('listConversations drops zero-message rows', () => {
     // Non-vacuous: dropping the EXISTS line fails the match (the only other
     // occurrences sit EARLIER in the file, and the pattern anchors on
     // `WHERE c.type = 'normal'` first, so a lazy span cannot reach back to
-    // them); dropping the hosted-origin filter fails the first anchor.
+    // them); dropping the hosted-origin filter fails the second anchor. The
+    // filter itself is the shared helper (2026-11-05: it covers the per-install
+    // `base:instanceId` family too) — this test only pins its position.
     expect(CONV_DB).toMatch(
-      /WHERE c\.type = 'normal'\s*\n\s*AND \(c\.origin IS NULL OR c\.origin NOT IN \(\$\{originPlaceholders\}\)\)[\s\S]*?AND EXISTS \(SELECT 1 FROM messages m WHERE m\.conversation_id = c\.id\)\s*\n\s*ORDER BY c\.pinned DESC, c\.created_at DESC/,
+      /WHERE c\.type = 'normal'\s*\n\s*AND \$\{hostedOriginExclusion\('c'\)\}[\s\S]*?AND EXISTS \(SELECT 1 FROM messages m WHERE m\.conversation_id = c\.id\)\s*\n\s*ORDER BY c\.pinned DESC, c\.created_at DESC/,
     )
   })
 

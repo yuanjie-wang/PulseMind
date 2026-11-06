@@ -16,6 +16,10 @@ export interface WsClientConfig {
   wsUrl: string
   token: string
   clientId: string
+  /** Per-install identity (see HelloParams.instanceId). The extension binary is
+   *  the same in every browser, so the constant clientId alone made Chrome and
+   *  360 kick each other off the service in a reconnect loop. */
+  instanceId?: string
   clientVersion: string
   protocolVersion: number
   reconnectBaseMs?: number
@@ -91,6 +95,9 @@ export class WsClient {
       // request gate below must let `hello` through or this deadlocks.
       this.request('hello', {
         clientId: this.cfg.clientId,
+        // Omitted rather than empty when unset: an empty string would still
+        // change the server-side identity key and the conversation origin.
+        ...(this.cfg.instanceId ? { instanceId: this.cfg.instanceId } : {}),
         clientVersion: this.cfg.clientVersion,
         protocolVersion: this.cfg.protocolVersion,
       }, 10_000)
