@@ -7,6 +7,7 @@ import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
 import { resultSummary } from '../../../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffModel, type EditDiffLine } from '../../../../shared/tool-display/edit-diff'
 import { deriveEditReveal, deriveReadReveal, type EditRevealTarget } from '../../../../shared/tool-display/edit-reveal'
+import { isImeConfirmKey } from '../../../../shared/ui/ime'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Keyframe animation for skeleton pulse effect (injected once)
@@ -229,6 +230,9 @@ function AskUserChoices({
   const choices = choicesStr.split(',').map((c) => c.trim()).filter(Boolean)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [customInput, setCustomInput] = useState('')
+  // compositionend 时刻 —— isImeConfirmKey 的第三层判据（macOS 上确认上屏时
+  // compositionend 先于 keydown，前两层判据在那里都看不见）。
+  const imeEndedAtRef = useRef(0)
   const { t } = useTranslation()
 
   if (block.status === 'completed') {
@@ -334,8 +338,14 @@ function AskUserChoices({
             placeholder={t('commandCard.customInputPlaceholder')}
             value={customInput}
             onChange={(e) => setCustomInput(e.target.value)}
+            onCompositionEnd={() => { imeEndedAtRef.current = Date.now() }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') submitCustom()
+              if (e.key !== 'Enter') return
+              // 输入法「确认上屏」的那一下回车不是提交答案：拼音模式下它把组合
+              // 串（含用户输入的英文）上屏，漏挡就直接把半截内容当答案发出去了，
+              // 不可逆。三层判据见 shared/ui/ime.ts。
+              if (isImeConfirmKey(e.nativeEvent, imeEndedAtRef.current)) return
+              submitCustom()
             }}
           />
           <button

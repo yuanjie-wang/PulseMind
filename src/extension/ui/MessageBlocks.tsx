@@ -21,6 +21,7 @@ import { Icon } from './icons'
 import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolDetailSummary, toolDisplayName, toolObjectSummary } from './format'
 import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
+import { isImeConfirmKey } from '../../shared/ui/ime'
 import { renderMarkdown, splitHtmlFences } from './markdown'
 import { HtmlArtifactCard } from './HtmlArtifactCard'
 import { trustedOnly } from './trusted'
@@ -348,6 +349,9 @@ function AskUserChoices({ block, onAnswer }: {
   const [selected, setSelected] = useState<string[]>([])
   const [custom, setCustom] = useState('')
   const answeredRef = useRef<string | null>(null)
+  // compositionend 时刻 —— isImeConfirmKey 的第三层判据（与 renderer 的
+  // CommandCard 同一条纪律，见 shared/ui/ime.ts）。
+  const imeEndedAtRef = useRef(0)
   const [answered, setAnswered] = useState<string | null>(null)
   const answer = (response: string): void => {
     if (answeredRef.current !== null) return
@@ -404,8 +408,13 @@ function AskUserChoices({ block, onAnswer }: {
               placeholder="输入自定义回答..."
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
+              onCompositionEnd={() => { imeEndedAtRef.current = Date.now() }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && custom.trim()) answer(custom.trim())
+                if (e.key !== 'Enter') return
+                // 输入法确认上屏的回车不是提交（拼音模式下它上屏的是组合串），
+                // 三层判据见 shared/ui/ime.ts。
+                if (isImeConfirmKey(e.nativeEvent, imeEndedAtRef.current)) return
+                if (custom.trim()) answer(custom.trim())
               }}
             />
             <button
