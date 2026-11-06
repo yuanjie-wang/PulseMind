@@ -136,7 +136,14 @@
       "!out/probe-*",
       "!**/*.map",
       "!.codegraph{,/**/*}",
-      "!node_modules/fluent-ffmpeg/coverage/**"
+      "!node_modules/fluent-ffmpeg/coverage/**",
+      "!node_modules/better-sqlite3/build/Release/obj/**",
+      "!node_modules/better-sqlite3/deps/**",
+      "!node_modules/better-sqlite3/bin/**",
+      "!node_modules/better-sqlite3/src/**",
+      "!node_modules/highlight.js/styles/**",
+      "!node_modules/highlight.js/scss/**",
+      "!node_modules/highlight.js/es/**"
     ],
     "extraResources": [
       {
