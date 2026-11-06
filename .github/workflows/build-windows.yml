@@ -28,6 +28,13 @@ name: Build Windows portable
 
 on:
   workflow_dispatch:
+    inputs:
+      # 平时只传 portable exe（257MB）。win-unpacked 整个目录解压后 948MB、压成 zip
+      # 约 380MB，只有需要离线整包时才勾。push / tag 触发时 inputs 为空 → false。
+      upload-unpacked:
+        description: '上传完整 win-unpacked.zip（约 380MB，仅需要离线整包时勾选）'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -234,6 +241,33 @@ jobs:
       - name: Report artifact
         shell: pwsh
         run: Get-ChildItem dist\*.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table
+
+      # 必须显式压成 zip 再上传：upload-artifact 直接传目录时它自己打的那个 zip 在
+      # `gh run download` 会被就地解开，拿不到原始压缩包。用 7z 而非 Compress-Archive
+      # ——后者对 948MB / 1061 个文件要整棵读进内存，runner 上容易 OOM 或超时。
+      # 7z 的路径不带通配符：zip 内保留 win-unpacked/ 前缀，解压即得同名目录。
+      - name: Zip win-unpacked
+        if: inputs.upload-unpacked == true
+        shell: pwsh
+        run: |
+          $zip = "dist\win-unpacked.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          7z a -tzip -mx=5 $zip dist\win-unpacked | Select-Object -Last 6
+          if ($LASTEXITCODE -ne 0) { throw "7z 打包失败 (exit $LASTEXITCODE)" }
+          $f = Get-Item $zip
+          Write-Host ("win-unpacked.zip = {0:N1} MB / {1:N0} bytes" -f ($f.Length / 1MB), $f.Length)
+          if ($env:GITHUB_STEP_SUMMARY) {
+            "### win-unpacked.zip`n`n| 项 | 值 |`n|---|---|`n| 大小 | **{0:N1} MB** |`n| 字节 | {1:N0} |" -f ($f.Length / 1MB), $f.Length | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload win-unpacked zip
+        if: inputs.upload-unpacked == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseMind-win-x64-unpacked
+          path: dist/win-unpacked.zip
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload portable exe
         uses: actions/upload-artifact@v4
