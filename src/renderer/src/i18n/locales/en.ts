@@ -228,6 +228,8 @@ const en: TranslationDict = {
     copy: 'Copy',
     resend: 'Resend',
     resendBusy: 'The current turn is still running — resend once it ends',
+    sentAtDate: '{{month}}/{{day}} {{time}}',
+    sentAtDateWithYear: '{{year}}/{{month}}/{{day}} {{time}}',
     download: 'Download',
     like: 'Like',
     liked: 'Liked',

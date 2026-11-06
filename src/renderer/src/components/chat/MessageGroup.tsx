@@ -27,6 +27,7 @@ import type { MenuProps } from 'antd'
 
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
+import { describeSentAtText, describeSentAtTitle } from '../../utils/relative-time'
 import { cacheHitRate, formatDuration, formatTokenCount } from '../../../../shared/ui/message-stats'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard, { AskUserBatchCard } from '../terminal/CommandCard'
@@ -569,6 +570,18 @@ export const MessageGroup = React.memo(function MessageGroup({
     ? msg.contentBlocks.findIndex((b) => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user')
     : -1
 
+  // 发送时间 (2026-11-06): the hover toolbar's leading item — 日期＋时分,
+  // "11月6日 18:02". A pure function of the message, so this render path needs
+  // no clock: react-hooks purity rejects Date.now() during render, and the
+  // alternative (a clock threaded down from ChatView) would invalidate the memo
+  // of every MessageGroup on every tick and re-render the whole transcript once
+  // a minute for a fact that changes once a day. The year — the only part a clock
+  // could prove redundant — rides on the <time> title instead. null (missing or
+  // unparsable createdAt — conversations persisted before the field) renders
+  // nothing, so those messages keep the toolbar they have today.
+  const sentAt = isUser ? describeSentAtText(msg.createdAt, t) : null
+  const sentAtTitle = sentAt ? describeSentAtTitle(msg.createdAt, t) : null
+
   return (
     <div
       // The user side stacks bubble → hover toolbar in a right-aligned COLUMN
@@ -694,6 +707,21 @@ export const MessageGroup = React.memo(function MessageGroup({
           contiguous with the bubble's bottom edge. */}
       {isUser && (
         <div className="pm-user-tools" style={{ display: 'flex', alignItems: 'center', gap: 2, height: 22, marginTop: 2 }}>
+          {/* 时间在左、按钮在右；整行仍与气泡右边缘对齐，靠的是外壳那条
+              alignItems: flex-end，这一行不用自己定位。tabular-nums 让冒号
+              两侧不随字形宽度抖动；行高 22px 是工具条给的常量，这段文字不会
+              再把下面的转录顶下去一行。日期一律显示（11px 下的「11月6日
+              18:02」），因为悬停工具条原本就是这一行的场景，而只给时间的话
+              翻回三天前的对话就完全无从判断是哪一天。 */}
+          {sentAt && (
+            <time
+              dateTime={msg.createdAt}
+              title={sentAtTitle ?? undefined}
+              style={{ fontSize: 11, color: 'var(--pm-text-faint)', fontVariantNumeric: 'tabular-nums', marginRight: 4, whiteSpace: 'nowrap', userSelect: 'none' }}
+            >
+              {sentAt}
+            </time>
+          )}
           <button
             style={userToolBtnStyle}
             onClick={handleCopy}

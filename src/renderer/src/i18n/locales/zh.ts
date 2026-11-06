@@ -222,6 +222,8 @@ const zh = {
     copy: '复制',
     resend: '重发',
     resendBusy: '当前回合还在跑，结束后再重发',
+    sentAtDate: '{{month}}月{{day}}日 {{time}}',
+    sentAtDateWithYear: '{{year}}年{{month}}月{{day}}日 {{time}}',
     download: '下载',
     like: '点赞',
     liked: '已点赞',
