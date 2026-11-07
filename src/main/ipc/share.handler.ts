@@ -55,7 +55,7 @@ function safeExportName(name: string): string {
   return cleaned || 'share'
 }
 
-async function buildPreviews(items: Array<{ kind: ShareItem['kind']; payload: Record<string, unknown> }>): { previews: SharePreviewItem[]; conflicts: Array<{ index: number; conflictId?: string }> } {
+async function buildPreviews(items: Array<{ kind: ShareItem['kind']; payload: Record<string, unknown> }>): Promise<{ previews: SharePreviewItem[]; conflicts: Array<{ index: number; conflictId?: string }> }> {
   const skills = await installedSkillNames()
   const routineNames = new Map(routineStore.list().map((r) => [r.name, r.id]))
   const workflowNames = new Map(workflowStore.list().map((w) => [w.name, w.id]))

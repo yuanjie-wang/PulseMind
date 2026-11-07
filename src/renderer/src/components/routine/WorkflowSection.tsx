@@ -191,6 +191,42 @@ export function WorkflowSection(): React.ReactElement {
     }
   }, [])
 
+  // ── 分享（PLAN-share-import-export）：导入两阶段（预览→提交，token 通道），
+  //    导出主进程一键完成。kind 无关——预览模态同一只。 ──
+  const [importOpen, setImportOpen] = useState(false)
+  const [importToken, setImportToken] = useState('')
+  const [importItems, setImportItems] = useState<SharePreviewItem[]>([])
+  const [importError, setImportError] = useState<string | undefined>(undefined)
+
+  const openImport = useCallback(async () => {
+    setImportError(undefined)
+    const res = await window.electronAPI.shareImportPreview().catch((err: unknown) => ({ canceled: false, error: err instanceof Error ? err.message : String(err) }))
+    if (res.canceled) return
+    const r = res as { error?: string; importToken?: string; items?: SharePreviewItem[] }
+    if (r.error && !r.importToken) {
+      message.error(r.error)
+      return
+    }
+    setImportToken(r.importToken ?? '')
+    setImportItems(r.items ?? [])
+    setImportError(r.error)
+    setImportOpen(true)
+  }, [message])
+
+  const exportWorkflow = useCallback(
+    async (wf: WorkflowDefinition) => {
+      const r = (await window.electronAPI.shareExport([{ kind: 'workflow', id: wf.id }]).catch((err: unknown) => ({
+        canceled: false,
+        count: 0,
+        path: undefined as string | undefined,
+        error: err instanceof Error ? err.message : String(err),
+      }))) as { canceled: boolean; count: number; path?: string; error?: string }
+      if (r.error) message.error(r.error)
+      else if (!r.canceled) message.success(r.path ? `${t('share.exportedTo')} ${r.path}` : t('share.exportedTo'))
+    },
+    [message, t],
+  )
+
   const removeWorkflow = useCallback(
     (wf: WorkflowDefinition) => {
       modal.confirm({

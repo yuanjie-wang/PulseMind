@@ -112,11 +112,15 @@ export function validateWorkflow(def: unknown): WorkflowValidation {
   const params = wf.params
   if (params && typeof params === 'object') {
     const p = params as WorkflowDefinition['params']
-    for (const key of ['stageTimeoutMinutes', 'maxStageContinues', 'defaultMaxVisits'] as const) {
+    for (const key of ['maxStageContinues', 'defaultMaxVisits'] as const) {
       const v = p?.[key]
-      if (v !== undefined && (!Number.isFinite(v) || (v as number) <= 0)) {
-        errors.push(`params.${key} 必须是正数`)
+      if (v !== undefined && (!Number.isFinite(v) || (v as number) < 0)) {
+        errors.push(`params.${key} 必须是非负数`)
       }
+    }
+    const timeout = p?.stageTimeoutMinutes
+    if (timeout !== undefined && (!Number.isFinite(timeout) || (timeout as number) <= 0)) {
+      errors.push('params.stageTimeoutMinutes 必须是正数')
     }
     if (p?.gitCheckpoint !== undefined && typeof p.gitCheckpoint !== 'boolean') {
       errors.push('params.gitCheckpoint 必须是布尔值')
