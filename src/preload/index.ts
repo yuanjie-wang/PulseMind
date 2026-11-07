@@ -593,6 +593,13 @@ const electronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
     }
   },
+  onConversationHandoff: (callback: (event: { sessionId: string; title: string; url: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { sessionId: string; title: string; url: string }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.CONVERSATION_HANDOFF, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.CONVERSATION_HANDOFF, listener)
+    }
+  },
 
   // ── Project (immersive) window ──
   projectWindowOpen: (projectId: string, name?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),

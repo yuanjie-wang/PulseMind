@@ -436,6 +436,10 @@ export class AgentEngine implements EngineCore {
    *  无须记得轮询 exec_logs。同 pid 只保留最新一条。 */
   /** @internal */
   backgroundNotices: Array<{ pid: number; code: number | null }> = []
+  /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来（engineCall
+   *  'markExtensionHandoff' 置位）。引擎生命周期内每回合 state block 都带告知
+   *  行——page_* 在桌面端结构性不可用；引擎重铸后丢失是诚实缺口（v1 不落库）。 */
+  extensionHandoffNotice = false
   /** @internal */
   enqueueBackgroundNotice = (pid: number, code: number | null): void => {
     this.backgroundNotices = this.backgroundNotices.filter((n) => n.pid !== pid)
@@ -1316,6 +1320,7 @@ export class AgentEngine implements EngineCore {
       toolProtocols,
       continuationNudge,
       backgroundNotices,
+      handoffNotice: this.extensionHandoffNotice || undefined,
       // The gauge must report the POST-PIPELINE size of this request, but the
       // pipeline below needs the state block's byte length first — so pass 1
       // ships the SENTINEL and the real section is swapped in after

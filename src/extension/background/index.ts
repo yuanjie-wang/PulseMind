@@ -15,6 +15,7 @@ import { loadConfig, saveConfig, type ExtensionConfig } from './config'
 import { discoverService } from './discovery'
 import { getInstanceId } from './instance'
 import { PanelBridge } from './panel-bridge'
+import { setTabHandedOff } from './state'
 import { routeToolCall } from './tool-router'
 import { WsClient } from './ws-client'
 
@@ -106,9 +107,7 @@ async function runEnsureClient(forceRediscover: boolean): Promise<void> {
       state.client?.close()
       state.client = null
       state.clientKey = ''
-      state.reason = cfg.serviceUrl
-        ? `未连接到手动指定的服务（${cfg.serviceUrl} 无响应）`
-        : '未发现桌面端服务（端口 8765–8779 无响应）'
+      state.reason = cfg.serviceUrl ? `未连接到手动指定的服务（${cfg.serviceUrl} 无响应）` : '未发现桌面端服务（端口 8765–8779 无响应）'
       broadcastState()
       return
     }
@@ -226,6 +225,9 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   // A navigation replaces the document, so a recorded "this page forbids eval"
   // verdict no longer describes it.
   if (info.status === 'loading') resetCspVerdict(tabId)
+  // 「已转出」横幅只属于移交时的那个页面（PLAN-extension-handoff）：页签导航后
+  // 横幅自然消失——用户去了新页面，面板照常可用。
+  if (info.url) void setTabHandedOff(tabId, false)
 })
 
 chrome.runtime.onMessage.addListener((msg: { type?: string }, sender, sendResponse) => {

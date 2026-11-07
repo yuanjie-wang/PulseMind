@@ -13,7 +13,14 @@ import type { SandboxApprovalMode } from '../src/shared/sandbox/policy'
 
 // ── Test harness ─────────────────────────────────────────────────────
 
-interface Frame { jsonrpc: '2.0'; id?: number | string | null; method?: string; params?: any; result?: any; error?: { code: number; message: string } }
+interface Frame {
+  jsonrpc: '2.0'
+  id?: number | string | null
+  method?: string
+  params?: any
+  result?: any
+  error?: { code: number; message: string }
+}
 
 class TestClient {
   private ws: WebSocket
@@ -34,13 +41,18 @@ class TestClient {
         return
       }
       const resolve = this.pending.get(frame.id as number)
-      if (resolve) { this.pending.delete(frame.id as number); resolve(frame) }
+      if (resolve) {
+        this.pending.delete(frame.id as number)
+        resolve(frame)
+      }
     })
   }
 
   open(): Promise<void> {
     if (this.ws.readyState === WebSocket.OPEN) return Promise.resolve()
-    return new Promise((resolve) => { this.openResolve = resolve })
+    return new Promise((resolve) => {
+      this.openResolve = resolve
+    })
   }
 
   closed(): Promise<number> {
@@ -51,7 +63,10 @@ class TestClient {
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`request timeout: ${method}`)), timeoutMs)
-      this.pending.set(id, (frame) => { clearTimeout(timer); resolve(frame) })
+      this.pending.set(id, (frame) => {
+        clearTimeout(timer)
+        resolve(frame)
+      })
       this.ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
     })
   }
@@ -81,7 +96,10 @@ class TestClient {
       this.notifications.push = (...items: Array<{ method: string; params: any }>) => {
         const r = originalPush(...items)
         for (const item of items) {
-          if (item.method === method) { clearTimeout(timer); resolve(item) }
+          if (item.method === method) {
+            clearTimeout(timer)
+            resolve(item)
+          }
         }
         return r
       }
@@ -133,19 +151,42 @@ function makeFakeSessions(): FakeSessions {
     /** The live transcript a snapshot() would answer with (the persistence
      *  tests seed it before emitting a turn end). */
     messages: [] as unknown[],
+    /** snapshot() 的状态面（handoff 守卫测试拨它）：真实 manager 的 snapshot
+     *  恒带 status，fake 缺省 idle。 */
+    snapshotStatus: 'idle' as string,
   }
   const live = new Set<string>()
   return {
-    get created() { return state.created },
-    get asks() { return state.asks },
-    get engineCalls() { return state.engineCalls },
-    get model() { return state.model },
-    get switched() { return state.switched },
-    get approvalModes() { return state.approvalModes },
-    get sessionModels() { return state.sessionModels },
-    get modelStateCalls() { return state.modelStateCalls },
-    get state() { return state },
-    get live() { return live },
+    get created() {
+      return state.created
+    },
+    get asks() {
+      return state.asks
+    },
+    get engineCalls() {
+      return state.engineCalls
+    },
+    get model() {
+      return state.model
+    },
+    get switched() {
+      return state.switched
+    },
+    get approvalModes() {
+      return state.approvalModes
+    },
+    get sessionModels() {
+      return state.sessionModels
+    },
+    get modelStateCalls() {
+      return state.modelStateCalls
+    },
+    get state() {
+      return state
+    },
+    get live() {
+      return live
+    },
     // The real manager writes the conversation column and re-resolves the live
     // engine; the fake records the write and echoes the level back, which is
     // what the caller reconciles against.
@@ -158,9 +199,9 @@ function makeFakeSessions(): FakeSessions {
     modelState: async (sessionId?: string) => {
       state.modelStateCalls.push(sessionId)
       const activeId = sessionId
-        // Mirror the real scoping: the session's own pin when it has one,
-        // the global default otherwise.
-        ? (state.sessionModels.find((m) => m.sessionId === sessionId && m.profileId)?.profileId ?? state.model.activeId)
+        ? // Mirror the real scoping: the session's own pin when it has one,
+          // the global default otherwise.
+          (state.sessionModels.find((m) => m.sessionId === sessionId && m.profileId)?.profileId ?? state.model.activeId)
         : state.model.activeId
       return { profiles: state.model.profiles, activeId }
     },
@@ -179,8 +220,12 @@ function makeFakeSessions(): FakeSessions {
       const activeId = profileId ?? state.model.activeId
       return { profiles: state.model.profiles, activeId }
     },
-    emit: (sessionId, data) => { for (const s of sinks) s(sessionId, data) },
-    setAskHandler: (fn) => { state.askHandler = fn },
+    emit: (sessionId, data) => {
+      for (const s of sinks) s(sessionId, data)
+    },
+    setAskHandler: (fn) => {
+      state.askHandler = fn
+    },
     createSession: async (sessionId, opts) => {
       state.created.push({ sessionId, opts })
       live.add(sessionId)
@@ -198,7 +243,7 @@ function makeFakeSessions(): FakeSessions {
     },
     cancel: () => {},
     history: async () => ({ messages: state.messages, agentId: 'default' }),
-    snapshot: async () => (live.size > 0 ? { messages: state.messages } : null),
+    snapshot: async () => (live.size > 0 ? { messages: state.messages, status: { status: state.snapshotStatus } } : null),
     hasSession: (sessionId) => live.has(sessionId),
     hydrate: async () => {},
     engineCall: async (sessionId, method, args = []) => {
@@ -207,7 +252,10 @@ function makeFakeSessions(): FakeSessions {
     },
     onEvent: (sink) => {
       sinks.push(sink)
-      return () => { const i = sinks.indexOf(sink); if (i >= 0) sinks.splice(i, 1) }
+      return () => {
+        const i = sinks.indexOf(sink)
+        if (i >= 0) sinks.splice(i, 1)
+      }
     },
   }
 }
@@ -264,13 +312,31 @@ function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRo
     title: (id) => rows.get(id)?.title ?? null,
     // The hosted-transcript writer records its saves so tests can assert the
     // turn-end write without a database.
-    persist: (conversation) => { savedConversations.set(conversation.id, conversation) },
-    remove: (id) => { rows.delete(id) },
-    rename: (id, title) => { const r = rows.get(id); if (r) r.title = title },
+    persist: (conversation) => {
+      savedConversations.set(conversation.id, conversation)
+    },
+    remove: (id) => {
+      rows.delete(id)
+    },
+    rename: (id, title) => {
+      const r = rows.get(id)
+      if (r) r.title = title
+    },
+    // session.handoff 的 origin 重戳（PLAN-extension-handoff）：与真实
+    // updateConversationOrigin 的 UPSERT 同语义——行在则改 origin，行不在则建桩。
+    stampOrigin: (id, origin) => {
+      const existing = rows.get(id)
+      if (existing) existing.origin = origin
+      else rows.set(id, { title: '', origin, updatedAt: new Date().toISOString() })
+    },
   }
 }
 
-async function start(token = 'test-token', sessions = makeFakeSessions(), store = makeFakeStore()): Promise<{ handle: AgentServiceHandle; sessions: FakeSessions; store: ReturnType<typeof makeFakeStore> }> {
+async function start(
+  token = 'test-token',
+  sessions = makeFakeSessions(),
+  store = makeFakeStore(),
+): Promise<{ handle: AgentServiceHandle; sessions: FakeSessions; store: ReturnType<typeof makeFakeStore> }> {
   const handle = await startAgentService({ port: 0, token, sessions, store })
   return { handle, sessions: sessions as FakeSessions, store: store as ReturnType<typeof makeFakeStore> }
 }
@@ -287,7 +353,11 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 }
 
 /** Open, hello, create a session — the common preamble. */
-async function openWithSession(handle: AgentServiceHandle, clientId = 'pulsemind-extension', instanceId?: string): Promise<{ client: TestClient; sessionId: string }> {
+async function openWithSession(
+  handle: AgentServiceHandle,
+  clientId = 'pulsemind-extension',
+  instanceId?: string,
+): Promise<{ client: TestClient; sessionId: string }> {
   const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
   await client.open()
   await client.hello(clientId, instanceId)
@@ -333,7 +403,9 @@ describe('M0.3 origin policy + token pairing', () => {
         new Promise((resolve, reject) => {
           const req = httpRequest({ host: '127.0.0.1', port: handle.port, path: '/token', headers }, (res) => {
             let body = ''
-            res.on('data', (d) => { body += d })
+            res.on('data', (d) => {
+              body += d
+            })
             res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
           })
           req.on('error', reject)
@@ -489,11 +561,15 @@ describe('M0.4 session surface', () => {
         sessions.emit(sid, { type: 'token', blockType: 'text', text: String(result) })
       })
 
-      const askPromise = client.request('agent.ask', {
-        sessionId,
-        content: '总结这个页面',
-        pageContext: { url: 'https://example.com/b', title: '页面 B' },
-      }, 8_000)
+      const askPromise = client.request(
+        'agent.ask',
+        {
+          sessionId,
+          content: '总结这个页面',
+          pageContext: { url: 'https://example.com/b', title: '页面 B' },
+        },
+        8_000,
+      )
 
       const call = await client.waitFor('tool.call')
       expect(call.params.tool).toBe('page_get_content')
@@ -531,9 +607,7 @@ describe('M0.4 session surface', () => {
       // is_error tool result).
       const failures: string[] = []
       sessions.setAskHandler(async (sid) => {
-        await hostedToolProxy
-          .call(agentClientRegistry.get(sid), sid, 'page_click', { index: 3 }, 200)
-          .catch((err: Error) => failures.push(err.message))
+        await hostedToolProxy.call(agentClientRegistry.get(sid), sid, 'page_click', { index: 3 }, 200).catch((err: Error) => failures.push(err.message))
       })
 
       const res = await client.request('agent.ask', { sessionId, content: '点它' }, 8_000)
@@ -938,10 +1012,12 @@ describe('per-install identity: two installs of one binary coexist', () => {
 
       // 已连接的客户端 distinguishes the installs by origin.
       expect(handle.clients()).toHaveLength(2)
-      expect(handle.clients()).toEqual(expect.arrayContaining([
-        { clientId: 'pulsemind-extension:inst_chrome', sessions: 0 },
-        { clientId: 'pulsemind-extension:inst_b360', sessions: 0 },
-      ]))
+      expect(handle.clients()).toEqual(
+        expect.arrayContaining([
+          { clientId: 'pulsemind-extension:inst_chrome', sessions: 0 },
+          { clientId: 'pulsemind-extension:inst_b360', sessions: 0 },
+        ]),
+      )
 
       chrome.close()
       b360.close()
@@ -1408,7 +1484,10 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
       const { sessionId } = await openWithSession(handle)
       seedRow(store, sessionId)
       sessions.state.messages.push({
-        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '总结这个页面' }], createdAt: '2026-11-02T00:00:00.000Z',
+        id: 'm1',
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: '总结这个页面' }],
+        createdAt: '2026-11-02T00:00:00.000Z',
       })
       sessions.emit(sessionId, { type: 'status', status: 'streaming' } as AgentEventData)
       expect(store.savedConversations.size).toBe(0) // active — the turn is open
@@ -1435,7 +1514,10 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
       const { sessionId } = await openWithSession(handle, 'pulsemind-extension', 'inst_persist')
       seedRow(store, sessionId, '', 'pulsemind-extension:inst_persist')
       sessions.state.messages.push({
-        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '页面总结' }], createdAt: '2026-11-05T00:00:00.000Z',
+        id: 'm1',
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: '页面总结' }],
+        createdAt: '2026-11-05T00:00:00.000Z',
       })
       sessions.emit(sessionId, { type: 'status', status: 'idle' } as AgentEventData)
       await waitUntil(() => store.savedConversations.size === 1)
@@ -1451,7 +1533,10 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
       const { sessionId } = await openWithSession(handle)
       seedRow(store, sessionId)
       sessions.state.messages.push({
-        id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '长任务' }], createdAt: '2026-11-02T00:00:00.000Z',
+        id: 'm1',
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: '长任务' }],
+        createdAt: '2026-11-02T00:00:00.000Z',
       })
       sessions.engineCall = async (sid, method) => {
         expect(sid).toBe(sessionId)
@@ -1469,7 +1554,9 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
         const { sessionId: sid2 } = await openWithSession(h2)
         seedRow(store2, sid2)
         s2.state.messages.push({ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: 'hi' }], createdAt: '2026-11-02T00:00:00.000Z' })
-        s2.engineCall = async () => { throw new Error('session not found') }
+        s2.engineCall = async () => {
+          throw new Error('session not found')
+        }
         s2.emit(sid2, { type: 'status', status: 'idle' } as AgentEventData)
         await waitUntil(() => store2.savedConversations.size === 1)
         const saved2 = store2.savedConversations.get(sid2) as { historySummary?: string }
@@ -1527,3 +1614,120 @@ describe('hosted transcripts persist at turn end (2026-11-02)', () => {
     }
   })
 })
+
+// ── session.handoff（PLAN-extension-handoff）──────────────────────────
+
+describe('session.handoff — 扩展会话移交桌面端', () => {
+  const seedRow = (store: ReturnType<typeof makeFakeStore>, sessionId: string, origin = 'pulsemind-extension'): void => {
+    store.rows.set(sessionId, { title: '移交的会话', origin, updatedAt: new Date().toISOString() })
+  }
+
+  it('三拒绝：会话不存在 / 已在桌面端 / 非 hosted origin', async () => {
+    const { handle, store } = await start()
+    try {
+      seedRow(store, 'conv_hosted', 'pulsemind-extension')
+      seedRow(store, 'conv_local', 'local')
+      seedRow(store, 'conv_other', 'some-other-client')
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+
+      const missing = await ext.request('session.handoff', { sessionId: 'conv_missing', page: { url: 'https://x.test' } })
+      expect(missing.error?.code).toBe(ErrorCodes.sessionNotFound)
+
+      const local = await ext.request('session.handoff', { sessionId: 'conv_local', page: { url: 'https://x.test' } })
+      expect(local.error?.code).toBe(ErrorCodes.invalidParams)
+      expect(local.error?.message).toContain('已在桌面端')
+
+      const other = await ext.request('session.handoff', { sessionId: 'conv_other', page: { url: 'https://x.test' } })
+      expect(other.error?.code).toBe(ErrorCodes.forbidden)
+      ext.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('第四拒绝：活跃回合（流式中 / 待审批）不得移交——审批卡孤儿化比等一拍更贵', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      seedRow(store, 'conv_busy')
+      sessions.live.add('conv_busy')
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+
+      for (const status of ['streaming', 'awaiting_approval', 'awaiting_user_input']) {
+        sessions.state.snapshotStatus = status
+        const res = await ext.request('session.handoff', { sessionId: 'conv_busy', page: { url: 'https://x.test' } })
+        expect(res.error?.code).toBe(ErrorCodes.invalidParams)
+        expect(res.error?.message).toContain('回合')
+        // 拒绝路径不得动 origin / 解绑
+        expect(store.rows.get('conv_busy')?.origin).toBe('pulsemind-extension')
+      }
+      ext.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('成功路径：origin 重戳 local + 双向解绑 + 广播 + 引擎已死也放行', async () => {
+    const broadcasts: Array<{ sessionId: string; title: string; url: string }> = []
+    const { sessions, store } = makeHandoffParts()
+    const handle = await startAgentService({
+      port: 0,
+      token: 'test-token',
+      sessions: sessions as unknown as AgentServiceSessions,
+      store,
+      broadcast: (p) => broadcasts.push(p),
+    })
+    try {
+      seedRow(store, 'conv_go')
+      // 引擎已死：live 不加该会话 → snapshot null → 守卫放行（转过去等于续聊静默会话）
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+
+      // 预置一个绑定：移交后必须解绑（registry 释放反向通道）
+      const fakeTransport = { id: 't1', clientId: 'pulsemind-extension', sendToolCall: () => {}, sendApprovalRequest: () => {}, sendAskUserRequest: () => {} }
+      agentClientRegistry.bind('conv_go', fakeTransport)
+
+      const res = await ext.request('session.handoff', {
+        sessionId: 'conv_go',
+        page: { url: 'https://example.test/article', title: '文章' },
+      })
+      expect(res.result).toMatchObject({ ok: true })
+      // ③ origin 重戳：桌面列表立即可见 + hosted-persistence 自动停写
+      expect(store.rows.get('conv_go')?.origin).toBe('local')
+      // ④ registry 解绑
+      expect(agentClientRegistry.get('conv_go')).toBeUndefined()
+      // ⑤ 广播
+      await waitUntil(() => broadcasts.length > 0)
+      expect(broadcasts[0]).toMatchObject({ sessionId: 'conv_go', url: 'https://example.test/article' })
+      ext.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('零消息会话放行（无东西可续，转过去等于新会话，无害）', async () => {
+    const { handle, store } = await start()
+    try {
+      seedRow(store, 'conv_empty')
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+      const res = await ext.request('session.handoff', { sessionId: 'conv_empty', page: { url: 'https://x.test' } })
+      expect(res.result).toMatchObject({ ok: true })
+      expect(store.rows.get('conv_empty')?.origin).toBe('local')
+      ext.close()
+    } finally {
+      await handle.close()
+    }
+  })
+})
+
+/** 独立的 fake 组装：与 start() 相同，但把 sessions/store 暴露给需要注入
+ *  broadcast 的用例（broadcast 是 startAgentService 的 opts，不走 start）。 */
+function makeHandoffParts(): { sessions: FakeSessions; store: ReturnType<typeof makeFakeStore> } {
+  return { sessions: makeFakeSessions(), store: makeFakeStore() }
+}

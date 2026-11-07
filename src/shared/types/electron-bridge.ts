@@ -676,6 +676,10 @@ export interface ElectronAPI {
    *  re-add must not mint the entry without the binding. */
   onConversationTitleChanged: (callback: (event: { id: string; title: string; projectId?: string }) => void) => () => void
 
+  /** PLAN-extension-handoff：一个扩展会话移交到了桌面端（origin 已重戳、扩展
+   *  侧已解绑）。主窗消费（收养 + 内置浏览器打开页面）；次级窗口忽略。 */
+  onConversationHandoff: (callback: (event: { sessionId: string; title: string; url: string }) => void) => () => void
+
   // ── Project (immersive) window (2026-10-30) ──
   /** Open the immersive window for a project — a project-scoped secondary
    *  window carrying tree | preview | chat. Idempotent: an already-open window

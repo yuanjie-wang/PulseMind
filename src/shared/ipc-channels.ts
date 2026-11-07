@@ -244,6 +244,10 @@ export const IPC_CHANNELS = {
    *  other windows' in-memory sidebar lists can follow (title generation
    *  happens in whichever window drove the turn). */
   CONVERSATION_TITLE_CHANGED: 'conversation:title-changed',
+  /** Main → every window（PLAN-extension-handoff）：一个扩展会话移交到了桌面端
+   *  （origin 已重戳 'local'、扩展侧已解绑）。主窗消费（收养会话 + 内置浏览器
+   *  打开移交的页面）；popout/项目沉浸窗口忽略。 */
+  CONVERSATION_HANDOFF: 'conversation:handoff',
   // ── Project (immersive) window (2026-10-30) ──
   /** Renderer → main: open the immersive window for a project (idempotent —
    *  focuses the existing one). Project windows REUSE the popout window module

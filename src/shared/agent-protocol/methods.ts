@@ -55,6 +55,11 @@ export const Methods = {
   toolResult: 'tool.result',
   /** client → service: user decision on continuing past the loop iteration limit */
   iterationLimitResponse: 'iteration_limit.response',
+  /** client → service: hand a session over to the desktop (PLAN-extension-handoff).
+   *  The extension panel stops driving it (origin re-stamped to 'local',
+   *  bindings released); the desktop adopts the SAME conversation — the engine
+   *  lives in the main process either way, only the client changes. */
+  sessionHandoff: 'session.handoff',
   // ── admin CRUD (M5) — names reserved now so they never re-number ──
   agentList: 'agent.list',
   agentCreate: 'agent.create',

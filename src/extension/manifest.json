@@ -10,7 +10,7 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["storage", "tabs", "alarms", "debugger"],
+  "permissions": ["storage", "tabs", "alarms", "debugger", "cookies"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "<all_urls>"],
   "background": { "service_worker": "background.js" },
   "options_page": "options.html",

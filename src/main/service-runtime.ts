@@ -16,7 +16,11 @@ export function tokenPath(): string {
 }
 
 export function readToken(): string {
-  try { return readFileSync(tokenPath(), 'utf-8').trim() } catch { return '' }
+  try {
+    return readFileSync(tokenPath(), 'utf-8').trim()
+  } catch {
+    return ''
+  }
 }
 
 export function writeToken(token: string): void {
@@ -33,7 +37,32 @@ export async function restartService(): Promise<{ port: number } | null> {
   serviceRuntime.handle = null
   const settings = await settingsStore.get()
   if (settings.serviceEnabled === false) return null
-  const handle = await startAgentService({ port: settings.servicePort })
+  const handle = await startAgentService({ port: settings.servicePort, broadcast: broadcastConversationHandoff })
   serviceRuntime.handle = handle
   return { port: handle.port }
+}
+
+/** session.handoff 的桌面广播（PLAN-extension-handoff）：全窗口 webContents
+ *  发送 + mac 关窗不退出的窗口保障——一扇窗都没有时先把主窗唤起来（index.ts
+ *  动态导入避免模块环），再广播；popout/项目沉浸窗口收到后自行忽略。 */
+async function broadcastConversationHandoff(payload: { sessionId: string; title: string; url: string }): Promise<void> {
+  try {
+    const { BrowserWindow } = await import('electron')
+    const { IPC_CHANNELS } = await import('../shared/ipc-channels')
+    let alive = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
+    if (alive.length === 0) {
+      const boot = await import('./index')
+      await boot.ensureMainWindowForHandoff()
+      alive = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
+    }
+    for (const win of alive) {
+      try {
+        win.webContents.send(IPC_CHANNELS.CONVERSATION_HANDOFF, payload)
+      } catch {
+        /* window closing */
+      }
+    }
+  } catch (err) {
+    console.warn('[AgentService] handoff broadcast failed:', err instanceof Error ? err.message : err)
+  }
 }

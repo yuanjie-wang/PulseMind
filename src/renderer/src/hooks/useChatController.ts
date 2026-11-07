@@ -479,6 +479,28 @@ export function useChatController(options: UseChatControllerOptions) {
     [engine.activateEngine, persistence.addConversation, persistence.activateConversation],
   )
 
+  // ── 7.6 扩展会话移交收养（PLAN-extension-handoff）──
+  // CONVERSATION_HANDOFF 到达：换客户端驱动同一个会话——主进程引擎本来就活着，
+  // 这里做四件事：乐观列表条目、两半激活（先 engine 后 persistence，与容器同
+  // 顺序）、adoptConversation 式镜像收养（引擎活着时零 DB 重放，快照直种）、
+  // 标记 state block 的移交告知行。主视图切 browser 档 + 开页签由 App 层在调
+  // 用后接手（pane 快照报到后 navigate，与 createBrowserTask 同一等待模式）。
+  const adoptHandoffTask = useCallback(
+    (convId: string, label: string) => {
+      persistence.addConversation({ key: convId, label, updatedAt: new Date().toISOString() }, 'prepend')
+      useWorkbenchStore.getState().setConversationPrimary(convId, 'browser')
+      useWorkbenchStore.getState().setOpen(convId, true)
+      useWorkbenchStore.getState().setActiveTab('chat')
+      engine.activateEngine(convId)
+      persistence.activateConversation(convId)
+      void persistence.adoptConversation(convId)
+      // 移交告知（M3）：下一回合 state block 出现 ## Handoff 行——提示不是工具
+      // 下架（G20 禁 availability 门控）。引擎重铸后 flag 丢失是诚实缺口。
+      window.electronAPI.agentSessionEngineCall(convId, 'markExtensionHandoff', []).catch(() => {})
+    },
+    [engine.activateEngine, persistence.addConversation, persistence.activateConversation, persistence.adoptConversation],
+  )
+
   // ── 7.5 Staged-message drain (暂存区) ──
   // A message staged while the loop ran goes out on its OWN turn's completion
   // edge. The rule — busy → completed of the same conversation; switch-into-
@@ -561,6 +583,7 @@ export function useChatController(options: UseChatControllerOptions) {
     setActiveConversationKey: persistence.handleSelectConversation,
     handleRequest,
     createBrowserTask,
+    adoptHandoffTask,
     sendStagedNow,
     /** composer 的停止按钮（冻结语义，2026-09-29 体验回滚）：中止在飞请求、
      *  整棵专家树一起冻结、回合停进 awaiting_continue，确认条的 继续执行/

@@ -451,6 +451,19 @@ function resolveWindowBounds(): {
   }
 }
 
+/** CONVERSATION_HANDOFF 的窗口保障（PLAN-extension-handoff）：mac 关窗不退出
+ *  时服务仍在跑，移交广播到达前必须有一扇主窗。与 dock activate 同一条
+ *  hooksComplete 门——门期（登录流程）零窗口是常态，不抢。 */
+export async function ensureMainWindowForHandoff(): Promise<void> {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    return
+  }
+  if (hooksComplete) createWindow()
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     ...resolveWindowBounds(),

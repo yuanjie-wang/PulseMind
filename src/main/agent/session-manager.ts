@@ -1194,6 +1194,10 @@ export class AgentSessionManagerImpl {
       // mirror from events alone and never snapshots, so a tree mounted after
       // the writes happened (tab switch, window reload) reads the ledger here.
       case 'getFileChanges': return entry.engine.getFileChanges()
+      case 'markExtensionHandoff':
+        // PLAN-extension-handoff M3：会话自扩展移交而来，state block 带告知行。
+        entry.engine.extensionHandoffNotice = true
+        return undefined
       case 'compactNow': return engine.compactNow(args[0] as string | undefined)
       case 'debugSubAgents':
         // Read-only diagnostic (conv_20260930091135: two plan sub-agents parked

@@ -22,6 +22,8 @@ export interface PanelApi {
   /** Panel visibility (persisted per tab so a reload keeps it open). */
   open: boolean
   sessions: SessionSummary[]
+  /** 「已转出」空态（PLAN-extension-handoff）：本页签会话已移交桌面端。 */
+  handedOff: boolean
   session: SessionState
   /** The conversation's tool-approval level (授权), mirrored from the desktop. */
   approvalMode: SandboxApprovalMode | undefined
@@ -49,6 +51,8 @@ export interface PanelApi {
   /** The loop-limit prompt (awaiting_extension): continue extends the engine's
    *  loop budget, stop ends the run. */
   respondIteration: (approved: boolean) => void
+  /** 转到桌面端继续（PLAN-extension-handoff）：移交当前页签会话（含 cookie）。 */
+  handoff: (page: { url: string; title?: string }) => Promise<boolean>
 }
 
 export function usePanel(): PanelApi {
@@ -63,6 +67,7 @@ export function usePanel(): PanelApi {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [handedOff, setHandedOff] = useState(false)
   const [approvalMode, setApprovalModeState] = useState<SandboxApprovalMode | undefined>(undefined)
   const [model, setModelState] = useState<ModelState | undefined>(undefined)
 
@@ -98,6 +103,7 @@ export function usePanel(): PanelApi {
     setConnection(snapshot.connection)
     setOpenState(snapshot.panelOpen)
     setSessions(snapshot.sessions)
+    setHandedOff(snapshot.handedOff === true)
     setApprovalModeState(snapshot.approvalMode)
     // Absent while the service is unreachable (or older than the field): keep
     // whatever we had rather than blanking a picker the user is looking at.
@@ -215,15 +221,18 @@ export function usePanel(): PanelApi {
 
   /** 授权：level 写在 conversations.approval_mode 上（与桌面端同一个字段、同一
    *  个语义 —— 下一条消息生效），所以本地立即回显、失败则回退到服务端的答案。 */
-  const setApprovalMode = useCallback(async (mode: SandboxApprovalMode) => {
-    const previous = approvalMode
-    setApprovalModeState(mode)
-    const res = await request({ type: 'panel/set-approval', mode })
-    if (!res.ok) {
-      setApprovalModeState(previous)
-      setError(res.error ?? '设置授权方式失败')
-    }
-  }, [approvalMode])
+  const setApprovalMode = useCallback(
+    async (mode: SandboxApprovalMode) => {
+      const previous = approvalMode
+      setApprovalModeState(mode)
+      const res = await request({ type: 'panel/set-approval', mode })
+      if (!res.ok) {
+        setApprovalModeState(previous)
+        setError(res.error ?? '设置授权方式失败')
+      }
+    },
+    [approvalMode],
+  )
 
   /** 模型下拉：把本会话的会话固定到所选模型（conversations.profile_id），
    *  本地先回显、失败回退。服务端返回写后的权威状态（按会话解析的
@@ -268,11 +277,24 @@ export function usePanel(): PanelApi {
     })
   }, [])
 
+  /** 转到桌面端（PLAN-extension-handoff）：成功后面板进「已转出」空态（快照由
+   *  后续 attach 送达，这里先乐观置位）；失败原样报错，绑定不动。 */
+  const handoff = useCallback(async (page: { url: string; title?: string }): Promise<boolean> => {
+    const res = await request({ type: 'panel/handoff', page })
+    if (!res.ok) {
+      setError(res.error ?? '转到桌面端失败')
+      return false
+    }
+    setHandedOff(true)
+    return true
+  }, [])
+
   return {
     sessionId,
     connection,
     open,
     sessions,
+    handedOff,
     session,
     approvalMode,
     model,
@@ -291,5 +313,6 @@ export function usePanel(): PanelApi {
     respondToApproval,
     answerQuestion,
     respondIteration,
+    handoff,
   }
 }

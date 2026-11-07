@@ -43,7 +43,9 @@ describe('extension browser floor (360 = Chromium 108)', () => {
 
   it('permissions stay lean — 360 support adds no capability surface', () => {
     // 360 支持不新增权限：红线是不许出现 nativeMessaging 之类的扩权兜底。
-    expect(manifest.permissions).toEqual(['storage', 'tabs', 'alarms', 'debugger'])
+    // cookies 是 PLAN-extension-handoff 的授权能力（host_permissions 已有
+    // <all_urls>，Chromium 108 下 chrome.cookies 全部可用）——白名单最后一位。
+    expect(manifest.permissions).toEqual(['storage', 'tabs', 'alarms', 'debugger', 'cookies'])
   })
 
   it('esbuild target matches the declared floor (chrome108)', () => {

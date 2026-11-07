@@ -52,13 +52,22 @@ import {
   releaseDeadScopeConversations,
   saveConversation,
   updateConversationTitle,
+  updateConversationOrigin,
 } from '../storage/conversation.db'
 import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
 import { installHostedPersistence, type HostedPersistenceDeps } from './hosted-persistence'
+import { PANE_SESSION_PARTITION } from '../../shared/browser/pane'
+import { handoffCookieDetails, sanitizeHandoffCookies } from './handoff-cookies'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
 import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
 const SERVICE_VERSION = `0.4.0`
+
+/** session.handoff 的回合边界守卫（PLAN-extension-handoff）：活跃态拒绝移交。
+ *  与 mirror 的 isActiveStatus 同一名单——那边吃 AgentStatus 联合、这边只有
+ *  协议层的 StatusSnapshot（status: string），点名比对比联合收窄更直白。 */
+const HANDOFF_ACTIVE_STATUSES = new Set(['streaming', 'executing', 'retrying', 'awaiting_approval', 'awaiting_user_input', 'awaiting_extension'])
+
 /** How far past the requested port the EADDRINUSE scan walks. The extension's
  *  discovery scans the identical range (8765..8779). */
 const PORT_SCAN_ATTEMPTS = 15
@@ -111,6 +120,11 @@ export interface AgentServiceConversations {
    *  folder before the row); the delete handler awaits it when present. */
   remove(id: string): void | Promise<void>
   rename(id: string, title: string): void
+  /** session.handoff（PLAN-extension-handoff）：origin 重戳为 'local'——写
+   *  所有权移交桌面渲染端（hosted-persistence 的 isHostedClientId 门随之停写），
+   *  桌面列表/搜索立即可见。Optional so lightweight test stores need not
+   *  implement it. */
+  stampOrigin?(id: string, origin: string): void
 }
 
 const storageConversations: AgentServiceConversations = {
@@ -125,6 +139,7 @@ const storageConversations: AgentServiceConversations = {
   persist: (conversation) => saveConversation(conversation),
   remove: (id) => deleteConversationWithWorkspace(id),
   rename: (id, title) => updateConversationTitle(id, title),
+  stampOrigin: (id, origin) => updateConversationOrigin(id, origin),
 }
 
 export interface AgentServiceHandle {
@@ -205,7 +220,16 @@ function isAllowedOrigin(origin: string | undefined): boolean {
 }
 
 export async function startAgentService(
-  opts: { port?: number; token?: string; sessions?: AgentServiceSessions; store?: AgentServiceConversations } = {},
+  opts: {
+    port?: number
+    token?: string
+    sessions?: AgentServiceSessions
+    store?: AgentServiceConversations
+    /** session.handoff 成功后的桌面广播（PLAN-extension-handoff）：窗口保障与
+     *  webContents.send 都在注入方（electron 不进本模块——vitest 的 electron
+     *  stub 撑不起窗口面）。缺席 = 不广播（测试）。 */
+    broadcast?: (payload: { sessionId: string; title: string; url: string }) => void
+  } = {},
 ): Promise<AgentServiceHandle> {
   const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
   const { join } = await import('node:path')
@@ -631,6 +655,54 @@ export async function startAgentService(
               if (sessionLive) send(makeResult(msg.id, { ok: true }))
               else send(makeError(msg.id, ErrorCodes.sessionNotFound, `session not found: ${itSessionId}`))
             }
+            break
+          }
+          case Methods.sessionHandoff: {
+            // PLAN-extension-handoff：换客户端驱动同一个会话。引擎本就在主进程
+            // （扩展只是 ws 远程客户端），移交 = ① 校验回合边界 ② cookie 落
+            // persist:pane ③ origin 重戳 'local'（写所有权移交桌面）④ 双向解绑
+            // ⑤ 广播 CONVERSATION_HANDOFF。单向：v1 不做桌面转回扩展。
+            const sessionId = String(params.sessionId ?? '')
+            const page = sanitizePageContext(params.page)
+            const cookies = sanitizeHandoffCookies(params.cookies)
+            void (async () => {
+              if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: ErrorCodes.invalidParams })
+              const origin = store.origin(sessionId)
+              if (!origin) throw Object.assign(new Error('会话不存在'), { code: ErrorCodes.sessionNotFound })
+              if (origin === 'local') throw Object.assign(new Error('该会话已在桌面端'), { code: ErrorCodes.invalidParams })
+              if (!isHostedClientId(origin)) throw Object.assign(new Error('不是扩展端的会话'), { code: ErrorCodes.forbidden })
+              // 回合边界守卫：活跃态（流式中 / 待审批 / 待回答 / 排队）一律拒绝——
+              // 审批卡孤儿化比等一拍更贵。引擎已死（snapshot null）反而无事可守，
+              // 放行：转过去等于续聊一条静默会话。
+              const snap = await sessions.snapshot(sessionId).catch(() => null)
+              if (snap?.status && HANDOFF_ACTIVE_STATUSES.has(snap.status.status)) {
+                throw Object.assign(new Error('当前回合仍在进行，请等它结束或先停止再转出'), { code: ErrorCodes.invalidParams })
+              }
+              // ② Cookie 写入持久分区（persist:pane，pane.ts 的常量是唯一真源）。
+              // electron 动态导入：本模块不顶层依赖 electron（vitest stub 撑不起
+              // session API）；cookie 采集失败在扩展侧本就可选，这里的失败也如实
+              // 报错——静默丢登录态比报错更难排查。
+              if (cookies.length > 0 && page?.url) {
+                const { session } = await import('electron')
+                const pane = session.fromPartition(PANE_SESSION_PARTITION)
+                for (const cookie of cookies) {
+                  await pane.cookies.set(handoffCookieDetails(page.url, cookie))
+                }
+              }
+              // ③ origin 重戳：桌面列表/搜索立即可见（hostedOriginExclusion 不再
+              //   命中），hosted-persistence 的 isHostedClientId 门自动停写——写
+              //   所有权干净移交桌面渲染端自己的 10s 保存管线，无双写窗口。
+              store.stampOrigin?.(sessionId, 'local')
+              // ④ 双向解绑：事件停止推给扩展 + registry 释放反向通道。
+              conn.sessions.delete(sessionId)
+              agentClientRegistry.unbindSession(sessionId)
+              // ⑤ 广播（窗口保障在注入方）。
+              opts.broadcast?.({ sessionId, title: store.title(sessionId) ?? page?.title ?? '', url: page?.url ?? '' })
+              send(makeResult(msg.id ?? null, { ok: true }))
+            })().catch((err) => {
+              const code = (err as { code?: number }).code
+              send(makeError(msg.id ?? null, typeof code === 'number' ? code : ErrorCodes.internal, errorMessage(err)))
+            })
             break
           }
           case Methods.ping: {

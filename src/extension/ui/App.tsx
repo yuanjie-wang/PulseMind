@@ -71,6 +71,9 @@ export function App(): React.JSX.Element {
    *  （styles.css 的 .pm-panel-wide）。只活在本次挂载里 —— 收起/展开是 worker
    *  按 tab 记的（背景/state.ts），尺寸不是。 */
   const [wide, setWide] = useState(false)
+  /** 转到桌面端的两步确认（PLAN-extension-handoff）：一次点击变确认态，确认
+   *  才发 panel/handoff——转出后此页签的会话绑定即解除，误触不可逆。 */
+  const [confirmHandoff, setConfirmHandoff] = useState(false)
   /** 尺寸切换的补间只活在切换瞬间（styles.css .pm-panel-animating 的注释）：
    *  同一次提交里挂上、transitionend 摘掉、兜底定时器保底。 */
   const [animating, setAnimating] = useState(false)
@@ -125,10 +128,7 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div
-      className={`pm-panel ${wide ? 'pm-panel-wide' : ''} ${animating ? 'pm-panel-animating' : ''}`}
-      onTransitionEnd={clearAnimating}
-    >
+    <div className={`pm-panel ${wide ? 'pm-panel-wide' : ''} ${animating ? 'pm-panel-animating' : ''}`} onTransitionEnd={clearAnimating}>
       <header className="pm-header">
         <span className="pm-brand">PulseMind</span>
         <ConnectionChip state={connection} />
@@ -140,9 +140,41 @@ export function App(): React.JSX.Element {
           onResume={(id) => void panel.resumeSession(id)}
           onDelete={(id) => void panel.deleteSession(id)}
         />
-        <button className="pm-icon-btn" title="新会话" onClick={() => void panel.newSession()}>
+        <button
+          className="pm-icon-btn"
+          title="新会话"
+          onClick={() => {
+            setConfirmHandoff(false)
+            void panel.newSession()
+          }}
+        >
           <Icon name="plus" />
         </button>
+        {/* 转到桌面端继续（PLAN-extension-handoff）：只在已绑定会话时出现——没有
+            会话的页签无可移交。两步确认：第一次点变确认态，再点才发。 */}
+        {panel.sessionId && !confirmHandoff && (
+          <button className="pm-icon-btn" title="转到桌面端继续" onClick={() => setConfirmHandoff(true)}>
+            <Icon name="expand" />
+          </button>
+        )}
+        {panel.sessionId && confirmHandoff && (
+          <button
+            className="pm-icon-btn"
+            title="确认转到桌面端"
+            onClick={(e) => {
+              if (!trustedOnly(e)) return
+              setConfirmHandoff(false)
+              void panel.handoff({ url: location.href, title: document.title })
+            }}
+          >
+            <Icon name="check" />
+          </button>
+        )}
+        {confirmHandoff && (
+          <button className="pm-icon-btn" title="取消" onClick={() => setConfirmHandoff(false)}>
+            <Icon name="close" />
+          </button>
+        )}
         <button className="pm-icon-btn" title={wide ? '还原' : '放大'} onClick={toggleWide}>
           <Icon name={wide ? 'compress' : 'expand'} />
         </button>
@@ -151,14 +183,24 @@ export function App(): React.JSX.Element {
         </button>
       </header>
 
+      {/* 「已转出」空态横幅（PLAN-extension-handoff）：会话已在桌面端继续，此
+          页签解绑；「开始新对话」走 newSession（worker 会清掉 handedOff 标记）。
+          页签导航后 worker 清标记，横幅自然消失。 */}
+      {panel.handedOff && (
+        <div className="pm-banner">
+          <span className="pm-banner-title">该会话已在桌面端 PulseMind 继续聊</span>
+          <button className="pm-link" onClick={() => void panel.newSession()}>
+            开始新对话
+          </button>
+        </div>
+      )}
+
       {!connection.connected ? (
         <div className="pm-banner">
           {/* 话术就这一句（user 2026-10-09 裁定，诊断原因不再上横幅——options 页
               与 [PulseMind] 日志仍是诊断面）；连接中不催开桌面端——那正是它
               正在做的事。 */}
-            <span className="pm-banner-title">
-              {connection.state === 'connecting' ? '正在连接桌面端 PulseMind…' : '请先打开 PulseMind 桌面端，并稍等片刻'}
-            </span>
+          <span className="pm-banner-title">{connection.state === 'connecting' ? '正在连接桌面端 PulseMind…' : '请先打开 PulseMind 桌面端，并稍等片刻'}</span>
           <button className="pm-link" onClick={openOptions}>
             打开设置
           </button>
@@ -193,10 +235,20 @@ export function App(): React.JSX.Element {
           <div className="pm-iterate-title">循环次数已达上限</div>
           <div className="pm-iterate-desc">任务仍在进行中，是否继续执行？继续将按当前上限额外增加一轮循环额度。</div>
           <div className="pm-iterate-actions">
-            <button className="pm-iterate-btn pm-iterate-btn-primary" onClick={(e) => { if (trustedOnly(e)) panel.respondIteration(true) }}>
+            <button
+              className="pm-iterate-btn pm-iterate-btn-primary"
+              onClick={(e) => {
+                if (trustedOnly(e)) panel.respondIteration(true)
+              }}
+            >
               继续执行
             </button>
-            <button className="pm-iterate-btn pm-iterate-btn-danger" onClick={(e) => { if (trustedOnly(e)) panel.respondIteration(false) }}>
+            <button
+              className="pm-iterate-btn pm-iterate-btn-danger"
+              onClick={(e) => {
+                if (trustedOnly(e)) panel.respondIteration(false)
+              }}
+            >
               停止
             </button>
           </div>

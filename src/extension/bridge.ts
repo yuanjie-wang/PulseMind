@@ -56,6 +56,9 @@ export interface PanelSnapshot {
   fileChanges?: unknown
   lastCompaction?: unknown
   sessions: SessionSummary[]
+  /** 「已转出」空态（PLAN-extension-handoff）：本页签的会话已移交桌面端，面板
+   *  显示横幅 + 「开始新对话」。页签导航后由 worker 清掉（state.ts），横幅自然消失。 */
+  handedOff?: boolean
   /** The bound session's tool-approval level (授权), straight from the desktop. */
   approvalMode?: SandboxApprovalMode
   /** The selectable models + the active one (模型). `activeId` is the bound
@@ -89,6 +92,9 @@ export type PanelRequest =
    *  engine's loop budget, stop ends the run. Session-scoped — no callId, the
    *  bridge injects the tab's session id. */
   | { type: 'panel/iteration-response'; approved: boolean }
+  /** 转到桌面端继续（PLAN-extension-handoff）：本页签的会话移交桌面端（cookie
+   *  一并搬运），成功后面板解绑进「已转出」空态。 */
+  | { type: 'panel/handoff'; page: { url: string; title?: string } }
 
 /** service worker → content script. */
 export type PanelNotification =
@@ -158,6 +164,7 @@ export const PANEL_REQUEST_TYPES: ReadonlySet<string> = new Set<PanelRequest['ty
   'panel/approval-response',
   'panel/answer',
   'panel/iteration-response',
+  'panel/handoff',
 ])
 
 export function isPanelRequest(msg: unknown): msg is PanelRequest {

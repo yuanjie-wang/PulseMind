@@ -379,6 +379,31 @@ export type AgentEventData =
  *  the declaration and the bytes can no longer drift. */
 export type PlanSnapshot = Plan
 
+// ── session.handoff（PLAN-extension-handoff）─────────────────────────
+
+/** One cookie as a compact wire tuple (PLAN-extension-handoff 第五节):
+ *  [name, value, domain, path, secure, httpOnly, expirationDate?, sameSite?].
+ *  An EMPTY domain means host-only (chrome.cookies 的 hostOnly 语义——设了
+ *  domain 会把主机 cookie 改写成域 cookie，登录态的边界就变了); expirationDate
+ *  absent = session cookie. Partitioned (CHIPS) cookies are deliberately NOT
+ *  carried — chrome.cookies 的 partitionKey 要 Chromium 119+，我们的地板是 108，
+ *  如实降级。 */
+export type HandoffCookieTuple = [string, string, string, string, boolean, boolean, number?, string?]
+
+export interface SessionHandoffParams {
+  sessionId: string
+  /** The page to reopen on the desktop's built-in browser. */
+  page: { url: string; title?: string }
+  /** All cookies the page's URL would carry (chrome.cookies.getAll({url}),
+   *  httpOnly included). Optional: collection can fail (permissions) — the
+   *  handoff itself must not. */
+  cookies?: HandoffCookieTuple[]
+}
+
+export interface SessionHandoffResult {
+  ok: boolean
+}
+
 // ── hosted tools (service → client reverse RPC) ─────────────────────
 
 export interface ToolCallParams {

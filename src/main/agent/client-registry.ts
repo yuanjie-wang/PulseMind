@@ -57,6 +57,13 @@ class ClientRegistry {
     }
   }
 
+  /** One session released by name (PLAN-extension-handoff): session.handoff
+   *  移交所有权时按 sessionId 解绑——unbindTransport 只认 transport 身份，
+   *  而移交时连接还活着（面板随后自己 clearTab）。 */
+  unbindSession(sessionId: string): void {
+    this.bySession.delete(sessionId)
+  }
+
   get(sessionId: string): ClientTransport | undefined {
     return this.bySession.get(sessionId)
   }

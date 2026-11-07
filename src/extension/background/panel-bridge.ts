@@ -18,6 +18,7 @@ import type {
   SessionCreateResult,
   SessionListResult,
 } from '../../shared/agent-protocol'
+import type { HandoffCookieTuple } from '../../shared/agent-protocol'
 import type { WsClient } from './ws-client'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { ConnectionState, PanelRequest, PanelResponse, PanelSnapshot, SessionSummary } from '../bridge'
@@ -31,11 +32,13 @@ import {
   getSessionForTab,
   getTabApprovalMode,
   getTabForSession,
+  getTabHandedOff,
   getTabModelId,
   getTabScope,
   isPanelOpen,
   setPanelOpen,
   setTabApprovalMode,
+  setTabHandedOff,
   setTabModelId,
 } from './state'
 
@@ -106,6 +109,8 @@ export class PanelBridge {
           if (!client?.connected) return { ok: false, error: '未连接桌面端' }
           const created = await this.createSession(client, tabId, null, undefined)
           await clearTab(tabId)
+          // 新会话即走出「已转出」空态（PLAN-extension-handoff）。
+          await setTabHandedOff(tabId, false)
           await bindTabSession(tabId, created.sessionId)
           this.mirrors.set(created.sessionId, freshSessionState())
           // Pre-session 授权/模型 choices ride onto the fresh conversation too —
@@ -128,6 +133,7 @@ export class PanelBridge {
           // nothing.
           if (!msg.sessionId) return { ok: false, error: '缺少会话 id' }
           await clearTab(tabId)
+          await setTabHandedOff(tabId, false)
           await bindTabSession(tabId, msg.sessionId)
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
@@ -215,6 +221,41 @@ export class PanelBridge {
           return { ok: true }
         }
 
+        case 'panel/handoff': {
+          // PLAN-extension-handoff：把本页签的会话移交桌面端。cookie 采集尽力
+          // 而为（getAll 失败不该挡移交本身）；成功 = 服务端已重戳 origin、解绑、
+          // 广播桌面——本地解绑 + 进「已转出」空态。守卫错误（回合进行中等）
+          // 原样透出，面板 toast。
+          const client = this.requireClient()
+          const sessionId = await getSessionForTab(tabId)
+          if (!sessionId) return { ok: false, error: '本页签还没有会话' }
+          let cookies: HandoffCookieTuple[] | undefined
+          try {
+            const all = await chrome.cookies.getAll({ url: msg.page.url })
+            cookies = all.map((c) => [
+              c.name,
+              c.value,
+              c.hostOnly ? '' : c.domain,
+              c.path,
+              c.secure,
+              c.httpOnly,
+              ...(typeof c.expirationDate === 'number' ? [c.expirationDate] : []),
+              ...(c.sameSite ? [c.sameSite] : []),
+            ]) as HandoffCookieTuple[]
+          } catch {
+            cookies = undefined // permissions/Chrome 拒绝 → 如实降级为无 cookie 移交
+          }
+          await client.request(Methods.sessionHandoff, { sessionId, page: msg.page, ...(cookies && cookies.length > 0 ? { cookies } : {}) })
+          this.mirrors.delete(sessionId)
+          this.approvalModes.delete(sessionId)
+          await clearTab(tabId)
+          // 转出后必须连 tab 态一起清（plan 边界 5）：面板重新 attach 时 worker
+          // 对已解绑 session 走 ensureSession 会新建——handedOff 标记保证面板
+          // attach 到的是「已转出」空态而不是复活旧绑定。
+          await setTabHandedOff(tabId, true)
+          return { ok: true }
+        }
+
         default:
           return { ok: false, error: `unknown request: ${(msg as { type: string }).type}` }
       }
@@ -257,12 +298,7 @@ export class PanelBridge {
     return client
   }
 
-  private async createSession(
-    client: WsClient,
-    tabId: number,
-    sessionId: string | null,
-    pageContext: PageContext | undefined,
-  ): Promise<SessionCreateResult> {
+  private async createSession(client: WsClient, tabId: number, sessionId: string | null, pageContext: PageContext | undefined): Promise<SessionCreateResult> {
     // The service answers with the id it actually used: a stale id falls back to
     // a fresh session, so the caller must always store the *returned* id.
     const created = (await client.request(Methods.sessionCreate, {
@@ -384,9 +420,9 @@ export class PanelBridge {
         streamingBlocks: [],
         status: 'idle',
         sessions,
-        model: pendingModelId && inventory.model
-          ? { ...inventory.model, activeId: pendingModelId }
-          : inventory.model,
+        // 「已转出」空态（PLAN-extension-handoff）：解绑后的面板由这条快照送达横幅。
+        handedOff: await getTabHandedOff(tabId),
+        model: pendingModelId && inventory.model ? { ...inventory.model, activeId: pendingModelId } : inventory.model,
         approvalMode: (await getTabApprovalMode(tabId)) ?? undefined,
       }
     }
@@ -430,9 +466,10 @@ export class PanelBridge {
     // The picker renders the session's OWN model (its conversation's choice,
     // under the create-time pin); the global default is only the fallback for
     // a service that does not know the session yet.
-    const model = connection.connected && sessionId
-      ? ((await client.request(Methods.modelList, { sessionId }).catch(() => undefined)) as ModelState | undefined) ?? inventory.model
-      : inventory.model
+    const model =
+      connection.connected && sessionId
+        ? (((await client.request(Methods.modelList, { sessionId }).catch(() => undefined)) as ModelState | undefined) ?? inventory.model)
+        : inventory.model
     return {
       sessionId,
       connection,
@@ -463,10 +500,7 @@ export class PanelBridge {
       // the cache covers the session the list no longer carries — one without
       // messages yet (see `approvalModes`) — before the tab's pre-session carry.
       approvalMode:
-        sessions.find((s) => s.sessionId === sessionId)?.approvalMode ??
-        this.approvalModes.get(sessionId) ??
-        (await getTabApprovalMode(tabId)) ??
-        undefined,
+        sessions.find((s) => s.sessionId === sessionId)?.approvalMode ?? this.approvalModes.get(sessionId) ?? (await getTabApprovalMode(tabId)) ?? undefined,
     }
   }
 

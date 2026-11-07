@@ -213,6 +213,7 @@ function AppContent(): React.ReactElement {
     setActiveConversationKey,
     handleRequest,
     createBrowserTask,
+    adoptHandoffTask,
     sendStagedNow,
     abort,
     steer,
@@ -623,6 +624,20 @@ function AppContent(): React.ReactElement {
     pendingBrowserUrl.current = null
     window.electronAPI.browserPaneAction({ op: 'navigate', url: pending.url }).catch((err: unknown) => reportSilentFailure('browser-task-tab', err))
   }, [browserPaneConversationId])
+  // ── 扩展会话移交（PLAN-extension-handoff）──
+  // 主窗是唯一消费者（次级窗口用 PopoutApp，不注册本监听）：收养 + 两半激活
+  // + 主视图切 browser 档都已在 adoptHandoffTask，这里只把移交 URL 挂进上面
+  // 同一条 pane 等待管线——pane 快照报到该会话名下即 navigate。cookie 已由
+  // 主进程写进 persist:pane，登录态随页面直达。
+  useEffect(() => {
+    const unsub = window.electronAPI.onConversationHandoff(({ sessionId, title, url }) => {
+      const target = url || title
+      if (!sessionId || !target) return
+      adoptHandoffTask(sessionId, title || url)
+      pendingBrowserUrl.current = { convId: sessionId, url: target }
+    })
+    return unsub
+  }, [adoptHandoffTask])
   /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
    *  a node the model never dispatched does not advertise a click it drops. */
   const openableNodeIds = useMemo(() => {

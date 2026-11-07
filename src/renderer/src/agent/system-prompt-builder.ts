@@ -49,6 +49,9 @@ export interface BuildSystemPromptParams {
    *  build time — one-shot, state block only (never persisted, never
    *  rendered), so the cache contract holds. Absent → no section. */
   backgroundNotices?: Array<{ pid: number; code: number | null }>
+  /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来——state block 的
+   *  `## Handoff` 告知行（提示不是工具下架，G20 禁 availability 门控）。 */
+  handoffNotice?: boolean
 }
 
 /** Sentinel standing in for the Context Window gauge while the compaction
@@ -89,7 +92,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge, contextUsage } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge, contextUsage, backgroundNotices, handoffNotice } = params
 
   if (spawnSystemPrompt) {
     const base = spawnSystemPromptAppendix
@@ -124,6 +127,12 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     // （buildStateBlock 的 ## Context Window 节）都在，唯独这一跳漏写——
     // 功能自落库即死，模型对窗口占用全盲。
     contextUsage,
+    // backgroundNotices / handoffNotice 的转发（PLAN-extension-handoff 落地时
+    // 顺手修正）：params 里有、engine 也传了，但这里从未解构转发——后台任务
+    // 的 ## Background Tasks 节在 buildSystemPrompt 这条生产路径上自落库即死，
+    // 只有直接调 buildStateBlock 的测试见过它。
+    backgroundNotices,
+    handoffNotice,
   })
   return { systemPrompt, stateBlock }
 }
@@ -242,8 +251,12 @@ async function buildStateBlock(params: {
   continuationNudge?: boolean
   contextUsage?: { tokens: number | null; window: number }
   backgroundNotices?: Array<{ pid: number; code: number | null }>
+  /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来。提示不是工具下架
+   *  （G20 缓存契约禁 availability 门控）——page_* 的 schema 照常在，模型调了
+   *  会得到「没有连接的浏览器客户端」的裸错误；这行让它先知道。 */
+  handoffNotice?: boolean
 }): Promise<string> {
-  const { opts, plan, summon, continuationNudge, contextUsage, backgroundNotices } = params
+  const { opts, plan, summon, continuationNudge, contextUsage, backgroundNotices, handoffNotice } = params
   const sections: string[] = []
 
   // Git status — OFF unless the user turned the injection on in settings, and
@@ -345,6 +358,15 @@ async function buildStateBlock(params: {
   // numbers; the clock keeps its last position either way.
   if (backgroundNotices && backgroundNotices.length > 0) {
     sections.push(buildBackgroundTasksSection(backgroundNotices))
+  }
+
+  // 会话移交告知（PLAN-extension-handoff M3）：持久 flag（引擎生命周期内每回合
+  // 都带），不是一次性 notice——page_* 在桌面端结构性不可用，晚一回合告知就晚
+  // 一回合白调。
+  if (handoffNotice) {
+    sections.push(
+      '## Handoff\n- 本会话已从浏览器扩展转入桌面端：page_* 系列工具（page_snapshot/page_click 等）不再可用。如需页面信息，请让用户粘贴内容或截图。'
+    )
   }
 
   // Context Window gauge (user 2026-10-10): the model owns the context_compact

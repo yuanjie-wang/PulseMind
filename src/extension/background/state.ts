@@ -14,6 +14,7 @@ const KEY_OPEN_PANELS = 'openPanels'
 const KEY_APPROVAL_MODES = 'approvalModes'
 const KEY_MODEL_IDS = 'modelIds'
 const KEY_TAB_SCOPES = 'tabScopes'
+const KEY_HANDED_OFF = 'handedOffTabs'
 
 type IdMap = Record<string, string>
 type TabMap = Record<string, number>
@@ -48,10 +49,7 @@ export async function getTabForSession(sessionId: string): Promise<number | null
  * event is delivered to the new one (its asks would vanish into a transcript
  * it never receives). Hit for real by resuming one session from two tabs. */
 export async function bindTabSession(tabId: number, sessionId: string): Promise<void> {
-  const [tabSessions, sessionTabs] = await Promise.all([
-    read<IdMap>(KEY_TAB_SESSIONS, {}),
-    read<TabMap>(KEY_SESSION_TABS, {}),
-  ])
+  const [tabSessions, sessionTabs] = await Promise.all([read<IdMap>(KEY_TAB_SESSIONS, {}), read<TabMap>(KEY_SESSION_TABS, {})])
   for (const [sid, tid] of Object.entries(sessionTabs)) {
     if (tid === tabId) delete sessionTabs[sid]
   }
@@ -60,41 +58,26 @@ export async function bindTabSession(tabId: number, sessionId: string): Promise<
   }
   tabSessions[String(tabId)] = sessionId
   sessionTabs[sessionId] = tabId
-  await Promise.all([
-    write(KEY_TAB_SESSIONS, tabSessions),
-    write(KEY_SESSION_TABS, sessionTabs),
-  ])
+  await Promise.all([write(KEY_TAB_SESSIONS, tabSessions), write(KEY_SESSION_TABS, sessionTabs)])
 }
 
 /** Drop a tab's binding entirely (tab closed). */
 export async function clearTab(tabId: number): Promise<void> {
-  const [tabSessions, sessionTabs] = await Promise.all([
-    read<IdMap>(KEY_TAB_SESSIONS, {}),
-    read<TabMap>(KEY_SESSION_TABS, {}),
-  ])
+  const [tabSessions, sessionTabs] = await Promise.all([read<IdMap>(KEY_TAB_SESSIONS, {}), read<TabMap>(KEY_SESSION_TABS, {})])
   const sessionId = tabSessions[String(tabId)]
   delete tabSessions[String(tabId)]
   if (sessionId) delete sessionTabs[sessionId]
-  await Promise.all([
-    write(KEY_TAB_SESSIONS, tabSessions),
-    write(KEY_SESSION_TABS, sessionTabs),
-  ])
+  await Promise.all([write(KEY_TAB_SESSIONS, tabSessions), write(KEY_SESSION_TABS, sessionTabs)])
 }
 
 /** Forget a session everywhere (it was deleted; no tab should point at it). */
 export async function clearSession(sessionId: string): Promise<void> {
-  const [tabSessions, sessionTabs] = await Promise.all([
-    read<IdMap>(KEY_TAB_SESSIONS, {}),
-    read<TabMap>(KEY_SESSION_TABS, {}),
-  ])
+  const [tabSessions, sessionTabs] = await Promise.all([read<IdMap>(KEY_TAB_SESSIONS, {}), read<TabMap>(KEY_SESSION_TABS, {})])
   delete sessionTabs[sessionId]
   for (const [tid, sid] of Object.entries(tabSessions)) {
     if (sid === sessionId) delete tabSessions[tid]
   }
-  await Promise.all([
-    write(KEY_TAB_SESSIONS, tabSessions),
-    write(KEY_SESSION_TABS, sessionTabs),
-  ])
+  await Promise.all([write(KEY_TAB_SESSIONS, tabSessions), write(KEY_SESSION_TABS, sessionTabs)])
 }
 
 /** The tab's 历史会话 scope (2026-11-03): one Chrome tab owns one scope, so its
@@ -202,4 +185,20 @@ export async function clearTabModelId(tabId: number): Promise<void> {
   const map = await read<ModeMap>(KEY_MODEL_IDS, {})
   delete map[String(tabId)]
   await write(KEY_MODEL_IDS, map)
+}
+
+// ── 「已转出」空态（PLAN-extension-handoff）──────────────────────────
+// 面板解绑后的友好横幅状态。与绑定同 store（chrome.storage.session）：worker
+// 重启后 attach 到的仍是「已转出」而不是复活旧绑定（plan 第四节边界 5）。
+
+export async function getTabHandedOff(tabId: number): Promise<boolean> {
+  const map = await read<FlagMap>(KEY_HANDED_OFF, {})
+  return map[String(tabId)] === true
+}
+
+export async function setTabHandedOff(tabId: number, value: boolean): Promise<void> {
+  const map = await read<FlagMap>(KEY_HANDED_OFF, {})
+  if (value) map[String(tabId)] = true
+  else delete map[String(tabId)]
+  await write(KEY_HANDED_OFF, map)
 }
