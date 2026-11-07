@@ -1,4 +1,5 @@
 import { OneShotAgent } from './OneShotAgent'
+import type { GreetingStyle } from './greeting-styles'
 
 function getTimeSlot(): string {
   const hour = new Date().getHours()
@@ -19,13 +20,13 @@ function getSeason(): string {
   return '冬天'
 }
 
-export class GreetingAgent extends OneShotAgent<void, string | null> {
+export class GreetingAgent extends OneShotAgent<GreetingStyle, string | null> {
   readonly name = 'GreetingAgent'
 
-  protected buildSystemPrompt(): string {
+  protected buildSystemPrompt(style: GreetingStyle): string {
     return `执行规范（最高优先级，必须遵守）
 1. 输出内容仅限最终问候语，禁止附带任何思考、推导、解释文字；
-2. 问候要求：提供情绪价值，可随机风格：亲切、关怀、俏皮（积极15个字以内）
+2. 问候要求：提供情绪价值，风格为「${style.name}：${style.instruction}」（积极，15个字以内）
 3. 句式：陈述句 / 感叹句；
 4. 环境信息： ${getSeason()} ${getTimeSlot()}
 5. 禁令：无消极抱怨。
