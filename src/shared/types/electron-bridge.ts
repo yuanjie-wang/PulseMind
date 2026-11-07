@@ -382,6 +382,10 @@ export interface ElectronAPI {
   pipelineStop: (runId: string) => Promise<boolean>
   pipelineRuns: (runId?: string, limit?: number) => Promise<{ runs?: PipelineRun[]; stages?: PipelineStageRun[]; run?: PipelineRun }>
   pipelineAssist: (params: { userNeed: string; currentJson: string }) => Promise<{ ok: boolean; workflow?: WorkflowDefinition; errors?: string[]; warnings?: string[] }>
+  // ── PLAN-share-import-export：分享（消毒 payload 只在主进程，提交只回 token）──
+  shareExport: (items: Array<{ kind: 'routine' | 'workflow'; id: string }>) => Promise<{ canceled: boolean; path?: string; count: number }>
+  shareImportPreview: () => Promise<{ canceled: boolean; error?: string; importToken?: string; items?: Array<{ index: number; kind: 'routine' | 'workflow'; name: string; summary: string; warnings: string[]; blocked: boolean; nameConflict: boolean; conflictId?: string }> }>
+  shareImportCommit: (params: { importToken: string; resolutions: Array<{ index: number; mode: 'create' | 'overwrite' | 'skip'; targetId?: string }> }) => Promise<{ imported: number; overwritten: number; skipped: number; failed: number; errors: string[] }>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
   routineCreate: (input: Partial<Routine>) => Promise<Routine>

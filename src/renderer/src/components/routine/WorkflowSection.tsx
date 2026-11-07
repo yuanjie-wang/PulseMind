@@ -7,8 +7,10 @@
 
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { App as AntdApp, Button, Input, Modal, Select, Tag, Tooltip } from 'antd'
-import { ApiOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons'
+import { ApiOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, ExportOutlined, ImportOutlined, PlusOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { ShareImportModal } from './ShareImportModal'
+import type { SharePreviewItem } from '../../../../shared/share/types'
 import type { PipelineRun, PipelineStageRun, WorkflowDefinition } from '../../../../shared/workflow/types'
 
 const CodeMirrorEditor = React.lazy(() => import('../preview/CodeMirrorEditor'))
@@ -211,6 +213,7 @@ export function WorkflowSection(): React.ReactElement {
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{t('workflow.title')}</span>
         <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t('workflow.titleHint')}</span>
         <span style={{ flex: 1 }} />
+        <Button icon={<ImportOutlined />} onClick={() => void openImport()}>{t('share.import')}</Button>
         <Button icon={<RobotOutlined />} disabled={assistBusy} onClick={() => void runAssist()} loading={assistBusy}>
           {t('workflow.assist')}
         </Button>
@@ -386,6 +389,9 @@ export function WorkflowSection(): React.ReactElement {
           <div style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t('workflow.runHint')}</div>
         </div>
       </Modal>
+
+      {/* 分享导入预览（kind 无关：routine 与工作流共用） */}
+      <ShareImportModal open={importOpen} importToken={importToken} items={importItems} error={importError} onClose={() => setImportOpen(false)} />
     </div>
   )
 }

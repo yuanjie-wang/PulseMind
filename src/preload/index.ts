@@ -64,6 +64,11 @@ const electronAPI = {
   pipelineStop: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_STOP, runId),
   pipelineRuns: (runId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUNS, runId, limit),
   pipelineAssist: (params: { userNeed: string; currentJson: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_ASSIST, params),
+  // ── PLAN-share-import-export：分享 ──
+  shareExport: (items: Array<{ kind: 'routine' | 'workflow'; id: string }>) => ipcRenderer.invoke(IPC_CHANNELS.SHARE_EXPORT, items),
+  shareImportPreview: () => ipcRenderer.invoke(IPC_CHANNELS.SHARE_IMPORT_PREVIEW),
+  shareImportCommit: (params: { importToken: string; resolutions: Array<{ index: number; mode: 'create' | 'overwrite' | 'skip'; targetId?: string }> }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SHARE_IMPORT_COMMIT, params),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
   routineCreate: (input: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CREATE, input),

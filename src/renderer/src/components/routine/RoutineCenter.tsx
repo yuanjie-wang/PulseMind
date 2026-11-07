@@ -22,7 +22,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
-import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, ExportOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -430,6 +430,20 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                         )}
                         <Tooltip title="编辑">
                           <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
+                        </Tooltip>
+                        {/* 导出（PLAN-share-import-export）：主进程一键完成
+                            （对话框+消毒+写盘），渲染端只报结果。 */}
+                        <Tooltip title="导出">
+                          <Button
+                            type="text"
+                            icon={<ExportOutlined style={{ fontSize: 15 }} />}
+                            data-action="share-export"
+                            onClick={() => {
+                              void window.electronAPI.shareExport([{ kind: 'routine', id: routine.id }]).then((res) => {
+                                if (!res.canceled) notify.success(res.path ? `已导出到 ${res.path}` : '已导出')
+                              }).catch((err: unknown) => notify.error(err instanceof Error ? err.message : String(err)))
+                            }}
+                          />
                         </Tooltip>
                         <Tooltip title="删除">
                           <Button type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeRoutine(routine)} />

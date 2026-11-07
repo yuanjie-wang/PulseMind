@@ -367,6 +367,11 @@ export const IPC_CHANNELS = {
   PIPELINE_RUNS: 'pipeline:runs',
   PIPELINE_ASSIST: 'pipeline:assist',
 
+  // ── PLAN-share-import-export：日常任务/工作流的导入导出 ──
+  SHARE_EXPORT: 'share:export',
+  SHARE_IMPORT_PREVIEW: 'share:import-preview',
+  SHARE_IMPORT_COMMIT: 'share:import-commit',
+
   // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',
   TOOL_GET: 'tool:get',
