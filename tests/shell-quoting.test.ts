@@ -266,9 +266,12 @@ describe('find 的注入面（read 档 = 永不审批，参数即命令串）', 
       spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8' })
       expect(existsSync(marker)).toBe(false)
       // Non-vacuity: the pre-fix raw interpolation really did split commands.
-      const oldCmd = `find '${dir}' -maxdepth 5 ; ${NEEDLE} ${marker} -not -path '*/node_modules/*' 2>/dev/null | head -100`
-      // cwd: dir — touch 的多余操作数（-not/-path）会在进程 cwd 落成空文件，
-      // 不指临时目录就漏进仓库根，每次跑套件都 resurrect（2026-10-13 实测）。
+      // 旧形状：extra_args 被裸拼在 -maxdepth 与 -not 之间，`;` 因此分割出第二条命令。
+      // 注入串只带 marker、不带 find 的尾部参数：GNU touch 先 getopt、撞上 -not 直接报
+      // 非法选项且一个文件都不建（BSD touch 是边解析边建，先落盘再报错），带上它们会让
+      // 这条负控在 Linux 上假失败（2026-11-07 CI 实测）。去掉后两个平台都真正落盘。
+      const oldCmd = `find '${dir}' -maxdepth 5 ; ${NEEDLE} ${marker} 2>/dev/null | head -100`
+      // cwd: dir 仍留着 —— 万一以后再有操作数落盘，也只会在临时目录里。
       spawnSync('/bin/sh', ['-c', oldCmd], { encoding: 'utf-8', cwd: dir })
       expect(existsSync(marker)).toBe(true)
     } finally {
