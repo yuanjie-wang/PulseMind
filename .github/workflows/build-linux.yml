@@ -37,12 +37,19 @@ name: Build Linux deb
 
 on:
   workflow_dispatch:
+    inputs:
+      # 手动触发时把产物传进哪个 Release（如 v0.5.0）。留空则只上传 artifact。
+      release-tag:
+        description: '上传产物到该 Release（如 v0.5.0，留空则不上传）'
+        type: string
+        default: ''
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: read
+  # write：要把产物上传到 Release（gh release upload）。
+  contents: write
 
 concurrency:
   group: build-linux-${{ github.ref }}
@@ -229,3 +236,19 @@ jobs:
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 14
+
+      # 把产物挂进 GitHub Release。artifact 只保 14 天，Release 是永久的；且构建机
+      # 在 GitHub 内网，上传比「本地下载再上传」快几个数量级（本地实测 42KB/s）。
+      # 触发：push v* tag，或手动触发时填了 release-tag。Release 不存在则顺手建。
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release-tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$REPO" \
+                 --title "PulseMind ${TAG#v}" --notes "PulseMind ${TAG#v}"
+          gh release upload "$TAG" dist/*.deb --repo "$REPO" --clobber
+          echo "release assets: $(gh release view "$TAG" --repo "$REPO" --json assets --jq '[.assets[].name] | join(", ")')"
