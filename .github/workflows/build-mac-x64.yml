@@ -1,0 +1,295 @@
+# macOS/x64（Intel）dmg 打包（真 Intel runner）。
+#
+# 这份文件的存在理由就是本机那个死结：AGENTS.md「mac x64 dmg 不能在 arm64 宿主上
+# 直接产出」——宿主 node_modules 全是 arm64，交叉打 x64 包会得到 better-sqlite3
+# 错架构（Intel 上 dlopen 崩）、缺 @img/sharp-darwin-x64、chromium 是 arm64 CFT
+# 三处硬伤。GitHub 的 `macos-15-intel` 是**真 Intel 机器**，`npm ci` 装出来天然
+# 是 x64，那套重建配方一行都不需要。
+#
+# 标签事实（2026-11 查官方 runner 表）：`macos-13` 已从列表消失（退休），网上老
+# 教程那句 `runs-on: macos-13` 现在会直接卡在找不到 runner。Intel 只能写
+# `macos-13`→`macos-15-intel` / `macos-26-intel`；`macos-15`/`macos-26`/
+# `macos-latest` 都是 arm64 镜像。
+#
+# 签名：没有 Apple 证书时 app-builder-lib/out/macPackager.js:209-212 会直接跳过
+# 签名（findIdentity 落空 → reportError → return false），照样出 dmg。x64 上未
+# 签名只是 Gatekeeper 拦截（右键打开可绕过），比 arm64 宽松；但仍然做 ad-hoc
+# 签名，因为签名后的包在别的机器上不会报「已损坏，应移到废纸篓」，是更小的用户
+# 摩擦。流程同 arm64：--dir → codesign --sign - → --prepackaged 压 dmg。
+#
+# 与 arm64 那份是**两份独立文件**（不用 matrix）：单架构失败只重跑那一个，不必
+# 陪另一边烧 mac 计费分钟（10x 倍率）。
+
+name: Build macOS dmg (x64)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    # 临时：workflow_dispatch 只认**默认分支**上已注册的 workflow 文件。本文件目前
+    # 只在 feature_0.5.1，不加这条分支触发就一次也跑不起来。合进 main 之后删掉。
+    branches:
+      - feature_0.5.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mac-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: mac/x64 dmg
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      # 目标架构与 `file` 输出里该出现的 Mach-O 架构串。arm64 那份是 arm64。
+      ARCH: x64
+      EXPECT_MACHO: x86_64
+      # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 对齐 build-linux.yml / build-windows.yml 的 node 20。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-mac-${{ env.ARCH }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-mac-${{ env.ARCH }}-${{ hashFiles('package-lock.json') }}
+
+      # node_modules 必须来自干净安装：afterPack 的 verify-packed-node-modules
+      # 门禁要求纯安装树（AGENTS.md「打包两刀」），不要在 CI 里缓存它。
+      # postinstall 会跑 electron-builder install-app-deps，原生模块在这一步按
+      # Electron 33 的 ABI 重建成 darwin-x64。
+      - name: Install dependencies
+        run: npm ci
+
+      # 本机踩过的三处错架构，逐条固化成门禁。在真 Intel runner 上这三条应当
+      # 天然通过；它们真正的价值是「任何一次依赖变动把架构带歪，当场拦下」——
+      # 否则错误会一路走到用户机器上才以 dlopen 崩的形式暴露。
+      - name: Assert native modules target Electron+darwin-x64
+        run: |
+          set -euo pipefail
+
+          bin=node_modules/better-sqlite3/build/Release/better_sqlite3.node
+          if [ ! -f "$bin" ]; then
+            echo "::error::better-sqlite3 二进制缺失 —— postinstall 的重建没跑成"
+            exit 1
+          fi
+          file "$bin"
+          if ! file "$bin" | grep -q "$EXPECT_MACHO"; then
+            echo "::error::better_sqlite3.node 不是 $EXPECT_MACHO 的 Mach-O —— Intel 上主进程加载 DB 即 dlopen 崩，此包不可分发"
+            exit 1
+          fi
+
+          # sharp 的平台包是 optionalDependencies，npm 按宿主架构装：只有对应
+          # 那一格时 file-ops.ts / ocr.ts 才可用。
+          sharp="node_modules/@img/sharp-darwin-$ARCH"
+          if [ ! -d "$sharp" ]; then
+            echo "::error::sharp 的 darwin-$ARCH 变体没装上（@img 下只有 $(ls node_modules/@img 2>/dev/null | tr '\n' ' ')）—— 图片链路会在运行期崩"
+            exit 1
+          fi
+          echo "sharp variant: $sharp"
+
+          wasm=node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
+          if [ ! -f "$wasm" ]; then
+            echo "::error::onnxruntime-web 的 wasm 引擎缺失 —— OCR 不可用"
+            exit 1
+          fi
+
+          if [ -d node_modules/onnxruntime-node ]; then
+            echo "::error::onnxruntime-node 仍在依赖树 —— 依赖已换成 onnxruntime-web"
+            exit 1
+          fi
+
+      - name: Fetch bundled Chromium
+        run: npm run browsers:install
+
+      - name: Build bundles
+        run: npm run build
+
+      # ensure-chromium.js 的契约是「永不非零退出」（缺了只 warn），所以任何取
+      # 浏览器失败都会静默变成「一个没有内置浏览器的包」。CI 里没有这个让步的
+      # 必要。架构断言正是本机第三个坑（resources/chromium 是 arm64 CFT 而打在
+      # x64 包里）的门禁——x64 包必须带 x64 的 chrome-mac。
+      - name: Verify bundled Chromium landed
+        run: |
+          set -euo pipefail
+
+          if [ -f resources/chromium/.source ]; then
+            echo "source marker: $(cat resources/chromium/.source)"
+          fi
+
+          bin=$(find resources/chromium/chrome-mac -type f -path '*/Contents/MacOS/*' -print -quit 2>/dev/null || true)
+          if [ -z "$bin" ]; then
+            echo "::error::resources/chromium/chrome-mac 下找不到 Contents/MacOS 可执行文件 —— ensure-chromium 永不失败，这一步是唯一的无浏览器包门禁"
+            find resources/chromium -maxdepth 3 -print 2>/dev/null | head -40 || true
+            exit 1
+          fi
+          echo "chromium binary: $bin"
+          file "$bin"
+          if ! file "$bin" | grep -q "$EXPECT_MACHO"; then
+            echo "::error::随包 Chromium 不是 $EXPECT_MACHO —— Intel 上浏览器工具会退化成系统 Chrome/Edge 兜底"
+            exit 1
+          fi
+
+      # 第一拍：--dir 只解包不压盘，拿到可签名的 .app。
+      - name: Package app dir
+        run: |
+          set -euo pipefail
+          npx electron-builder --mac --"$ARCH" --dir --publish never
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          if [ -z "$app" ]; then
+            echo "::error::--dir 跑完了但找不到 PulseMind.app"
+            ls -la dist || true
+            exit 1
+          fi
+          echo "app=$app"
+
+      # 第二拍：ad-hoc 签名。第三拍要用这份签过名的 app 压 dmg，所以签名必须在
+      # 打包之前——反过来（先 dmg 再签）改不到 dmg 里的东西。
+      - name: Ad-hoc sign the app
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+
+          # 不给 --options runtime：ad-hoc + hardened runtime 会要求 Electron 的
+          # JIT entitlement，ad-hoc 签名带不上完整信任链，反而更容易起不来。
+          codesign --force --deep --sign - "$app"
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | head -15
+          if ! codesign -dv "$app" 2>&1 | grep -qE 'Signature=(adhoc|Authority)'; then
+            echo "::error::签名没落上 —— 用户那边会报「已损坏，应移到废纸篓」"
+            exit 1
+          fi
+
+          file "$app/Contents/MacOS/PulseMind"
+          if ! file "$app/Contents/MacOS/PulseMind" | grep -q "$EXPECT_MACHO"; then
+            echo "::error::主可执行文件不是 $EXPECT_MACHO —— 打出来的 dmg 是错架构的"
+            exit 1
+          fi
+
+      # 第三拍：用已签名的 app 压 dmg。--prepackaged 跳过重新打包，签名得以保留。
+      - name: Package dmg from signed app
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          npx electron-builder --mac --prepackaged "$app" --publish never
+          ls -lh dist/*.dmg
+
+      # afterPack 删掉了执行提供器库与异平台二进制。文件存在 ≠ 能加载：这里拿
+      # 打包后的 onnxruntime 真建 det/rec/cls 三个会话。smoke 脚本自己处理
+      # <out>/PulseMind.app/Contents/Resources 这个 mac 特有的层级。
+      - name: Smoke packed OCR runtime
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          node scripts/smoke-packed-ocr.js --app-out "$(dirname "$app")" --platform darwin --arch "$ARCH"
+
+      - name: Assert packaged tree is usable
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          res="$app/Contents/Resources"
+
+          if [ ! -f "$res/app.asar" ]; then
+            echo "::error::app.asar 缺失"
+            exit 1
+          fi
+          ls -lh "$res/app.asar"
+
+          # OCR 模型走全局 extraResources → Resources/ocr-models
+          for m in det.onnx rec.onnx cls.onnx keys.txt; do
+            if [ ! -f "$res/ocr-models/$m" ]; then
+              echo "::error::OCR 模型未随包：$m"
+              exit 1
+            fi
+          done
+          du -sh "$res/ocr-models"
+
+          # 依赖已从 onnxruntime-node（原生）换成 onnxruntime-web（纯 WASM）：
+          # 「包内有 onnxruntime-node」才是错。
+          if [ -d "$res/app.asar.unpacked/node_modules/onnxruntime-node" ]; then
+            echo "::error::onnxruntime-node 仍在包内 —— 依赖切换未完成"
+            exit 1
+          fi
+          for f in ort.node.min.js ort-wasm-simd-threaded.mjs ort-wasm-simd-threaded.wasm; do
+            if [ ! -f "$res/ort-web/$f" ]; then
+              echo "::error::ort-web 运行时未随包：$f"
+              exit 1
+            fi
+          done
+
+          # rg：平台段 extraResources 的 filter 是 darwin-${arch}/**，缺了不报错
+          rg="$res/bin/darwin-$ARCH/rg"
+          if [ ! -f "$rg" ]; then
+            echo "::error::内置 rg 未随包（搜索会静默降级成 grep 兜底）"
+            exit 1
+          fi
+          file "$rg"
+          if ! file "$rg" | grep -q "$EXPECT_MACHO"; then
+            echo "::error::随包 rg 不是 $EXPECT_MACHO"
+            exit 1
+          fi
+
+      # 端到端：dmg 才是交付物。挂上去看里面那份 app 的架构与签名，才算证明
+      # 「用户拿到手能启动」——上面的断言都只作用在 dist/ 的中间产物上。
+      - name: Verify dmg contents
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/*.dmg | head -1)
+          ls -lh "$dmg"
+          hdiutil verify "$dmg"
+
+          mp="$RUNNER_TEMP/dmg-mnt"
+          mkdir -p "$mp"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mp" "$dmg" >/dev/null
+          # detach 必须发生，否则 runner 收尾时 dmg 还挂着会报占用
+          trap 'hdiutil detach "$mp" -quiet || true' EXIT
+
+          app=$(find "$mp" -maxdepth 2 -name 'PulseMind.app' -print -quit)
+          if [ -z "$app" ]; then
+            echo "::error::dmg 里找不到 PulseMind.app"
+            ls -la "$mp"
+            exit 1
+          fi
+          file "$app/Contents/MacOS/PulseMind"
+          if ! file "$app/Contents/MacOS/PulseMind" | grep -q "$EXPECT_MACHO"; then
+            echo "::error::dmg 内 app 架构不对（期望 $EXPECT_MACHO）"
+            exit 1
+          fi
+          codesign -dv --verbose=2 "$app" 2>&1 | head -10
+          if ! codesign -dv "$app" 2>&1 | grep -qE 'Signature=(adhoc|Authority)'; then
+            echo "::error::dmg 内 app 没有签名 —— 用户那边会报「已损坏」"
+            exit 1
+          fi
+          echo "DMG-OK"
+
+      - name: Report artifact
+        run: ls -lh dist/*.dmg
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseMind-mac-x64-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
