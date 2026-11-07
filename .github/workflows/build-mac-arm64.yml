@@ -29,12 +29,6 @@ on:
   push:
     tags:
       - 'v*'
-    # 临时：workflow_dispatch 只认**默认分支**上已注册的 workflow 文件，本文件目前
-    # 只在 feature_0.5.1，不加这条分支触发就一次也跑不起来。文件随分支合进 main
-    # 之后**删掉这三行**（build-windows.yml 里那组是同样的临时件，合进 main 后忘了删，
-    # 一并清）。
-    branches:
-      - feature_0.5.1
 
 permissions:
   contents: read
