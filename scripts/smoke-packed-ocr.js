@@ -7,7 +7,8 @@
 'use strict'
 
 const { existsSync, readdirSync, readFileSync } = require('node:fs')
-const { join, resolve, sep } = require('node:path')
+const { join, resolve } = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 function parseArgs (argv) {
   const out = {}
@@ -64,7 +65,14 @@ console.log(`  ort-web: ${required.join(', ')}`)
 // 3) 真建会话：只断言「能加载」，不校验精度（精度由 tests/ocr-core.test.ts 钉）
 ;(async () => {
   const ort = require(join(ortDir, 'ort.node.min.js'))
-  ort.env.wasm.wasmPaths = ortDir + sep
+  // Windows 的盘符路径（D:\…）会被 Node 的 ESM loader 当成协议 scheme
+  // （ERR_UNSUPPORTED_ESM_URL_SCHEME: Received protocol 'd:'），而 ort 内部
+  // 正是用 import() 去拉 ort-wasm-simd-threaded.mjs 的 —— 裸路径前缀
+  // `ortDir + sep` 因此只在 POSIX 上侥幸可用。改成 ort 1.23 支持的
+  // wasmPaths 对象形态（{ mjs }，取值时自动解 .href），wasm 二进制则读进
+  // 内存经 wasmBinary 直供：两条路都不再碰裸盘符路径，两个平台一致。
+  ort.env.wasm.wasmPaths = { mjs: pathToFileURL(join(ortDir, 'ort-wasm-simd-threaded.mjs')) }
+  ort.env.wasm.wasmBinary = readFileSync(join(ortDir, 'ort-wasm-simd-threaded.wasm'))
   ort.env.wasm.numThreads = 1 // CI 单线程最稳，避免 SharedArrayBuffer 差异
   ort.env.wasm.proxy = false
   for (const m of ['det.onnx', 'rec.onnx', 'cls.onnx']) {
