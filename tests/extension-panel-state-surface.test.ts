@@ -14,12 +14,12 @@ import { freshSessionState, mirroredStatus, seedSessionState } from '../src/shar
 const REPO = process.cwd()
 const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
 
-const MIRROR = read('src', 'shared', 'agent-session', 'mirror.ts')
 const METHODS = read('src', 'shared', 'agent-protocol', 'methods.ts')
 const PAYLOADS = read('src', 'shared', 'agent-protocol', 'payloads.ts')
 const WS_SERVER = read('src', 'main', 'agent', 'ws-server.ts')
 const SERVICE_SESSIONS = read('src', 'main', 'agent', 'service-sessions.ts')
 const SESSION_MANAGER = read('src', 'main', 'agent', 'session-manager.ts')
+const CONVERSATION_DB = read('src', 'main', 'storage', 'conversation.db.ts')
 const ENGINE = read('src', 'renderer', 'src', 'agent', 'AgentEngine.ts')
 const PANEL_BRIDGE = read('src', 'extension', 'background', 'panel-bridge.ts')
 const BRIDGE = read('src', 'extension', 'bridge.ts')
@@ -28,6 +28,8 @@ const APP = read('src', 'extension', 'ui', 'App.tsx')
 const STATE_STRIP = read('src', 'extension', 'ui', 'StateStrip.tsx')
 const SESSIONS_MENU = read('src', 'extension', 'ui', 'SessionsMenu.tsx')
 const TRANSCRIPT = read('src', 'extension', 'ui', 'Transcript.tsx')
+const MESSAGE_BLOCKS = read('src', 'extension', 'ui', 'MessageBlocks.tsx')
+const MESSAGE_GROUP = read('src', 'renderer', 'src', 'components', 'chat', 'MessageGroup.tsx')
 const HTML_CARD = read('src', 'extension', 'ui', 'HtmlArtifactCard.tsx')
 const ICONS = read('src', 'extension', 'ui', 'icons.tsx')
 
@@ -190,5 +192,58 @@ describe('the html card opens in the browser; user images render', () => {
     expect(TRANSCRIPT).toMatch(/b\.type === 'tool_result' && msg\.role === 'user'/)
     expect(TRANSCRIPT).toMatch(/data:image\/png;base64,\$\{img\.imageData\}/)
     expect(TRANSCRIPT).toContain('className="pm-user-image"')
+  })
+
+  it('the user-arm counts imageData ONLY — a text tool_result carrier is not a user bubble', () => {
+    // 2026-11-02 user report（tool use 的结果那块展示有问题）：引擎每轮把工具结果
+    // 作为一条 user 消息追加（result-ingestion.ts），contentBlocks 全是带 content
+    // 的 tool_result。11-01 的 user-arm 写成 `imageData || content`，于是每轮工具
+    // 调用后都多出一个右侧用户气泡，里面是原始工具输出——卡里本就有【输出】。
+    // 桌面 MessageGroup.hasDisplayableContent 只认 imageData，面板逐字同形。
+    // Non-vacuous: restoring the `|| content` disjunct fails the negative scan;
+    // dropping the imageData arm fails the positive one; the desktop side is
+    // pinned too so the two gates cannot drift apart silently.
+    expect(TRANSCRIPT).toMatch(/b\.type === 'tool_result' && msg\.role === 'user' && !!\(b as ToolResultBlock\)\.imageData\)/)
+    expect(TRANSCRIPT).not.toMatch(/\.imageData \|\| \(b as ToolResultBlock\)\.content/)
+    expect(MESSAGE_GROUP).toMatch(/\(b\.type === 'tool_result' && b\.imageData\)/)
+    expect(MESSAGE_GROUP).not.toMatch(/tool_result' && \(b\.imageData \|\| b\.content\)/)
+  })
+
+  it('the tool card output box follows its tail while output streams (the desktop outputRef)', () => {
+    // CommandCard scrolls its output container to the bottom on every
+    // block.output change; the panel's 300px-capped .pm-cmd-out used to sit at
+    // the top and hide the tail behind its scrollbar. Non-vacuous: removing the
+    // effect fails the scan; dropping the ref off the element fails the second.
+    expect(MESSAGE_BLOCKS).toMatch(/useEffect\(\(\) => \{\s*if \(outputRef\.current\) outputRef\.current\.scrollTop = outputRef\.current\.scrollHeight\s*\}, \[block\.output\]\)/)
+    expect(MESSAGE_BLOCKS).toContain('<div className="pm-cmd-out" ref={outputRef}>')
+  })
+})
+
+describe('历史会话 lists only conversations with messages (2026-11-02)', () => {
+  // The DB layer is better-sqlite3 (Electron ABI — not loadable here), so the
+  // predicate is pinned by scan; the behaviour it protects (the current empty
+  // session's 授权 no longer read off the list) is driven for real in
+  // tests/extension-panel-bridge.test.ts.
+  it('listConversationsByOrigin keeps the origin key and adds the EXISTS(messages) predicate', () => {
+    // Non-vacuous: dropping the EXISTS clause fails the first match; renaming
+    // the origin predicate fails the second; the ORDER/LIMIT must survive.
+    // The optional tab_key arm (2026-11-03) sits between them, so the pin
+    // spells it out instead of letting `[\s\S]*?` swallow it.
+    expect(CONVERSATION_DB).toMatch(
+      /const scoped = tabKey \? 'AND c\.tab_key = \?' : ''[\s\S]*?WHERE c\.origin = \?\s*AND EXISTS \(SELECT 1 FROM messages m WHERE m\.conversation_id = c\.id\)\s*\$\{scoped\}\s*ORDER BY c\.updated_at DESC LIMIT \?/,
+    )
+  })
+
+  it('agent.snapshot carries the stored 授权 and the bridge seeds its cache from it', () => {
+    expect(PAYLOADS).toMatch(/export interface AgentSnapshotResult \{[\s\S]*?approvalMode\?: SandboxApprovalMode/)
+    expect(SESSION_MANAGER).toMatch(/lastCompaction: entry\.engine\.lastCompaction,[\s\S]{0,700}approvalMode: this\.storedApprovalMode\(sessionId\),/)
+    // Best-effort like the origin stamp: a column read failing (no DB in a
+    // test harness, a torn-down store) must not cost the client the snapshot.
+    expect(SESSION_MANAGER).toMatch(/private storedApprovalMode\(sessionId: string\): SandboxApprovalMode \| undefined \{\s*try \{ return getConversationApprovalMode\(sessionId\) \} catch \{ return undefined \}/)
+    expect(PANEL_BRIDGE).toContain('private approvalModes = new Map<string, SandboxApprovalMode>()')
+    expect(PANEL_BRIDGE).toMatch(/seedSessionState\(state, snap\)[\s\S]{0,400}if \(snap\.approvalMode\) this\.approvalModes\.set\(sessionId, snap\.approvalMode\)/)
+    // Resolution order: list row → cache → tab carry (the row is the freshest
+    // read of the column; the cache covers the session the list omits).
+    expect(PANEL_BRIDGE).toMatch(/sessions\.find\(\(s\) => s\.sessionId === sessionId\)\?\.approvalMode \?\?\s*this\.approvalModes\.get\(sessionId\) \?\?\s*\(await getTabApprovalMode\(tabId\)\)/)
   })
 })

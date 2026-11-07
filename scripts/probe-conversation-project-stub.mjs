@@ -82,8 +82,8 @@ async function phaseMain() {
   check('stub-insert creates the row', !!proj)
   check('type is the conversation type, not the project id', proj?.type === 'normal', proj?.type)
   check('project_id carries the binding', proj?.project_id === 'proj_alpha', proj?.project_id)
-  const listed = listConversations().find((c) => c.id === 'conv_20260917090000')
-  check('listConversations() lists it (type=normal) under its project', !!listed && listed.projectId === 'proj_alpha', listed ? listed.projectId : 'not listed')
+  const stubListed = listConversations().some((c) => c.id === 'conv_20260917090000')
+  check('the zero-message stub is NOT a 历史会话 entry', !stubListed, stubListed ? 'listed' : 'hidden')
   check('getConversationProjectId resolves the binding', getConversationProjectId('conv_20260917090000') === 'proj_alpha', getConversationProjectId('conv_20260917090000'))
 
   // ── ② the first save keeps the binding (the stub's whole contract) ──
@@ -97,6 +97,10 @@ async function phaseMain() {
   check('the full save does not touch project_id', saved?.project_id === 'proj_alpha', saved?.project_id)
   check('…nor type', saved?.type === 'normal', saved?.type)
   check('…and the title landed on top of the stub row', saved?.title === '啦啦啦', saved?.title)
+  // 2026-11-04：零消息存根不进 listConversations（侧栏重启后不再冒出「新对话」），
+  // 首条消息落地即恢复可见，binding 原样带出。
+  const listed = listConversations().find((c) => c.id === 'conv_20260917090000')
+  check('once it has a message it is listed under its project', !!listed && listed.projectId === 'proj_alpha', listed ? listed.projectId : 'not listed')
 
   // ── ③ the sibling stubs (same helper now) keep type='normal' too ──
   setConversationExpert('conv_expert', 'exp_1')
@@ -180,8 +184,11 @@ async function launcher() {
     format: 'cjs',
     outfile: bundle,
     // better-sqlite3 is resolved at runtime from the repo (NODE_PATH) so its
-    // native binding keeps working; esbuild is the bundler itself.
-    external: ['better-sqlite3', 'esbuild'],
+    // native binding keeps working; esbuild is the bundler itself. The browser
+    // stack rides in through storage/index's import graph but this phase never
+    // opens a window — keep it external like the sibling DB probes (a missing
+    // chromium-bidi in node_modules must not fail the bundle).
+    external: ['better-sqlite3', 'esbuild', 'jsdom', 'playwright-core', 'chromium-bidi'],
     plugins: [
       {
         name: 'electron-stub',

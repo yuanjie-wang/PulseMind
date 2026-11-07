@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AgentEventData } from '../src/shared/agent-protocol'
 import { PanelBridge } from '../src/extension/background/panel-bridge'
-import { getSessionForTab, getTabForSession } from '../src/extension/background/state'
+import { getSessionForTab, getTabForSession, getTabScope } from '../src/extension/background/state'
 import type { WsClient } from '../src/extension/background/ws-client'
 import type { ConnectionState } from '../src/extension/bridge'
 
@@ -314,6 +314,108 @@ describe('extension panel bridge', () => {
     expect(client.callsTo('agent.ask').map((p) => p.sessionId)).toEqual(['ws_1', 'ws_2'])
   })
 
+  // ── 历史会话 scope per tab (2026-11-03) ─────────────────────────────
+  // One Chrome tab shares ONE 历史会话 list across refresh/navigation; two tabs
+  // must never see each other's conversations. The scope is a token minted per
+  // tab in session storage and stamped on the conversation row, so both the
+  // create and the list have to carry it.
+
+  it('gives each tab its own 历史会话 scope and keeps it stable across re-attaches', async () => {
+    const bridge = makeBridge(client)
+
+    await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    const scopeA = client.callsTo('session.list')[0]?.tabKey
+    expect(typeof scopeA).toBe('string')
+    expect(scopeA).toBeTruthy()
+
+    // Refresh / navigation keep the tab id, so the same tab keeps its scope —
+    // that is what makes its list survive a reload.
+    await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(client.callsTo('session.list')[1]?.tabKey).toBe(scopeA)
+
+    // A sibling tab is a different scope: its list can never show this tab's rows.
+    await bridge.handleRequest({ type: 'panel/attach' }, OTHER_TAB)
+    const scopeB = client.callsTo('session.list')[2]?.tabKey
+    expect(typeof scopeB).toBe('string')
+    expect(scopeB).not.toBe(scopeA)
+
+    // The live scope set rides along (review_20261104 中3): the service
+    // releases dead stamps (previous browser sessions) so the rows re-adopt
+    // into this tab instead of stranding after a Chrome restart.
+    const scopesSeen = client.callsTo('session.list').at(-1)?.liveScopes
+    expect(Array.isArray(scopesSeen)).toBe(true)
+    expect(scopesSeen).toContain(scopeA)
+    expect(scopesSeen).toContain(scopeB)
+
+    // The create stamps the same scope, so the service can list the new
+    // conversation back to this tab (and only to it).
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(client.callsTo('session.create')[0].tabKey).toBe(scopeA)
+    // A resume carries it too — a service whose row lost the stamp must not be
+    // able to strand this conversation outside the tab's list.
+    await bridge.handleRequest({ type: 'panel/ask', content: '再来' }, TAB)
+    expect(client.callsTo('session.create')[1]).toMatchObject({ sessionId: 'ws_1', tabKey: scopeA })
+
+    // The scope is persisted, not minted per call: a worker restart rebuilds
+    // the bridge from an empty module and must read the same token back.
+    const revived = makeBridge(client)
+    await revived.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(client.callsTo('session.list').at(-1)?.tabKey).toBe(scopeA)
+  })
+
+  // review_20261104 高1：会话列表是 tab 作用域数据，刷新点只允许回请求页签。
+  // 旧实现 broadcast 给所有打开面板——B 的历史菜单被 A 的列表整表顶掉，B 还能
+  // resume A 的行（把会话绑定搬走、COALESCE 把 tab_key 永久改写进 B 作用域）。
+  it('routes the session-list refresh only to the requesting tab (review_20261104 高1)', async () => {
+    const bridge = makeBridge(client)
+    // Both panels open: a leaked broadcast lands in `sent` addressed to both.
+    // The attach mints each tab's scope (session.list carries it).
+    await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    await bridge.handleRequest({ type: 'panel/attach' }, OTHER_TAB)
+    await bridge.handleRequest({ type: 'panel/set-open', open: true }, TAB)
+    await bridge.handleRequest({ type: 'panel/set-open', open: true }, OTHER_TAB)
+    const scopes = sessionBag.tabScopes as Record<string, string>
+    const scopeA = scopes[String(TAB)]
+    const scopeB = scopes[String(OTHER_TAB)]
+    expect(scopeA).toBeTruthy()
+    expect(scopeB).toBeTruthy()
+    // The fake service answers each scoped list with a row naming that scope,
+    // so a leaked list is identifiable by payload alone.
+    client.handlers['session.list'] = (params) => ({
+      sessions: [{ sessionId: 'ws_1', title: `rows-of-${params.tabKey}` }],
+      model: modelStore,
+    })
+    sent.length = 0
+
+    // All four refresh points, each triggered by TAB only.
+    await bridge.handleRequest({ type: 'panel/rename-session', sessionId: 'ws_1', title: '改名' }, TAB)
+    await bridge.handleRequest({ type: 'panel/new-session' }, TAB)
+    await bridge.handleRequest({ type: 'panel/delete-session', sessionId: 'ws_1' }, TAB)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB) // ensureSession 铸新会话
+    await settle()
+
+    const listMessages = sent.filter((s) => s.msg.type === 'panel/sessions')
+    expect(listMessages.length).toBeGreaterThan(0)
+    expect(listMessages.every((s) => s.tabId === TAB)).toBe(true)
+    for (const m of listMessages) {
+      for (const row of m.msg.payload as Array<{ title: string }>) {
+        expect(row.title).toBe(`rows-of-${scopeA}`)
+      }
+    }
+  })
+
+  // review_20261104 中4：getTabScope 是整表读改写，两次并发首铸（attach 的
+  // inventory 与首条消息的 createSession）各从旧 map 铸 token、后写覆盖先写——
+  // 败者的 token 已盖在会话上、存储里却活着另一个，该会话在自己的页签列表里
+  // 永久隐形。铸造串行化后并发调用必须拿到同一个 token。
+  it('concurrent first mints of one tab agree on a single scope (review_20261104 中4)', async () => {
+    const [a, b] = await Promise.all([getTabScope(101), getTabScope(101)])
+    expect(a).toBe(b)
+    // 落盘的是双方共用的那一个，不是被覆盖的孤儿。
+    const stored = (sessionBag.tabScopes as Record<string, string>)[String(101)]
+    expect(stored).toBe(a)
+  })
+
   it('drops a closed tab binding so events stop being routed to it', async () => {
     const bridge = makeBridge(client)
     await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
@@ -354,6 +456,86 @@ describe('extension panel bridge', () => {
     // The desktop's column is the authority: a session list carrying a different
     // mode wins over the tab's local carry-over.
     client.handlers['session.list'] = () => ({ sessions: [{ sessionId: 'ws_1', title: 'X', approvalMode: 'outside-ask' }] })
+    const attached = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(attached.snapshot?.approvalMode).toBe('outside-ask')
+  })
+
+  // ── 授权 for a session the list does not carry (2026-11-02) ─────────
+  // `session.list` lists only conversations WITH messages now (the 历史会话
+  // menu was full of 未命名会话 stubs — every session.create upserts a row).
+  // The snapshot used to read the current session's 授权 off that list, so a
+  // fresh session (新会话, 授权 picked, nothing sent yet) would have shown the
+  // default right after the click and after every reload.
+
+  it('keeps the 授权 of a message-less session that session.list no longer carries', async () => {
+    const bridge = makeBridge(client)
+    // 新会话 → an empty conversation: the real list omits it from here on.
+    client.handlers['session.list'] = () => ({ sessions: [], model: modelStore })
+    await bridge.handleRequest({ type: 'panel/new-session' }, TAB)
+
+    const set = await bridge.handleRequest({ type: 'panel/set-approval', mode: 'auto' }, TAB)
+    expect(client.callsTo('session.setApprovalMode').at(-1)).toMatchObject({ sessionId: 'ws_1', mode: 'auto' })
+    // The answer's snapshot and a later re-attach both show the choice, with
+    // no list row and no tab carry-over (the carry is consumed on write).
+    expect(set.snapshot?.approvalMode).toBe('auto')
+    const attached = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(attached.snapshot?.approvalMode).toBe('auto')
+    expect(sessionBag.approvalModes ?? {}).toEqual({})
+  })
+
+  it('a cold attach seeds the 授权 from agent.snapshot when the list has no row for it', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/new-session' }, TAB)
+
+    // Worker restart: mirrors (and the cache) are gone, the tab binding stays.
+    // The service's still-life carries the stored column; the list is empty.
+    client.handlers['session.create'] = () => ({ sessionId: 'ws_1', agentId: 'default', resumed: true })
+    client.handlers['session.list'] = () => ({ sessions: [], model: modelStore })
+    client.handlers['agent.snapshot'] = () => ({
+      messages: [],
+      status: { status: 'idle' },
+      streamingBlocks: [],
+      plan: null,
+      fileChanges: [],
+      lastCompaction: null,
+      approvalMode: 'always-ask',
+    })
+    const revived = makeBridge(client)
+    const res = await revived.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(res.snapshot?.approvalMode).toBe('always-ask')
+  })
+
+  // review_20261103 高3：doCreateSession 把「上次使用」档位播种进每个无配置的
+  // 新会话列，而该会话既进不了 session.list（EXISTS(messages)）也等不到冷快照
+  // （bridge 已持 mirror，snapshot 路径被跳过）——面板显示「按需确认」、引擎
+  // 实际按 auto 放行。session.create 现在把列值带回来，createSession 播种缓存，
+  // 一处覆盖两个铸造点。
+  it('session.create 的 approvalMode 播种缓存：新会话快照显示服务端真实档位', async () => {
+    const bridge = makeBridge(client)
+    // 服务端按「上次使用」播种了 auto；该会话无消息，list 永远不携带它。
+    client.handlers['session.create'] = () => ({ sessionId: 'ws_1', agentId: 'default', approvalMode: 'auto' })
+    client.handlers['session.list'] = () => ({ sessions: [], model: modelStore })
+    const res = await bridge.handleRequest({ type: 'panel/new-session' }, TAB)
+    expect(res.snapshot?.approvalMode).toBe('auto')
+
+    // 重挂（worker 不重启，mirror 已在）：缓存仍在，快照继续显示真实档位。
+    const attached = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(attached.snapshot?.approvalMode).toBe('auto')
+
+    // 预会话 carry 仍然赢过播种值：干净页签先摆 carry，再开新会话，快照显示 carry。
+    const second = makeBridge(client)
+    client.handlers['session.create'] = () => ({ sessionId: 'ws_2', agentId: 'default', approvalMode: 'auto' })
+    await second.handleRequest({ type: 'panel/set-approval', mode: 'always-ask' }, OTHER_TAB)
+    const carried = await second.handleRequest({ type: 'panel/new-session' }, OTHER_TAB)
+    expect(carried.snapshot?.approvalMode).toBe('always-ask')
+    expect(client.callsTo('session.setApprovalMode').at(-1)).toMatchObject({ sessionId: 'ws_2', mode: 'always-ask' })
+  })
+
+  it('a list row (the freshest read of the column) still outranks the cached 授权', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    await bridge.handleRequest({ type: 'panel/set-approval', mode: 'auto' }, TAB)
+    client.handlers['session.list'] = () => ({ sessions: [{ sessionId: 'ws_1', title: 'X', approvalMode: 'outside-ask' }], model: modelStore })
     const attached = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
     expect(attached.snapshot?.approvalMode).toBe('outside-ask')
   })
@@ -490,6 +672,51 @@ describe('extension panel bridge', () => {
     expect(await getTabForSession('ws_1')).toBe(OTHER_TAB)
     expect(await getSessionForTab(TAB)).toBeNull()
     expect(await getSessionForTab(OTHER_TAB)).toBe('ws_1')
+  })
+
+  it('resume-session switches the tab to that conversation\'s transcript', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: '第一个' }, TAB)
+    expect(await getSessionForTab(TAB)).toBe('ws_1')
+
+    // The 历史会话 row for another conversation: the id must survive the wire
+    // (2026-11-02 — `session.list` shipped the store's raw `id`, so the panel
+    // called this with `undefined` and the click did nothing).
+    client.handlers['session.create'] = (params) => ({ sessionId: String(params.sessionId ?? 'ws_x'), agentId: 'default', resumed: true })
+    // Full still-life shape: seedSessionState reads status/streamingBlocks/plan,
+    // and a partial snapshot throws into the agent.history fallback instead.
+    client.handlers['agent.snapshot'] = () => ({
+      messages: [userMessage('m2', '第二个会话')],
+      status: { status: 'idle' },
+      streamingBlocks: [],
+      plan: null,
+    })
+
+    const res = await bridge.handleRequest({ type: 'panel/resume-session', sessionId: 'ws_2' }, TAB)
+    expect(res.ok).toBe(true)
+    expect(res.snapshot?.sessionId).toBe('ws_2')
+    expect(res.snapshot?.messages).toHaveLength(1)
+    expect(await getSessionForTab(TAB)).toBe('ws_2')
+    expect(client.callsTo('agent.snapshot').at(-1)).toMatchObject({ sessionId: 'ws_2' })
+  })
+
+  it('refuses a resume without an id and keeps the tab\'s current binding', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+
+    // A malformed row must fail loudly BEFORE clearTab: unbinding first turned
+    // the broken click into "this panel now has no conversation at all". No
+    // service round trip may happen on the way out (the first ask's
+    // session.create is the only one on record).
+    const createdBefore = client.callsTo('session.create').length
+    const res = await bridge.handleRequest(
+      { type: 'panel/resume-session', sessionId: undefined as unknown as string },
+      TAB,
+    )
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('会话 id')
+    expect(await getSessionForTab(TAB)).toBe('ws_1')
+    expect(client.callsTo('session.create')).toHaveLength(createdBefore)
   })
 
   it('consumes a pre-session choice after carrying it — it never resurfaces', async () => {

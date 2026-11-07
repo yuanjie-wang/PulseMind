@@ -148,6 +148,9 @@ export function usePanel(): PanelApi {
           setConnection(msg.payload)
           break
         case 'panel/sessions':
+          // The sender addresses only the tab that owns this list (review
+          // 20261104 高1 — a broadcast replaced every open panel's 历史会话
+          // menu with the requesting tab's rows), so a full swap is safe here.
           setSessions(msg.payload)
           break
         // No 'panel/model' branch: the 模型 switch is per conversation now,

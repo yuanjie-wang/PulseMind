@@ -37,15 +37,36 @@ export interface PaneFileEvent {
   extraPaths?: string[]
 }
 
-type KnownToolMeta = { name: string; path: string; reveal?: EditRevealTarget | null; extraPaths?: string[] }
+type KnownToolMeta = {
+  name: string
+  path: string
+  reveal?: EditRevealTarget | null
+  extraPaths?: string[]
+  /** edit-only search/replace inputs (2026-11-01): lets the review diff
+   *  rebuild the pre-change text when the pane did NOT hold the file
+   *  (multiAll = replace every occurrence). Multi-file `diff` inputs have no
+   *  such reconstruction — those show a review only if the pane held them. */
+  reconstruct?: { mode: 'reconstruct'; oldStr: string; newStr: string; multiAll: boolean }
+}
 
 /** Input → tracked meta, shared by the tool_start and message-item ingest
  *  arms. A no-file_path edit can still name its target: a multi-file diff's
  *  first section is the reveal file, the rest ride extraPaths. */
 function metaFromInput(name: string, input: Record<string, unknown> | null | undefined): KnownToolMeta | null {
+  const reconstructOf = (): KnownToolMeta['reconstruct'] => {
+    if (name !== 'edit') return undefined
+    const oldStr = input?.old_str
+    const newStr = input?.new_str
+    // Empty new_str is a pure-deletion edit (review_20261103 中3): the old
+    // guard let it through and `after.replace('', oldStr)` spliced the whole
+    // document at the head — a document-scale fake diff. Reconstruct requires
+    // both halves; reconstructPreChangeText re-guards defensively anyway.
+    if (typeof oldStr !== 'string' || oldStr.length === 0 || typeof newStr !== 'string' || newStr.length === 0) return undefined
+    return { mode: 'reconstruct' as const, oldStr, newStr, multiAll: input?.multi === true }
+  }
   const filePath = input?.file_path
   if (typeof filePath === 'string' && filePath.trim().length > 0) {
-    return { name, path: filePath, reveal: name === 'edit' ? deriveEditReveal(input) : undefined }
+    return { name, path: filePath, reveal: name === 'edit' ? deriveEditReveal(input) : undefined, reconstruct: reconstructOf() }
   }
   if (name === 'edit') {
     const targets = deriveEditTargets(input)
@@ -116,6 +137,28 @@ export function usePreviewPaneSync(conversationId: string | undefined, workspace
         fired.add(ev.toolUseId)
         const store = usePreviewPaneStore.getState()
         const abs = resolvePreviewPath(ev.path, workspaceDir)
+        // Agent-change review diff (2026-11-01): fix the pre-change base at
+        // EVENT time — the pane holding the file wins (loadedTexts = the
+        // exact pre-change text, snapshotted NOW because the reload's own
+        // read would overwrite it); otherwise stage the edit tool's
+        // old_str/new_str reconstruction, which PreviewContent resolves once
+        // the post-change read lands (before bumpReload — that read is what
+        // the reconstruct pairs against).
+        const meta = known.get(ev.toolUseId)
+        const before = store.loadedTexts[abs]
+        if (before !== undefined) {
+          store.setAgentDiffBase(abs, before)
+          store.setDiffVisible(abs, true)
+        } else if (meta?.reconstruct) {
+          store.setAgentDiffCapture(abs, meta.reconstruct)
+          store.setDiffVisible(abs, true)
+        }
+        // 发射即弃（review_20261104 中5）：store 已接走自己的副本
+        // （setAgentDiffCapture 由 resolve 侧消费、自行清理），known 里再留
+        // 一份原始 old_str/new_str 就是会话生命周期内的纯滞留——违反本文件
+        // 头「绝不留原始 old_str/new_str」的纪律。fired 集合已挡重发，删除
+        // 只是让内存与纪律对齐。
+        known.delete(ev.toolUseId)
         // D3's previewable-kind gate now serves edits too: the reveal is the
         // review moment, and it must not open a pane on a binary blob.
         if (ev.force || shouldAutoOpen(abs)) {

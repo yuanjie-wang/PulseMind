@@ -187,6 +187,7 @@ export const mainHost: PulseHost = {
   patchFiles: (input) => fileOps.svcPatchFiles(input),
   getFileStat: (filePath) => fileOps.svcFileStat(filePath),
   convertFileToMarkdown: (filePath) => fileOps.svcConvertToMarkdown(filePath),
+  ocrImage: (filePath) => fileOps.svcOcrImage(filePath),
   copyFileToTmp: (sourcePath) => fileOps.svcCopyFileToTmp(sourcePath),
   saveBase64Image: (data) => fileOps.svcSaveBase64Image(data),
 

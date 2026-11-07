@@ -31,8 +31,16 @@ import type { AgentSessionCreateOptions, StatusSnapshot } from '../agent-protoco
  *  keeps it in a registry that dies with the popout window; nothing here is
  *  ever persisted. */
 export interface PopoutWorkbenchSeed {
-  /** The donor's frontmost workbench tab; present only when the pane was open. */
-  workbenchTab?: 'workspace' | 'browser' | 'plan'
+  /** 本窗的主视图模式（2026-11-04 用户裁定「对话在主窗是什么视图模式，弹出独立
+   *  弹窗后要保持一致」）：弹窗是独立渲染进程，`primaryByConversation` 刻意不
+   *  持久化（各窗口一份内存态），不携带就恒 boot 成对话优先。缺省/缺席 = 'chat'
+   *  （无条目即对话优先，与 store 的读法同一条）。 */
+  primary?: 'chat' | 'files' | 'browser'
+  /** The donor's frontmost workbench tab; present only when the pane was open.
+   *  视图模式（PLAN-layout-modes）下 donor 可能停在 'chat' tab（对话降级到
+   *  侧栏）——popout 强制对话优先，应用侧的 openTab reconcile 会把它落回
+   *  'workspace'，这里按全集类型放宽。 */
+  workbenchTab?: 'workspace' | 'browser' | 'plan' | 'chat'
   /** The donor's open preview file tabs (paths, verbatim order). Carried even
    *  when the pane was closed — opening the workbench later restores them. */
   previewPaths?: string[]
@@ -162,6 +170,16 @@ export interface MCPToolCallResult {
   error?: string
 }
 
+/** 一次性模板包导入结果（2026-11-05）。zip = 整份 settings.json + 可选
+ *  skills/；settingsApplied=false 表示包里没有（或没有有效的）settings.json，
+ *  settings 原样未动。warnings 含 `enc:v1:` 密钥不可迁移提示等非致命项。
+ *  skills.skipped = 重名被跳过的技能（幂等重复导入是预期行为，UI 不提示）。 */
+export interface TemplateImportResult {
+  settingsApplied: boolean
+  warnings: string[]
+  skills: { imported: SkillDefinition[]; skipped: string[]; errors: string[]; warnings: string[] }
+}
+
 export interface ElectronAPI {
   // Debug
   dbCheck: () => Promise<string>
@@ -233,6 +251,9 @@ export interface ElectronAPI {
 
   // Skills - Import
   importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null>
+  /** 一次性模板包导入（2026-11-05，无密钥 welcome 引导卡入口）：主进程开
+   *  zip 文件对话框；null = 用户取消。settings.json 整份替换 + skills/ 落盘。 */
+  importTemplate: () => Promise<TemplateImportResult | null>
   listImportedSkills: () => Promise<SkillDefinition[]>
   deleteImportedSkill: (name: string) => Promise<void>
   ensureBuiltInSkills: (skills: SkillDefinition[]) => Promise<void>
@@ -504,6 +525,16 @@ export interface ElectronAPI {
     filePath: string
   }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
+  /** 图片文字识别（PP-OCRv4 本地模型，无网络）：按行返回文本与置信度，
+   *  外加尺寸/耗时/被当作界面碎片丢弃的行。非图片或模型缺失一律 reject。 */
+  ocrImage: (filePath: string) => Promise<{
+    text: string
+    lines: Array<{ text: string; score: number }>
+    dropped: Array<{ text: string; score: number }>
+    width: number
+    height: number
+    ms: number
+  }>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */
   registerPreviewNonce: (input: { filePath: string; nonce: string }) => Promise<void>
@@ -639,8 +670,11 @@ export interface ElectronAPI {
    *  read receipt + eviction/unread bookkeeping); popout windows ignore it. */
   onPopoutEvent: (callback: (event: { type: 'opened' | 'closed'; sessionId: string }) => void) => () => void
   /** A conversation's title changed in the DB (rename or title generation in
-   *  another window): update this window's in-memory sidebar list. */
-  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void) => () => void
+   *  another window): update this window's in-memory sidebar list. `projectId`
+   *  rides along ('default' when unbound) — a conversation created in a
+   *  secondary window is unknown to this window's list, and its first-sighting
+   *  re-add must not mint the entry without the binding. */
+  onConversationTitleChanged: (callback: (event: { id: string; title: string; projectId?: string }) => void) => () => void
 
   // ── Project (immersive) window (2026-10-30) ──
   /** Open the immersive window for a project — a project-scoped secondary
@@ -651,6 +685,15 @@ export interface ElectronAPI {
    *  when it has none yet). Main rebroadcasts it on POPOUT_EVENT, so the main
    *  window adopts/saves it exactly as it does a popped-out conversation. */
   secondaryWatch: (sessionId: string | null) => Promise<void>
+  /** Focus the project's immersive window and switch it onto a conversation
+   *  (main-window click on one of the project's conversations). Resolves false
+   *  when the project has no open window — the caller opens the conversation
+   *  in-window as usual. */
+  projectWindowFocusConversation: (projectId: string, convId: string) => Promise<boolean>
+  /** Main → the holding project window only: switch the immersive window onto
+   *  this conversation (the main window clicked it). Sent targeted, never
+   *  broadcast — the main window's POPOUT_EVENT handler must not see it. */
+  onPopoutSwitch: (callback: (event: { sessionId: string }) => void) => () => void
 
   // SubAgent
   expertList: () => Promise<ExpertProfile[]>

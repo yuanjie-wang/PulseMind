@@ -214,3 +214,58 @@ export function hunkMismatchError(oldStart: number, expectedLines: string[], con
   }
   return `${base} The closest region to the hunk's expected content is at ${where} (${region.matchedLines}/${region.totalLines} line(s) line up):\n${region.preview}\n${SWITCH_TO_REPLACE}`
 }
+
+/** How many occurrence start lines get listed before the "(+N more)" fold. */
+const AMBIGUOUS_LIST_CAP = 10
+
+/** The ambiguity gate's error (2026-11-01): the edit schema promises
+ *  "must match uniquely (or set multi: true)", and the executor enforces it.
+ *  A non-unique old_str used to silently replace the FIRST occurrence — a
+ *  success-shaped result that could edit the wrong block. Same discipline as
+ *  editMissError: refuse, then hand over exactly what the retry needs — the
+ *  count and every occurrence's start line, so the model extends old_str with
+ *  surrounding context instead of guessing. The count is derived from the
+ *  same scan that produces the lines, so it can never disagree with them. */
+export function editAmbiguousError(filePath: string, content: string, oldStr: string): string {
+  const total = countOccurrences(content, oldStr)
+  const base = `old_str matches ${total} places in ${filePath} — refusing to guess: replacing the first occurrence could silently edit the wrong block.`
+  const tail = ' Extend old_str with more surrounding lines until it matches exactly one place, or pass multi: true to replace every occurrence.'
+  // An empty needle matches everywhere (an IPC caller can bypass the
+  // executor's non-empty guard) — the line scan below would loop forever.
+  if (!oldStr) return base + tail
+  // One linear pass with a running newline count: the per-hit
+  // `slice(0, at).split('\n')` prefix re-scan cost O(file · hits) on the MAIN
+  // PROCESS thread — a short needle (`}`, a blank line) on a minified bundle
+  // froze every IPC, window and session for seconds to minutes
+  // (review_20261103 高2, measured 2MB > 120s). Every character is counted
+  // exactly once (the gaps AND the hits — a multi-line needle's own newlines
+  // move the next start line), and the list stops after CAP+1 starts: the
+  // count comes from `total`, not from how far the scan ran.
+  const starts: number[] = []
+  let scanned = 0
+  let line = 1
+  for (;;) {
+    const at = content.indexOf(oldStr, scanned)
+    if (at < 0) break
+    for (; scanned < at; scanned++) if (content.charCodeAt(scanned) === 10) line++
+    starts.push(line)
+    if (starts.length > AMBIGUOUS_LIST_CAP) break
+    for (let i = at; i < at + oldStr.length; i++) if (content.charCodeAt(i) === 10) line++
+    scanned = at + oldStr.length
+  }
+  if (starts.length === 0) return base + tail
+  const listed = starts.slice(0, AMBIGUOUS_LIST_CAP).join(', ')
+  const more = total > AMBIGUOUS_LIST_CAP ? ` (+${total - AMBIGUOUS_LIST_CAP} more)` : ''
+  return `${base} Occurrences start at lines: ${listed}${more}.${tail}`
+}
+
+/** Non-overlapping occurrence count. For a non-empty needle this is the same
+ *  number the executor's `split(oldStr).length - 1` branch condition computes.
+ *  An EMPTY needle is the one divergence: `split('')` counts characters
+ *  (length − 1) while this counts gaps (length + 1). The executor guards
+ *  non-empty, so the two never disagree on a path that compares them —
+ *  the empty-needle arm above returns before any list is built. */
+function countOccurrences(content: string, oldStr: string): number {
+  if (!oldStr) return content.length + 1
+  return content.split(oldStr).length - 1
+}

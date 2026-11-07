@@ -324,7 +324,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       })()
     }, 10000)
     return () => clearInterval(timer)
-  }, [enginesRef, saveConversationById, listEvictionCandidates, evictEngine, isEvictable, savesEnabled])
+    // activeEngineIdRef is read via .current inside the sweep (review_20261013
+    // 低3's exhaustive-deps note) — the ref is stable, listed to silence the
+    // warning without changing eviction timing.
+  }, [enginesRef, saveConversationById, listEvictionCandidates, evictEngine, isEvictable, savesEnabled, activeEngineIdRef])
 
   // ── Save immediately when streaming ends ──
   const prevAgentStatusRef = useRef(agentStatus.status)
@@ -529,14 +532,23 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // missed the just-added item and the bare re-add below REPLACED it, dropping
   // its projectId: the conversation fell out of its 项目 group into 对话 while
   // the DB binding (written by the same block) stayed correct.
-  const updateConversationTitleInList = (convId: string, title: string) => {
+  //
+  // `projectId` rides the cross-window push (CONVERSATION_TITLE_CHANGED): a
+  // conversation created in a SECONDARY window (immersive project window /
+  // popout) is unknown to this window's list — the bare re-add is its FIRST
+  // sighting, and without the binding it grouped under 对话 forever while the
+  // DB row stayed correctly bound (2026-11-01 用户报「沉浸模式新建的会话归到了
+  // 普通对话」). The found-branch backfills too, healing entries an older
+  // build added bare. 'default' normalizes to absent, the list's convention.
+  const updateConversationTitleInList = (convId: string, title: string, projectId?: string) => {
     const stamp = new Date().toISOString()
+    const bound = projectId && projectId !== 'default' ? projectId : undefined
     if (getConversation(convId)) {
-      setConversation(convId, partialOf(convId, { label: title, updatedAt: stamp }))
+      setConversation(convId, partialOf(convId, { label: title, updatedAt: stamp, ...(bound ? { projectId: bound } : {}) }))
       return
     }
     setConversations(
-      sortConversations([{ key: convId, label: title, updatedAt: stamp }, ...conversationsRef.current])
+      sortConversations([{ key: convId, label: title, updatedAt: stamp, projectId: bound }, ...conversationsRef.current])
     )
   }
 
@@ -766,8 +778,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // eslint-disable-next-line react-hooks/refs -- latest mirror; the subscription below is mount-only
   titleInListRef.current = updateConversationTitleInList
   useEffect(() => {
-    const unsub = window.electronAPI.onConversationTitleChanged(({ id, title }) => {
-      titleInListRef.current(id, title)
+    const unsub = window.electronAPI.onConversationTitleChanged(({ id, title, projectId }) => {
+      titleInListRef.current(id, title, projectId)
     })
     return unsub
   }, [])

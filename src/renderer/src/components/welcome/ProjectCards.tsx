@@ -1,4 +1,10 @@
 // ── Welcome quick entry: project cards (project mode) ──
+// Two forms, derived purely from newTaskStore.projectId (2026-11-04 两形态
+// 裁定): nothing picked = the full picker (heading + card grid, the composer
+// is hidden entirely while this form holds); a project picked = one compact
+// strip wearing the selected card's wash, hugging the composer that just
+// appeared, plus the 试试 prompts. 更换 = setProjectId(null) — back to the
+// full picker, pick any card to compress again. No extra state anywhere.
 // A fixed heading over the cards; clicking a card targets that project for the
 // conversation started by the next message (still nothing is created until it
 // is sent, M8.4); the trailing play button in the meta row is the only action
@@ -15,19 +21,12 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
-import {
-  ArrowRightOutlined,
-  CheckOutlined,
-  EditOutlined,
-  FolderOutlined,
-  PlayCircleOutlined,
-  PlusOutlined,
-} from '@ant-design/icons'
+import { ArrowRightOutlined, CheckOutlined, EditOutlined, FolderOutlined, PlayCircleOutlined, PlusOutlined, SwapOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { StarterPrompts } from './StarterPrompts'
 import { useProjectStore, projectHue } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
-import { useWelcomeShake } from '../../utils/welcome-shake'
+import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import { ProjectModal } from '../project/ProjectModal'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { hsvToCss } from '../../../../shared/hash-color'
@@ -177,9 +176,12 @@ function MetaLine({
 export function ProjectCards({
   conversations,
   onOpenConversation,
+  onStarterSend,
 }: {
   conversations: ConversationListItem[]
   onOpenConversation: (key: string) => void
+  /** 试试 chips 的发送通道（2026-11-04 裁定：点一下即发送）。缺省 = 整行不渲染。 */
+  onStarterSend?: (text: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
   const projects = useProjectStore((s) => s.projects)
@@ -220,84 +222,190 @@ export function ProjectCards({
 
   const userProjects = projects.filter((p) => p.id !== DEFAULT_PROJECT_ID)
   const projectStarters = [t('welcome.projectStarter1'), t('welcome.projectStarter2'), t('welcome.projectStarter3')]
+  // 压缩形态（2026-11-04 两形态裁定）的主体：当前选中的项目。选中后卡片网格
+  // 整组退场，压成一条项目色横条贴住 composer；「更换」= setProjectId(null)
+  // 回完整选择形态——形态完全由 projectId 派生，零新增状态。
+  const selectedProject = projectId ? projects.find((p) => p.id === projectId) : undefined
+  // 陈旧选择自愈：选中的项目在别处被删（项目中心/另一窗口）后 projectId 悬空
+  // ——压缩形态没有横条主体可渲染。守卫 loaded：列表在途时 projects 还是空
+  // 数组，不判死。
+  const loaded = useProjectStore((s) => s.loaded)
+  useEffect(() => {
+    if (loaded && projectId && !projects.some((p) => p.id === projectId)) setProjectId(null)
+  }, [loaded, projectId, projects, setProjectId])
+
+  // 形态切换的一次性入场（2026-11-04 追加）：project id 就是形态 token——变化
+  // 即在 picker root 上播 220ms 淡入+位移（选中 = 横条从下方浮入，更换 = 网格
+  // 从上方落定）。**挂载首跑刻意不播**：入场是「原地换形」的过渡，不是挂载
+  // 动画——新挂载的 picker root 必须静止（从历史列表打开空会话不得自己动，
+  // probe-welcome-focus 的宽限窗用例按「无动画」钉住）；root 本身在换形时
+  // 不卸载，所以换形仍会播。transform+opacity 不动布局，探针的几何测量在
+  // ≥300ms 等待后读到的都是已落定位置。
+  const formKey = selectedProject?.id ?? null
+  const formMountedRef = useRef(false)
+  useEffect(() => {
+    if (!formMountedRef.current) {
+      formMountedRef.current = true
+      return
+    }
+    playWelcomeEnter(pickerShakeRef.current, formKey === null ? 'above' : 'below')
+  }, [formKey])
 
   return (
-    <div ref={pickerShakeRef} data-welcome-shake="projectPicker" style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      {/* Heading sits OUTSIDE the scroll region below, so the scrollbar starts
+    <div
+      ref={pickerShakeRef}
+      data-welcome-shake="projectPicker"
+      style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', justifyContent: selectedProject ? 'flex-end' : undefined }}
+    >
+      {selectedProject ? (
+        <>
+          {/* 压缩形态：一条项目色横条（选中卡的 wash 配方）+ 试试 prompts，
+              整体贴住下方的输入框（根 justifyContent flex-end）——输入框已
+              出现，横条是它的上下文。prompts 点一下即发送（2026-11-04 裁定）。「更换」
+              胶囊沿用标题行「新建项目」的配方（透明底、hover 泛起软面）。 */}
+          <div style={{ maxWidth: CARDS_COLUMN_WIDTH, width: '100%', margin: '0 auto', flexShrink: 0 }}>
+            <div
+              data-welcome-project-strip
+              style={{
+                background: selectedWash(projectHue(selectedProject), WASH),
+                borderRadius: 16,
+                padding: '12px 16px',
+                boxSizing: 'border-box',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              {selectedProject.icon && <span style={{ fontSize: 18, lineHeight: '24px', flexShrink: 0 }}>{selectedProject.icon}</span>}
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: 'left',
+                  fontSize: 16,
+                  fontWeight: 600,
+                  lineHeight: '24px',
+                  color: 'var(--pm-text-strong)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {selectedProject.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setProjectId(null)}
+                style={{
+                  flexShrink: 0,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: 'var(--pm-text-quiet)',
+                  transition: 'background 0.15s, color 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = CARD_BG
+                  e.currentTarget.style.color = 'var(--pm-text-strong)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--pm-text-quiet)'
+                }}
+              >
+                <SwapOutlined style={{ fontSize: 12 }} />
+                {t('welcome.changeProject')}
+              </button>
+            </div>
+          </div>
+          <div style={{ maxWidth: CARDS_COLUMN_WIDTH, width: '100%', margin: '14px auto 0', flexShrink: 0 }}>
+            <StarterPrompts labels={projectStarters} onSend={onStarterSend} />
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Heading sits OUTSIDE the scroll region below, so the scrollbar starts
           at the cards instead of spanning this row. It follows the cards'
           952px column so the 新建项目 pill keeps lining up with their edge. */}
-      <div style={{ flexShrink: 0 }}>
-        <div
-          style={{
-            maxWidth: CARDS_COLUMN_WIDTH,
-            margin: '0 auto',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '8px 0 10px',
-            fontSize: 15,
-            fontWeight: 600,
-            color: 'var(--pm-text-strong)',
-          }}
-        >
-          {t('welcome.pickProjectTitle')}
-          <ArrowRightOutlined style={{ fontSize: 13, color: 'var(--pm-text-muted)' }} />
-          {/* Trailing action of the row: the column's right edge is the flex
+          <div style={{ flexShrink: 0 }}>
+            <div
+              style={{
+                maxWidth: CARDS_COLUMN_WIDTH,
+                margin: '0 auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 0 10px',
+                fontSize: 15,
+                fontWeight: 600,
+                color: 'var(--pm-text-strong)',
+              }}
+            >
+              {t('welcome.pickProjectTitle')}
+              <ArrowRightOutlined style={{ fontSize: 13, color: 'var(--pm-text-muted)' }} />
+              {/* Trailing action of the row: the column's right edge is the flex
             content edge, so the pill lines up with the cards below it. */}
-          <button
-            type="button"
-            onClick={() => {
-              setEditTarget(null) // create mode, even if an edit modal just closed
-              setModalOpen(true)
-            }}
-            style={{
-              marginLeft: 'auto',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              padding: '5px 10px',
-              borderRadius: 999,
-              fontSize: 13,
-              fontWeight: 500,
-              color: 'var(--pm-text-quiet)',
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = CARD_BG
-              e.currentTarget.style.color = 'var(--pm-text-strong)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.color = 'var(--pm-text-quiet)'
-            }}
-          >
-            <PlusOutlined style={{ fontSize: 12 }} />
-            {t('welcome.newProject')}
-          </button>
-        </div>
-      </div>
-      {/* Scroll region: only the cards — heading row above stays fixed. */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-        <div style={{ maxWidth: CARDS_COLUMN_WIDTH, margin: '0 auto' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
-            {userProjects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                conversations={conversations}
-                now={now}
-                selected={projectId === project.id}
-                onSelect={() => setProjectId(project.id)}
-                onOpenConversation={onOpenConversation}
-                onEdit={() => setEditTarget(project)}
-                cardRef={projectId === project.id ? selectedCardRef : undefined}
-              />
-            ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditTarget(null) // create mode, even if an edit modal just closed
+                  setModalOpen(true)
+                }}
+                style={{
+                  marginLeft: 'auto',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: 'var(--pm-text-quiet)',
+                  transition: 'background 0.15s, color 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = CARD_BG
+                  e.currentTarget.style.color = 'var(--pm-text-strong)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--pm-text-quiet)'
+                }}
+              >
+                <PlusOutlined style={{ fontSize: 12 }} />
+                {t('welcome.newProject')}
+              </button>
+            </div>
+          </div>
+          {/* Scroll region: only the cards — heading row above stays fixed. */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+            <div style={{ maxWidth: CARDS_COLUMN_WIDTH, margin: '0 auto' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
+                {userProjects.map((project) => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    conversations={conversations}
+                    now={now}
+                    selected={projectId === project.id}
+                    onSelect={() => setProjectId(project.id)}
+                    onOpenConversation={onOpenConversation}
+                    onEdit={() => setEditTarget(project)}
+                    cardRef={projectId === project.id ? selectedCardRef : undefined}
+                  />
+                ))}
 
-            {/* Empty state: ONE card, not two — the explanation and the create
+                {/* Empty state: ONE card, not two — the explanation and the create
                 action are the same affordance now, so the page never shows a
                 grey panel beside a dashed cell that say the same thing. It
                 spans the whole row and wears the create card's transparent +
@@ -305,95 +413,94 @@ export function ProjectCards({
                 卡片和【新建项目】的卡片合并，透明背景、灰色虚线边框，把
                 【还没有项目】改为【立即创建项目】」). A real <button>, so it
                 takes focus and answers Enter/Space. */}
-            {userProjects.length === 0 ? (
-              <button
-                type="button"
-                data-project-empty
-                data-action="create-project"
-                onClick={() => setModalOpen(true)}
-                style={{
-                  gridColumn: 'span 3',
-                  border: `1px dashed ${DASH_BORDER}`,
-                  borderRadius: 16,
-                  padding: '18px 20px 16px',
-                  boxSizing: 'border-box',
-                  background: 'transparent',
-                  font: 'inherit',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  minHeight: CARD_MIN_HEIGHT,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  gap: 6,
-                  color: 'var(--pm-text-secondary)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
-                  e.currentTarget.style.color = 'var(--pm-row-ink)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = DASH_BORDER
-                  e.currentTarget.style.color = 'var(--pm-text-secondary)'
-                }}
-              >
-                <div style={{ fontSize: 16, fontWeight: 600 }}>{t('welcome.createProjectNow')}</div>
-                <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--pm-text-muted)' }}>{t('welcome.noProjectsHint')}</div>
-              </button>
-            ) : (
-              /* The create card — the last cell whenever projects are listed.
+                {userProjects.length === 0 ? (
+                  <button
+                    type="button"
+                    data-project-empty
+                    data-action="create-project"
+                    onClick={() => setModalOpen(true)}
+                    style={{
+                      gridColumn: 'span 3',
+                      border: `1px dashed ${DASH_BORDER}`,
+                      borderRadius: 16,
+                      padding: '18px 20px 16px',
+                      boxSizing: 'border-box',
+                      background: 'transparent',
+                      font: 'inherit',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      minHeight: CARD_MIN_HEIGHT,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      gap: 6,
+                      color: 'var(--pm-text-secondary)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
+                      e.currentTarget.style.color = 'var(--pm-row-ink)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = DASH_BORDER
+                      e.currentTarget.style.color = 'var(--pm-text-secondary)'
+                    }}
+                  >
+                    <div style={{ fontSize: 16, fontWeight: 600 }}>{t('welcome.createProjectNow')}</div>
+                    <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--pm-text-muted)' }}>{t('welcome.noProjectsHint')}</div>
+                  </button>
+                ) : (
+                  /* The create card — the last cell whenever projects are listed.
                  A real <button> (like the routine page's 新建任务 card) rather
                  than the clickable div it used to be: `font: inherit` keeps the
                  label on this page's type scale — a bare <button> would fall
                  back to the UA's 13.33px Arial — and the transparent background
                  undoes the UA's grey face. The dashed recipe is the same one the
                  routine page wears. */
-              <button
-                type="button"
-                data-action="create-project"
-                onClick={() => setModalOpen(true)}
-                style={{
-                  border: `1px dashed ${DASH_BORDER}`,
-                  borderRadius: 16,
-                  padding: CARD_PADDING,
-                  boxSizing: 'border-box',
-                  background: 'transparent',
-                  font: 'inherit',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  minHeight: CARD_MIN_HEIGHT,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  fontSize: 14,
-                  color: 'var(--pm-text-quiet)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
-                  e.currentTarget.style.color = 'var(--pm-row-ink)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = DASH_BORDER
-                  e.currentTarget.style.color = 'var(--pm-text-quiet)'
-                }}
-              >
-                <PlusOutlined />
-                {t('welcome.newProject')}
-              </button>
-            )}
+                  <button
+                    type="button"
+                    data-action="create-project"
+                    onClick={() => setModalOpen(true)}
+                    style={{
+                      border: `1px dashed ${DASH_BORDER}`,
+                      borderRadius: 16,
+                      padding: CARD_PADDING,
+                      boxSizing: 'border-box',
+                      background: 'transparent',
+                      font: 'inherit',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      minHeight: CARD_MIN_HEIGHT,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      fontSize: 14,
+                      color: 'var(--pm-text-quiet)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
+                      e.currentTarget.style.color = 'var(--pm-row-ink)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = DASH_BORDER
+                      e.currentTarget.style.color = 'var(--pm-text-quiet)'
+                    }}
+                  >
+                    <PlusOutlined />
+                    {t('welcome.newProject')}
+                  </button>
+                )}
+              </div>
+              {/* 试试 prompts 刻意只属于压缩形态（2026-11-04 追加裁定）：选择
+              形态没有输入框，chips 点了无处可落——starter 的一次性通道在无
+              消费者时只排队不显示，点了就是「没反应」。已选形态 composer 已
+              挂载，chips 点一下落进输入框（见上方压缩分支）。 */}
+            </div>
           </div>
-          {/* The same 试试 row chat mode carries under its band, with prompts
-              shaped for a project's workspace: one click drops the question
-              into the composer. Inside the scroll region, so a long project
-              list scrolls the starters with it rather than pinning them. */}
-          <div style={{ marginTop: 14 }}>
-            <StarterPrompts labels={projectStarters} />
-          </div>
-        </div>
-      </div>
+        </>
+      )}
       <ProjectModal
         open={modalOpen || editTarget !== null}
         editing={editTarget}
@@ -571,8 +678,14 @@ function ProjectCard({
                 color: 'var(--pm-text-muted)',
                 padding: 0,
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--pm-text-strong)'; e.currentTarget.style.background = 'var(--pm-hover)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--pm-text-muted)'; e.currentTarget.style.background = 'transparent' }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--pm-text-strong)'
+                e.currentTarget.style.background = 'var(--pm-hover)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--pm-text-muted)'
+                e.currentTarget.style.background = 'transparent'
+              }}
             >
               <EditOutlined style={{ fontSize: 13 }} />
             </button>

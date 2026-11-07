@@ -9,10 +9,7 @@ import { SegmentBlock } from '../chat/SegmentView'
 import { buildSegments, getSegmentAnchorId, getSegmentKey, hasLiveTextTail, type Segment } from '../chat/message-segments'
 import { useSegmentEntrance } from '../chat/use-segment-entrance'
 import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
-import { StreamingCursor } from '../chat/StreamingCursor'
-import { ErrorDisplay } from '../chat/ErrorDisplay'
-import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
-import { TurnDeliverablesCard } from '../chat/TurnDeliverablesCard'
+import { ChatBody, CHAT_SCROLLER_EDGE_GAP } from '../chat/ChatBody'
 import { useDeliverables } from '../../hooks/useDeliverables'
 import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
@@ -21,14 +18,18 @@ import { projectContextUsed } from '../chat/ContextRing'
 import { MessageNavControls } from '../chat/MessageNavigator'
 import { listUserPrompts, isUserPromptMessage } from '../chat/message-navigator'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
-import { clampPaneWidth } from '../../../../shared/browser/pane'
+import { clampPaneWidth, WORKBENCH_CARD_MARGIN } from '../../../../shared/browser/pane'
+import { IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
-import { useWelcomeShake } from '../../utils/welcome-shake'
+import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
-import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, autoOpenTab } from '../../stores/workbenchStore'
 import { WorkbenchPane } from '../workbench/WorkbenchPane'
+import { WorkspacePane } from '../workbench/WorkspacePane'
+import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
+import { BrowserTaskStarter } from '../browser/BrowserTaskStarter'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -146,26 +147,32 @@ interface ChatViewProps {
    *  switcher would let a task escape into a chat-mode conversation, so it is
    *  hidden there (the host has already pinned the project). */
   hideTaskSwitcher?: boolean
+  /** 卡片形态（2026-11-03 主窗裁定，参考沉浸卡片语言）：对话列与右侧工作台
+   *  各成一张圆角卡（四周 5px 边距、列间 5px gap、圆角 8、1px
+   *  separator-faint 边框）。主窗 App.tsx 与「会话弹出窗口」PopoutApp 都传入
+   *  （2026-11-04 用户裁定：两个窗口统一）；项目沉浸窗口不传——它有自己的
+   *  ProjectExplorer 三列卡。工作台卡片化把浏览器 dock 的原生 view 顶出卡
+   *  内容盒，所以此形态同时驱动 useBrowserPaneBinding 携带
+   *  WORKBENCH_CARD_*_INSET 三补偿。 */
+  card?: boolean
   /** Compact draft surface (project window, 2026-10-30 用户裁定「新建会话不引入
    *  welcome 页面」): replaces the whole WelcomeContent (logo / greeting /
    *  suggestions / project cards) with the host's own hint block — the project
    *  window knows the name and the hue, and none of the welcome machinery
    *  means anything inside a pinned project. The composer below stays as-is. */
   welcomeHint?: React.ReactNode
+  /** browser 模式任务入口（PLAN-layout-modes 二期）：welcome URL 表单回车/
+   *  点历史项 → 宿主铸容器会话 + 绑定浏览器主视图 + 开页签。必填
+   *  （review_20261105 中1）：可选曾让 PopoutApp 漏传静默成 noop，编译器
+   *  兜底——所有宿主（App / PopoutApp）都必须提供真通道。 */
+  onBrowserTaskStart: (url: string) => void
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
 
-// The chat scrollers are inset from the pane's right edge by this much. The
-// 6px global scrollbar paints flush at the container edge, and that edge is a
-// native drag surface the scrollbar must not touch: with the workbench closed
-// it is the OS resize border (~4-5px, kept by titleBarStyle:'hidden') — it
-// swallows pointer events before they reach the page, so of the 6px scrollbar
-// only ~1px actually scrolled and every grab became a window resize; with the
-// workbench open the pane's 6px col-resize drag handle sits flush against the
-// scrollbar's right edge, one stray pixel into a pane-width drag. The gap
-// clears both.
-const CHAT_SCROLLER_EDGE_GAP = 10
+// CHAT_SCROLLER_EDGE_GAP moved to chat/ChatBody (PLAN-layout-modes): both of
+// the conversation column's hosts (primary card / side dock) scroll there.
+// ChatView's welcome region still insets the same edge and imports it.
 
 // --- Main component ---
 
@@ -213,7 +220,9 @@ function ChatView({
   hideComposer,
   hideWorkbench,
   hideTaskSwitcher,
+  card,
   welcomeHint,
+  onBrowserTaskStart,
   plan,
   onPlanJump,
   onOpenPlanNode,
@@ -247,10 +256,9 @@ function ChatView({
   // Same memo discipline as `staging`: an inline arrow here hands memoized
   // InputArea a fresh prop every streaming tick and re-renders the whole
   // composer ~12.5×/s for nothing (review_20260930 中3).
-  const handleUnbindExpert = useCallback(
-    () => { if (conversationId) onUnbindExpert?.(conversationId) },
-    [conversationId, onUnbindExpert],
-  )
+  const handleUnbindExpert = useCallback(() => {
+    if (conversationId) onUnbindExpert?.(conversationId)
+  }, [conversationId, onUnbindExpert])
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
@@ -270,12 +278,21 @@ function ChatView({
   // component never remounts and the draft survives — wiggles once per click.
   const composerShakeRef = useRef<HTMLDivElement | null>(null)
   useWelcomeShake('composer', composerShakeRef)
+  // 两形态的 composer 入场（ProjectCards 的 root 同期播一份）：形态 token
+  // 变化即从下方浮入一次。未挂载时 ref 为 null（卸载即置空），no-op——更换
+  // 后输入框退场、无动画可播。transform+opacity 不动布局。
+  useEffect(() => {
+    playWelcomeEnter(composerShakeRef.current, 'below')
+  }, [taskMode, newTaskProjectId])
   // 两个 InputArea 挂载点共用的发送包装（先钉回底部跟随再上抛）——稳定引用是
   // InputArea 的 memo 生效的前提。
-  const sendMessageAndPin = useCallback((content: string) => {
-    isNearBottomRef.current = true
-    onSendMessage(content)
-  }, [onSendMessage])
+  const sendMessageAndPin = useCallback(
+    (content: string) => {
+      isNearBottomRef.current = true
+      onSendMessage(content)
+    },
+    [onSendMessage],
+  )
 
   // 项目模式未选项目时 Composer 拒绝发送（灰按钮 + Enter 静默）——这次拒绝的
   // 回答：选择区摇晃一次（复用新建任务的 guidance shake，指向「缺的是项目」）
@@ -300,6 +317,29 @@ function ChatView({
       style: dx ? { position: 'relative', left: dx } : undefined,
     })
   }, [antdMessage, t])
+
+  // 重发 (2026-11-05): the user bubble's hover toolbar hands its prompt text
+  // back up here and it goes out as a NEW turn. Lightweight by design — the
+  // transcript is never rewound, so the original turn stays in place (a rewind
+  // would need an engine primitive; session-manager's whitelist only offers
+  // retryLastTurn). A live turn refuses with a toast instead of queueing: the
+  // engine would accept the ask, and the same prompt answered twice is never
+  // what 重发 means.
+  const handleResendUserMessage = useCallback(
+    (text: string) => {
+      if (!text.trim()) return
+      const busy =
+        isRequesting ||
+        agentStatus.status === 'awaiting_approval' ||
+        agentStatus.status === 'awaiting_user_input'
+      if (busy) {
+        antdMessage.open({ key: 'resend-busy', type: 'warning', content: t('chatView.resendBusy') })
+        return
+      }
+      sendMessageAndPin(text)
+    },
+    [isRequesting, agentStatus.status, antdMessage, t, sendMessageAndPin],
+  )
 
   // ── Windowed rendering ──
   // Only the latest PAGE_SIZE segments render initially; older segments are
@@ -347,7 +387,9 @@ function ChatView({
   // binding that pushes what is on screen and folds/restores the WebView.
   const browserPane = useBrowserPaneStore((s) => s.update)
   const paneRootRef = useRef<HTMLDivElement | null>(null)
-  const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
+  // card 形态随绑定走：工作台卡片化后浏览器 dock 需要三 inset 才能把原生
+  // view 收进卡的内容盒（hook 的推送 effect 据此携带 WORKBENCH_CARD_*_INSET）。
+  const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef, card)
 
   // ── Message navigator (定位我的消息, PLAN-message-navigator) ──
   // 用户消息的有序锚点：上/下一条步进按钮的数据源。memo key 是廉价 ids 签名
@@ -358,7 +400,11 @@ function ChatView({
   // 候选消息的 id 串，谓词与 listUserPrompts 同源（isUserPromptMessage）；
   // deps 相等时 React 原样返回上一个数组，引用天然稳定。
   const promptIdsKey = useMemo(
-    () => messages.filter(isUserPromptMessage).map((m) => m.id).join('\u0000'),
+    () =>
+      messages
+        .filter(isUserPromptMessage)
+        .map((m) => m.id)
+        .join('\u0000'),
     [messages],
   )
   const userPrompts = useMemo(
@@ -387,8 +433,33 @@ function ChatView({
   // the auto-open effects below (the store read stays unconditional — rules of
   // hooks; the flag is static per window either way).
   const workbenchOpen = workbenchOpenRaw && !hideWorkbench
-  const workbenchWidth = useWorkbenchStore((s) => s.width)
+  // 与面板自身同一个读数口子（useWorkbenchWidth）：reserve 和 pane 宽度必须
+  // 取同一个 tab 的值，否则会出现缝或覆盖。
+  const workbenchWidth = useWorkbenchWidth()
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
+  // 视图模式（PLAN-layout-modes 二期裁定「模式跟任务走」）：主视图归属决定
+  // 这张 ChatView 的主卡放什么（对话 / 工作区 / 浏览器），以及对话降级到侧栏
+  // 时的 chatSlot 注入。按会话读——DRAFT 无条目恒 'chat'，新建对话天然回
+  // 整页 welcome。
+  const primary = useConversationPrimary(wbKey)
+  // 浏览器主视图卡的内容盒宽——原生 view 的 paneWidth 直通来源（沉浸卡同款，
+  // useBrowserPane 的 browserPrimary 分支消费）。挂在主卡 wrapper 上，只在
+  // browser 主视图时测量。
+  const primaryCardRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (primary !== 'browser') {
+      useBrowserPaneStore.getState().setPrimaryPaneWidth(null)
+      return
+    }
+    const el = primaryCardRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth
+      useBrowserPaneStore.getState().setPrimaryPaneWidth(w > 0 ? w : null)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [primary])
   useEffect(() => {
     usePreviewPaneStore.getState().switchConversation(conversationId ?? null)
   }, [conversationId])
@@ -410,7 +481,8 @@ function ChatView({
     const count = browserPane.tabs.length
     const prev = prevBrowserTabsRef.current
     if (prev && prev.convKey === wbKey && prev.count === 0 && count > 0) {
-      useWorkbenchStore.getState().openTab(wbKey, 'browser')
+      // autoOpenTab：浏览器优先模式下浏览器已是主卡，不再弹 dock / 翻侧栏。
+      autoOpenTab(wbKey, 'browser')
     }
     prevBrowserTabsRef.current = { convKey: wbKey, count }
   }, [browserPane.tabs.length, browserPane.conversationId, wbKey, conversationId])
@@ -437,21 +509,36 @@ function ChatView({
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定。
   // The strip is a POINTER to the workbench's 计划 tab, so it only exists
   // where that pane can show (hideWorkbench would make its click a no-op).
-  const planStrip = useMemo(() => plan && !plan.completed && planTotal > 0 && !workbenchOpen && !hideWorkbench ? (
-    <div
-      onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 12px',
-        borderRadius: 13, background: 'var(--pm-elevated)', border: '1px solid var(--pm-pop-border)',
-        boxShadow: 'var(--pm-shadow-soft)', fontSize: 11, color: 'var(--pm-text-body)', cursor: 'pointer',
-        ...TABULAR_NUMS,
-      }}
-    >
-      <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--pm-link)', flexShrink: 0 }} />
-      <span>{plan?.mode === 'direct' ? '清单进行中' : '计划进行中'} · {planSettled}/{planTotal}</span>
-      <span style={{ color: 'var(--pm-link)' }}>查看</span>
-    </div>
-  ) : null, [plan, planTotal, planSettled, workbenchOpen, wbKey, hideWorkbench])
+  const planStrip = useMemo(
+    () =>
+      plan && !plan.completed && planTotal > 0 && !workbenchOpen && !hideWorkbench ? (
+        <div
+          onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 26,
+            padding: '0 12px',
+            borderRadius: 13,
+            background: 'var(--pm-elevated)',
+            border: '1px solid var(--pm-pop-border)',
+            boxShadow: 'var(--pm-shadow-soft)',
+            fontSize: 11,
+            color: 'var(--pm-text-body)',
+            cursor: 'pointer',
+            ...TABULAR_NUMS,
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--pm-link)', flexShrink: 0 }} />
+          <span>
+            {plan?.mode === 'direct' ? '清单进行中' : '计划进行中'} · {planSettled}/{planTotal}
+          </span>
+          <span style={{ color: 'var(--pm-link)' }}>查看</span>
+        </div>
+      ) : null,
+    [plan, planTotal, planSettled, workbenchOpen, wbKey, hideWorkbench],
+  )
   // 回到底部：平滑滚回尾部（用户裁定：点击后要有滚动动画），并重新接上
   // 跟随。动画期间挂 suppress 守卫（与跳转 effect 同款）——handleScroll 的
   // 早退防住 extraTop 塌缩与懒加载抢跑；isNearBottomRef 由动画自身的滚动
@@ -494,11 +581,7 @@ function ChatView({
     () =>
       planStrip || awayFromBottom ? (
         <div style={{ position: 'relative', width: '100%' }}>
-          {planStrip && (
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              {planStrip}
-            </div>
-          )}
+          {planStrip && <div style={{ display: 'flex', justifyContent: 'center' }}>{planStrip}</div>}
           <MessageNavControls
             visible={awayFromBottom}
             prompts={userPrompts}
@@ -646,14 +729,8 @@ function ChatView({
   // the loop starts), so it is there on the chat view's first frame; a
   // conversation in the default project has no `projectId` at all and stays
   // black, as it should — nobody chose that project.
-  const activeConversationProjectId = conversationId
-    ? conversations.find((c) => c.key === conversationId)?.projectId
-    : undefined
-  const composerProjectId = isWelcomeForm
-    ? taskMode === 'project'
-      ? (newTaskProjectId ?? undefined)
-      : undefined
-    : activeConversationProjectId
+  const activeConversationProjectId = conversationId ? conversations.find((c) => c.key === conversationId)?.projectId : undefined
+  const composerProjectId = isWelcomeForm ? (taskMode === 'project' ? (newTaskProjectId ?? undefined) : undefined) : activeConversationProjectId
   // The identity color the send button wears, from the project store — the same
   // hue the project card's wash and check icon use.
   const composerProjectHue = useProjectHue(composerProjectId)
@@ -701,10 +778,7 @@ function ChatView({
   // the card mounts at the turn's end: INSIDE the last message (above its
   // 对话工具条, via MessageGroup's aboveActions slot) when the turn closes on
   // assistant text, or as a sibling block after the last segment otherwise.
-  const turnRows = useMemo(
-    () => collectTurnDeliverables(messages, childDeliverables, { workspaceDir }),
-    [messages, childDeliverables, workspaceDir],
-  )
+  const turnRows = useMemo(() => collectTurnDeliverables(messages, childDeliverables, { workspaceDir }), [messages, childDeliverables, workspaceDir])
   const turnPlacement = useMemo(() => segmentTurnPlacement(allSegments), [allSegments])
 
   // 存为日常任务 rides exactly one action row — the conversation's last settled
@@ -907,10 +981,27 @@ function ChatView({
         conversationTitle={conversationTitle}
         onOpenSubAgent={onOpenSubAgent}
         onExtractRoutine={routineEntryIndex === index ? onExtractRoutine : undefined}
+        onResendUserMessage={handleResendUserMessage}
         aboveActions={aboveActions}
       />
     ),
-    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, freshSegKeys, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, routineEntryIndex, onExtractRoutine, onOpenSubAgent],
+    [
+      highlightedMsgId,
+      allSegments,
+      isRequesting,
+      agentStatus.status,
+      freshSegKeys,
+      onApproveTool,
+      onRejectTool,
+      onKillTool,
+      onRespondToTool,
+      conversationId,
+      conversationTitle,
+      routineEntryIndex,
+      onExtractRoutine,
+      handleResendUserMessage,
+      onOpenSubAgent,
+    ],
   )
 
   // ── Render ──
@@ -919,7 +1010,10 @@ function ChatView({
   // switch is still loading its messages from the DB, skip the welcome screen —
   // falling through to the (empty) message view keeps the layout stable so the
   // loaded content replaces it without a visible flash.
-  if (isWelcomeForm) {
+  // 视图模式：仅对话优先保留这条整页 welcome 早退（它的 DOM 被探针钉死）；
+  // 文件/浏览器优先下 welcome 走下面的布局返回，紧凑版由侧栏 chatSlot 的
+  // ChatBody welcome 臂承接。
+  if (isWelcomeForm && primary === 'chat') {
     return (
       <div
         style={{
@@ -927,9 +1021,31 @@ function ChatView({
           background: 'var(--pm-bg)',
           display: 'flex',
           flexDirection: 'column',
+          // 卡片形态：外层让出 5px 窗口边距（border-box 防 100%+10 溢出），
+          // 卡盒在下面的 wrapper 上。非卡片形态零改动。
+          ...(card ? ({ padding: WORKBENCH_CARD_MARGIN, boxSizing: 'border-box' } as React.CSSProperties) : {}),
         }}
       >
-        {/* Task form switcher (M8.4-rev): 对话 / 项目, its own top band so
+        {/* 卡片形态的公共盒：圆角边框 + 裁切（沉浸对话卡同款，IMMERSIVE_CARD
+            的镜像——那张表在 WorkspacePane，不跨文件共享样式对象）。 */}
+        <div
+          style={
+            card
+              ? {
+                  flex: 1,
+                  minHeight: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  boxSizing: 'border-box',
+                  background: 'var(--pm-bg)',
+                  border: '1px solid var(--pm-separator-faint)',
+                  borderRadius: IMMERSIVE_CARD_RADIUS,
+                  overflow: 'hidden',
+                }
+              : { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
+          }
+        >
+          {/* Task form switcher (M8.4-rev): 对话 / 项目, its own top band so
             short windows can never slide the content over it (it used to be
             absolutely pinned, and the centered logo overlapped it). Drives the
             same store the welcome page panels and handleRequest consume.
@@ -940,81 +1056,91 @@ function ChatView({
             Hidden in the project window (hideTaskSwitcher): the host already
             pinned the project, and the switcher would let a task escape into a
             chat-mode conversation outside it. */}
-        {!hideTaskSwitcher && (
-          <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
-            <Segmented
-              className="task-switch"
-              size="large"
-              value={taskMode}
-              onChange={(v) => setTaskMode(v as NewTaskMode)}
-              options={[
-                { label: t('welcome.modeChat'), value: 'chat' },
-                { label: t('welcome.modeProject'), value: 'project' },
-              ]}
-            />
-          </div>
-        )}
+          {!hideTaskSwitcher && (
+            <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
+              <Segmented
+                className="task-switch"
+                size="large"
+                value={taskMode}
+                onChange={(v) => setTaskMode(v as NewTaskMode)}
+                options={[
+                  { label: t('welcome.modeChat'), value: 'chat' },
+                  { label: t('welcome.modeProject'), value: 'project' },
+                  { label: t('welcome.modeBrowser'), value: 'browser' },
+                ]}
+              />
+            </div>
+          )}
 
-        {/* Welcome content: auto-margin centering that degrades to scrolling
+          {/* Welcome content: auto-margin centering that degrades to scrolling
             when the window is too short (alignItems:center would clip the top
             under the switcher instead). Same right inset as the transcript
             scroller — this edge is the window's native resize border too. */}
-        <div
-          data-welcome-region
-          style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', marginRight: CHAT_SCROLLER_EDGE_GAP }}
-        >
-          {/* The compact draft surface (welcomeHint) fills the region itself —
+          <div data-welcome-region style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', marginRight: CHAT_SCROLLER_EDGE_GAP }}>
+            {/* The compact draft surface (welcomeHint) fills the region itself —
               the host centers its own copy, and none of the welcome machinery
               (logo / greeting / suggestions / project cards) mounts. */}
-          {welcomeHint ?? (
-            <WelcomeContent
-              greeting={greeting}
-              hasApiKey={hasApiKey}
-              animName={animName}
-              conversations={conversations}
-              convLights={convLights}
-              onOpenConversation={onOpenConversation}
-            />
-          )}
-        </div>
+            {welcomeHint ?? (
+              <WelcomeContent
+                onBrowserTaskStart={onBrowserTaskStart}
+                greeting={greeting}
+                hasApiKey={hasApiKey}
+                animName={animName}
+                conversations={conversations}
+                convLights={convLights}
+                onOpenConversation={onOpenConversation}
+                onStarterSend={hasApiKey ? sendMessageAndPin : undefined}
+              />
+            )}
+          </div>
 
-        <div
-          ref={composerShakeRef}
-          data-welcome-shake="composer"
-          style={{ flexShrink: 0, padding: '0 24px 16px', maxWidth: 1048, margin: '0 auto', width: '100%' }}
-        >
-          <InputArea
-            key={conversationId ?? 'new'}
-            layout="inline"
-            focusToken={welcomeFocusToken}
-            // A project task owes a project: with none picked the send button
-            // greys out (the input keeps working) until a card is chosen — and
-            // a refused send answers itself: the picker shakes and a warning
-            // names the reason (handleBlockedSend).
-            sendBlocked={taskMode === 'project' && !newTaskProjectId}
-            onSendBlocked={handleBlockedSend}
-            sendAccentHue={composerProjectHue}
-            staging={staging}
-            isRequesting={isRequesting}
-            isStreaming={isStreaming}
-            isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
-            isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
-            hasMessages={hasMessages}
-            onSendMessage={sendMessageAndPin}
-            onCancel={onCancel}
-            profiles={profiles}
-            activeProfileId={activeProfileId}
-            profilePinned={profilePinned}
-            onSelectProfile={onSelectProfile}
-            onResetProfile={onResetProfile}
-            contextUsed={contextUsed}
-            contextLength={contextLength}
-            lastCompaction={lastCompaction}
-            approvalMode={approvalMode}
-            onChangeApprovalMode={onChangeApprovalMode}
-          />
-        </div>
-        <style>{`
+          {/* 输入框可见性（2026-11-04 两形态裁定）：chat 恒显；project 仅在
+              已选项目后出现（未选 = 输入框整块退场，卡片网格是唯一入口——
+              同 browser 先例，条件渲染而非 display:none）；browser 恒隐。
+              形态完全由 newTaskStore.projectId 派生，选中即挂载（focusToken
+              含 projectId，自动聚焦），「更换」= setProjectId(null) 回形态一。
+              手打文字活在 InputArea 的本地 state，卸载即失（刻意：一次性草稿
+              通道已随「点一下即发送」退役，没有第二条路径可漂移）。灰钮拒发
+              的旧路径只剩 dock 窄面（ChatBody welcome 臂，那里没有项目卡可
+              点）。
+              **未配置 API 密钥时整块退场**（2026-11-04 用户裁定「对话模式隐藏
+              对话输入区」）：没有密钥，发送必然失败，输入框只是诱饵——位置
+              由 WelcomeContent 的 ApiKeyGuide 卡接管；chat 与 project 两形态
+              同门（选中项目的输入框同样发不出去），transcript 形态的输入框
+              不受影响（历史会话仍可读、可改归档，配置后立刻可用）。 */}
+          {hasApiKey && (taskMode === 'chat' || (taskMode === 'project' && !!newTaskProjectId)) && (
+            <div
+              ref={composerShakeRef}
+              data-welcome-shake="composer"
+              style={{ flexShrink: 0, padding: '0 24px 16px', maxWidth: 1048, margin: '0 auto', width: '100%' }}
+            >
+              <InputArea
+                key={conversationId ?? 'new'}
+                layout="inline"
+                focusToken={welcomeFocusToken}
+                sendAccentHue={composerProjectHue}
+                staging={staging}
+                isRequesting={isRequesting}
+                isStreaming={isStreaming}
+                isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
+                isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
+                hasMessages={hasMessages}
+                onSendMessage={sendMessageAndPin}
+                onCancel={onCancel}
+                profiles={profiles}
+                activeProfileId={activeProfileId}
+                profilePinned={profilePinned}
+                onSelectProfile={onSelectProfile}
+                onResetProfile={onResetProfile}
+                contextUsed={contextUsed}
+                contextLength={contextLength}
+                lastCompaction={lastCompaction}
+                approvalMode={approvalMode}
+                onChangeApprovalMode={onChangeApprovalMode}
+              />
+            </div>
+          )}
+          <style>{`
           /* Task switcher: enlarged capsule (M8.4-rev) — !important beats antd's
              own item/thumb radii, which would otherwise square off the pill */
           .task-switch { padding: 4px; border-radius: 999px !important; }
@@ -1022,11 +1148,89 @@ function ChatView({
           .task-switch .ant-segmented-thumb { border-radius: 999px !important; }
           .task-switch .ant-segmented-item-label { padding: 8px 34px !important; font-size: 16px; font-weight: 600; }
         `}</style>
+        </div>
       </div>
     )
   }
 
-  // Chat view
+  // Chat view（视图模式布局返回：主卡按 primary 切换，dock 永在右侧）。
+  // ChatBody 的两份宿主——chat-primary 在主卡、其余模式经 chatSlot 进
+  // WorkbenchPane 的对话 tab。每次渲染只落一个宿主；换宿主重挂可接受
+  // （状态在上方 hooks 与 store，滚动重置后 follow-tail 自动落底）。
+  const showCursor = isRequesting && !hasLiveTextTail(allSegments)
+  const liveTurn = !routineEntryAllowed(agentStatus.status) ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1] : undefined
+  // 浏览器任务的静态开场（用户裁定 2026-11-04）：零消息的浏览器容器没有
+  // 转录可读，侧栏对话 tab 本来是纯空白。只在「浏览器主视图 + 一句话都没说
+  // + 没有回合在跑」时出现——它不是消息，不落库、不进上下文；用户一开口
+  // （乐观消息即刻到）就让位给转录。建议 chip 直接发送（同日追加裁定）：空态
+  // 上点建议就是要它跑起来，不再要求用户按第二下。没有 API 密钥时窄面挂的是
+  // ApiKeyGuide、没有可发的地方 → 不传 onSend，chip 整组不渲染。
+  const emptySlot =
+    primary === 'browser' && !hasMessages && !isRequesting && !isStreaming && !isError ? (
+      <BrowserTaskStarter conversationId={conversationId} onSend={hasApiKey ? sendMessageAndPin : undefined} />
+    ) : undefined
+  const chatBody = (
+    <ChatBody
+      // 浏览器主视图下 dock 对话 tab 不出 welcome 窄面（切换器不该出现在
+      // 纯浏览视图里）；composer 照常——侧栏对话是浏览器任务的持续输入面
+      // （三期修正裁定：去掉的是 welcome 页浏览器模式的自由输入框）。
+      welcome={isWelcomeForm && primary !== 'browser'}
+      narrow={primary !== 'chat'}
+      emptySlot={emptySlot}
+      scrollRef={scrollRef}
+      onScroll={handleScroll}
+      renderedSegments={renderedSegments}
+      windowTop={windowTop}
+      turnPlacement={turnPlacement}
+      turnRows={turnRows}
+      liveTurn={liveTurn}
+      renderSegment={renderSegment}
+      showCursor={showCursor}
+      isRequesting={isRequesting}
+      workspaceDir={workspaceDir}
+      agentStatus={agentStatus}
+      isError={isError}
+      isRetrying={isRetrying}
+      retryCountdown={retryCountdown}
+      isAwaitingContinue={isAwaitingContinue}
+      isAwaitingExtension={isAwaitingExtension}
+      onClearError={onClearError}
+      onRetryLast={onRetryLast}
+      onStopExecution={onStopExecution}
+      onResumeExecution={onResumeExecution}
+      onExtendLoop={onExtendLoop}
+      conversationId={conversationId}
+      hideComposer={hideComposer}
+      hasMessages={hasMessages}
+      navTopSlot={navTopSlot}
+      onSendMessage={sendMessageAndPin}
+      onSteer={onSteer}
+      onCancel={onCancel}
+      staging={staging}
+      profiles={profiles}
+      activeProfileId={activeProfileId}
+      profilePinned={profilePinned}
+      onSelectProfile={onSelectProfile}
+      onResetProfile={onResetProfile}
+      contextUsed={contextUsed}
+      contextLength={contextLength}
+      lastCompaction={lastCompaction}
+      activeExpertId={activeExpertId}
+      onUnbindExpert={handleUnbindExpert}
+      sendAccentHue={composerProjectHue}
+      approvalMode={approvalMode}
+      onChangeApprovalMode={onChangeApprovalMode}
+      greeting={greeting}
+      taskMode={taskMode}
+      newTaskProjectId={newTaskProjectId}
+      onTaskModeChange={setTaskMode}
+      welcomeFocusToken={welcomeFocusToken}
+      composerShakeRef={composerShakeRef}
+      onSendBlocked={handleBlockedSend}
+      hasApiKey={hasApiKey}
+    />
+  )
+
   return (
     <div
       ref={paneRootRef}
@@ -1034,146 +1238,71 @@ function ChatView({
         position: 'relative',
         height: '100%',
         background: 'var(--pm-bg)',
+        // flex column：卡片形态的对话卡带 margin，块流的 margin 塌陷会把
+        // 根自己推出容器（根无 padding/border 挡），flex 容器不塌陷。
+        display: 'flex',
+        flexDirection: 'column',
         // Reserve the workbench strip so chat content never flows under the
         // docked pane (PLAN-workbench W1: one width, one reserve — the old
         // browser+preview additive stack is gone). Transitions off — the
         // drag handle needs 1:1 tracking. The reserve clamps the stored
         // width like the pane itself does: a persisted width larger than
         // today's chat area (window moved/shrunk, or the 2026-10-06 zoom era
-        // 3× viewport drag) must not eat the whole column.
-        paddingRight: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) : 0,
+        // 3× viewport drag) must not eat the whole column. 卡片形态再加一个
+        // 卡边距：对话卡右缘 = 工作台卡左缘 − 列间 gap 5。
+        paddingRight: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) + (card ? WORKBENCH_CARD_MARGIN : 0) : 0,
       }}
     >
+      {/* 卡片形态（2026-11-03 主窗裁定，参考沉浸卡片语言）：对话列收进一张
+          圆角卡——boxSizing border-box（沉浸卡的 lesson：clamp 数学不被 +2
+          打破）、裁切防内容溢出圆角。scroller 与浮动 Composer（absolute，
+          锚自己的 relative wrapper）都搬进卡内，Composer 底缘即卡内容盒底。
+          非卡片形态（项目沉浸窗口——它的三列卡在 ProjectExplorer，以及测试
+          宿主）结构同形、零额外样式。 */}
       <div
-        ref={scrollRef}
-        data-pm-chat-scroll
-        onScroll={handleScroll}
-        // overflowAnchor: none — when content above the viewport grows after a
-        // conversation opens (markdown bodies, images, tool blocks), Chrome's
-        // scroll anchoring would otherwise adjust scrollTop to keep the old
-        // anchor node stable and drag the view off the tail.
-        // marginRight: CHAT_SCROLLER_EDGE_GAP — keeps the scrollbar clear of
-        // the native resize border / the workbench pane's drag handle (see the
-        // constant's note).
-        style={{
-          height: '100%',
-          overflow: 'auto',
-          overflowAnchor: 'none',
-          marginRight: CHAT_SCROLLER_EDGE_GAP,
-        }}
+        ref={primaryCardRef}
+        // 浮窗让位（十三期）的 webview 矩形基准——useFloatOverlayShift 据此
+        // 量浮窗越过 webview 左右缘的 px。
+        data-pm-primary-browser-card=""
+        style={
+          card
+            ? {
+                flex: 1,
+                minHeight: 0,
+                minWidth: 0,
+                margin: WORKBENCH_CARD_MARGIN,
+                display: 'flex',
+                flexDirection: 'column',
+                boxSizing: 'border-box',
+                background: 'var(--pm-bg)',
+                border: '1px solid var(--pm-separator-faint)',
+                borderRadius: IMMERSIVE_CARD_RADIUS,
+                overflow: 'hidden',
+              }
+            : { flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }
+        }
       >
-        <div style={{ height: 24 }} />
-
-        {renderedSegments.map((seg, i) => {
-          const abs = windowTop + i
-          const turn = turnPlacement.turnOf[abs]
-          // 本轮产物卡等轮次完全落定（2026-10-25 用户裁定）：轮次未落定时最后一轮
-          // 是 live 轮——文件行随 tool_result 逐个到齐，卡会跟着流式尾巴逐帧下坠、
-          // 行数中途变化；落定（idle/completed/error，routine-entry 同一套判定）
-          // 后才一次性出现。更早的轮次是已落定的历史，照常出卡。
-          const liveTurn = !routineEntryAllowed(agentStatus.status)
-            ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1]
-            : undefined
-          const turnDeliverable =
-            turn !== undefined && turn !== liveTurn && turnPlacement.lastSegmentOfTurn[turn] === abs
-              ? turnRows[turn]
-              : undefined
-          const card =
-            turnDeliverable && turnDeliverable.rows.length > 0 ? (
-              <TurnDeliverablesCard
-                deliverable={turnDeliverable}
-                conversationId={conversationId}
-                workspaceDir={workspaceDir}
-              />
-            ) : null
-          // A turn closing on assistant text mounts the card INSIDE the message
-          // (above its 对话工具条); otherwise the card is a sibling block after
-          // the turn's last segment — the column wrapper keeps the sibling's
-          // footprint aligned with the slotted one (24px inset + 16px margin).
-          const cardInMessage = seg.type === 'single' && seg.msg.role === 'assistant'
-          return (
-            <React.Fragment key={getSegmentKey(seg)}>
-              {renderSegment(seg, abs, cardInMessage ? card : undefined)}
-              {!cardInMessage && card && (
-                <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>{card}</div>
-              )}
-            </React.Fragment>
-          )
-        })}
-
-        <div style={{ minHeight: 1, paddingBottom: 160 }}>
-          {/* The single cursor of a run: at the foot while nothing streams as
-              text, otherwise at the end of the live text (SegmentView's tail). */}
-          <StreamingCursor show={isRequesting && !hasLiveTextTail(allSegments)} />
-
-          {/* Error state */}
-          {isError && (
-            <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <ErrorDisplay message={'error' in agentStatus ? agentStatus.error : 'Unknown error'} onDismiss={onClearError} onRetry={onRetryLast} />
-            </div>
-          )}
-
-          {/* Retry indicator */}
-          {isRetrying && (
-            <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  padding: '8px 16px',
-                  margin: '0 16px',
-                  background: 'var(--pm-retry-bg)',
-                  border: '1px solid var(--pm-retry-border)',
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: 'var(--pm-retry-ink)',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff9500" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
-                  <circle cx="12" cy="12" r="10" stroke="var(--pm-retry-border)" strokeWidth="2.5" />
-                  <path d="M12 2a10 10 0 0 1 10 10" strokeDasharray="31.4 31.4" strokeDashoffset="0">
-                    <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.7s" repeatCount="indefinite" />
-                  </path>
-                </svg>
-                <span>
-                  网络波动，正在重试
-                  {/* The count is the payload of this banner — but only when it
-                      actually arrived: undefined keys render `(/)`, so the
-                      parens ride behind key presence, not truthiness. */}
-                  {'attempt' in agentStatus && 'maxRetries' in agentStatus && ` (${agentStatus.attempt}/${agentStatus.maxRetries})`}
-                  {retryCountdown > 0 && <span style={{ marginLeft: 8, color: 'var(--pm-text-muted)' }}>{retryCountdown}s</span>}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Pause — resume or fully stop */}
-          {isAwaitingContinue && (
-            <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <SubAgentStopPrompt onConfirm={onStopExecution} onResume={onResumeExecution} />
-            </div>
-          )}
-
-          {/* Loop extension prompt */}
-          {isAwaitingExtension && (
-            <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <ExtensionPrompt
-                currentCount={'currentCount' in agentStatus ? agentStatus.currentCount : 50}
-                limit={'limit' in agentStatus ? agentStatus.limit : 50}
-                onExtend={onExtendLoop}
-                onStop={onClearError}
-              />
-            </div>
-          )}
-        </div>
+        {/* 主卡内容按视图模式切换：chat = 对话列（ChatBody，与抽取前逐字节
+          同构）；files = 目录树+预览（WorkspacePane 工作台形态拉宽，自带
+          DRAFT key 兜底）；browser = 浏览器 chrome 整卡（原生 view 由主进程
+          dock 按 browserPrimary 推送落进卡内容盒——chrome 以下全部留白）。 */}
+        {primary === 'chat' ? (
+          chatBody
+        ) : primary === 'files' ? (
+          <WorkspacePane conversationId={conversationId} />
+        ) : primary === 'browser' ? (
+          <BrowserPaneChrome pane={browserPane} onAction={browserPaneBinding.action} />
+        ) : null}
       </div>
 
+      {/* The workbench pane rides at ROOT level — a sibling of the card, not
+          inside it: it carries its own card box in the card form, and the
+          non-card host (the project immersive window) keeps the flush dock. */}
       {!hideWorkbench && (
         <WorkbenchPane
           conversationId={conversationId}
           chatAreaWidth={browserPaneBinding.chatAreaWidth}
+          card={card}
           plan={plan ?? null}
           onPlanJump={onPlanJump}
           onOpenPlanNode={onOpenPlanNode}
@@ -1183,41 +1312,9 @@ function ChatView({
           browserPane={browserPane}
           onBrowserAction={browserPaneBinding.action}
           onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}
+          chatSlot={primary !== 'chat' ? chatBody : undefined}
         />
       )}
-
-      <InputArea
-        key={conversationId ?? 'new'}
-        hidden={hideComposer}
-        isRequesting={isRequesting}
-        isStreaming={isStreaming}
-        isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
-        isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
-        hasMessages={hasMessages}
-        topSlot={navTopSlot}
-        // No rightInset: the root's paddingRight already ends the in-flow
-        // wrapper at the pane's left edge, and the composer is absolute
-        // INSIDE that wrapper — an inset here would deduct the pane twice.
-        onSendMessage={sendMessageAndPin}
-        onSteer={onSteer}
-        onCancel={onCancel}
-        profiles={profiles}
-        activeProfileId={activeProfileId}
-        profilePinned={profilePinned}
-        onSelectProfile={onSelectProfile}
-        onResetProfile={onResetProfile}
-        contextUsed={contextUsed}
-        contextLength={contextLength}
-        lastCompaction={lastCompaction}
-        boundExpertId={activeExpertId}
-        // The conversation's project keeps coloring the send button after the
-        // first message — the color belongs to the task, not to the welcome form.
-        sendAccentHue={composerProjectHue}
-        staging={staging}
-        onUnbindExpert={handleUnbindExpert}
-        approvalMode={approvalMode}
-        onChangeApprovalMode={onChangeApprovalMode}
-      />
     </div>
   )
 }

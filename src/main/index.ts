@@ -24,6 +24,7 @@ import { resolveThemePreference } from '../shared/theme'
 import { installApplicationMenu, attachShortcutFallback } from './menu'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
+import { windowIconName } from './app-icon'
 import { routineScheduler } from './routine/routine-scheduler'
 import { browserService } from './browser/BrowserService'
 import { enableAppViewDebugPort } from './browser/cdp-port'
@@ -71,8 +72,8 @@ function applyNativeThemeChange(): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setBackgroundColor(WINDOW_BACKGROUND[bootThemeMode])
       }
-      // Popped-out windows follow the main window's own refresh.
-      refreshPopoutTitleBarTheme()
+      // Popped-out windows follow the main window's own refresh (same mode).
+      refreshPopoutTitleBarTheme(bootThemeMode)
     })
     .catch(() => {})
 }
@@ -369,7 +370,7 @@ function createSplashWindow(): void {
     // nothing visually and paints much faster.
     transparent: false,
     backgroundColor: '#000',
-    icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
+    icon: getResourcePath(windowIconName()),
     webPreferences: {
       // No preload: splash.html is pure HTML/CSS/images and never touches
       // window.electronAPI. Loading the 348-line IPC bridge here only delays
@@ -456,7 +457,7 @@ function createWindow(): void {
     ...resolveTitleBarOptions(),
     show: false,
     backgroundColor: WINDOW_BACKGROUND[bootThemeMode],
-    icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
+    icon: getResourcePath(windowIconName()),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,

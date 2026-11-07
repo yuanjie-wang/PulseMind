@@ -117,7 +117,10 @@ const ASSISTANT = {
     text(MARKDOWN),
     { type: 'tool_use', id: 't1', name: 'page_get_content', status: 'completed', exitCode: 0, input: {}, output: '已读取 128 个节点' },
     { type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false },
-    { type: 'tool_use', id: 't2', name: 'exec', status: 'completed', exitCode: 1, input: { command: 'npm run build' }, output: 'error TS2307: 找不到模块' },
+    // exec's output is long on purpose: resultSummary has no exec family (the
+    // raw box always renders), and 40+ lines overflow the box's 300px cap —
+    // which is what the output-follow check below needs to be non-vacuous.
+    { type: 'tool_use', id: 't2', name: 'exec', status: 'completed', exitCode: 1, input: { command: 'npm run build' }, output: ['error TS2307: 找不到模块'].concat(Array.from({ length: 40 }, (_, i) => '  at step ' + i + ' of the build')).join('\\n') },
     { type: 'tool_result', tool_use_id: 't2', content: 'error TS2307', is_error: true },
     { type: 'tool_use', id: 't3', name: 'page_click', status: 'rejected', input: { index: 12, description: '点击提交按钮' } },
     { type: 'tool_result', tool_use_id: 't3', content: 'skipped', is_error: false },
@@ -126,6 +129,42 @@ const ASSISTANT = {
 }
 
 const USER = { id: 'm1', role: 'user', contentBlocks: [text('总结这个页面')], createdAt: NOW }
+
+/** The engine's REAL tool-result carrier (result-ingestion.ts): after every tool
+ *  round one user-role message whose contentBlocks are nothing but tool_result
+ *  blocks with text content. The desktop hides it (MessageGroup's
+ *  hasDisplayableContent counts a user tool_result only when it carries
+ *  imageData) — the card's 【输出】 already shows the text. The panel's 11-01
+ *  user-arm counted content too, so every round grew a right-aligned "user"
+ *  bubble of raw tool output (user report 2026-11-02). The ASSISTANT fixture
+ *  above parks its tool_results inside the assistant message, a shape the
+ *  engine never produces, which is why this probe never caught it. */
+const TOOL_RESULTS = {
+  id: 'm2r',
+  role: 'user',
+  createdAt: NOW,
+  contentBlocks: [
+    { type: 'tool_result', tool_use_id: 't1', content: '已读取 128 个节点\\n\\n# 页面标题\\n正文第一段……', is_error: false },
+    { type: 'tool_result', tool_use_id: 't2', content: 'error TS2307: 找不到模块 "./foo"', is_error: true },
+    { type: 'tool_result', tool_use_id: 't3', content: '已由用户跳过', is_error: false },
+  ],
+}
+
+/** A 1×1 transparent PNG — enough for an <img> to decode and lay out. */
+const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+
+/** The carrier WITH a screenshot (a page/browser tool's imageData): this one
+ *  the desktop does show — the image, plus any sibling text result as a well
+ *  (MessageGroup's user tool_result branch) — and so must the panel. */
+const SCREENSHOT = {
+  id: 'm2s',
+  role: 'user',
+  createdAt: NOW,
+  contentBlocks: [
+    { type: 'tool_result', tool_use_id: 't11', content: '', is_error: false, imageData: PNG_1X1 },
+    { type: 'tool_result', tool_use_id: 't12', content: '页面标题：示例', is_error: false },
+  ],
+}
 
 /** The turn's FINAL answer — text-only, after the tools are done. The chat gives
  *  the action row to THIS message only (SegmentBlock hides the narration's row
@@ -194,9 +233,11 @@ const PANELS = [
   {
     title: '主对话对齐',
     status: '就绪',
-    // 全部允许, so the amber assertions below have their subject.
+    // 全部允许, so the amber assertions below have their subject. TOOL_RESULTS
+    // rides between the narration and the final answer exactly where the
+    // engine puts it — and must render NOTHING (see the fixture's note).
     approvalMode: 'auto',
-    session: shell({ messages: [USER, ASSISTANT, FINAL] }),
+    session: shell({ messages: [USER, ASSISTANT, TOOL_RESULTS, FINAL] }),
   },
   {
     title: '等待批准',
@@ -214,7 +255,12 @@ const PANELS = [
     approvalMode: 'outside-ask',
     session: shell({
       agentStatus: { status: 'awaiting_user_input' },
-      messages: [USER, { id: 'a2', role: 'assistant', createdAt: NOW, contentBlocks: [{ type: 'tool_use', id: 't10', name: 'ask_user', status: 'pending', input: { prompt: '要往哪个城市订？', choices: '北京, 上海, 广州, 深圳', multi: true } }] }],
+      // 'queued', not 'pending': the dispatch-time state of a parked ask is
+      // 'queued' (the 排队中/执行中 split) and 'pending' means its input is
+      // still streaming — the panel renders 正在整理问题… for that and no rows
+      // (2026-10-10 ruling: 「'queued' must count as live」). A 'pending'
+      // fixture here silently emptied the two chip checks below.
+      messages: [USER, { id: 'a2', role: 'assistant', createdAt: NOW, contentBlocks: [{ type: 'tool_use', id: 't10', name: 'ask_user', status: 'queued', input: { prompt: '要往哪个城市订？', choices: '北京, 上海, 广州, 深圳', multi: true } }] }],
     }),
   },
   {
@@ -283,6 +329,22 @@ const PANELS = [
             ),
           ],
         },
+      ],
+    }),
+  },
+  {
+    // The screenshot carrier (the one user tool_result the desktop DOES show):
+    // the image renders, its sibling text result rides along as a clip, and the
+    // typed message before it is the only other user row. Kept out of panel 0
+    // because that panel's glyph check asserts zero <img> elements.
+    title: '截图回传',
+    status: '就绪',
+    session: shell({
+      messages: [
+        USER,
+        { id: 'a7', role: 'assistant', createdAt: NOW, contentBlocks: [{ type: 'tool_use', id: 't11', name: 'browser', status: 'completed', input: { action: 'screenshot' } }, { type: 'tool_use', id: 't12', name: 'page_get_content', status: 'completed', input: {} }] },
+        SCREENSHOT,
+        { id: 'a8', role: 'assistant', createdAt: NOW, contentBlocks: [text('截图已拿到。')] },
       ],
     }),
   },
@@ -717,6 +779,57 @@ check(
   `rows=${rowPlacement.transcriptRows}, narration=${rowPlacement.narrationHasRow}, final=${rowPlacement.finalHasRow}`,
 )
 check('审批挂起与进行中的面板都不出现操作行', rowPlacement.heldRows === 0 && rowPlacement.busyRows === 0, `held=${rowPlacement.heldRows}, busy=${rowPlacement.busyRows}`)
+
+// ── 工具结果载体消息（2026-11-02 user report：tool use 的结果那块展示有问题）──
+// 引擎每轮把工具结果作为一条 user 消息追加（result-ingestion.ts），桌面端整条
+// 隐藏（hasDisplayableContent 只认 imageData）。面板曾把 content 也算进来，
+// 每轮工具调用后都多出一个右侧「用户」气泡装着原始工具输出。这里直接数 DOM：
+// 主面板只有用户敲的那一条 user row，一个 clip 都没有；截图面板则相反——图
+// 渲染出来，伴随的文字结果作为 clip 跟在同一气泡里（桌面的 well 分支同形）。
+const carrier = await page.evaluate(() => {
+  const count = (i, sel) => window.__panels()[i].querySelectorAll(sel).length
+  const shotRoot = window.__panels()[7]
+  const img = shotRoot.querySelector('.pm-user-image')
+  return {
+    mainUserRows: count(0, '.pm-row-user'),
+    mainClips: count(0, '.pm-user-clip'),
+    mainRawOutputLeaked: (window.__panels()[0].querySelector('.pm-transcript')?.textContent ?? '').includes('找不到模块 "./foo"'),
+    shotUserRows: count(7, '.pm-row-user'),
+    shotImages: count(7, '.pm-user-image'),
+    shotClips: count(7, '.pm-user-clip'),
+    shotImgDecoded: !!img && img.naturalWidth === 1 && img.naturalHeight === 1,
+    shotClipInSameBubble: !!img && !!img.parentElement?.querySelector('.pm-user-clip'),
+  }
+})
+check(
+  '纯文字的工具结果载体不渲染成用户气泡（主面板只有用户敲的那一条 user row）',
+  carrier.mainUserRows === 1 && carrier.mainClips === 0 && !carrier.mainRawOutputLeaked,
+  `userRows=${carrier.mainUserRows}, clips=${carrier.mainClips}, leaked=${carrier.mainRawOutputLeaked}`,
+)
+check(
+  '带截图的载体照常渲染：图 + 伴随文字结果同气泡（桌面 well 分支同形）',
+  carrier.shotUserRows === 2 && carrier.shotImages === 1 && carrier.shotImgDecoded && carrier.shotClips === 1 && carrier.shotClipInSameBubble,
+  `userRows=${carrier.shotUserRows}, imgs=${carrier.shotImages}, decoded=${carrier.shotImgDecoded}, clips=${carrier.shotClips}, sameBubble=${carrier.shotClipInSameBubble}`,
+)
+
+// ── 工具卡【输出】框跟随尾部（桌面 CommandCard 的 outputRef 同款）────────
+// 展开一张有长输出的卡：300px 帽下 scrollTop 应吸到底，而不是停在开头。
+const outputFollow = await page.evaluate(async () => {
+  const root = window.__panels()[0]
+  const heads = [...root.querySelectorAll('.pm-tool-head')]
+  // t2 = exec 卡（第二个工具头）；展开后找到它的输出框
+  heads[1]?.click()
+  await new Promise((r) => setTimeout(r, 50))
+  const out = root.querySelector('.pm-cmd-out')
+  const r = out ? { scrollable: out.scrollHeight > out.clientHeight, atBottom: Math.abs(out.scrollHeight - out.scrollTop - out.clientHeight) <= 1, h: out.clientHeight, sh: out.scrollHeight } : null
+  heads[1]?.click()
+  return r
+})
+check(
+  '展开长输出的 exec 卡，【输出】框溢出 300px 帽且已吸到底（outputRef 跟随）',
+  !!outputFollow && outputFollow.scrollable && outputFollow.atBottom,
+  outputFollow ? `h=${outputFollow.h}, sh=${outputFollow.sh}, scrollable=${outputFollow.scrollable}, atBottom=${outputFollow.atBottom}` : 'no .pm-cmd-out',
+)
 check('no page errors while rendering', pageErrors.length === 0, pageErrors.join(' | '))
 
 // ── guards for the failures a glance would catch ─────────────────────
@@ -788,7 +901,13 @@ check('其余档位的图标与文案是桌面端那个 #666', tint.askIcon === 
 
 // The option is tinted before it is picked, so 全部允许 is recognisable in the
 // open menu too — then closed again so the screenshots stay the resting state.
-await page.evaluate(() => window.__panels()[0].querySelector('.pm-approval').click())
+// A REAL mouse click, not el.click(): the approval button is a safe action
+// (full_20261011 M13-P0-1) gated on isTrusted — a synthetic click never opened
+// the menu, and the two checks below passed vacuously on an empty list.
+// Playwright locators pierce open shadow roots, so the panel host's nth-child
+// addresses the button inside it (same recipe as the html card above).
+const approvalButton = page.locator('#page [data-pulsemind-panel]:nth-child(1) .pm-approval')
+await approvalButton.click()
 await page.waitForTimeout(150)
 const menu = await page.evaluate(() => {
   const items = [...window.__panels()[0].querySelectorAll('.pm-approval-item')]
@@ -801,8 +920,8 @@ const menu = await page.evaluate(() => {
 const autoItem = menu.find((i) => i.label === '全部允许')
 const otherItem = menu.find((i) => i.label === '始终询问')
 check('下拉里 全部允许 一项的图标与文案同样标橙', menu.length === 3 && autoItem?.color === 'rgb(212, 107, 8)' && autoItem?.icon === autoItem?.color, menu.map((i) => `${i.label} ${i.icon}/${i.color}`).join(', '))
-check('下拉里其余档位不变色', otherItem?.color !== 'rgb(212, 107, 8)' && otherItem?.icon !== 'rgb(212, 107, 8)', `${otherItem?.icon}/${otherItem?.color}`)
-await page.evaluate(() => window.__panels()[0].querySelector('.pm-approval').click())
+check('下拉里其余档位不变色', !!otherItem && otherItem.color !== 'rgb(212, 107, 8)' && otherItem.icon !== 'rgb(212, 107, 8)', `${otherItem?.icon}/${otherItem?.color}`)
+await approvalButton.click()
 await page.waitForTimeout(150)
 
 // 没有档位可报时的默认值（未连接 / 新会话）：按需确认，图标与文案一起是普通灰。
@@ -987,7 +1106,7 @@ check(
 // clicks the header: the strip has to be there with the card still shut. Then the
 // header is clicked once, to keep checking the dark card it opens onto.
 const panelCount = await page.evaluate(() => window.__panels().length)
-check('all seven state panels mounted', panelCount === 7, `${panelCount} panels`)
+check('all eight state panels mounted', panelCount === 8, `${panelCount} panels`)
 
 const held = await page.evaluate(() => {
   const root = window.__panels()[1]

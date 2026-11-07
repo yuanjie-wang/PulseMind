@@ -39,10 +39,30 @@ describe("the panel's 打开设置 button routes through the service worker", ()
 
   it('the service worker answers the message with openOptionsPage', () => {
     // Non-vacuous: deleting the handler branch fails the branch scan; a branch
-    // that no longer calls the API fails the compound match.
+    // that no longer calls the API fails the compound match. (Window widened
+    // when the receipt comment below landed — the routing explanation and the
+    // review_20261010 低5 note live between the branch head and the call.)
     expect(BACKGROUND).toContain('OPEN_OPTIONS_MESSAGE_TYPE')
+    // `\s*` around the member dot: prettier owns the chain's line breaks.
     expect(BACKGROUND).toMatch(
-      /msg\?\.type === OPEN_OPTIONS_MESSAGE_TYPE[\s\S]{0,300}chrome\.runtime\.openOptionsPage\(\)/,
+      /msg\?\.type === OPEN_OPTIONS_MESSAGE_TYPE[\s\S]{0,700}chrome\.runtime\s*\.\s*openOptionsPage\(\)/,
+    )
+  })
+
+  it('the success path answers with an {ok:true} receipt (review_20261010 低5)', () => {
+    // The branch used to `return false` with no sendResponse: the content
+    // side's promise-shaped sendMessage then rejected ("The message port
+    // closed before a response was received") and logged a false-alarm
+    // `open options failed` warn on every SUCCESSFUL open — poisoning the
+    // [PulseMind] diagnostic surface the same fix designated. The receipt
+    // makes the resolve real; the failure arm keeps the warn for genuine
+    // failures only. Non-vacuous: deleting either sendResponse arm fails its
+    // scan; reverting the branch to `return false` fails the async-marker
+    // scan (the port closes before the receipt can arrive).
+    expect(BACKGROUND).toMatch(/OPEN_OPTIONS_MESSAGE_TYPE[\s\S]{0,800}sendResponse\(\{ ok: true \}\)/)
+    expect(BACKGROUND).toMatch(/OPEN_OPTIONS_MESSAGE_TYPE[\s\S]{0,1000}sendResponse\(\{ ok: false \}\)/)
+    expect(BACKGROUND).toMatch(
+      /sendResponse\(\{ ok: false \}\)[\s\S]{0,120}return true \/\/ async response — the receipt above needs the port kept open/,
     )
   })
 })

@@ -33,6 +33,7 @@ import { resolveThemePreference } from '../shared/theme'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { installPopupMotionGuard } from './motion-guard'
 import { safeExternalUrl } from './utils/external-url'
+import { windowIconName } from './app-icon'
 import { DATA_DIR } from './storage/index'
 import { settingsStore } from './storage/settings-store'
 import type { PopoutWorkbenchSeed } from '../shared/types/electron-bridge'
@@ -68,7 +69,7 @@ const CASCADE_WRAP = 6
 let cascadeCount = 0
 
 function appIconPath(): string {
-  const name = process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'
+  const name = windowIconName()
   const prodBase = process.resourcesPath
   if (prodBase) {
     const prodPath = join(prodBase, 'resources', name)
@@ -246,6 +247,35 @@ export function recordSecondaryWatch(win: BrowserWindow, sessionId: string | nul
 export function recordSecondaryWatchFromSender(sender: WebContents, sessionId: string | null): void {
   const win = BrowserWindow.fromWebContents(sender)
   if (win) recordSecondaryWatch(win, sessionId)
+}
+
+/**
+ * The main window clicked one of a project's conversations: raise the project's
+ * immersive window and switch it onto `convId`. Resolves false when the project
+ * has no open window — the caller opens the conversation in-window as usual.
+ *
+ * Holder priority mirrors `openPopoutWindow`: a single-conversation popout is
+ * the more precise holder of `convId`, so it wins over the project window (and
+ * switching the project window onto a session a popout already carries would
+ * put one conversation in two windows). The switch order itself rides
+ * POPOUT_SWITCH — a targeted send to the holding window only; the downstream
+ * opened/closed announcements are recordSecondaryWatch's business, exactly as
+ * for the in-window switcher.
+ */
+export function focusProjectConversation(projectId: string, convId: string): boolean {
+  if (!projectId || !convId) return false
+  const popout = popouts.get(convId)
+  if (popout && !popout.isDestroyed()) {
+    if (popout.isMinimized()) popout.restore()
+    popout.focus()
+    return true
+  }
+  const win = projectWindows.get(projectId)
+  if (!win || win.isDestroyed()) return false
+  if (win.isMinimized()) win.restore()
+  win.focus()
+  try { win.webContents.send(IPC_CHANNELS.POPOUT_SWITCH, { sessionId: convId }) } catch { /* window closing */ }
+  return true
 }
 
 /**
@@ -427,10 +457,12 @@ export function setPopoutTitle(convId: string, title: string): void {
   if (win && !win.isDestroyed()) win.setTitle(title)
 }
 
-/** OS light/dark flipped while running: secondary caption overlays follow the
- *  main window's own refresh (index.ts applyNativeThemeChange). */
-export function refreshPopoutTitleBarTheme(): void {
-  const mode = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+/** Repaint every secondary window's caption overlay for `mode`. The mode is
+ *  RESOLVED BY THE CALLER (index.ts applyNativeThemeChange for an OS flip,
+ *  settings.handler for an in-app save — a 'light' preference must win over a
+ *  dark OS), because this window's renderer resolves the same preference for
+ *  its own surfaces and the two halves must agree. */
+export function refreshPopoutTitleBarTheme(mode: string): void {
   for (const win of [...popouts.values(), ...projectWindows.values()]) {
     if (!win.isDestroyed()) setTitleBarTheme(mode, win)
   }

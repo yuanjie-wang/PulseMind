@@ -7,13 +7,13 @@
 // dirty draft alive across tab switches (the component remounts, the draft
 // lives in the store).
 
-import React, { Suspense, useCallback, useEffect, useState } from 'react'
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Button, message } from 'antd'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
 import { detectFileKind, isPreviewable, extensionOf, type FileKind } from '../../../../shared/preview/file-kind'
 import { capPreviewText, previewLimitLabel } from '../../../../shared/preview/view-cap'
+import { reconstructPreChangeText } from '../../../../shared/diff/reconstruct-baseline'
 import { MarkdownPreview } from './MarkdownPreview'
-import { TextPreview } from './TextPreview'
 import { CsvPreview } from './CsvPreview'
 import { HtmlPreview } from './HtmlPreview'
 import { FileEditor } from './FileEditor'
@@ -91,6 +91,10 @@ function usePreviewFile(
           // by probe-preview-edit's NOT-remounted check). The ready render is
           // cheap since fast-code.ts — no transition needed.
           const capped = capPreviewText(text)
+          // Publish for the agent-diff capture (2026-11-01): usePreviewPaneSync
+          // snapshots this at the completion event as the PRE-change text.
+          // Imperative write — nobody subscribes, zero re-render cost.
+          usePreviewPaneStore.getState().noteLoadedText(path, capped.text)
           setState({ status: 'ready', text: capped.text, truncated: capped.truncated })
         }
       })
@@ -243,10 +247,18 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   const externalChange = usePreviewPaneStore((s) => !!s.externalChanges[path])
   const reveal = usePreviewPaneStore((s) => s.revealTargets[path])
   const [revealLine, setRevealLine] = useState<number | null>(null)
+  // Agent-change review diff (2026-11-01 pivot): the VIEW half highlights what
+  // the AGENT changed (pre-change base vs the fresh disk text, read-only, no
+  // controls). The user's own typing earns no diff (user ruling) — edit mode
+  // never mounts the merge extension.
+  const diffOn = usePreviewPaneStore((s) => s.diffVisible[path] ?? true)
+  const agentBase = usePreviewPaneStore((s) => s.agentDiffBases[path])
+  const viewDiffBase = !editMode && diffOn && agentBase != null && !(state.status === 'ready' && state.text === agentBase) ? agentBase : null
 
   // ── Reveal (PLAN-ide-linkage 1b): a completed edit (agent sync) or a tool
   // card click anchored this path — locate the target line in the fresh text
-  // and hand it to TextPreview, then consume the target after the flash. The
+  // and hand it to the CM instance (the unified FileEditor), then consume the
+  // target after the flash. The
   // tick guard keeps a second reveal from being cancelled by the first one's
   // expiry timer. Only the code view has a coordinate system to land on; every
   // other kind consumes-and-drops. A text anchor that no longer matches (the
@@ -280,6 +292,20 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     }, REVEAL_FLASH_MS)
     return () => window.clearTimeout(timer)
   }, [reveal, state, kind, path])
+
+  // Draft write-through, shared by the text branch's edit half and the
+  // generic edit branch below — one draft shape, one setter. Only reachable
+  // from the editor, which only renders on 'ready' (the narrowing is for the
+  // type, not a runtime path).
+  const updateDraft = useCallback(
+    (next: string) => {
+      const st = usePreviewPaneStore.getState()
+      const disk = state.status === 'ready' ? state.text : ''
+      const entry = st.drafts[path] ?? makeDraftFromDisk(disk)
+      st.setDraft(path, { ...entry, content: next })
+    },
+    [path, state],
+  )
 
   // Every freshly-read disk text funnels through the conflict decision
   // (PLAN-preview-edit T3/D7). The initial load has no decision to make
@@ -321,6 +347,33 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     // fresh read (a reload tick re-reads the same path, so `path`/`status`
     // alone never change).
   }, [state, path, kind, elementMode, t])
+
+  // Resolve a pending agent-diff RECONSTRUCTION (2026-11-01) once the
+  // post-change read has landed: the edit tool's old_str/new_str rebuilds the
+  // pre-change text from the fresh disk text. `seen === state` means this
+  // ready object is still the PRE-spec read (the reload the sync triggered
+  // hasn't completed) — wait. A fresh mount resolves on its first ready (the
+  // sync staged the spec before openFile, so the mount read IS post-change).
+  // (When the pane held the file, the sync set the base directly — no spec.)
+  const lastReadyRef = useRef<LoadState | null>(null)
+  useEffect(() => {
+    if (state.status !== 'ready') return
+    const st = usePreviewPaneStore.getState()
+    const spec = st.agentDiffCaptures[path]
+    const seen = lastReadyRef.current
+    lastReadyRef.current = state
+    if (!spec || seen === state) return
+    const after = state.text
+    // Shared with the unit tests (src/shared/diff/reconstruct-baseline.ts,
+    // review_20261103 中5) — the inline version carried a `$`-pattern and a
+    // CRLF defect the hand-copied test could never see.
+    const before = reconstructPreChangeText(after, spec)
+    st.setAgentDiffBase(path, before)
+    st.clearAgentDiffCapture(path)
+    // A new review auto-shows (auto-show ruling reused): an explicit earlier
+    // 隐藏改动 must not swallow the NEXT agent change.
+    st.setDiffVisible(path, true)
+  }, [state, path])
 
   if (kind === 'image') return <ImagePreview path={path} />
   if (kind === 'office') {
@@ -365,9 +418,9 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     )
   }
 
-  // ── Edit mode (D1/D3): markdown / text / csv / html all edit their SOURCE
-  // text — the view mode's renderer is irrelevant here. Display text prefers
-  // the store draft (survives tab switches and agent conflicts). ──
+  // ── Edit mode size gate (D1/D3): markdown / text / csv / html all edit
+  // their SOURCE text. Applies to every editable kind, the unified text
+  // branch included. ──
   if (editMode && isEditableKind(kind)) {
     const bytes = new TextEncoder().encode(state.text).length
     if (!isEditableSize(bytes)) {
@@ -377,6 +430,54 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
         </div>
       )
     }
+  }
+
+  // ── text: the unified CM instance (PLAN-codemirror-view). One lazy editor
+  // serves view and edit; the readOnly flip reconfigures in place — no
+  // remount, so scroll position, undo history and the draft all survive the
+  // 查看↔编辑 flip. Draft wiring only in edit mode (CodeMirrorEditor header
+  // note 3): the flip adopts the draft via the value effect, and a view-side
+  // listener would feed that disk text straight back into the setter, wiping
+  // the dirty draft. ──
+  // The tree SHAPE must be identical across the flip (both modes render
+  // TruncationNotice; show=false collapses to a fragment) — the edit branch
+  // returning `body` bare unmounts the fragment wrapper and remounts the
+  // whole editor (probe: same-node=false).
+  if (kind === 'text') {
+    const body = (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        {editMode && externalChange && <ConflictBanner path={path} />}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <FileEditor
+            value={editMode ? draft?.content ?? state.text : state.text}
+            path={path}
+            onChange={editMode ? updateDraft : undefined}
+            onSave={
+              editMode
+                ? () => {
+                    // The toolbar's save button owns the actual write; dispatch
+                    // a custom event so ⌘S in the editor and the button share
+                    // one path.
+                    window.dispatchEvent(new CustomEvent('pulsemind-preview-save', { detail: path }))
+                  }
+                : undefined
+            }
+            readOnly={!editMode}
+            revealLine={revealLine}
+            viewDiffBase={viewDiffBase}
+          />
+        </div>
+      </div>
+    )
+    // Edit text is ≤ MAX_EDITABLE_BYTES (gate above) — far under the 2M-char
+    // render cap — so the truncation notice is view-only.
+    return <TruncationNotice show={!editMode && state.truncated}>{body}</TruncationNotice>
+  }
+
+  // ── Edit mode (D1/D3): markdown / csv / html (text returned above).
+  // Display text prefers the store draft (survives tab switches and agent
+  // conflicts). ──
+  if (editMode && isEditableKind(kind)) {
     const value = draft?.content ?? state.text
     return (
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -385,11 +486,7 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
           <FileEditor
             value={value}
             path={path}
-            onChange={(next) => {
-              const st = usePreviewPaneStore.getState()
-              const entry = st.drafts[path] ?? makeDraftFromDisk(state.text)
-              st.setDraft(path, { ...entry, content: next })
-            }}
+            onChange={updateDraft}
             onSave={() => {
               // The toolbar's save button owns the actual write; dispatch a
               // custom event so ⌘S in the editor and the button share one path.
@@ -402,7 +499,6 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   }
 
   if (kind === 'markdown') return <TruncationNotice show={state.truncated}><MarkdownPreview text={state.text} /></TruncationNotice>
-  if (kind === 'text') return <TruncationNotice show={state.truncated}><TextPreview text={state.text} path={path} revealLine={revealLine ?? undefined} /></TruncationNotice>
   if (kind === 'csv') return <TruncationNotice show={state.truncated}><CsvPreview text={state.text} path={path} /></TruncationNotice>
   if (kind === 'html') return <HtmlPreview path={path} reloadTick={reloadTick} />
   return <FallbackCard path={path} kind={kind} />

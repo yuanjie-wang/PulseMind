@@ -73,3 +73,40 @@ describe('active-session sync ownership gate (useConversationEngine)', () => {
     expect(engine).toMatch(/scheduleActiveSync\(sessionId, st\)/)
   })
 })
+
+// ── 激活即引擎活跃会话（2026-11-04，「浏览器模式启动对话后输入消息无响应」）──
+// 同一道 activeEngineIdRef 门的另一面：回合是发给主进程的，与视图无关；但事件
+// 进 React 必须过 `activeEngineIdRef.current === sessionId`。存在于「会话切了、
+// 引擎活跃 id 没跟」的路径上时，消息发得出去、界面一片不动——草稿已被 submit
+// 清空、转录不更新、无 spinner，用户只能描述成「输入无响应」。物化分支（首条
+// 消息）一直两半都激活；浏览器任务容器（createBrowserTask）曾经只做了
+// persistence 那一半，容器又从不过侧栏切换，于是它的每一条消息都掉进这个洞。
+describe('activation makes the conversation the engine-active session', () => {
+  const controller = read('src/renderer/src/hooks/useChatController.ts')
+
+  it('the React state sync gate is the active-engine id (the mechanism above)', () => {
+    const engineSrc = read('src/renderer/src/hooks/useConversationEngine.ts')
+    expect(engineSrc).toMatch(/if \(activeEngineIdRef\.current === sessionId\) \{\s*\n\s*if \(data\.type === 'compaction'\)/)
+  })
+
+  it('createBrowserTask activates the engine, before persistence', () => {
+    const body = functionBody(controller, 'const createBrowserTask = useCallback')
+    const activate = body.indexOf('engine.activateEngine(convId)')
+    const persist = body.indexOf('persistence.activateConversation(convId)')
+    expect(activate).toBeGreaterThan(-1)
+    expect(persist).toBeGreaterThan(-1)
+    expect(activate).toBeLessThan(persist)
+    // 依赖表必须带上它，否则回调闭包停在旧实例上（functionBody 止于回调的
+    // 右大括号，依赖表在它之外，所以这里扫整源）。
+    expect(controller).toMatch(/const createBrowserTask = useCallback[\s\S]{0,2600}\[engine\.activateEngine,/)
+  })
+
+  it('handleRequest activates a conversation that is not the active engine', () => {
+    const body = functionBody(controller, 'const handleRequest = useCallback')
+    const guard = body.indexOf('if (engine.activeEngineIdRef.current !== convId) engine.activateEngine(convId)')
+    const send = body.indexOf('engineHandle.startLoop(content, knowledgeBase)')
+    expect(guard).toBeGreaterThan(-1)
+    expect(send).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(send)
+  })
+})

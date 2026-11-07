@@ -10,6 +10,18 @@ import { mintPlanId } from './exchange'
 
 export const MAX_PLAN_NODES = 20
 
+/** How many ROWS a direct-mode todo list keeps at all (outstanding + settled
+ *  history). Deliberately separate from MAX_PLAN_NODES (2026-11-06): that one
+ *  bounds OUTSTANDING work, this one bounds the array so the prompt section and
+ *  the panel stay finite. Charging settled history against the outstanding
+ *  budget made the cap un-escapable — retire soft-skips a row but keeps it, so
+ *  after 20 lifetime entries every append was refused and the refusal pointed at
+ *  "retire finished entries", the one action that frees nothing. Kept at exactly
+ *  2× the outstanding budget so there is always enough settled history to drop.
+ *  Nothing derives a node's number from its position, so trimming settled rows
+ *  leaves every surviving id exactly as the model last saw it. */
+export const MAX_TODO_HISTORY = MAX_PLAN_NODES * 2
+
 /** Split generations (PLAN-plan-split P5): 0 = an original node (splittable),
  *  1 = the product of a split (not splittable). One level only — the bound
  *  that makes dynamic splitting determinately terminating; the spawn prompt
@@ -95,6 +107,14 @@ function assertAcyclic(nodes: PlanNode[]): void {
 // ── Derivation ───────────────────────────────────────────────────────────
 
 export const isTerminal = (status: PlanNodeStatus): boolean => status !== 'pending' && status !== 'blocked'
+
+/** Whether a status leaves the entry OUTSTANDING — what the todo budget counts.
+ *  `in_progress` is an INPUT-only claim (it lands as pending + the current
+ *  marker) that isTerminal would call terminal, so it is spelled out rather than
+ *  inferred. `undefined` means "no claim": the caller decides whether that reads
+ *  as unchanged (an existing entry) or as the pending default (a new one). */
+export const isOutstanding = (status: PlanNodeStatus | TodoItem['status'] | undefined): boolean =>
+  status === undefined || status === 'pending' || status === 'blocked' || status === 'in_progress'
 
 /** Pending and every dependency completed — the parallel-dispatch set (D1). */
 export function readyNodes(plan: Plan): PlanNode[] {
@@ -505,18 +525,27 @@ export function reconcileTodo(
   plan: Plan | null,
   objective: string,
   rawItems: unknown,
-  fix?: { msgId?: string },
+  fix?: { msgId?: string; fresh?: boolean },
 ): TodoReconcileResult {
   const items = normalizeTodoItems(rawItems)
   for (let i = 0; i < items.length; i++) {
     if (!items[i].description) throw new Error(`item ${i + 1}: description is required`)
   }
-  const live = plan && (plan.mode ?? 'delegated') === 'direct' && !plan.completed ? plan : null
+  // A settled todo list is CONTINUED, not replaced (2026-11-06). Minting on
+  // `completed` was the second half of the lost-id bug: mint numbers entries by
+  // POSITION and ignores the ids it was handed, so a model carrying stale
+  // numbering got a silent renumber instead of an error. `fresh` is the explicit
+  // way to discard the old list; a delegated plan still mints (mode differs).
+  const live = !fix?.fresh && plan && (plan.mode ?? 'delegated') === 'direct' ? plan : null
 
   if (!live) {
     if (items.length === 0) throw new Error('items are required — a todo list starts with at least one entry')
     if (!objective.trim()) throw new Error('objective is required')
-    if (items.length > MAX_PLAN_NODES) throw new Error(`maximum ${MAX_PLAN_NODES} entries allowed`)
+    if (items.length > MAX_TODO_HISTORY) throw new Error(`maximum ${MAX_TODO_HISTORY} rows per list`)
+    const mintedOutstanding = items.filter(it => isOutstanding(it.status)).length
+    if (mintedOutstanding > MAX_PLAN_NODES) {
+      throw new Error(`maximum ${MAX_PLAN_NODES} outstanding entries — this call starts with ${mintedOutstanding}; settle the extra ones in the same call (settled rows do not count against the cap)`)
+    }
     const next: Plan = {
       id: mintPlanId(),
       objective: objective.trim(),
@@ -525,8 +554,13 @@ export function reconcileTodo(
       version: 2,
       mode: 'direct',
     }
+    const minted = applyTodoStatuses(next, items, fix)
+    // Derive on mint too (2026-11-06): a list minted already fully settled (a
+    // post-compaction re-send, e.g.) must not claim to be open — the prompt
+    // section and nextScheduleAction both read this flag.
+    minted.completed = minted.nodes.every(n => isTerminal(n.status))
     return {
-      plan: applyTodoStatuses(next, items, fix),
+      plan: minted,
       stats: { added: items.length, retired: 0, completed: countTodoCompleted(items), keptWording: 0 },
       minted: true,
       changed: next.nodes.map(n => n.id),
@@ -541,6 +575,9 @@ export function reconcileTodo(
   // todo_write must leave the caller's plan exactly as it was.
   const working = live.nodes.map(n => ({ id: n.id, status: n.status, taken: false }))
   const paired: Array<{ item: TodoItem; nodeId: string; isNew: boolean; viaId: boolean }> = []
+  // Numbers are NOT contiguous any more once history trimming has run, so every
+  // "which ids exist" message quotes the HIGHEST number instead of a range.
+  const highest = working.reduce((max, w) => Math.max(max, Number(w.id.slice(1))), 0)
   // Pass A — id claims are the ONLY reference path (2026-10-25: identity is
   // the id, not the wording — the same model the plan tools always had, and
   // the reword trap is structurally gone because rewording rides the id).
@@ -551,10 +588,10 @@ export function reconcileTodo(
     if (item.id === undefined) continue
     const nid = `n${item.id.toLowerCase().replace(/^n/, '')}`
     if (!/^n\d+$/.test(nid)) {
-      throw new Error(`item ${i + 1}: id "${item.id}" is not an entry number — use the n1..n${working.length} from the last list`)
+      throw new Error(`item ${i + 1}: id "${item.id}" is not an entry number — use an id exactly as the last list showed it (highest is n${highest}), brackets omitted`)
     }
     const hit = working.find(w => w.id === nid)
-    if (!hit) throw new Error(`item ${i + 1}: id "${nid}" does not exist — the list has n1..n${working.length}`)
+    if (!hit) throw new Error(`item ${i + 1}: id "${nid}" does not exist — the list carries ids up to n${highest}; nothing answers to "${nid}"`)
     if (paired.some(p => p.nodeId === nid)) throw new Error(`item ${i + 1}: id "${nid}" is claimed twice — one list entry per id`)
     hit.taken = true
     paired[i] = { item, nodeId: nid, isNew: false, viaId: true }
@@ -566,13 +603,23 @@ export function reconcileTodo(
   // discipline slip with a visible outcome, not a silent correctness trap.
   for (let i = 0; i < items.length; i++) {
     if (paired[i]) continue
-    if (working.length >= MAX_PLAN_NODES) {
-      throw new Error(`maximum ${MAX_PLAN_NODES} entries allowed — retire finished entries instead of adding past the cap`)
-    }
     const nextNum = working.reduce((max, w) => Math.max(max, Number(w.id.slice(1))), 0) + 1
     const id = `n${nextNum}`
     working.push({ id, status: 'pending', taken: true })
     paired[i] = { item: items[i], nodeId: id, isNew: true, viaId: false }
+  }
+  // The budget counts OUTSTANDING entries on the PROJECTED list (2026-11-06) —
+  // never the array length, which charged settled history and made the cap
+  // reachable but not releasable. Projected, not current, so one call may settle
+  // twenty rows and append three. An existing entry absent from the incoming list
+  // retires as skipped (the retire pass below), so it projects as settled.
+  const outstandingAfter = working.filter((w) => {
+    const claim = paired.find(p => p.nodeId === w.id)
+    if (!claim) return false
+    return isOutstanding(claim.item.status ?? (w.status as PlanNodeStatus))
+  }).length
+  if (outstandingAfter > MAX_PLAN_NODES) {
+    throw new Error(`maximum ${MAX_PLAN_NODES} outstanding entries — this call would leave ${outstandingAfter}; settle or drop ${outstandingAfter - MAX_PLAN_NODES} of them first (settled rows never count against the cap)`)
   }
 
   // Mutation phase — cannot throw: append the new nodes, then apply.
@@ -661,7 +708,24 @@ export function reconcileTodo(
     delete live.currentNodeId
   }
   if (objective.trim()) live.objective = objective.trim()
-  if (live.nodes.every(n => isTerminal(n.status))) live.completed = true
+  // Derived BOTH ways (2026-11-06). Setting it only on the all-settled edge left
+  // a closed list closed forever: appending a fresh pending entry to it kept
+  // completed=true, so the panel, the prompt section and nextScheduleAction all
+  // went on calling the list finished while the new entry was outstanding.
+  live.completed = live.nodes.every(n => isTerminal(n.status))
+  // Keep the array bounded (2026-11-06). MAX_TODO_HISTORY is 2× the outstanding
+  // budget, so dropping the oldest settled rows can always restore the bound: only
+  // terminal rows the current call did not touch are candidates, and ids are never
+  // derived from position — every surviving number stays exactly as the model last
+  // saw it (a dropped id simply stops resolving, which the "does not exist" error
+  // names against the list that is actually there).
+  if (live.nodes.length > MAX_TODO_HISTORY) {
+    const excess = live.nodes.length - MAX_TODO_HISTORY
+    const dropped = new Set(
+      live.nodes.filter(n => isTerminal(n.status) && !changed.has(n.id)).slice(0, excess).map(n => n.id),
+    )
+    live.nodes = live.nodes.filter(n => !dropped.has(n.id))
+  }
   return { plan: live, stats, minted: false, changed: [...changed] }
 }
 
@@ -765,11 +829,26 @@ function normalizePlanShape(plan: Plan | null): Plan | null {
  *  plan — the caller omits the section entirely. */
 export function formatPlanForPrompt(plan: Plan | null): string | null {
   const active = normalizePlanShape(plan)
-  if (!active || active.completed) return null
+  if (!active) return null
   const todo = isTodoPlan(active)
+  // A CLOSED todo list must stay visible (2026-11-06). The delta snapshot renders
+  // ONLY the entries a call touched, on the explicit assumption that THIS section
+  // re-injects the full list next turn (see PlanSnapshotInfo.changed). Bailing out
+  // on `completed` broke that loop exactly when the list went all-green: the model
+  // lost every id it had, could not tell a settled list from no list at all, and
+  // could only guess the next number — while mint-by-position silently renumbered
+  // whatever it guessed. A settled DELEGATED plan keeps the old behaviour: the DAG
+  // is over, nothing invites a follow-up.
+  if (active.completed && !todo) return null
   const byId = idMap(active)
   const ready = new Set(readyNodes(active).map(n => n.id))
   const lines: string[] = ['## Current Plan', '', `Objective: "${active.objective}"`, `Mode: ${active.mode ?? 'delegated'}`, '']
+  if (active.completed) {
+    const last = active.nodes.reduce((max, n) => Math.max(max, nodeNumberOf(n)), 0)
+    lines.push(`STATE: CLOSED — all ${active.nodes.length} entr${active.nodes.length === 1 ? 'y' : 'ies'} settled (highest is n${last}); nothing is in progress.`)
+    lines.push(`The list itself stays live: todo_write continues it — an item WITHOUT an id appends (the next number is n${last + 1}), an item naming an existing n-number revives that entry in place. Up to ${MAX_PLAN_NODES} entries may be outstanding at once; settled rows never count against that cap. Pass fresh=true ONLY to start an unrelated list (its numbering restarts at n1).`)
+    return lines.join('\n')
+  }
   for (const node of active.nodes) lines.push(todo ? describeTodoNode(node, active.currentNodeId ?? null) : describeNode(node, byId, ready))
   lines.push('', '### Rules')
   if (!todo) {

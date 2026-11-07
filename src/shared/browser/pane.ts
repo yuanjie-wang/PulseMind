@@ -12,6 +12,10 @@
  *  own tab strip (32px) + address bar (36px). Shared by the renderer chrome
  *  and the main-process dock — both must agree on every pixel. */
 export const PANE_CHROME_HEIGHT = 100
+/** 浏览器主视图卡头顶的 chrome 行高（PLAN-layout-modes 2026-11-03）：
+ *  pane 页签条 32 + 地址行 36 = 68——主视图卡没有工作台页签条（它整卡就是
+ *  浏览器），比侧栏形态的 PANE_CHROME_HEIGHT 少了那 32px 页签条。 */
+export const PRIMARY_PANE_CHROME_HEIGHT = 68
 export const PANE_MIN_WIDTH = 320
 /** Drag ceiling input: the chat column keeps this fixed floor (2026-10-30,
  *  replacing the old PANE_MAX_CHAT_RATIO=0.6 percentage ceiling — the floor
@@ -27,6 +31,21 @@ export const PANE_DRAG_HANDLE_WIDTH = 6
  *  WebView is inset past it (one px narrower) or a loaded page hides the
  *  divider. */
 export const PANE_BORDER_WIDTH = 1
+
+// ── 主窗工作台卡片化（2026-11-03，参考沉浸卡片语言）──
+// 工作台面板收成圆角卡：四周 5px 窗口边距 + 列间 5px gap + 1px 卡边框
+// （ChatView 的 card 形态，主窗 App.tsx 与会话弹出窗口 PopoutApp 都传入——
+// 2026-11-04 两窗统一；项目沉浸窗口走自己的 ProjectExplorer 三列卡）。
+// 浏览器 tab 在前时原生 view 必须收进卡的内容盒——三个 inset 语义见
+// BrowserPaneState（沉浸右卡同款：右缘不含边框，由 webviewBox 自身的内缩
+// 吸收；上/下含边框）。渲染端在 card 形态随状态携带，缺省不携带 = 旧几何。
+export const WORKBENCH_CARD_MARGIN = 5
+/** TITLE_BAR_HEIGHT 之下再下推：窗口边距 + 卡上边框。 */
+export const WORKBENCH_CARD_TOP_INSET = WORKBENCH_CARD_MARGIN + PANE_BORDER_WIDTH
+/** 距窗口右缘收进：窗口边距（卡右边框由 webviewBox 的内缩吸收）。 */
+export const WORKBENCH_CARD_RIGHT_INSET = WORKBENCH_CARD_MARGIN
+/** 距窗口底缘收进：窗口边距 + 卡下边框。 */
+export const WORKBENCH_CARD_BOTTOM_INSET = WORKBENCH_CARD_MARGIN + PANE_BORDER_WIDTH
 
 // ── Pane session contract ──
 // Pane tabs ride their own persistent session, never defaultSession. The
@@ -71,6 +90,17 @@ export interface BrowserPaneState {
   /** 直通面板宽度（沉浸浏览器面板占满右卡，没有「挤占聊天」的侧栏关系，
    *  绕开 clampPaneWidth 的 chatArea−640 数学）。absent = 走旧 clamp。 */
   paneWidth?: number
+  /** 浏览器主视图模式（PLAN-layout-modes 2026-11-03）：原生 view 头顶的
+   *  chrome 行高。侧栏形态 = 工作台页签条 32 + pane 页签条 32 + 地址行 36
+   *  = PANE_CHROME_HEIGHT(100)；主视图卡没有工作台页签条，只有 32+36=68。
+   *  absent = 100（侧栏形态逐字节不变）。 */
+  chromeHeight?: number
+  /** 浮窗让位（十三期）：原生 view 画在一切 DOM 之上，左侧边栏/dock 的下拉
+   *  浮窗右侵/左侵进浏览器主卡时会被遮挡。渲染端量出浮窗越过 webview 左/
+   *  右缘的 px 推过来，dock 把 view 的左/右缘临时内收让出浮窗（裁剪而非缩
+   *  放——zoom 按原 width 计算，页面不 reflow），浮窗关闭即归零。absent = 0。 */
+  leftOverlay?: number
+  rightOverlay?: number
 }
 
 /** One row in the pane's tab strip. */
@@ -147,12 +177,7 @@ export type WindowOpenRoute =
  *  `postBody`/`referrer` are the HandlerDetails fields, passed through
  *  structurally so this stays Electron-import-free: postBody.data is
  *  Electron's UploadData[] (rawData chunks) and is decoded to one string. */
-export function routeWindowOpen(
-  rawUrl: string,
-  disposition: string,
-  postBody?: { data?: unknown; contentType?: string },
-  referrer?: string,
-): WindowOpenRoute {
+export function routeWindowOpen(rawUrl: string, disposition: string, postBody?: { data?: unknown; contentType?: string }, referrer?: string): WindowOpenRoute {
   // A download is not a window: the session's will-download hook already
   // routes it (user → ~/Downloads, agent → the conversation workspace).
   // Minting a tab here would park an empty page next to the download.
@@ -167,8 +192,8 @@ export function routeWindowOpen(
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
       const chunks = Array.isArray(postBody?.data)
         ? (postBody.data as Array<{ type?: string; bytes?: Uint8Array }>).filter(
-          (p): p is { type: string; bytes: Uint8Array } => p?.type === 'rawData' && p.bytes != null,
-        )
+            (p): p is { type: string; bytes: Uint8Array } => p?.type === 'rawData' && p.bytes != null,
+          )
         : []
       const total = chunks.reduce((n, c) => n + c.bytes.byteLength, 0)
       const merged = new Uint8Array(total)
@@ -263,9 +288,7 @@ export function mergeSuggestions(
   const seen = new Set<string>()
   const out: MergedSuggestion[] = []
 
-  const favs = [...favorites]
-    .filter(matches)
-    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+  const favs = [...favorites].filter(matches).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
   for (const f of favs) {
     const key = normalizeFavoriteUrl(f.url)
     if (seen.has(key)) continue
@@ -404,11 +427,6 @@ export function rankHistorySuggestions(text: string, rows: HistorySuggestionRow[
       visitCount: row.visitCount ?? 0,
     })
   }
-  ranked.sort((a, b) =>
-    a.rank - b.rank ||
-    b.lastVisitAt - a.lastVisitAt ||
-    b.visitCount - a.visitCount ||
-    a.url.localeCompare(b.url),
-  )
+  ranked.sort((a, b) => a.rank - b.rank || b.lastVisitAt - a.lastVisitAt || b.visitCount - a.visitCount || a.url.localeCompare(b.url))
   return ranked.slice(0, Math.max(0, limit)).map(({ url, title, rank }) => ({ url, title, rank }))
 }

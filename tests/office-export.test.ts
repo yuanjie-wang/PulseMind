@@ -409,7 +409,9 @@ describe('docx style system (2026-10-01: markdowner export-CSS ported into OOXML
 
   it('blockquote: app-link-blue left bar over the link-bg wash', async () => {
     const xml = await docxDocumentXml('> 引用文字')
-    expect(xml).toContain('w:color="1677FF"')
+    // 竖线是主题色 70% 叠白的柔化条：mixOverWhite('1677FF', 0.7) → 5CA0FF；
+    // 底纹仍是 8% 叠白的 ECF4FF。
+    expect(xml).toContain('w:color="5CA0FF"')
     expect(xml.toUpperCase()).toContain('ECF4FF')
   })
 
@@ -525,15 +527,16 @@ describe('docx frontmatter design (PLAN-docx-native-styles)', () => {
   })
 
   it('accent re-tints quote bar/wash and table header; default accent = byte-stable constants', async () => {
-    // mixOverWhite('0F766E'): quote fill 8% → ECF4F3, header fill 6% → F1F7F6, rule 25% → C3DDDB
+    // mixOverWhite('0F766E'): quote fill 8% → ECF4F3, header fill 6% → F1F7F6,
+    // rule 25% → C3DDDB, quote bar 70%（柔化竖线）→ 579F9A
     const xml = await docxDocumentXml('---\naccent: "#0F766E"\n---\n\n> 引用\n\n| 甲 | 乙 |\n|---|---|\n| 1 | 2 |')
-    expect(xml).toContain('w:color="0F766E"')
+    expect(xml).toContain('w:color="579F9A"')
     expect(xml).toContain('ECF4F3')
     expect(xml).toContain('F1F7F6')
     const styles = await docxPart('---\naccent: "#0F766E"\n---\n\n# 标题\n\n正文', 'word/styles.xml')
     expect(styles).toContain('C3DDDB')
     const def = await docxDocumentXml('> 引用\n\n| 甲 |\n|---|\n| 1 |')
-    expect(def).toContain('w:color="1677FF"')
+    expect(def).toContain('w:color="5CA0FF"')
     expect(def.toUpperCase()).toContain('ECF4FF')
     expect(def.toUpperCase()).toContain('F2F3F5')
   })

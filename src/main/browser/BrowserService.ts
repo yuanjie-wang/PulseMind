@@ -198,6 +198,13 @@ export class BrowserService {
     if (!prev || prev.sender !== sender) this.lastPanePush.delete(key)
     this.paneWindows.set(key, { state, sender, win })
     appViewDock.setChromeOverlay(win, state.chromeOverlayHeight ?? 0)
+    // 浏览器主视图（PLAN-layout-modes）：chrome 基础行高随推送（主视图卡
+    // 68，无工作台页签条）；缺省回落 PANE_CHROME_HEIGHT——侧栏/popout 推送
+    // 不带该字段，dock 几何逐字节不变。
+    appViewDock.setChromeBase(win, state.chromeHeight)
+    // 浮窗让位（十三期）：侧边栏/dock 下拉浮窗右侵/左侵浏览器主卡时，渲染端
+    // 量出的左右内收 px；缺省 0——无浮窗时 view 几何逐字节不变。
+    appViewDock.setSideOverlays(win, state.leftOverlay ?? 0, state.rightOverlay ?? 0)
     // 沉浸窗口（2026-10-31）：三向卡片 inset 随 pane 状态推送更新——主窗与
     // popout 不带这些字段，全是 0，dock 几何逐字节不变。
     appViewDock.setInsets(win, state.topInset ?? 0, state.rightInset ?? 0, state.bottomInset ?? 0)
@@ -212,7 +219,7 @@ export class BrowserService {
     if (clamped !== this.paneWidth) {
       this.paneWidth = clamped
       try {
-        await settingsStore.update(s => ({ ...s, browser: { ...s.browser, paneWidth: clamped } }))
+        await settingsStore.update((s) => ({ ...s, browser: { ...s.browser, paneWidth: clamped } }))
       } catch {
         /* width stays session-only */
       }
@@ -372,27 +379,26 @@ export class BrowserService {
     const postRoute = post ? (url: URL) => url.toString() === target : null
     if (post && postRoute) {
       let replayed = false
-      await entry.tab.page.route(
-        postRoute,
-        async (r) => {
-          // One-shot rewrite BY HAND, gated to the main-frame navigation: the
-          // URL predicate alone also matches same-URL subresource/iframe
-          // requests (Playwright routes them all), and Playwright's own
-          // `times: 1` counts EVERY match — a subresource arriving before
-          // goto would consume the rewrite (the navigation ships as GET), and
-          // a goto whose URL normalization never matches would leave the
-          // route armed to overwrite a LATER same-URL request with the stale
-          // body (review_20260930 中9; a SAML one-time token would replay an
-          // old assertion). Everything else passes through untouched.
-          const req = r.request()
-          if (replayed || !req.isNavigationRequest() || req.frame() !== entry.tab.page.mainFrame()) {
-            await r.continue().catch(() => {})
-            return
-          }
-          replayed = true
-          // request().headers() is async (Playwright) — spread it AWAITED or
-          // the override ships with no cookies/user-agent and SSO breaks.
-          await r.continue({
+      await entry.tab.page.route(postRoute, async (r) => {
+        // One-shot rewrite BY HAND, gated to the main-frame navigation: the
+        // URL predicate alone also matches same-URL subresource/iframe
+        // requests (Playwright routes them all), and Playwright's own
+        // `times: 1` counts EVERY match — a subresource arriving before
+        // goto would consume the rewrite (the navigation ships as GET), and
+        // a goto whose URL normalization never matches would leave the
+        // route armed to overwrite a LATER same-URL request with the stale
+        // body (review_20260930 中9; a SAML one-time token would replay an
+        // old assertion). Everything else passes through untouched.
+        const req = r.request()
+        if (replayed || !req.isNavigationRequest() || req.frame() !== entry.tab.page.mainFrame()) {
+          await r.continue().catch(() => {})
+          return
+        }
+        replayed = true
+        // request().headers() is async (Playwright) — spread it AWAITED or
+        // the override ships with no cookies/user-agent and SSO breaks.
+        await r
+          .continue({
             method: 'POST',
             headers: {
               ...(await r.request().headers()),
@@ -400,16 +406,18 @@ export class BrowserService {
               'content-length': String(new TextEncoder().encode(post.data).length),
             },
             postData: post.data,
-          }).catch(() => {})
-        },
-      )
+          })
+          .catch(() => {})
+      })
     }
     try {
-      await entry.tab.page.goto(target, {
-        waitUntil: 'commit',
-        timeout: 20_000,
-        ...(route.referrer ? { referrer: route.referrer } : {}),
-      }).catch(() => {})
+      await entry.tab.page
+        .goto(target, {
+          waitUntil: 'commit',
+          timeout: 20_000,
+          ...(route.referrer ? { referrer: route.referrer } : {}),
+        })
+        .catch(() => {})
     } finally {
       // The rewrite never outlives this mint: a route left armed by a
       // failed or never-matching goto would keep rewriting later same-URL
@@ -563,7 +571,9 @@ export class BrowserService {
             const inside = isSubpath(wsDir, lexical) || (wsReal.status === 'resolved' && isSubpath(wsReal.path, real.path))
             if (!inside) return browserError('PATH_DENIED', '文件上传被拒绝：只能上传当前会话工作区内的文件')
           }
-          return browserOk(await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }, entry.lastSnapshot?.tree ?? null))
+          return browserOk(
+            await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }, entry.lastSnapshot?.tree ?? null),
+          )
         }
         case 'playwrightWaitForTimeout':
           await page.waitForTimeout(Math.min(Math.max(cmd.ms, 0), 30_000))
@@ -670,6 +680,46 @@ export class BrowserService {
       console.warn('[browser] fetchRendered failed:', err instanceof Error ? err.message : err)
       return null
     }
+  }
+
+  /** The page this conversation's own browser pane is showing, for the state
+   *  block's `## Current Page` section (2026-11-04, user ruling: 带上、只放
+   *  最简信息). Two facts only — url + title — because the section is rebuilt
+   *  on EVERY tool-loop iteration and the model can read the rest itself with
+   *  the `browser` tool.
+   *
+   *  Source = the active pane tab (what the user would see if the pane were
+   *  unfolded), falling back to the newest tab that holds a real page: a scope
+   *  whose active tab is still `about:blank` must not report nothing while a
+   *  sibling tab shows something. No visible-window/scope check — the tab
+   *  belongs to this conversation whether or not the pane is currently
+   *  unfolded, and the section is worded for exactly that ("has this page
+   *  open", not "you are looking at it").
+   *
+   *  Never throws into the prompt path: a destroyed view or a torn-down
+   *  backend just means "no page". */
+  currentPageOf(scope: string | null): { url: string; title: string } | null {
+    if (!scope) return null
+    const read = (tab: ServiceTab): { url: string; title: string } | null => {
+      try {
+        const view = this.viewOfTab(tab.id)
+        if (!view || view.webContents.isDestroyed()) return null
+        const url = view.webContents.getURL() ?? ''
+        if (!url || isFreshTabUrl(url)) return null
+        return { url, title: view.webContents.getTitle() ?? '' }
+      } catch {
+        return null
+      }
+    }
+    const active = this.activePaneEntry(scope)
+    const fromActive = active ? read(active) : null
+    if (fromActive) return fromActive
+    const entries = this.paneScopeEntries(scope)
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const hit = read(entries[i])
+      if (hit) return hit
+    }
+    return null
   }
 
   private async listTabs(scopeId: string): Promise<BrowserTabInfo[]> {

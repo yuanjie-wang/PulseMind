@@ -50,6 +50,10 @@ export interface SegmentViewProps {
    *  ChatView passes it for the conversation's last settled assistant message
    *  only; every other host leaves it off and renders as before. */
   onExtractRoutine?: () => void | Promise<void>
+  /** 重发 on the user bubble's hover toolbar (see MessageGroup). Optional: only
+   *  hosts with a send channel (ChatView) pass it; everything else renders the
+   *  copy button alone. */
+  onResendUserMessage?: (text: string) => void
   onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
@@ -160,6 +164,7 @@ export function SegmentView({
   isRequesting,
   awaitingApproval,
   onExtractRoutine,
+  onResendUserMessage,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -199,6 +204,7 @@ export function SegmentView({
       conversationTitle={conversationTitle}
       onOpenSubAgent={onOpenSubAgent}
       onExtractRoutine={onExtractRoutine}
+      onResendUserMessage={onResendUserMessage}
       awaitingApproval={awaitingApproval}
     />
   )

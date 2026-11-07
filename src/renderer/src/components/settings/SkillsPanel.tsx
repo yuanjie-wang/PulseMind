@@ -168,7 +168,18 @@ function SkillCard({ skill, use, onToggle, onDeleteSkill, onOpen }: SkillCardPro
       onClick={() => onOpen(definition.name)}
       actions={
         <>
-          <CapabilitySwitch checked={enabled} onToggle={() => onToggle(definition.name)} />
+          {/* 内置技能恒启用（2026-11-04 裁定「内置恒不可关」，review_20261105
+              中4）：引擎侧 applyPreferences 把内置从 disabled 集剥除，开关
+              点了只是「假关」——内存态翻回、DB 残留陈旧条目、重载静默复开。
+              开关置 disabled + tooltip 说清原因，引擎侧 SkillManager.toggle
+              同步拒绝翻转（防未来的第二调用方）。 */}
+          <CapabilitySwitch
+            checked={enabled}
+            disabled={definition.builtIn}
+            onLabel={t('skills.builtInAlwaysOn')}
+            offLabel={t('skills.builtInAlwaysOn')}
+            onToggle={() => onToggle(definition.name)}
+          />
           {!definition.builtIn && onDeleteSkill && (
             <CapabilityDeleteButton onClick={() => onDeleteSkill(definition.name)} />
           )}

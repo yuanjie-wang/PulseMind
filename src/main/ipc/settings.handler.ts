@@ -6,6 +6,7 @@ import { keepAwake } from '../system/keep-awake'
 import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { expireOldBackups } from '../services/backup-retention'
 import { setTitleBarTheme } from '../window-chrome'
+import { refreshPopoutTitleBarTheme } from '../popout-window'
 import { rebuildApplicationMenu } from '../menu'
 import { applyLaunchAtLogin } from '../tray'
 import { resolveThemePreference } from '../../shared/theme'
@@ -42,11 +43,15 @@ export function registerSettingsHandlers(): void {
     try { expireOldBackups(settings.backupRetentionDays) } catch { /* best-effort */ }
     // The window chrome follows the theme, which this save may have just changed.
     // 'system' resolves against nativeTheme here; the renderer resolves the same
-    // preference against prefers-color-scheme for its own surfaces.
-    setTitleBarTheme(
-      resolveThemePreference(settings.theme, nativeTheme.shouldUseDarkColors),
-      BrowserWindow.fromWebContents(event.sender)
-    )
+    // preference against prefers-color-scheme for its own surfaces. The sender
+    // repaint covers the saving window; the secondaries (popout + project
+    // windows) get the SAME resolved mode — their web content follows this save
+    // via the SETTINGS_CHANGED broadcast below, and their OS-drawn caption
+    // buttons must move with it (2026-11-02: they used to keep the previous
+    // theme's colours until the OS itself flipped).
+    const chromeTheme = resolveThemePreference(settings.theme, nativeTheme.shouldUseDarkColors)
+    setTitleBarTheme(chromeTheme, BrowserWindow.fromWebContents(event.sender))
+    refreshPopoutTitleBarTheme(chromeTheme)
     // 开机自启 was tray-only; the settings UI now writes the same preference.
     // Idempotent, and the tray's 30s rebuild() picks the checkbox up on its own.
     applyLaunchAtLogin(!!settings.launchAtLogin)

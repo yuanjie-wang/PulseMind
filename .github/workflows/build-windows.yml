@@ -1,0 +1,283 @@
+# Windows/x64 portable 打包。
+#
+# 目标：产出免安装 .exe（build.win.target = portable），并让它**装机即能启动**。
+# 2026-10-14 的 0.4.2 win portable 曾「装完就崩 Cannot find module
+# 'archiver-utils'」——那是 two packing bugs（平台段 files 全否定触发 `**/*`
+# 全捕获 + Go 依赖树静默丢包），已在 package.json 与 afterPack 门禁里修掉；
+# 本 workflow 因此**不重做那层检查**，而是把「跑完 electron-builder 不等于产物
+# 能用」这件事换成三条显式断言（见 Package 之后的步骤）。
+#
+# 为什么不在 mac 上交叉打：win 的 portable 目标走 NSIS，非 Windows 宿主需要
+# wine（本仓开发机实测没有 wine）。GitHub 的 windows runner 免掉这层。
+#
+# 与 build-linux.yml 的三处刻意差异：
+#   · **不设 npm_config_build_from_source**：那条旗是为 glibc 天花板钉的，
+#     Windows 不存在这个问题。better-sqlite3 的 win32-x64 prebuild 与 Electron
+#     33 的 ABI 对得上，让 prebuild-install 直接取，省掉 MSVC 编译时间。
+#     万一 prebuild 缺席，node-gyp 会回落编译，windows-latest 自带 VS Build Tools。
+#   · **不设 PLAYWRIGHT_HOST_PLATFORM_OVERRIDE**：Linux 那边是因为 runner 发行
+#     版被 Playwright 从支持矩阵里摘了才 override；Windows 是原生支持的一格。
+#   · 架构只出 x64：win.extraResources 的 filter 是 `win32-${arch}/**`，而
+#     resources/bin 只有 win32-x64（arm64 缺 rg 会静默降级成 grep 兜底）。
+#
+# 原生模块的 ABI 由 `npm ci` 的 postinstall 保证：scripts 里有
+# `postinstall: electron-builder install-app-deps`，它按 devDependencies 的
+# electron 版本重建 —— 所以 build 配置里的 npmRebuild:false 不影响这里。
+
+name: Build Windows portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      # 平时只传 portable exe（257MB）。win-unpacked 整个目录解压后 948MB、压成 zip
+      # 约 380MB，只有需要离线整包时才勾。push / tag 触发时 inputs 为空 → false。
+      upload-unpacked:
+        description: '上传完整 win-unpacked.zip（约 380MB，仅需要离线整包时勾选）'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+    # 临时：workflow_dispatch 只认**默认分支**上已注册的 workflow 文件，本文件
+    # 目前只存在于 feature_0.5.0，不加这条分支触发就一次也跑不起来（gh workflow
+    # run 报 HTTP 404 "not found on the default branch"）。文件随分支合进 main
+    # 之后**删掉这三行**，否则每推一次这个分支就白跑一次十几分钟的 Windows 构建。
+    branches:
+      - feature_0.5.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: win/x64 portable
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # 不传 token，也就不会尝试上传任何东西；--publish never 再兜一层。
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 对齐 build-linux.yml 的 node 20（两者产出同一个版本的 asar 形态）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ms-playwright
+          key: playwright-win-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: electron-win-${{ hashFiles('package-lock.json') }}
+
+      # node_modules 必须来自干净安装：afterPack 的 verify-packed-node-modules
+      # 门禁要求纯安装树（AGENTS.md「打包两刀」），不要在 CI 里缓存它。
+      # postinstall 会跑 electron-builder install-app-deps，原生模块在这一步
+      # 就按 Electron 33 的 ABI 重建成 win32-x64。
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Assert native modules target Electron+win32
+        shell: pwsh
+        run: |
+          $node_exe = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+          if (-not (Test-Path $node_exe)) { throw "better-sqlite3 二进制缺失 —— postinstall 的重建没跑成" }
+          # 头部 MZ 即 Windows PE；ELF/Mach-O 说明装进了一个别的平台的产物
+          $magic = [System.IO.File]::ReadAllBytes((Resolve-Path $node_exe))[0..1]
+          if ($magic[0] -ne 0x4D -or $magic[1] -ne 0x5A) { throw "better_sqlite3.node 不是 PE 格式（magic=$($magic -join ','))" }
+          Get-Item $node_exe | Select-Object Length, FullName | Format-List
+          $sharp = Get-ChildItem "node_modules\@img" -Directory | Where-Object { $_.Name -like '*win32*' }
+          if (-not $sharp) { throw "sharp 的 win32 变体没装上（@img 下只有 $((Get-ChildItem node_modules\@img -Directory).Name -join ', ')）—— 图片链路会在运行期崩" }
+          $sharp | ForEach-Object { Write-Host "sharp variant: $($_.Name)" }
+          $wasm = "node_modules\onnxruntime-web\dist\ort-wasm-simd-threaded.wasm"
+          if (-not (Test-Path $wasm)) { throw "onnxruntime-web 的 wasm 引擎缺失 —— OCR 不可用" }
+          Get-Item $wasm | Select-Object Length | Format-List
+          if (Test-Path "node_modules\onnxruntime-node") { throw "onnxruntime-node 仍在依赖树 —— 它会带入 DirectML.dll，Win10 1809 上 OCR 必崩（1114）" }
+
+      - name: Fetch bundled Chromium
+        run: npm run browsers:install
+
+      - name: Build bundles
+        run: npm run build
+
+      # ensure-chromium.js 的契约是「永不非零退出」（缺了只 warn，让没有
+      # Chromium 的开发机也能打包），代价是任何取浏览器失败都会静默变成
+      # 「一个没有内置浏览器的包」。CI 里没有这个让步的必要。
+      # ensure-chromium 会把 chrome-win64 归一化成 chrome-win（名字对齐
+      # ManagedBackend 的期待），所以断言的是归一化后的目录。
+      - name: Verify bundled Chromium landed
+        shell: pwsh
+        run: |
+          $chrome = "resources\chromium\chrome-win\chrome.exe"
+          if (-not (Test-Path $chrome)) {
+            Write-Host "::error::$chrome missing — ensure-chromium never fails, so this step is the only browser-less-package gate"
+            if (Test-Path resources\chromium) { Get-ChildItem resources\chromium -Recurse -Depth 2 | Select-Object -First 40 | ForEach-Object { Write-Host $_.FullName } }
+            exit 1
+          }
+          Get-Item $chrome | Select-Object Length | Format-List
+
+      - name: Package portable exe
+        run: npx electron-builder --win portable --x64 --publish never
+
+      # afterPack 删掉了执行提供器库（CUDA/TensorRT/shared）与异平台二进制。
+      # 文件存在 ≠ 能加载：这里拿打包后的 onnxruntime 真建 det/rec/cls 三个会话。
+      - name: Smoke packed OCR runtime
+        run: node scripts/smoke-packed-ocr.js --app-out dist/win-unpacked --platform win32 --arch x64
+
+      # 一条悬案要定：afterPack 报「freed 187.3MB」，但 portable exe 两次构建都是
+      # 256.90MB、字节数只差 10KB（269,221,526 → 269,232,183）。看 win-unpacked
+      # 自己减了没有即可定性：
+      #   - 减了 187MB 而 exe 没减 → 问题在 7z 压缩环节（afterPack 与 target 的先后）
+      #   - 没减 → 删掉的 187MB 不是包内文件，freed 数字虚高
+      # 只产出日志 + 几 KB CSV，不传大文件：256MB 的 zip 在这条网络上已两次超时。
+      # 故意排在 Assert 之前——断言会 throw，而清单在失败时才有诊断价值。
+      - name: Report unpacked tree
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path "dist\win-unpacked").Path
+          function MB($b) { if ($null -eq $b) { 0 } else { [math]::Round($b / 1MB, 1) } }
+
+          $all = Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue
+          $total = ($all | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("=== win-unpacked total: {0:N1} MB / {1} files ===" -f (MB $total), $all.Count)
+
+          function Show-Tree([string]$path, [string]$label) {
+            Write-Host ""
+            Write-Host "=== $label ==="
+            Get-ChildItem $path -ErrorAction SilentlyContinue | ForEach-Object {
+              $b = if ($_.PSIsContainer) {
+                (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                  Measure-Object -Property Length -Sum).Sum
+              } else { $_.Length }
+              [PSCustomObject]@{ Item = $_.Name; MB = (MB $b) }
+            } | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
+          }
+
+          Show-Tree $root "top level"
+          Show-Tree (Join-Path $root "resources") "resources"
+
+          # ORT 递归清单：这是 187.3MB 悬案的核心，剥完到底还剩什么、各多大
+          $ort = Join-Path $root "resources\ort-web"
+          $ortFiles = @()
+          $ortBytes = 0
+          if (Test-Path $ort) {
+            $ortFiles = Get-ChildItem $ort -Recurse -File
+            $ortBytes = ($ortFiles | Measure-Object -Property Length -Sum).Sum
+            Write-Host ""
+            Write-Host ("=== onnxruntime-node: {0:N1} MB / {1} files ===" -f (MB $ortBytes), $ortFiles.Count)
+            $ortFiles | Sort-Object Length -Descending |
+              Select-Object @{n='MB';e={ MB $_.Length }},
+                            @{n='Rel';e={ $_.FullName.Substring($ort.Length + 1) }} |
+              Format-Table -AutoSize | Out-String | Write-Host
+          } else {
+            Write-Host ""
+            Write-Host "WARNING: onnxruntime-node 未 unpack"
+          }
+
+          $csv = "dist\win-unpacked-manifest.csv"
+          $all | Select-Object @{n='Bytes';e={$_.Length}},
+                                @{n='Rel';e={$_.FullName.Substring($root.Length + 1)}} |
+            Sort-Object Bytes -Descending | Export-Csv -NoTypeInformation -Encoding utf8 $csv
+          Write-Host ("manifest -> {0} ({1:N0} bytes)" -f $csv, (Get-Item $csv).Length)
+
+          $exe = Get-ChildItem "dist\*.exe" | Select-Object -First 1
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $rows = @(
+              "### win-unpacked 体积清单",
+              "",
+              "| 项 | 大小 |",
+              "|---|---|",
+              ("| win-unpacked 总计 | **{0:N1} MB** / {1} files |" -f (MB $total), $all.Count),
+              ("| onnxruntime-node | **{0:N1} MB** / {1} files |" -f (MB $ortBytes), $ortFiles.Count),
+              ("| portable exe | **{0:N1} MB** |" -f (MB $exe.Length))
+            )
+            $rows | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      # 「electron-builder 退出码 0」不等于「产物能用」——0.4.2 那次就是这么发出去的。
+      # 三条断言对应三个曾经/可能真出事的点：依赖树完整性（afterPack 门禁已跑，
+      # 这里复核 win-unpacked 真的产出了）、OCR 模型随包（extraResources 的模型是
+      # 全局段，不依赖平台 filter，但值得钉住）、ORT 呈 ort-web 形态（纯 WASM，
+      # onnxruntime-node 应已不在包内）。
+      - name: Assert packaged tree is usable
+        shell: pwsh
+        run: |
+          $unpacked = "dist\win-unpacked"
+          if (-not (Test-Path $unpacked)) { throw "dist\win-unpacked 不存在" }
+          $asar = Join-Path $unpacked "resources\app.asar"
+          if (-not (Test-Path $asar)) { throw "app.asar 缺失" }
+          Write-Host ("app.asar: {0:N1} MB" -f ((Get-Item $asar).Length / 1MB))
+
+          # OCR 模型走全局 extraResources → win-unpacked\resources\ocr-models
+          foreach ($m in @('det.onnx', 'rec.onnx', 'cls.onnx', 'keys.txt')) {
+            $p = Join-Path $unpacked "resources\ocr-models\$m"
+            if (-not (Test-Path $p)) { throw "OCR 模型未随包：$m" }
+          }
+          Write-Host ($(Get-ChildItem (Join-Path $unpacked "resources\ocr-models") | Measure-Object -Property Length -Sum).Sum / 1MB)
+
+          # 依赖已从 onnxruntime-node（原生、静态带 DirectML）换成 onnxruntime-web
+          # （纯 WASM）。所以「包内有 onnxruntime-node」才是错，「ort-web 三件套随包」
+          # 才是对 —— 下面这两条合起来钉住这次切换，别再退回旧守卫。
+          $legacyOrt = Join-Path $unpacked "resources\app.asar.unpacked\node_modules\onnxruntime-node"
+          if (Test-Path $legacyOrt) { throw "onnxruntime-node 仍在包内 —— 依赖切换未完成（白胖 ~59MB + DirectML 崩点）：$legacyOrt" }
+          $ortWeb = Join-Path $unpacked "resources\ort-web"
+          foreach ($f in @('ort.node.min.js', 'ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm')) {
+            if (-not (Test-Path (Join-Path $ortWeb $f))) { throw "ort-web 运行时未随包：$f" }
+          }
+          Write-Host "ORT: ort-web 三件套齐全，onnxruntime-node 已不在包内（符合预期）"
+
+          # rg：平台段 extraResources 的 filter 是 win32-${arch}/**，缺了不报错
+          if (-not (Test-Path (Join-Path $unpacked "resources\bin\win32-x64\rg.exe"))) { throw "内置 rg 未随包（搜索会静默降级成 grep 兜底）" }
+
+      - name: Report artifact
+        shell: pwsh
+        run: Get-ChildItem dist\*.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table
+
+      # 必须显式压成 zip 再上传：upload-artifact 直接传目录时它自己打的那个 zip 在
+      # `gh run download` 会被就地解开，拿不到原始压缩包。用 7z 而非 Compress-Archive
+      # ——后者对 948MB / 1061 个文件要整棵读进内存，runner 上容易 OOM 或超时。
+      # 7z 的路径不带通配符：zip 内保留 win-unpacked/ 前缀，解压即得同名目录。
+      - name: Zip win-unpacked
+        if: inputs.upload-unpacked == true
+        shell: pwsh
+        run: |
+          $zip = "dist\win-unpacked.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          7z a -tzip -mx=5 $zip dist\win-unpacked | Select-Object -Last 6
+          if ($LASTEXITCODE -ne 0) { throw "7z 打包失败 (exit $LASTEXITCODE)" }
+          $f = Get-Item $zip
+          Write-Host ("win-unpacked.zip = {0:N1} MB / {1:N0} bytes" -f ($f.Length / 1MB), $f.Length)
+          if ($env:GITHUB_STEP_SUMMARY) {
+            "### win-unpacked.zip`n`n| 项 | 值 |`n|---|---|`n| 大小 | **{0:N1} MB** |`n| 字节 | {1:N0} |" -f ($f.Length / 1MB), $f.Length | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload win-unpacked zip
+        if: inputs.upload-unpacked == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseMind-win-x64-unpacked
+          path: dist/win-unpacked.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseMind-win-x64-portable
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

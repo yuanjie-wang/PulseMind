@@ -133,6 +133,10 @@ export const IPC_CHANNELS = {
   SKILL_USE_RECORD: 'skill-use:record',
   SKILL_USE_LIST: 'skill-use:list',
 
+  // ── Template pack (2026-11-05 一次性导入：无密钥 welcome 引导卡上的
+  // 「导入模板包」。zip = 整份 settings.json + 可选 skills/，整份替换语义) ──
+  TEMPLATE_IMPORT: 'template:import',
+
   // ── Experiences ──
   EXPERIENCES_LIST: 'experiences:list',
   EXPERIENCES_SAVE: 'experiences:save',
@@ -188,6 +192,7 @@ export const IPC_CHANNELS = {
   UTIL_COPY_FILE_TO_TMP: 'util:copy-file-to-tmp',
   UTIL_COPY_FILE: 'util:copy-file',
   UTIL_CONVERT_TO_MARKDOWN: 'util:convert-to-markdown',
+  UTIL_OCR_IMAGE: 'util:ocr-image',
   // 工作区文件操作（PLAN-project-ide 刀三）：树的新建/重命名悬停动作。读同一
   // deny-root 语义的写门（guardFsTarget），无会话时即基线拒绝根。
   UTIL_CREATE_DIR: 'util:create-dir',
@@ -249,6 +254,16 @@ export const IPC_CHANNELS = {
    *  the watch and rebroadcasts POPOUT_EVENT itself, so the renderer never has
    *  to emit popout events. */
   SECONDARY_WATCH: 'secondary:watch',
+  /** Renderer → main: focus the project's immersive window and switch it onto
+   *  a conversation (main-window click on one of the project's conversations).
+   *  Resolves false when the project has no open window — the caller then
+   *  opens the conversation in-window as usual. */
+  PROJECT_WINDOW_FOCUS_CONV: 'project-window:focus-conv',
+  /** Main → the holding project window ONLY (targeted send, not a broadcast):
+   *  switch the immersive window onto this conversation. The main window's
+   *  POPOUT_EVENT handler must never see this — its else-branch would drop the
+   *  conversation from the popped registry. */
+  POPOUT_SWITCH: 'popout:switch',
   // ── Hosted (reverse-RPC) page tools (PLAN-browser-extension M0.2) ──
   HOSTED_TOOL_CALL: 'hosted:tool-call',
 

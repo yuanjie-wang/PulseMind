@@ -33,4 +33,5 @@ The always-on Engineering Workflow rules apply unchanged — this skill adds HOW
 ### Rules that hold on every route
 - State the route in one line before working (「这是一次大重构，我会先…」) so the user can correct the scale early.
 - Verify with the project's own commands (the Engineering Workflow #2) at every checkpoint the reference names — a route without working verification is a guess with extra steps.
+- Project instructions beat your defaults: the \`## Project Instructions\` block (AGENTS.md) in the session state carries this repo's hard-won contract — its command table, structure notes and explicit prohibitions take precedence over habit, and its commands are the FIRST source for the verification commands above. Offer to record new durable conventions in \`.pulsemind/AGENTS.md\`. Full discipline: \`references/project-instructions.md\`.
 - References are the default process, not a mandate: the user's explicit process requirement wins. If the actual work turns out smaller than the route assumed, STOP using the heavyweight process and say so; the route serves the work, not the reverse.`

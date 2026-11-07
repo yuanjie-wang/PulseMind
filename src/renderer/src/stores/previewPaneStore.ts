@@ -11,7 +11,7 @@
 import { create } from 'zustand'
 import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
-import { useWorkbenchStore } from './workbenchStore'
+import { autoOpenTab } from './workbenchStore'
 import type { DraftEntry } from './preview-edit'
 import { useHtmlEditStore } from './htmlEditStore'
 import type { EditRevealTarget } from '../../../shared/tool-display/edit-reveal'
@@ -49,6 +49,37 @@ interface PreviewPaneState {
   /** path → the loaded text exceeds the edit size gate (D8); the toolbar's
    *  edit toggle disables on it. */
   oversized: Record<string, true>
+  /** path → the merge diff (草稿 vs 基线，2026-11-01) was turned OFF by the
+   *  ⋯ menu; ABSENT = show automatically whenever there is something to show
+   *  (user ruling「编辑态自动显示」, reused by the agent-diff auto-show — a
+   *  new agent change resets the flag so the next review lands visible).
+   *  Stored per path so the choice survives the PreviewContent remounts a
+   *  tab switch causes. */
+  diffVisible: Record<string, boolean>
+  setDiffVisible: (path: string, on: boolean) => void
+  // ── Agent-change review diff (2026-11-01 pivot: the diff shows what the
+  // AGENT changed, in view mode, read-only — not the user's own typing). ──
+  /** path → the text the pane last loaded from disk for it. Capture source
+   *  for the agent-diff base (the pre-change disk text): usePreviewPaneSync
+   *  snapshots it at the completion event, BEFORE the reload re-read lands.
+   *  Nobody subscribes to it — written imperatively, zero re-render cost. */
+  loadedTexts: Record<string, string>
+  noteLoadedText: (path: string, text: string) => void
+  /** A pending agent change whose pre-change text must be REBUILT (the pane
+   *  did not hold the file — no loadedTexts snapshot): the edit tool's own
+   *  old_str/new_str reconstructs it from the post-change read. Resolved
+   *  once by PreviewContent when the fresh text lands. When the pane DID
+   *  hold the file, the sync sets the base DIRECTLY from loadedTexts — no
+   *  capture needed (resolve-time reads would have already overwritten it). */
+  agentDiffCaptures: Record<string, { mode: 'reconstruct'; oldStr: string; newStr: string; multiAll: boolean }>
+  setAgentDiffCapture: (path: string, spec: { mode: 'reconstruct'; oldStr: string; newStr: string; multiAll: boolean }) => void
+  clearAgentDiffCapture: (path: string) => void
+  /** path → resolved pre-change text; the view-mode merge diff renders the
+   *  loaded doc against it. Cleared on save (the user's own text replaced the
+   *  disk — the agent diff is stale) and with the tab. */
+  agentDiffBases: Record<string, string>
+  setAgentDiffBase: (path: string, before: string) => void
+  clearAgentDiffBase: (path: string) => void
   /** path → pending reveal (PLAN-ide-linkage 1b): the scroll + flash
    *  PreviewContent performs once the file text is ready. Producers are the
    *  agent sync (a completed edit lands where the change did) and chat tool
@@ -85,6 +116,10 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
   previewModes: {},
   externalChanges: {},
   oversized: {},
+  diffVisible: {},
+  loadedTexts: {},
+  agentDiffCaptures: {},
+  agentDiffBases: {},
   revealTargets: {},
 
   requestReveal: (path, target) =>
@@ -124,6 +159,24 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       delete externalChanges[path]
       return { externalChanges }
     }),
+  setDiffVisible: (path, on) => set((s) => ({ diffVisible: { ...s.diffVisible, [path]: on } })),
+  noteLoadedText: (path, text) => set((s) => ({ loadedTexts: { ...s.loadedTexts, [path]: text } })),
+  setAgentDiffCapture: (path, spec) => set((s) => ({ agentDiffCaptures: { ...s.agentDiffCaptures, [path]: spec } })),
+  clearAgentDiffCapture: (path) =>
+    set((s) => {
+      if (!(path in s.agentDiffCaptures)) return s
+      const agentDiffCaptures = { ...s.agentDiffCaptures }
+      delete agentDiffCaptures[path]
+      return { agentDiffCaptures }
+    }),
+  setAgentDiffBase: (path, before) => set((s) => ({ agentDiffBases: { ...s.agentDiffBases, [path]: before } })),
+  clearAgentDiffBase: (path) =>
+    set((s) => {
+      if (!(path in s.agentDiffBases)) return s
+      const agentDiffBases = { ...s.agentDiffBases }
+      delete agentDiffBases[path]
+      return { agentDiffBases }
+    }),
 
   openFile: (conversationId, path) => {
     const key = convKey(conversationId)
@@ -137,7 +190,9 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       tabsByConversation: touch(s.tabsByConversation, key, tabs),
       activeByConversation: { ...s.activeByConversation, [key]: path },
     }))
-    useWorkbenchStore.getState().openTab(key, 'workspace')
+    // autoOpenTab（视图模式守卫）：文件优先模式下工作区已是主卡，不再弹
+    // dock / 翻侧栏 tab。
+    autoOpenTab(key, 'workspace')
   },
 
   closeTab: (conversationId, path) => {
@@ -150,13 +205,15 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
     useHtmlEditStore.getState().forgetFile(path)
     set((s) => ({
       tabsByConversation: { ...s.tabsByConversation, [key]: result.tabs },
-      ...(result.nextActive !== undefined
-        ? { activeByConversation: { ...s.activeByConversation, [key]: result.nextActive } }
-        : {}),
+      ...(result.nextActive !== undefined ? { activeByConversation: { ...s.activeByConversation, [key]: result.nextActive } } : {}),
       drafts: omitKey(s.drafts, path),
       previewModes: omitKey(s.previewModes, path),
       externalChanges: omitKey(s.externalChanges, path),
       oversized: omitKey(s.oversized, path),
+      diffVisible: omitKey(s.diffVisible, path),
+      loadedTexts: omitKey(s.loadedTexts, path),
+      agentDiffCaptures: omitKey(s.agentDiffCaptures, path),
+      agentDiffBases: omitKey(s.agentDiffBases, path),
       revealTargets: omitKey(s.revealTargets, path),
     }))
     // No fold-back when the strip empties: the preview lives beside the 工作区
@@ -184,8 +241,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
     })
   },
 
-  bumpReload: (path) =>
-    set((s) => ({ reloadTicks: { ...s.reloadTicks, [path]: (s.reloadTicks[path] ?? 0) + 1 } })),
+  bumpReload: (path) => set((s) => ({ reloadTicks: { ...s.reloadTicks, [path]: (s.reloadTicks[path] ?? 0) + 1 } })),
 
   forgetConversation: (conversationId) => {
     const paths = (get().tabsByConversation[conversationId] ?? []).map((t) => t.path)
@@ -198,6 +254,10 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
         previewModes: omitKeys(s.previewModes, paths),
         externalChanges: omitKeys(s.externalChanges, paths),
         oversized: omitKeys(s.oversized, paths),
+        diffVisible: omitKeys(s.diffVisible, paths),
+        loadedTexts: omitKeys(s.loadedTexts, paths),
+        agentDiffCaptures: omitKeys(s.agentDiffCaptures, paths),
+        agentDiffBases: omitKeys(s.agentDiffBases, paths),
         revealTargets: omitKeys(s.revealTargets, paths),
       }
     })

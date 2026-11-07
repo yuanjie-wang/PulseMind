@@ -24,8 +24,8 @@ const SETTINGS_PAGE = read('src', 'renderer', 'src', 'components', 'settings', '
 const retentionOptionsSrc = read('src', 'renderer', 'src', 'components', 'settings', 'retention-options.ts')
 
 describe('shared retention options', () => {
-  it('pins the four presets and their order (0/7/30/90, 0 = forever)', () => {
-    expect(RETENTION_OPTIONS.map((o) => o.days)).toEqual([0, 7, 30, 90])
+  it('pins the presets and their order (0/7/30/90/180, 0 = forever)', () => {
+    expect(RETENTION_OPTIONS.map((o) => o.days)).toEqual([0, 7, 30, 90, 180])
   })
 
   it('labels via i18n so the three surfaces cannot drift apart in wording', () => {
@@ -36,6 +36,7 @@ describe('shared retention options', () => {
       { days: 7, label: 'dataRuntime.keepDays:7' },
       { days: 30, label: 'dataRuntime.keepDays:30' },
       { days: 90, label: 'dataRuntime.keepDays:90' },
+      { days: 180, label: 'dataRuntime.keepDays:180' },
     ])
   })
 

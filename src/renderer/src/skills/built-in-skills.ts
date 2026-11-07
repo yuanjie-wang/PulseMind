@@ -143,22 +143,58 @@ The \`install\` tool registers an MCP server straight from a config object — n
   {
     name: 'coding-workflow',
     description:
-      'Long-tail coding work organization (PLAN-coding-contract P2): routing across six scenarios — large refactor, code review, migration, debugging/root-cause, new feature delivery, performance work — with the per-scenario discipline in reference files. The always-on engineering contract (read before write / verify before claim / no invented API) is NOT here — it ships in the frozen core; this skill adds how to stage work bigger than a few lines.',
+      'Long-tail coding work organization (PLAN-coding-contract P2): routing across six scenarios — large refactor, code review, migration, debugging/root-cause, new feature delivery, performance work — with the per-scenario discipline in reference files. The always-on engineering contract (read before write / verify before claim / no invented API) is NOT here — it ships in the frozen core; this skill adds how to stage work bigger than a few lines, plus the AGENTS.md (project instructions) usage discipline.',
     category: 'pulsemind',
     builtIn: true,
+    // matchSkills 的匹配是「大小写不敏感 substring」，所以这里收词讲究三件事：
+    // 按用户的症状词汇收（卡顿/报错/升级），不按路线的分类学名字收；
+    // 中英各收一份（en locale 或中英混输也得命中）；避开 substring 陷阱
+    // （fix→fixture/prefix、perf→perfect、lag→flag、裸「卡」→卡片、
+    // 裸「慢」→慢慢来）。migration 不含 migrate（第 7 位 e≠i），两个都要。
     triggers: [
+      // 通用编码意图（不属某一具体路线；命中只是「可能该用这个技能」的提示，
+      // 正文第一句就是「没有路线合适就直接按核心四规则做」，所以宽词安全）
+      '代码',
+      '编写',
+      '脚本',
+      // refactor-large
       '重构',
-      '重构一下',
       '大改',
+      '重写',
+      'refactor',
+      // code-review
+      'review',
+      '评审',
+      // migration
       '迁移',
-      'review 代码',
-      '代码评审',
-      'code review',
+      '升级',
+      'migrate',
+      'migration',
+      'upgrade',
+      // debug-root-cause
       '排查',
       '调试',
       'bug',
+      '报错',
+      '崩溃',
+      'debug',
+      'crash',
+      // performance
       '性能',
+      '卡顿',
+      '卡死',
+      '卡住',
+      '太慢',
+      '内存',
+      'slow',
+      // feature-delivery
       '新功能',
+      '实现一个',
+      '写一个',
+      'implement',
+      // project-instructions（AGENTS.md 使用纪律）
+      'AGENTS.md',
+      '项目指令',
     ],
     systemPrompt: CODING_WORKFLOW_PROMPT,
     resources: CODING_WORKFLOW_REFERENCES,

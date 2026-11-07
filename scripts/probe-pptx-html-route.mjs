@@ -17,14 +17,12 @@
 // ELECTRON_RUN_AS_NODE recipe is unnecessary.
 
 import { build } from 'esbuild'
-import { createRequire } from 'node:module'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(fileURLToPath(import.meta.url)) + '/..'
-const require = createRequire(join(root, 'package.json'))
 const work = mkdtempSync(join(tmpdir(), 'pm-html-route-probe-'))
 const fixture = join(work, 'deck')
 // the bundle runs in-process, but `packages: external` makes its requires

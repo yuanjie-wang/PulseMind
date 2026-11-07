@@ -6,6 +6,7 @@ export const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
   { days: 7, label: '保留 7 天' },
   { days: 30, label: '保留 30 天' },
   { days: 90, label: '保留 90 天' },
+  { days: 180, label: '保留 180 天' },
 ]
 
 /** Localize the labels without duplicating the choices across settings surfaces. */

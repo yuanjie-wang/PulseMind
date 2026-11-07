@@ -6,6 +6,7 @@ import { useConversationPersistence } from './useConversationPersistence'
 import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { takePendingProfileId } from '../stores/pendingProfileStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
+import { useWorkbenchStore } from '../stores/workbenchStore'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
@@ -72,7 +73,7 @@ export function useChatController(options: UseChatControllerOptions) {
 
   // ── 3. Engine (with background-complete callback for title gen) ──
   // Forward ref for generateTitle (breaks circular dep: engine ← persistence ← generateTitle ← onBackgroundComplete)
-  const generateTitleRef = useRef<(typeof generateTitle)>(null as any)
+  const generateTitleRef = useRef<typeof generateTitle>(null as any)
   // Ref bridges: the engine hook is constructed below but needs this callback,
   // and the callback needs the engine's session mirror (same pattern as
   // generateTitleRef — breaks the circular dependency).
@@ -92,7 +93,7 @@ export function useChatController(options: UseChatControllerOptions) {
     ...managers,
     platformInfo: managers.platformInfo ?? undefined,
     onBackgroundComplete: (convId: string) => onBackgroundCompleteRef.current(convId),
-    onSkillStateChange: managers.refreshSkills
+    onSkillStateChange: managers.refreshSkills,
   })
   /* eslint-disable react-hooks/refs -- latest-instance mirrors: engineBridge is read by child effects, onBackgroundComplete is invoked from engine callbacks */
   engineBridgeRef.current = engine
@@ -119,62 +120,70 @@ export function useChatController(options: UseChatControllerOptions) {
     // Mirror eviction (MAX_CACHED_CONVERSATIONS): the engine owns the
     // mechanism, the persistence sweep owns the policy (verified-save gate).
     listEvictionCandidates: engine.listEvictionCandidates,
-    evictEngine: engine.evictEngine
+    evictEngine: engine.evictEngine,
   })
 
   // ── Shared title generation ────────────────────────────────────────
   const stripFileMarkers = (s: string) => s.replace(/\[(?:file|folder):[^\]]+\]/g, '').trim()
-  const generateTitle = useCallback(async (
-    convId: string,
-    messages: { role: string; contentBlocks?: { type: string; text?: string }[] }[],
-    opts: { llmFallback: string; stripFileMarkers?: boolean; refine?: boolean }
-  ): Promise<void> => {
-    // A conversation with a popout attached is titled by ITS window (the
-    // popout's own controller runs the same effect); the main window writing
-    // over it would race the popout's generation with an LLM call. The
-    // popout's own store is empty, so this gate is a no-op there.
-    if (isPoppedOut(convId)) return
-    // Skip if conversation already has a meaningful title stored
-    // (prevents re-triggering title generation after app restart).
-    // The 3rd-message refinement passes refine:true — its whole point is to
-    // RE-title a conversation that already has the first-message title.
-    const existingConv = persistence.conversations.find((c: any) => String(c.key) === convId)
-    if (!opts.refine && existingConv?.label && existingConv.label !== '新对话') return
+  const generateTitle = useCallback(
+    async (
+      convId: string,
+      messages: { role: string; contentBlocks?: { type: string; text?: string }[] }[],
+      opts: { llmFallback: string; stripFileMarkers?: boolean; refine?: boolean },
+    ): Promise<void> => {
+      // A conversation with a popout attached is titled by ITS window (the
+      // popout's own controller runs the same effect); the main window writing
+      // over it would race the popout's generation with an LLM call. The
+      // popout's own store is empty, so this gate is a no-op there.
+      if (isPoppedOut(convId)) return
+      // Skip if conversation already has a meaningful title stored
+      // (prevents re-triggering title generation after app restart).
+      // The 3rd-message refinement passes refine:true — its whole point is to
+      // RE-title a conversation that already has the first-message title.
+      const existingConv = persistence.conversations.find((c: any) => String(c.key) === convId)
+      if (!opts.refine && existingConv?.label && existingConv.label !== '新对话') return
 
-    const firstUser = messages.find(m => m.role === 'user')
-    const raw = firstUser?.contentBlocks?.find(b => b.type === 'text')?.text || ''
-    const doStrip = opts.stripFileMarkers !== false
-    const userContent = doStrip ? stripFileMarkers(raw) : raw.trim()
-    if (!userContent) return
+      const firstUser = messages.find((m) => m.role === 'user')
+      const raw = firstUser?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
+      const doStrip = opts.stripFileMarkers !== false
+      const userContent = doStrip ? stripFileMarkers(raw) : raw.trim()
+      if (!userContent) return
 
-    const userMsgCount = messages.filter(m => m.role === 'user').length
-    if (userMsgCount < 3 && userContent.length < 6) {
-      persistence.updateConversationTitleInList(convId, userContent)
-      window.electronAPI.updateConversationTitle(convId, userContent)
-      return
-    }
+      const userMsgCount = messages.filter((m) => m.role === 'user').length
+      if (userMsgCount < 3 && userContent.length < 6) {
+        persistence.updateConversationTitleInList(convId, userContent)
+        window.electronAPI.updateConversationTitle(convId, userContent)
+        return
+      }
 
-    const conversationContext = userMsgCount >= 3
-      ? messages.filter(m => m.role === 'user')
-          .map(m => {
-            const text = m.contentBlocks?.find(b => b.type === 'text')?.text || ''
-            return text ? `User: ${text.slice(0, 300)}` : ''
-          })
-          .filter(Boolean)
-          .join('\n')
-          .slice(0, 3000)
-      : undefined
+      const conversationContext =
+        userMsgCount >= 3
+          ? messages
+              .filter((m) => m.role === 'user')
+              .map((m) => {
+                const text = m.contentBlocks?.find((b) => b.type === 'text')?.text || ''
+                return text ? `User: ${text.slice(0, 300)}` : ''
+              })
+              .filter(Boolean)
+              .join('\n')
+              .slice(0, 3000)
+          : undefined
 
-    const result = await titleAgentRef.current.execute(
-      { userMessage: raw, conversationContext, locale: options.locale },
-      { llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }, maxOutputTokens: 4096 }
-    )
-    const fallback = doStrip ? stripFileMarkers(opts.llmFallback) : opts.llmFallback
-    const finalTitle = result || fallback
-    if (!finalTitle) return
-    persistence.updateConversationTitleInList(convId, finalTitle)
-    window.electronAPI.updateConversationTitle(convId, finalTitle)
-  }, [apiKey, baseURL, options.adapter, options.model, options.locale, persistence])
+      const result = await titleAgentRef.current.execute(
+        { userMessage: raw, conversationContext, locale: options.locale },
+        {
+          llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens },
+          maxOutputTokens: 4096,
+        },
+      )
+      const fallback = doStrip ? stripFileMarkers(opts.llmFallback) : opts.llmFallback
+      const finalTitle = result || fallback
+      if (!finalTitle) return
+      persistence.updateConversationTitleInList(convId, finalTitle)
+      window.electronAPI.updateConversationTitle(convId, finalTitle)
+    },
+    [apiKey, baseURL, options.adapter, options.model, options.locale, persistence],
+  )
 
   // eslint-disable-next-line react-hooks/refs -- latest-title-generator mirror; callers run after commit
   generateTitleRef.current = generateTitle as any
@@ -244,13 +253,7 @@ export function useChatController(options: UseChatControllerOptions) {
     titleGeneratedRef.current.add(convId)
 
     generateTitle(convId, engine.messages, { llmFallback: '' })
-  }, [
-    persistence.activeConversationKey,
-    engine.agentStatus,
-    engine.messages,
-    generateTitle,
-    generateTitleRef
-  ])
+  }, [persistence.activeConversationKey, engine.agentStatus, engine.messages, generateTitle, generateTitleRef])
 
   // ── 7. handleRequest (send message) ──
   const handleRequest = useCallback(
@@ -275,7 +278,14 @@ export function useChatController(options: UseChatControllerOptions) {
           return false
         }
         const status = engine.agentStatus.status
-        if (status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'awaiting_user_input' && status !== 'awaiting_extension' && status !== 'awaiting_continue') {
+        if (
+          status !== 'idle' &&
+          status !== 'completed' &&
+          status !== 'error' &&
+          status !== 'awaiting_user_input' &&
+          status !== 'awaiting_extension' &&
+          status !== 'awaiting_continue'
+        ) {
           message.warning(t('chatView.compaction.busy'))
           return false
         }
@@ -313,7 +323,11 @@ export function useChatController(options: UseChatControllerOptions) {
       // The empty-task guard still reads the words BESIDE the mentions
       // (`mentions.task`), so a bare roster with no assignment is no summon.
       let experts: ExpertProfile[] = []
-      try { experts = await window.electronAPI.expertList() } catch { /* non-critical */ }
+      try {
+        experts = await window.electronAPI.expertList()
+      } catch {
+        /* non-critical */
+      }
       const mentions = parseExpertMentions(content, experts)
       const mentioned: SummonedExpert[] = mentions.experts.map((e) => ({ id: e.id, name: e.name }))
       if (mentioned.length > 0 && !mentions.task.trim()) {
@@ -333,7 +347,9 @@ export function useChatController(options: UseChatControllerOptions) {
         const parsedBase = parseKnowledgeBaseMention(content, bases, mentions.spans)
         knowledgeBase = parsedBase.base
         if (knowledgeBase) content = parsedBase.text
-      } catch { /* bases unavailable — unscoped turn */ }
+      } catch {
+        /* bases unavailable — unscoped turn */
+      }
 
       if (!convId) {
         // Materialize the conversation row here. Its working directory comes
@@ -367,6 +383,16 @@ export function useChatController(options: UseChatControllerOptions) {
         // conversation's own profile instead of the global default.
         const profileSeed = takePendingProfileId() ?? options.lastUsedProfileId
         if (profileSeed) persistence.updateConversationProfile(convId, profileSeed)
+        // 浏览器任务（PLAN-layout-modes 二期「模式跟任务走」）：物化即绑定该
+        // 会话的浏览器主视图，并打开 dock——侧栏对话 tab 是浏览器主视图下唯一
+        // 的转录面。welcome 的 URL 表单/自由输入都走这条物化路径。
+        if (task.mode === 'browser') {
+          useWorkbenchStore.getState().setConversationPrimary(convId, 'browser')
+          useWorkbenchStore.getState().setOpen(convId, true)
+          // 首帧确定性：'workspace'/'plan' 在 browser 侧栏集合里是合法成员、
+          // 不会被 reconcile，但刚起步的浏览器任务该落在对话 tab（转录面）。
+          useWorkbenchStore.getState().setActiveTab('chat')
+        }
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
       } else {
@@ -379,17 +405,18 @@ export function useChatController(options: UseChatControllerOptions) {
 
       // First-message title generation
       if (!titleGeneratedRef.current.has(convId)) {
-        generateTitleRef.current(
-          convId,
-          [{ role: 'user', contentBlocks: [{ type: 'text', text: content }] }],
-          { llmFallback: content.trim() }
-        )
+        generateTitleRef.current(convId, [{ role: 'user', contentBlocks: [{ type: 'text', text: content }] }], { llmFallback: content.trim() })
       }
 
       // The @-summoned experts ride the same conversation materialization and
       // title generation as a normal send — only the turn's entry point
       // differs: main dispatches the deterministic spawn_agent call (one
       // expert) or plans the work first (several), inside this conversation.
+      // 发送即激活的兜底（2026-11-04）：回合是发给主进程的，与视图无关；但
+      // 事件进 React 要过 activeEngineIdRef 这道门。发起到「引擎活跃会话 ≠
+      // 本条会话」上时，消息发得出去、界面什么都不动——这就是浏览器任务容器
+      // 报出的「输入消息无响应」。物化分支与已激活路径在此都是 no-op。
+      if (engine.activeEngineIdRef.current !== convId) engine.activateEngine(convId)
       const engineHandle = engine.getOrCreateEngine(convId)
       // 3rd-user-message refinement latch: the send that makes the count hit
       // 3 marks the conversation; the completion effect re-titles it from the
@@ -404,10 +431,52 @@ export function useChatController(options: UseChatControllerOptions) {
       // for company.
       return true
     },
-    [apiKey, persistence.activeConversationKey, persistence.addConversation,
-     persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
-     persistence.updateConversationApproval, persistence.updateConversationProfile,
-     persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, engine.agentStatus, options, t, message]
+    [
+      apiKey,
+      persistence.activeConversationKey,
+      persistence.addConversation,
+      persistence.setActiveConversationKey,
+      persistence.updateConversationTitleInList,
+      persistence.updateConversationApproval,
+      persistence.updateConversationProfile,
+      persistence.convIdRef,
+      engine.getOrCreateEngine,
+      engine.activeEngineIdRef,
+      engine.activateEngine,
+      engine.agentStatus,
+      options,
+      t,
+      message,
+    ],
+  )
+
+  // ── 7.4 浏览器任务容器（PLAN-layout-modes 三期裁定）──
+  // welcome 的 URL 表单提交 = 直接开页，不发任何消息（无 LLM 回合）：会话只
+  // 是浏览器会话的容器（页签归属、侧栏可见）。乐观列表条目即容器——无消息
+  // 则无 DB 行，重启随页签一起消失（同「重启无活面板」裁定）。标题即 URL；
+  // auto-title 不参与（没有首条消息可提炼）。
+  const createBrowserTask = useCallback(
+    (url: string): string => {
+      const now = new Date()
+      const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
+      const convId = `conv_${ts}`
+      persistence.addConversation({ key: convId, label: url, updatedAt: now.toISOString() }, 'prepend')
+      useWorkbenchStore.getState().setConversationPrimary(convId, 'browser')
+      useWorkbenchStore.getState().setOpen(convId, true)
+      // 首帧确定性：dock 落对话 tab（浏览器主视图下转录面的唯一出口）。
+      useWorkbenchStore.getState().setActiveTab('chat')
+      // 容器也必须是「引擎活跃会话」（2026-11-04 实锤：浏览器模式下输入消息
+      // 无响应）。镜像的 React 同步只认 activeEngineIdRef（useConversationEngine
+      // 的事件订阅 `if (activeEngineIdRef.current === sessionId)`）——容器不经
+      // 侧栏切换，创建时只激活了 persistence 那一半，于是用户在 dock 里发的
+      // 消息：回合照常发出、事件照常进镜像，UI 却一片不动（草稿已被 submit 清
+      // 空、转录不更新、没有 spinner），看起来正是「输入无响应」。顺序同物化
+      // 分支：先 activateEngine 再 activateConversation。
+      engine.activateEngine(convId)
+      persistence.activateConversation(convId)
+      return convId
+    },
+    [engine.activateEngine, persistence.addConversation, persistence.activateConversation],
   )
 
   // ── 7.5 Staged-message drain (暂存区) ──
@@ -436,10 +505,9 @@ export function useChatController(options: UseChatControllerOptions) {
     const restore = (): void => restoreStaged(convId, item, 0)
     // A failed send (all-@ text, missing key, …) restores the head in place —
     // the message stays visible in the strip instead of evaporating.
-    void handleRequest(item.text).then(
-      (ok) => { if (!ok) restore() },
-      restore
-    )
+    void handleRequest(item.text).then((ok) => {
+      if (!ok) restore()
+    }, restore)
   }, [engine.agentStatus, persistence.activeConversationKey, handleRequest])
 
   /** 立即发送: stop-first is load-bearing — prepareTurn only aborts the
@@ -454,7 +522,7 @@ export function useChatController(options: UseChatControllerOptions) {
       engine.stopExecution()
       return handleRequest(text)
     },
-    [engine, handleRequest]
+    [engine, handleRequest],
   )
 
   // ── 8. Return ──
@@ -492,6 +560,7 @@ export function useChatController(options: UseChatControllerOptions) {
     renameConversation: persistence.renameConversation,
     setActiveConversationKey: persistence.handleSelectConversation,
     handleRequest,
+    createBrowserTask,
     sendStagedNow,
     /** composer 的停止按钮（冻结语义，2026-09-29 体验回滚）：中止在飞请求、
      *  整棵专家树一起冻结、回合停进 awaiting_continue，确认条的 继续执行/
@@ -500,7 +569,7 @@ export function useChatController(options: UseChatControllerOptions) {
     abort: engine.cancelLoop,
     saveCurrentConversation: persistence.saveCurrentConversation,
     saveConversationSync: persistence.saveConversationSync,
-saveAllConversationsSync: persistence.saveAllConversationsSync,
+    saveAllConversationsSync: persistence.saveAllConversationsSync,
     agentStatus: engine.agentStatus,
     streamingBlocks: engine.streamingBlocks,
     plan: engine.plan,
@@ -547,6 +616,6 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     bumpConversation: persistence.bumpConversation,
     updateConversationExpert: persistence.updateConversationExpert,
     updateConversationApproval: persistence.updateConversationApproval,
-    updateConversationProfile: persistence.updateConversationProfile
+    updateConversationProfile: persistence.updateConversationProfile,
   }
 }

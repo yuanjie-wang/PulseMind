@@ -101,7 +101,31 @@ describe('extension WsClient', () => {
     expect(client.lastError).toBe('')
     expect(socket.sent[0].method).toBe('hello')
     expect(socket.sent[0].params).toMatchObject({ clientId: 'pulsemind-extension', protocolVersion: 1 })
+    // No instance configured ⇒ the field is ABSENT, not an empty string: an
+    // empty suffix would still change the server-side identity and origin.
+    expect(socket.sent[0].params).not.toHaveProperty('instanceId')
     expect(states).toEqual(['connecting', 'open'])
+
+    client.close()
+  })
+
+  it('sends the per-install instanceId in hello (Chrome + 360 coexistence)', async () => {
+    // The binary is identical everywhere; without this field the service's
+    // same-clientId rule made two installs kick each other off the service.
+    const client = new WsClient(
+      { ...CFG, instanceId: 'inst_abc123' },
+      {},
+      FakeSocket as unknown as typeof WebSocket,
+    )
+    const ready = client.connect()
+    const socket = FakeSocket.instances[0]
+    socket.open()
+    await ready
+
+    expect(socket.sent[0].params).toMatchObject({
+      clientId: 'pulsemind-extension',
+      instanceId: 'inst_abc123',
+    })
 
     client.close()
   })

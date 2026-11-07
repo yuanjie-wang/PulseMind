@@ -70,3 +70,8 @@ export function clampExplorerWidth(desired: number, totalWidth: number): number 
  *  gap、WorkspacePane（immersive）的树↔预览 gap，以及两处宽度 clamp 对可用
  *  行宽的扣减都用这一个常量——间距改这里，几何处处跟随。 */
 export const IMMERSIVE_CARD_GAP = 5
+
+/** 卡片的圆角（2026-10-31 沉浸裁定「三列各用圆角矩形包裹」；2026-11-03 主窗
+ *  对话区/工作台卡片化沿用同一个值）。ProjectExplorer / WorkspacePane / 主窗
+ *  ChatView 对话卡与 WorkbenchPane 卡都从这里取——圆角改这里，处处跟随。 */
+export const IMMERSIVE_CARD_RADIUS = 8

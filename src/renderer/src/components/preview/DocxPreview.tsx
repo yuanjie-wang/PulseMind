@@ -23,6 +23,7 @@ import { ZoomControls, MIN_ZOOM, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomCo
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { paginateDocxPages } from './docx-paginate'
 import { docxFontCss } from './docx-fonts'
+import { docxQuoteCss } from './docx-quote-css'
 import { visualCenterPaddingX } from './visual-center'
 
 /** Below this pane width the document stops shrinking (it would become
@@ -305,6 +306,9 @@ export function DocxPreview({
             own <style> — which carries any embedded font — comes later and
             therefore wins for the families it defines. */}
         <style>{docxFontCss(DOCX_CLASS)}</style>
+        {/* 引用块的横向内边距：docx-preview 丢掉 w:pBdr/@w:space，Word 有的
+            内边距在这里由 CSS 补上（与 PDF 转换页同一份，见 docx-quote-css）。 */}
+        <style>{docxQuoteCss(DOCX_CLASS)}</style>
         <div
           ref={containerRef}
           className="pm-docx-preview"

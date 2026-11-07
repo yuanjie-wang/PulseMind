@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { windowIconName } from '../src/main/app-icon'
 import { getStubBrowserWindows, getStubExternalOpens, resetStubBrowserWindows, resetStubExternalOpens } from './stubs/electron'
 import { closeAllHookWindows, openBuiltInWindow, wasLastHookWindowUserClosed } from '../src/main/hook-browser'
 
@@ -46,7 +47,7 @@ describe('openBuiltInWindow', () => {
     // icon shows the host electron binary's own in the Windows title bar —
     // the default Electron glyph in dev. Same file the main/splash windows
     // and the tray resolve.
-    expect(String(win.options.icon)).toContain(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png')
+    expect(String(win.options.icon)).toContain(windowIconName())
     expect(win.options.webPreferences).toMatchObject({
       sandbox: true,
       contextIsolation: true,

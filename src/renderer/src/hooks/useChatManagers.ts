@@ -166,9 +166,9 @@ export function useChatManagers(options: UseChatManagersOptions) {
     if (!prefsLoadedRef.current || !skillsReadyRef.current) return
     const persist = async (): Promise<void> => {
       const enabledPrefs = skillManagerRef.current.getPreferences()
-      // Patch-shaped (PLAN-parallel-experts T10): only the enabled list is
+      // Patch-shaped (PLAN-parallel-experts T10): only the disabled list is
       // ours to replace — keywords and processed ids stay as stored.
-      await window.electronAPI.updateSkillPreferences({ replaceEnabledSkills: enabledPrefs.enabledSkills })
+      await window.electronAPI.updateSkillPreferences({ replaceDisabledSkills: enabledPrefs.disabledSkills })
     }
     persist().catch((e) => {
       console.error('[persist] Failed to save skill prefs:', e)
@@ -279,6 +279,16 @@ export function useChatManagers(options: UseChatManagersOptions) {
       console.warn('[refreshSkillsFromDisk] Failed to scan for new skills:', err)
     }
   }, [apiKey, options.adapter, options.baseURL, options.model])
+
+  // 主进程侧的技能落盘（welcome 模板包导入、install 工具等）以 skills:changed
+  // 广播收尾——UI 列表必须跟着重扫盘，否则这些技能要到重启才出现在技能中心。
+  // registerSkill 对已注册同名返回 false，重复广播天然去重。
+  useEffect(() => {
+    const unsub = window.electronAPI.onSkillsChanged(() => {
+      void refreshSkillsFromDisk()
+    })
+    return unsub
+  }, [refreshSkillsFromDisk])
 
     /* eslint-disable react-hooks/refs -- the stable manager instances are exposed through their refs; each is fixed for the hook's lifetime and read only after commit */
   return {

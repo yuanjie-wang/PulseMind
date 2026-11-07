@@ -109,8 +109,9 @@ describe('the spawn card opens the one sub-agent session view', () => {
 
   it('keeps the handler in the segment renderer\u2019s deps (a stale one would drop the click)', () => {
     // renderSegment is a useCallback handed to every segment; without the dep
-    // the expanded segments keep the first render's handler.
-    expect(read(CHAT_VIEW)).toContain('onOpenSubAgent]')
+    // the expanded segments keep the first render's handler. prettier 竖排 deps
+    // 数组——末项 + 收括号对空白鲁棒。
+    expect(read(CHAT_VIEW)).toMatch(/onOpenSubAgent,\s*\]/)
   })
 
   it('reaches no host that did not ask for it', () => {
@@ -192,7 +193,10 @@ describe('the spawn card opens the one sub-agent session view', () => {
     const appSrc = read(APP)
 
     expect(appSrc).not.toContain("display: subAgentView ? 'none'")
-    expect(appSrc).toContain('right: workbenchOpen ? workbenchWidth : 0')
+    // 卡片化（2026-11-03）：右缘 = clamp 后的 pane 宽 + 卡边距 + 列间 gap——
+    // 与 ChatView 的 reserve 同一把 clampPaneWidth 尺（旧表达式用 raw
+    // workbenchWidth，存储宽大于今日 chatArea 时覆盖层越过对话列压到 pane）。
+    expect(appSrc).toContain('clampPaneWidth(workbenchWidth, chatAreaWidth) + WORKBENCH_CARD_MARGIN * 2')
     expect(appSrc).toContain('openByConversation[wbKey] ?? false')
     expect(appSrc).toContain('const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY')
     // The workbench reads its own open flag through the identical expression —
@@ -231,7 +235,8 @@ describe('the spawn card opens the one sub-agent session view', () => {
     const chatSrc = read(CHAT_VIEW)
     expect(chatSrc).toContain('hideComposer?: boolean')
     expect(chatSrc).toContain('hideComposer,')
-    expect(chatSrc).toContain('hidden={hideComposer}')
+    // PLAN-layout-modes：InputArea 挂载（hidden 交付点）随抽取搬进 ChatBody。
+    expect(read(R('components', 'chat', 'ChatBody.tsx'))).toContain('hidden={hideComposer}')
 
     const inputSrc = read(R('components', 'chat', 'InputArea.tsx'))
     expect(inputSrc).toContain('display: hidden ? \'none\' : undefined')

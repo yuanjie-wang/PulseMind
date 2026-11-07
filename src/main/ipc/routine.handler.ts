@@ -48,10 +48,16 @@ export function registerRoutineHandlers(): void {
   // The card grid's delete dialog promises 「运行历史会一并删除」 — the task's
   // runs (and their transcripts) go with the definition, running row included.
   // clearRoutine is now async (workspace-converged deletes) and internally
-  // best-effort per run; the trigger sync must not wait on folder IO.
+  // best-effort per run; the trigger sync must not wait on folder IO — but
+  // fire-and-forget no longer means silent: a cleanup failure is logged where
+  // main.log can see it instead of dying as an unhandled rejection with zero
+  // user-side signal. Leftover run rows retry on the next retention pass.
+  // (review_20261013 低2)
   ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => {
     routineStore.remove(id)
-    void routineRunHistory.clearRoutine(id, true)
+    void routineRunHistory.clearRoutine(id, true).catch((err) => {
+      console.warn('[Routine] run-history cleanup failed (rows may remain until next retention):', err)
+    })
     routineTriggerManager.sync()
   })
 

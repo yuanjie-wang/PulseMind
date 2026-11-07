@@ -73,7 +73,9 @@ describe('svcEditPptx', () => {
     const texts = deck.slides[0].shapes.flatMap((s) => s.text?.paragraphs.map((p) => p.runs.map((r) => r.text).join('')) ?? [])
     expect(texts.some((t) => t.includes('31%'))).toBe(true)
     expect(deck.skipped.corruptSlides).toBe(0)
-  })
+    // Real zip write+re-parse: ~2.5s standalone, 5s+ under full-suite
+    // parallelism — needs a ceiling above the 5s vitest default.
+  }, 20_000)
 
   it('set_shape_text by shape id from the outline; a second edit gets a -2 backup', async () => {
     const dir = tempDir()

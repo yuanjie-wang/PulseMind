@@ -923,8 +923,20 @@ export class ExecutionFlow {
     // per-round times stay on the intermediate messages.
     if (this.engine.turnClock.isActive()) {
       const totalMs = Math.round(this.engine.turnClock.stop())
-      const lastMsg = this.engine.messages[this.engine.messages.length - 1]
-      if (lastMsg?.role === 'assistant') lastMsg.processingMs = totalMs
+      // The turn's answer is the LAST ASSISTANT message — not necessarily the
+      // last message. A plan wave's delivery, a tool result and a resume notice
+      // all append a `role: 'user'` entry right after the round that produced
+      // them, so reading `messages[len - 1]` and requiring
+      // `role === 'assistant'` skipped the stamp silently on every
+      // plan-dispatched turn (user report 2026-11-06: a 13-sub-agent review read
+      // back as its final round's 11s). Search backwards instead of trusting the
+      // tail.
+      for (let i = this.engine.messages.length - 1; i >= 0; i--) {
+        const msg = this.engine.messages[i]
+        if (msg.role !== 'assistant') continue
+        msg.processingMs = totalMs
+        break
+      }
     }
     this.engine.agentStatus = { status: 'completed' }
     try {

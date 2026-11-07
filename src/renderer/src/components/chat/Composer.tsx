@@ -42,6 +42,13 @@ export const COMPOSER_MAX_CHARS = MAX_USER_INPUT_CHARS
  *  happened to it instead of silently losing its tail. */
 export const COMPOSER_COUNT_VISIBLE_AT = Math.floor(COMPOSER_MAX_CHARS * 0.8)
 
+/** Vertical gap between the input card's top edge and the aboveCard slot
+ *  (`bottom: calc(100% + ABOVE_CARD_GAP)`). The transcript's bottom reserve is
+ *  the measured slot height PLUS this gap, so the two cannot drift: a slot
+ *  that reserves its own height but not the gap still lets the last message
+ *  peek under the strip. */
+export const ABOVE_CARD_GAP = 8
+
 export function clampComposerInput(value: string): string {
   return value.length > COMPOSER_MAX_CHARS ? value.slice(0, COMPOSER_MAX_CHARS) : value
 }
@@ -133,6 +140,16 @@ export interface ComposerProps {
   dropActive?: boolean
   /** Focus the textarea once mounted. */
   autoFocus?: boolean
+  /** Reports the height of the band the card occupies at the bottom of the
+   *  view: distance from the floating root's bottom edge to the card's top
+   *  edge (root padding + card height). The transcript reserves exactly this
+   *  much so the newest message can scroll clear of the composer — the card
+   *  autosizes (draft rows, attachment chips, header), so a fixed constant is
+   *  only ever right for one shape (user report 2026-11-04: a multi-row draft
+   *  swallowed the 160 band and the staged strip covered the newest message).
+   *  Inline layout reports 0 (the card is in flow; nothing floats over the
+   *  transcript). */
+  onCardBand?: (height: number) => void
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
@@ -158,11 +175,44 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onPaste,
     dropActive,
     autoFocus,
+    onCardBand,
   }: ComposerProps,
   ref,
 ): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
+  const columnRef = useRef<HTMLDivElement>(null)
   const [isWin, setIsWin] = useState(false)
+
+  // Measure the band the floating card occupies (root bottom → card top) and
+  // report it to the host. ResizeObserver on the column catches every growth
+  // reason (autosize rows, header chips, footer wrap); the window listener
+  // catches a reflow that changes the card's height without changing the
+  // column's content box.
+  useEffect(() => {
+    if (!onCardBand) return
+    const root = containerRef.current
+    const column = columnRef.current
+    if (layout !== 'floating' || !root || !column) {
+      onCardBand(0)
+      return
+    }
+    const report = () => {
+      const band = root.getBoundingClientRect().bottom - column.getBoundingClientRect().top
+      onCardBand(Math.max(0, band))
+    }
+    report()
+    const ro = new ResizeObserver(report)
+    ro.observe(column)
+    ro.observe(root)
+    window.addEventListener('resize', report)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', report)
+      // The next mount reports its own band; a stale number would keep the
+      // transcript padded for a card that is gone.
+      onCardBand(0)
+    }
+  }, [onCardBand, layout])
 
   useEffect(() => {
     window.electronAPI
@@ -239,6 +289,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
     >
       <div
+        ref={columnRef}
         style={{
           position: 'relative',
           // The click-through root hands events back here — the card and the
@@ -259,8 +310,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             exactly (the root adds 36px of floating padding around it), so
             `bottom: calc(100% + 8px)` lands 8px above the card in both
             layouts, and the card's growth (attachment chips, autosize rows)
-            carries the slot up with it. */}
-        {aboveCard && <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, zIndex: 100 }}>{aboveCard}</div>}
+            carries the slot up with it. The gap is exported because the
+            transcript's bottom reserve must include it (ABOVE_CARD_GAP). */}
+        {aboveCard && <div style={{ position: 'absolute', bottom: `calc(100% + ${ABOVE_CARD_GAP}px)`, left: 0, right: 0, zIndex: 100 }}>{aboveCard}</div>}
         <Sender
           ref={ref}
           autoSize={{ minRows: 1, maxRows }}
@@ -335,20 +387,44 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
       <style>{`
         .ant-sender-actions-btn { display: none !important; }
-        /* Responsive footer: the 授权/模型 selectors shed their labels before
-           the row can overflow the card. The classes are hung by InputArea —
-           the text+caret of both buttons (and the model picker's caret) carry
-           pm-collapse-compact, the model's robot glyph carries pm-collapse-only;
-           the breakpoint is the column's width (container pm-composer above),
-           which equals the card's width everywhere below its 952 cap. 600px
-           sits above the worst wide-mode row (labels + compaction chip + ring +
-           a 160px-capped model name ≈ 560px), so nothing overflows at any
-           width: above it everything fits, below it the buttons are 28px icons.
-           antd 6 paints the 8px inter-item gap on the button root, so the
-           hidden elements leave no phantom spacing and one visible icon leaves
-           no gap at all. */
+        /* Responsive footer: the row sheds width in stages, least-essential
+           element first, so controls keep their labels down to widths where
+           they genuinely no longer fit (2026-11-01 user ruling: the old single
+           600px breakpoint compressed the 授权/模型 labels while the common
+           row — short model name, no chip — still had ~250px of visible
+           slack). Measured row pieces (probe-composer-responsive.mjs /
+           real Chromium): attach buttons 56, 授权 full 108 / icon 30, count
+           "3400/4000" 59, compaction chip 199 (pending) / ~150 (settled),
+           context ring 16, model full 84 short / 194 (160px-capped name) /
+           icon 30, send 24, gaps ~36. Absolute worst (pending chip + count +
+           ring + long name + labels) ≈ 692px. The stages, each sized so the
+           post-shed worst row fits every width it applies to:
+             ≤ 700  the compaction chip hides (pm-collapse-chip, hung by
+                    InputArea) — passive info, the tooltip carries everything;
+                    it is the widest and least essential piece. This is ALSO
+                    the stage that rescues the true worst case: the old 600px
+                    estimate (~560) predates the pending-chip wording.
+             ≤ 500  the near-cap count hides (pm-composer-count) — transient
+                    typing feedback; the clamp itself is unchanged.
+             ≤ 440  the 授权/模型 selectors shed label + caret
+                    (pm-collapse-compact, hung by InputArea) and the model
+                    picker swaps to a robot glyph (pm-collapse-only) — 28px
+                    icons whose colour/tooltip still name the choice.
+           The breakpoint is the column's width (container pm-composer above),
+           which equals the card's width everywhere below its 952 cap; the
+           model name span (minWidth 0 + ellipsis) is the row's last absorber,
+           so a few px of estimate error ellipsize the name instead of
+           overflowing. antd 6 paints the 8px inter-item gap on the button
+           root, so hidden elements leave no phantom spacing and one visible
+           icon leaves no gap at all. */
         .pm-collapse-only { display: none; }
-        @container pm-composer (max-width: 600px) {
+        @container pm-composer (max-width: 700px) {
+          .pm-collapse-chip { display: none; }
+        }
+        @container pm-composer (max-width: 500px) {
+          .pm-composer-count { display: none; }
+        }
+        @container pm-composer (max-width: 440px) {
           .pm-collapse-compact { display: none; }
           .pm-collapse-only { display: inline-block; }
         }

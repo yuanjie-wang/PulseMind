@@ -1,12 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import type { PulseHost } from '../src/renderer/src/agent/host/types'
-import { setHost } from '../src/renderer/src/agent/host'
-import { MemoryManager } from '../src/renderer/src/memory/MemoryManager'
+import { describe, expect, it } from 'vitest'
 import { SessionReviewAgent } from '../src/renderer/src/agent/one-shot-agent/SessionReviewAgent'
-import type { MemoryEntry } from '../src/renderer/src/memory/types'
-import { MEMORY_ENTRY_MAX_CHARS, MEMORY_RESIDENT_CAP } from '../src/shared/memory/limits'
+import { MEMORY_ENTRY_MAX_CHARS } from '../src/shared/memory/limits'
 import { escapeLikePattern } from '../src/shared/memory/like-pattern'
 
 /**
@@ -26,27 +22,6 @@ import { escapeLikePattern } from '../src/shared/memory/like-pattern'
 
 const ROOT = join(__dirname, '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
-
-function makeHost(memories: MemoryEntry[], saved: string[] = []): PulseHost {
-  return {
-    getMemoryMd: async () => '',
-    listMemories: async () => memories,
-    listMemoryPages: async () => [],
-    applyMemoryPageOps: async (ops: Array<{ action: string; title?: string; content?: string }>) => {
-      for (const op of ops) if (op.content !== undefined) saved.push(op.content)
-      return ops.map((op, i) => ({ op, ok: true, pageId: `page_${i}` }))
-    },
-    listConversationsForMemory: async () => [],
-    saveMemory: async (input: { content: string }) => {
-      saved.push(input.content)
-      return { id: 'mem_x', content: input.content, type: 'auto', category: 'general', createdAt: new Date().toISOString() } as MemoryEntry
-    },
-  } as unknown as PulseHost
-}
-
-function entry(content: string, n: number, type = 'auto'): MemoryEntry {
-  return { id: `mem_${n}`, content, type, category: 'code', createdAt: new Date().toISOString() } as MemoryEntry
-}
 
 describe('主提取路径的结构兜底：超限条目不入库', () => {
   it('preference/fact 超 100 字整条丢弃，帽内的照存（v2：帽在 agent.parseResponse，结构兜底不再依赖 store 复检）', () => {

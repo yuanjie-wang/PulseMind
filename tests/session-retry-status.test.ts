@@ -133,6 +133,8 @@ describe('wiring — the wire type and the banner guards', () => {
   const root = join(__dirname, '..')
   const payloads = readFileSync(join(root, 'src/shared/agent-protocol/payloads.ts'), 'utf8')
   const chatView = readFileSync(join(root, 'src/renderer/src/components/layout/ChatView.tsx'), 'utf8')
+  // PLAN-layout-modes：重试横幅的 JSX 随抽取搬进 ChatBody（两个宿主共用）。
+  const chatBody = readFileSync(join(root, 'src/renderer/src/components/chat/ChatBody.tsx'), 'utf8')
 
   it('the status event and the snapshot share one StatusSnapshot declaration', () => {
     // One definition, two carriers — an event that spells its own field list
@@ -150,9 +152,12 @@ describe('wiring — the wire type and the banner guards', () => {
 
   it('the banner renders (attempt/maxRetries) only behind the key-presence guard', () => {
     // The regression line, verbatim: unguarded parens straight off the status
-    // object, which render `(/)` when a thin wire dropped the fields.
+    // object, which render `(/)` when a thin wire dropped the fields. The
+    // banner JSX lives in ChatBody now; scan both faces so the guard cannot
+    // quietly regress in either.
     expect(chatView).not.toMatch(/正在重试 \(\{agentStatus\.attempt\}\/\{agentStatus\.maxRetries\}\)/)
-    expect(chatView).toMatch(/'attempt' in agentStatus && 'maxRetries' in agentStatus/)
+    expect(chatBody).not.toMatch(/正在重试 \(\{agentStatus\.attempt\}\/\{agentStatus\.maxRetries\}\)/)
+    expect(chatBody).toMatch(/'attempt' in agentStatus && 'maxRetries' in agentStatus/)
     // And the countdown seed must not go NaN on a missing delay — NaN <= 1 is
     // false, so the interval would tick for the rest of the turn while the
     // seconds never render.

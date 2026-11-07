@@ -126,7 +126,10 @@ async function phaseMain() {
   saveConversation(agentMessagesToConversation(thread, 'expert_probe_old', title))
   const oldRow = db.prepare('SELECT type FROM conversations WHERE id = ?').get('expert_probe_old')
   check("pre-fix: the row's type is 'normal' (deriveConvType of a bare id)", oldRow?.type === 'normal', oldRow?.type)
-  check('pre-fix: …so it surfaces in 历史对话', listConversations().some((c) => c.id === 'expert_probe_old'))
+  // 2026-11-04 起 listConversations 滤掉零消息行，所以这条 pre-fix 残留只剩
+  // 「行存在、内容不可见、也进不了历史对话」——修复要做的事（绝不写裸 id）
+  // 仍由 ③ 的后续几条钉住。
+  check('pre-fix: …and the zero-message row never surfaces in 历史对话', !listConversations().some((c) => c.id === 'expert_probe_old'))
   const oldConv = getConversation('expert_probe_old')
   check('pre-fix: with ZERO messages — 内容不可见', oldConv?.messages.length === 0, `${oldConv?.messages.length} msgs`)
   check('pre-fix: the text is still owned by the draft slot', getConversation('expert_assist_draft')?.messages.length === 2)
@@ -265,7 +268,11 @@ async function launcher() {
     ['session-lifecycle re-keys the messages it saves', /rekeyed/.test(lifecycleSrc) && /crypto\.randomUUID\(\)/.test(lifecycleSrc)],
     ['ExpertEditor promotes with EXPERT_ASSIST_SPEC.conversationPrefix', /promoteAssistDraftToEntity\(\s*assist\.messages,\s*EXPERT_ASSIST_SPEC\.conversationPrefix,/.test(expertSrc)],
     ['RoutineEditorPage promotes with ROUTINE_ASSIST_SPEC.conversationPrefix', /promoteAssistDraftToEntity\(\s*assist\.messages,\s*ROUTINE_ASSIST_SPEC\.conversationPrefix,/.test(routineSrc)],
-    ['the sidebar delete is the voidHandler over deleteConversation', /IPC_CHANNELS\.CONVERSATION_DELETE,\s*voidHandler\([^,]+,\s*deleteConversation\)/.test(handlerSrc), ''],
+    // The handler grew the autoCleanup deleteWorkspace arm (workspace first, row
+    // second), so the voidHandler shape no longer describes it; the intent —
+    // the sidebar's delete goes through this channel and ends in
+    // deleteConversation — is what the pin keeps.
+    ['the sidebar delete is the CONVERSATION_DELETE handler over deleteConversation', /IPC_CHANNELS\.CONVERSATION_DELETE, async \(_event, id: string, opts\?: \{ deleteWorkspace\?: boolean \}\)[\s\S]{0,400}?deleteConversation\(id\)/.test(handlerSrc), ''],
   ]
   for (const [name, ok, detail] of wired) check(name, ok, detail)
   total += wired.length

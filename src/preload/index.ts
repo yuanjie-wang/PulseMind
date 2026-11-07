@@ -17,6 +17,7 @@ import type {
   DataPaths,
   ServiceStatus,
   PopoutWorkbenchSeed,
+  TemplateImportResult,
 } from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
@@ -196,6 +197,7 @@ const electronAPI = {
 
   // Skills - Import
   importSkill: (): Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT),
+  importTemplate: (): Promise<TemplateImportResult | null> => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_IMPORT),
   listImportedSkills: (): Promise<SkillDefinition[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_IMPORTED),
   deleteImportedSkill: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE_IMPORTED, name),
   ensureBuiltInSkills: (skills: SkillDefinition[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_ENSURE_BUILT_IN, skills),
@@ -422,6 +424,14 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
+  ocrImage: (filePath: string): Promise<{
+    text: string
+    lines: Array<{ text: string; score: number }>
+    dropped: Array<{ text: string; score: number }>
+    width: number
+    height: number
+    ms: number
+  }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_OCR_IMAGE, filePath),
   registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),
@@ -576,8 +586,8 @@ const electronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.POPOUT_EVENT, listener)
     }
   },
-  onConversationTitleChanged: (callback: (event: { id: string; title: string }) => void): (() => void) => {
-    const listener = (_e: unknown, event: { id: string; title: string }): void => callback(event)
+  onConversationTitleChanged: (callback: (event: { id: string; title: string; projectId?: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { id: string; title: string; projectId?: string }): void => callback(event)
     ipcRenderer.on(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, listener)
@@ -587,6 +597,15 @@ const electronAPI = {
   // ── Project (immersive) window ──
   projectWindowOpen: (projectId: string, name?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_OPEN, projectId, name),
   secondaryWatch: (sessionId: string | null): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SECONDARY_WATCH, sessionId),
+  projectWindowFocusConversation: (projectId: string, convId: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_FOCUS_CONV, projectId, convId),
+  onPopoutSwitch: (callback: (event: { sessionId: string }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { sessionId: string }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.POPOUT_SWITCH, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.POPOUT_SWITCH, listener)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

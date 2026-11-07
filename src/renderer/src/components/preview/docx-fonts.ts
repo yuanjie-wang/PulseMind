@@ -77,11 +77,66 @@ const LATIN_ALIASES: Record<string, string[]> = {
   'Segoe UI Light': ['Helvetica Neue'],
 }
 
-function fontFaceCss(aliases: Record<string, string[]>): string {
+// ── weight-specific faces ──
+// A family mapped to ONE local face has no bold face, so a bold run gets
+// Chromium's *synthesised* bold: the regular face smeared sideways. Word shows
+// a real bold face (PingFang Semibold, Songti Bold…), and the difference is
+// very visible on headings — thinner, softer strokes, and in the PDF the font
+// name comes out as PingFangSC-Regular. Naming the real bold face under
+// `font-weight: 700` makes the family resolve the way Word does.
+//
+// Only PostScript names belong here (local("PingFang SC") would resolve to the
+// family's default face and defeat the point). A name that is not installed
+// simply fails to load, the browser falls back to the 400 face and synthesises
+// — i.e. exactly the behaviour without this table, so a miss costs nothing.
+const CJK_BOLD: Record<string, string[]> = {
+  微软雅黑: ['PingFangSC-Semibold', 'PingFangSC-Medium'],
+  'Microsoft YaHei': ['PingFangSC-Semibold', 'PingFangSC-Medium'],
+  等线: ['PingFangSC-Semibold'],
+  DengXian: ['PingFangSC-Semibold'],
+  宋体: ['SongtiSC-Bold', 'STSongti-SC-Bold'],
+  SimSun: ['SongtiSC-Bold', 'STSongti-SC-Bold'],
+  新宋体: ['SongtiSC-Bold', 'STSongti-SC-Bold'],
+  NSimSun: ['SongtiSC-Bold', 'STSongti-SC-Bold'],
+  中易宋体: ['SongtiSC-Bold', 'STSongti-SC-Bold'],
+  华文宋体: ['STSongti-SC-Bold'],
+  方正书宋: ['SongtiSC-Bold'],
+  黑体: ['STHeitiSC-Medium'],
+  SimHei: ['STHeitiSC-Medium'],
+  中易黑体: ['STHeitiSC-Medium'],
+  华文黑体: ['STHeitiSC-Medium'],
+  华文细黑: ['STHeitiSC-Medium'],
+  方正黑体: ['STHeitiSC-Medium'],
+  楷体: ['KaitiSC-Bold'],
+  KaiTi: ['KaitiSC-Bold'],
+  楷体_GB2312: ['KaitiSC-Bold'],
+  华文楷体: ['KaitiSC-Bold'],
+  方正楷体: ['KaitiSC-Bold'],
+}
+
+const LATIN_BOLD: Record<string, string[]> = {
+  Calibri: ['Carlito-Bold', 'HelveticaNeue-Bold'],
+  'Calibri Light': ['Carlito-Bold', 'HelveticaNeue-Bold'],
+  Cambria: ['Caladea-Bold', 'Georgia-Bold'],
+  'Cambria Math': ['Caladea-Bold', 'Georgia-Bold'],
+  Consolas: ['Menlo-Bold', 'CourierNewPS-BoldMT'],
+  'Segoe UI': ['HelveticaNeue-Bold'],
+  'Segoe UI Light': ['HelveticaNeue-Bold'],
+}
+
+function fontFaceCss(
+  aliases: Record<string, string[]>,
+  boldLocals: Record<string, string[]>
+): string {
+  const src = (locals: string[]): string => locals.map((name) => `local("${name}")`).join(', ')
   return Object.entries(aliases)
-    .map(([family, locals]) => {
-      const src = locals.map((name) => `local("${name}")`).join(', ')
-      return `@font-face { font-family: "${family}"; src: ${src}; }`
+    .flatMap(([family, locals]) => {
+      const faces = [`@font-face { font-family: "${family}"; font-weight: 400; src: ${src(locals)}; }`]
+      const bold = boldLocals[family]
+      if (bold && bold.length > 0) {
+        faces.push(`@font-face { font-family: "${family}"; font-weight: 700; src: ${src(bold)}; }`)
+      }
+      return faces
     })
     .join('\n')
 }
@@ -106,11 +161,11 @@ function defaultFontCss(className: string): string {
 
 /** Injected before docx-preview's own <style>, so embedded fonts still win. */
 export function docxFontCss(className: string): string {
-  return `${fontFaceCss(LATIN_ALIASES)}\n${fontFaceCss(CJK_ALIASES)}\n${defaultFontCss(className)}`
+  return `${fontFaceCss(LATIN_ALIASES, LATIN_BOLD)}\n${fontFaceCss(CJK_ALIASES, CJK_BOLD)}\n${defaultFontCss(className)}`
 }
 
 /** Just the alias @font-face table, without the docx wrapper default —
  *  shared with the PPTX preview, whose pages name the same Office faces. */
 export function officeFontFaceCss(): string {
-  return `${fontFaceCss(LATIN_ALIASES)}\n${fontFaceCss(CJK_ALIASES)}`
+  return `${fontFaceCss(LATIN_ALIASES, LATIN_BOLD)}\n${fontFaceCss(CJK_ALIASES, CJK_BOLD)}`
 }

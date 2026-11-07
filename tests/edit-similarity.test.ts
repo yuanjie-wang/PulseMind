@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { editMissError, findSimilarRegion, hunkMismatchError, stripReadNumbering } from '../src/shared/diff/edit-similarity'
+import { editAmbiguousError, editMissError, findSimilarRegion, hunkMismatchError, stripReadNumbering } from '../src/shared/diff/edit-similarity'
 import { patchContent } from '../src/shared/diff/patch-utils'
 
 // ── PLAN-coding-contract (harness 反馈层): a failed edit used to surface the
@@ -95,7 +95,9 @@ describe('findSimilarRegion — locating the closest region', () => {
 
   it('previews are line-numbered, capped, and clip pathological lines', () => {
     const long = 'x'.repeat(500)
-    const body = Array.from({ length: 30 }, (_, i) => `line ${i}`).concat([long]).join('\n')
+    const body = Array.from({ length: 30 }, (_, i) => `line ${i}`)
+      .concat([long])
+      .join('\n')
     const region = findSimilarRegion(body, body) // self-match: the full window
     expect(region!.whitespaceOnly).toBe(true)
     expect(region!.preview.split('\n').filter((l) => l.startsWith('  ')).length).toBeLessThanOrEqual(13) // 12 lines + the (+N more) tail
@@ -104,7 +106,7 @@ describe('findSimilarRegion — locating the closest region', () => {
   })
 })
 
-describe('editMissError — the edit tool\'s not-found surface', () => {
+describe("editMissError — the edit tool's not-found surface", () => {
   it('keeps the original prefix (longitudinal log greps) and adds the region', () => {
     const msg = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n    return " ".repeat(width - text.length) + text\n}')
     expect(msg.startsWith('old_str not found in /ws/a.js.')).toBe(true)
@@ -127,7 +129,11 @@ describe('editMissError — the edit tool\'s not-found surface', () => {
     // flash-class models, diff-form edits failed 59–91% vs ~2% for
     // search/replace — the advice pushed a struggling model into the weaker form.
     const whitespace = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n    return " ".repeat(width - text.length) + text\n}')
-    const fragmentary = editMissError('/ws/a.js', FILE, ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'].join('\n'))
+    const fragmentary = editMissError(
+      '/ws/a.js',
+      FILE,
+      ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'].join('\n'),
+    )
     const partial = editMissError('/ws/a.js', FILE, 'function padLeft(text, width) {\n  return "x".repeat(width) + text\n}')
     for (const msg of [whitespace, fragmentary, partial]) {
       expect(msg).not.toContain('unified diff')
@@ -160,7 +166,7 @@ describe('editMissError — the edit tool\'s not-found surface', () => {
 })
 
 describe('hunkMismatchError — the diff mode counterpart', () => {
-  it('locates where the hunk\'s expected lines actually live', () => {
+  it("locates where the hunk's expected lines actually live", () => {
     const msg = hunkMismatchError(50, ['  MODE: "safe",', '  RETRIES: 2,'], FILE)
     expect(msg.startsWith('Hunk at line 50 does not match file content.')).toBe(true)
     expect(msg).toContain('lines 2–3')
@@ -211,7 +217,7 @@ describe('read-prefix detection in the miss errors (B12)', () => {
     const file = 'alpha line\nbeta line two\ngamma'
     const msg = editMissError('/ws/f.txt', file, '     2\tbeta line two')
     expect(msg.startsWith('old_str not found in /ws/f.txt.')).toBe(true)
-    expect(msg).toContain("line-number prefix")
+    expect(msg).toContain('line-number prefix')
     expect(msg).toContain('Strip the prefixes and retry')
     expect(msg).toContain('lines 2–2')
     expect(msg).toContain('2 | beta line two')
@@ -220,11 +226,7 @@ describe('read-prefix detection in the miss errors (B12)', () => {
   })
 
   it('a fully prefixed multi-line needle reports where the bare text matches', () => {
-    const needle = [
-      '     6\tfunction padLeft(text, width) {',
-      '     7\t  return " ".repeat(width - text.length) + text',
-      '     8\t}',
-    ].join('\n')
+    const needle = ['     6\tfunction padLeft(text, width) {', '     7\t  return " ".repeat(width - text.length) + text', '     8\t}'].join('\n')
     const msg = editMissError('/ws/a.js', FILE, needle)
     expect(msg).toContain('line-number prefix')
     expect(msg).toContain('lines 6–8')
@@ -341,6 +343,63 @@ describe('wiring — file-ops and patch-utils consume the helper', () => {
   it('applyPatch routes the mismatch branch through hunkMismatchError', () => {
     const src = read('src/shared/diff/patch-utils.ts')
     expect(src).toContain("from './edit-similarity'")
-    expect(src).toContain('hunkMismatchError(hunk.oldStart, expectedSequence, fileLines.join(\'\\n\'))')
+    expect(src).toContain("hunkMismatchError(hunk.oldStart, expectedSequence, fileLines.join('\\n'))")
+  })
+})
+
+// ── Ambiguity gate (2026-11-01): the schema promises "must match uniquely
+// (or set multi: true)" and svcEditFile now enforces it — a non-unique
+// old_str used to silently replace the FIRST occurrence with a success-shaped
+// result, possibly editing the wrong block. The refusal must carry the count
+// and every occurrence's start line so the retry extends old_str with
+// surrounding context instead of guessing.
+
+describe('editAmbiguousError — the uniqueness gate refusal', () => {
+  const MULTI = ['function a() {', '  return 1', '}', '', 'function b() {', '  return 1', '}'].join('\n')
+
+  it('names the count and every occurrence start line', () => {
+    const msg = editAmbiguousError('/ws/m.js', MULTI, '  return 1')
+    expect(msg).toContain('old_str matches 2 places in /ws/m.js')
+    expect(msg).toContain('Occurrences start at lines: 2, 6')
+    expect(msg).toContain('multi: true')
+  })
+
+  it('a multi-line needle reports the line its first line starts on', () => {
+    const block = 'start() {\n  go()'
+    const twice = [block, 'middle', block].join('\n')
+    const msg = editAmbiguousError('/ws/m.js', twice, block)
+    expect(msg).toContain('matches 2 places')
+    expect(msg).toContain('Occurrences start at lines: 1, 4')
+  })
+
+  it('caps the line list with a (+N more) fold', () => {
+    const many = Array.from({ length: 14 }, () => 'x').join('\n')
+    const msg = editAmbiguousError('/ws/m.js', many, 'x')
+    expect(msg).toContain('matches 14 places')
+    expect(msg).toContain('(+4 more)')
+    const listed = msg.match(/lines: (.+?)\./)![1]
+    expect(listed.split(', ')).toHaveLength(10)
+  })
+
+  it('an empty needle (IPC callers bypass the executor guard) degrades to guidance only', () => {
+    const msg = editAmbiguousError('/ws/m.js', MULTI, '')
+    expect(msg).toContain('refusing to guess')
+    expect(msg).not.toContain('Occurrences start at lines')
+    expect(msg).toContain('multi: true')
+  })
+
+  // review_20261103 高2：旧实现每个命中都 `slice(0, at).split('\n')` 重扫整个
+  // 前缀——短针打大文件（minified bundle / lockfile）在主进程线程上 O(文件×命中)，
+  // 实测 2MB > 120s，IPC、窗口、所有会话一起冻住。线性扫描 + 命中数过帽即停，
+  // 这条用同形大输入钉住耗时上界（计数与 (+N more) 折叠照常准确）。
+  it('stays linear on a big file full of hits — the scan stops after the list cap', () => {
+    const unit = `function f${'x'.repeat(64)}() {\n  return 1\n}\n\n`
+    const big = unit.repeat(4000) // ~3.6MB, 4000 hits of a single `}`
+    const t0 = Date.now()
+    const msg = editAmbiguousError('/ws/big.js', big, '}')
+    const elapsed = Date.now() - t0
+    expect(msg).toContain('matches 4000 places')
+    expect(msg).toContain('(+3990 more)')
+    expect(elapsed).toBeLessThan(2000) // 旧实现同输入秒级到分钟级
   })
 })

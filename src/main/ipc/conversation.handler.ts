@@ -31,6 +31,7 @@ import {
   saveConversationPlan,
   getConversationPlan,
   getToolResultsByIds,
+  getConversationProjectId,
 } from '../storage/conversation.db'
 import {
   getHourlyTokenStats,
@@ -168,9 +169,17 @@ export function registerConversationHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, (_event, id: string, title: string) => {
     updateConversationTitle(id, title)
     setPopoutTitle(id, title)
+    // The project binding RIDES the push: a conversation created in a secondary
+    // window (immersive project window / popout) is unknown to the OTHER
+    // windows' in-memory lists, whose miss-branch re-add used to mint the entry
+    // without projectId — the conversation grouped under 对话 while the DB
+    // binding (written by the creating window) stayed correct (2026-11-01
+    // 用户报「沉浸模式新建的会话归到了普通对话」). 'default' stays literal; the
+    // renderer normalizes it to absent.
+    const projectId = getConversationProjectId(id)
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
-        try { win.webContents.send(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, { id, title }) } catch { /* window closing */ }
+        try { win.webContents.send(IPC_CHANNELS.CONVERSATION_TITLE_CHANGED, { id, title, projectId }) } catch { /* window closing */ }
       }
     }
   })

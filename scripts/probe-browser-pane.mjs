@@ -36,6 +36,12 @@ const SHOTS = join(tmpdir(), 'pm-pane-shots')
 const CONV_KEY = 'conv_20260916190000'
 /** Matches the dock: ChatView's top offset inside the window content area. */
 const TITLE_BAR_HEIGHT = 56
+/** Must equal src/shared/browser/pane.ts WORKBENCH_CARD_MARGIN — the carded
+ *  workbench pane's window margin (2026-11-03 卡片化). */
+const WORKBENCH_CARD_MARGIN = 5
+/** Must equal shared/browser/pane.ts PANE_BORDER_WIDTH — the card's 1px top
+ *  border rides between the pane's border-box top and the chrome rows. */
+const PANE_BORDER_WIDTH = 1
 /** Must equal src/shared/browser/pane.ts PANE_CHROME_HEIGHT. */
 const PANE_CHROME_HEIGHT = 100
 
@@ -85,6 +91,7 @@ window.__mount = ({ tabs, activeTab = 'browser' } = {}) => {
             onTogglePinConversation={() => {}}
           >
             <ChatView
+              card
               messages={[
                 { id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '你好' }], createdAt: '2026-09-16T19:00:00.000Z' },
               ]}
@@ -118,8 +125,13 @@ window.__ready = true
 
 await build({
   stdin: { contents: HARNESS, resolveDir: process.cwd(), loader: 'tsx', sourcefile: 'harness.tsx' },
-  bundle: true, format: 'iife', platform: 'browser', target: 'chrome114',
-  outfile: OUT, tsconfig: 'tsconfig.web.json', jsx: 'automatic',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'chrome114',
+  outfile: OUT,
+  tsconfig: 'tsconfig.web.json',
+  jsx: 'automatic',
   define: { 'process.env.NODE_ENV': JSON.stringify(process.env.PROBE_DEV ? 'development' : 'production'), __APP_VERSION__: '"0.0.0-probe"' },
   loader: { '.css': 'text', '.png': 'dataurl', '.svg': 'dataurl', '.ttf': 'text', '.woff': 'text', '.woff2': 'text' },
 })
@@ -184,10 +196,13 @@ await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
 await address().waitFor()
 
 const box = await address().boundingBox()
-const hit = await page.evaluate(({ x, y }) => {
-  const el = document.elementFromPoint(x, y)
-  return { tag: el?.tagName ?? null, placeholder: el?.getAttribute?.('placeholder') ?? null }
-}, { x: box.x + box.width / 2, y: box.y + box.height / 2 })
+const hit = await page.evaluate(
+  ({ x, y }) => {
+    const el = document.elementFromPoint(x, y)
+    return { tag: el?.tagName ?? null, placeholder: el?.getAttribute?.('placeholder') ?? null }
+  },
+  { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+)
 check('the address bar hit-tests to itself (nothing stacks above it)', hit.tag === 'INPUT', `${hit.tag} placeholder=${hit.placeholder}`)
 
 check('the address bar shows the active tab URL', (await address().inputValue()) === 'https://www.baidu.com/', await address().inputValue())
@@ -208,19 +223,22 @@ const geom = await page.evaluate(() => {
   return { paneTop, rowBottom, chromeHeight: rowBottom - paneTop }
 })
 check(
-  `the chrome the native WebView docks below is exactly PANE_CHROME_HEIGHT (${PANE_CHROME_HEIGHT}px)`,
-  Math.round(geom.chromeHeight) === PANE_CHROME_HEIGHT,
+  `the chrome (+ the card's 1px top border) measures PANE_CHROME_HEIGHT + border (${PANE_CHROME_HEIGHT + PANE_BORDER_WIDTH}px)`,
+  Math.round(geom.chromeHeight) === PANE_CHROME_HEIGHT + PANE_BORDER_WIDTH,
   `measured ${geom.chromeHeight}px`,
 )
+// 卡片化（2026-11-03）：pane 是圆角卡，border-box 顶 = TITLE + 卡边距 5。
 check(
-  'the pane starts at TITLE_BAR_HEIGHT below the viewport top',
-  Math.round(geom.paneTop) === TITLE_BAR_HEIGHT,
+  `the pane card starts at TITLE_BAR_HEIGHT + card margin below the viewport top`,
+  Math.round(geom.paneTop) === TITLE_BAR_HEIGHT + WORKBENCH_CARD_MARGIN,
   `paneTop=${geom.paneTop}`,
 )
+// The dock's invariant unchanged: paneTop(dock) = TITLE + topInset(边距+边框)
+// + PANE_CHROME_HEIGHT lands exactly on the address row's bottom edge.
 check(
-  'the dock offset (pane top + chrome) is where the address row ends — no overlap',
-  Math.round(geom.rowBottom) === TITLE_BAR_HEIGHT + PANE_CHROME_HEIGHT,
-  `rowBottom=${geom.rowBottom} vs ${TITLE_BAR_HEIGHT + PANE_CHROME_HEIGHT}`,
+  'the dock offset (card top + margin + border + chrome) is where the address row ends — no overlap',
+  Math.round(geom.rowBottom) === TITLE_BAR_HEIGHT + WORKBENCH_CARD_MARGIN + PANE_BORDER_WIDTH + PANE_CHROME_HEIGHT,
+  `rowBottom=${geom.rowBottom} vs ${TITLE_BAR_HEIGHT + WORKBENCH_CARD_MARGIN + PANE_BORDER_WIDTH + PANE_CHROME_HEIGHT}`,
 )
 
 // Typing: select-all then type, the way a user replacing an address does.
@@ -230,7 +248,9 @@ await page.keyboard.press('Meta+A')
 await page.keyboard.type('example.com')
 check('typing shows in the address bar', (await address().inputValue()) === 'example.com', await address().inputValue())
 await shot('pane-with-tab.png')
-await page.evaluate(() => { window.__actions = [] })
+await page.evaluate(() => {
+  window.__actions = []
+})
 await page.keyboard.press('Enter')
 await page.waitForTimeout(150)
 const navActions = await page.evaluate(() => window.__actions)
@@ -246,18 +266,24 @@ check(
         optimistic id working. Switch timing is recorded informationally. ── */
 await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
 await address().waitFor()
-const optimistic = await page.evaluate(() => new Promise((resolve) => {
-  const tab = document.querySelector('div[title="Example"]')
-  if (!tab) { resolve(null); return }
-  const before = getComputedStyle(tab).fontWeight
-  const t0 = performance.now()
-  tab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  // Same frame, before any paint or event await — React's scheduled render
-  // from the zustand write completes in a microtask, i.e. before this runs.
-  requestAnimationFrame(() => {
-    resolve({ before, after: getComputedStyle(tab).fontWeight, ms: performance.now() - t0 })
-  })
-}))
+const optimistic = await page.evaluate(
+  () =>
+    new Promise((resolve) => {
+      const tab = document.querySelector('div[title="Example"]')
+      if (!tab) {
+        resolve(null)
+        return
+      }
+      const before = getComputedStyle(tab).fontWeight
+      const t0 = performance.now()
+      tab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      // Same frame, before any paint or event await — React's scheduled render
+      // from the zustand write completes in a microtask, i.e. before this runs.
+      requestAnimationFrame(() => {
+        resolve({ before, after: getComputedStyle(tab).fontWeight, ms: performance.now() - t0 })
+      })
+    }),
+)
 check(
   'clicking the inactive tab moves the highlight within the same frame (optimistic)',
   !!optimistic && optimistic.before === '400' && optimistic.after === '600',
@@ -269,7 +295,7 @@ await page.evaluate((tabs) => {
   window.__paneStore.getState().setUpdate({ visible: true, width: 420, conversationId: window.__CONV_KEY, tabs })
 }, TABS)
 const snapshotWeight = await page.evaluate(() => getComputedStyle(document.querySelector('div[title="百度一下"]')).fontWeight)
-check('main\'s snapshot clears the optimistic id (main is the source of truth)', snapshotWeight === '600', `百度一下 fontWeight=${snapshotWeight}`)
+check("main's snapshot clears the optimistic id (main is the source of truth)", snapshotWeight === '600', `百度一下 fontWeight=${snapshotWeight}`)
 
 /* ── 2. A pane with NO tab: the row must still be usable — typing takes, and
         Enter opens a tab instead of being swallowed. ───────────────────── */
@@ -280,7 +306,9 @@ await page.keyboard.type('mail.163.com')
 const typedNoTab = await address().inputValue()
 check('typing works in a pane with no tab yet', typedNoTab === 'mail.163.com', `value=${JSON.stringify(typedNoTab)}`)
 await shot('pane-no-tab.png')
-await page.evaluate(() => { window.__actions = [] })
+await page.evaluate(() => {
+  window.__actions = []
+})
 await page.keyboard.press('Enter')
 await page.waitForTimeout(150)
 const noTabActions = await page.evaluate(() => window.__actions)
@@ -300,8 +328,14 @@ const freshValue = await address().inputValue()
 check('a fresh about:blank tab shows an empty address bar (placeholder, not the scheme)', freshValue === '', JSON.stringify(freshValue))
 await address().click()
 await page.keyboard.type('mail.163.com')
-check('typing into a fresh tab starts from the typed text (no about:blank concatenation)', (await address().inputValue()) === 'mail.163.com', await address().inputValue())
-await page.evaluate(() => { window.__actions = [] })
+check(
+  'typing into a fresh tab starts from the typed text (no about:blank concatenation)',
+  (await address().inputValue()) === 'mail.163.com',
+  await address().inputValue(),
+)
+await page.evaluate(() => {
+  window.__actions = []
+})
 await page.keyboard.press('Enter')
 await page.waitForTimeout(150)
 const freshNav = await page.evaluate(() => window.__actions)
@@ -343,25 +377,33 @@ const MANY_TABS = Array.from({ length: 8 }, (_, i) => ({
 await page.evaluate((tabs) => window.__mount({ tabs }), MANY_TABS)
 await address().waitFor()
 
-const strip = () => page.evaluate(() => {
-  const el = document.querySelector('.pm-pane-tabstrip')
-  if (!el) return null
-  const r = el.getBoundingClientRect()
-  // The 32px contract lives on the strip ROW, which is the closest ancestor
-  // carrying the border-bottom — NOT the scroller's parent any more: since
-  // 2026-10-30 the scroller sits inside a `position: relative` wrapper that
-  // holds the two edge-fade masks (StripEdgeFades), and that wrapper is
-  // content-height. Measured by the same rule the address row above uses.
-  const row = el.closest('div[style*="border-bottom"]').getBoundingClientRect()
-  return {
-    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
-    scrollLeft: el.scrollLeft, top: r.top, height: r.height,
-    rowHeight: row.height,
-  }
-})
+const strip = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('.pm-pane-tabstrip')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    // The 32px contract lives on the strip ROW, which is the closest ancestor
+    // carrying the border-bottom — NOT the scroller's parent any more: since
+    // 2026-10-30 the scroller sits inside a `position: relative` wrapper that
+    // holds the two edge-fade masks (StripEdgeFades), and that wrapper is
+    // content-height. Measured by the same rule the address row above uses.
+    const row = el.closest('div[style*="border-bottom"]').getBoundingClientRect()
+    return {
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      scrollLeft: el.scrollLeft,
+      top: r.top,
+      height: r.height,
+      rowHeight: row.height,
+    }
+  })
 
 let st = await strip()
-check('8 tabs overflow the strip (it scrolls instead of clipping)', st && st.scrollWidth > st.clientWidth, `scrollWidth=${st?.scrollWidth} clientWidth=${st?.clientWidth}`)
+check(
+  '8 tabs overflow the strip (it scrolls instead of clipping)',
+  st && st.scrollWidth > st.clientWidth,
+  `scrollWidth=${st?.scrollWidth} clientWidth=${st?.clientWidth}`,
+)
 check('…and the strip row is still exactly 32px tall (PANE_CHROME_HEIGHT contract)', st && Math.round(st.rowHeight) === 32, `rowHeight=${st?.rowHeight}`)
 
 await page.locator('.pm-pane-tabstrip').hover()
@@ -419,9 +461,13 @@ await page.locator('div[style*="z-index: 40"]').waitFor()
 const rowCount = await suggestionItems().count()
 check('typing opens the dropdown with matching history rows', rowCount === 2, `${rowCount} rows`)
 
-const firstBg = await suggestionItems().nth(0).evaluate((el) => getComputedStyle(el).backgroundColor)
+const firstBg = await suggestionItems()
+  .nth(0)
+  .evaluate((el) => getComputedStyle(el).backgroundColor)
 await page.keyboard.press('ArrowDown')
-const secondBg = await suggestionItems().nth(0).evaluate((el) => getComputedStyle(el).backgroundColor)
+const secondBg = await suggestionItems()
+  .nth(0)
+  .evaluate((el) => getComputedStyle(el).backgroundColor)
 check('ArrowDown moves the selection (row highlight moves)', firstBg !== secondBg, `${firstBg} → ${secondBg}`)
 
 await page.keyboard.press('ArrowDown') // wrap to the second row
@@ -441,11 +487,15 @@ await page.keyboard.press('Meta+A')
 await page.keyboard.type('ma')
 await page.locator('div[style*="z-index: 40"]').waitFor()
 await page.keyboard.press('Escape')
-check('first Esc closes the dropdown but keeps the typed text', (await page.locator('div[style*="z-index: 40"]').count()) === 0 && (await address().inputValue()) === 'ma', `value=${await address().inputValue()}`)
+check(
+  'first Esc closes the dropdown but keeps the typed text',
+  (await page.locator('div[style*="z-index: 40"]').count()) === 0 && (await address().inputValue()) === 'ma',
+  `value=${await address().inputValue()}`,
+)
 await page.keyboard.press('Escape')
 // 清空的是 draft：有激活页签时字段回到该页签自己的地址（无页签才是空串）。
 const clearedTo = await address().inputValue()
-check('second Esc clears the draft (field reverts to the active tab\'s url)', clearedTo === 'https://www.baidu.com/', `value=${JSON.stringify(clearedTo)}`)
+check("second Esc clears the draft (field reverts to the active tab's url)", clearedTo === 'https://www.baidu.com/', `value=${JSON.stringify(clearedTo)}`)
 
 // Clear footer: one click arms the confirm, the second fires it.
 await address().click()
@@ -468,15 +518,16 @@ check('an open dropdown reports its height so main shifts the webview', overlayP
    出联想。SQL LIKE 能查到该行，但 rankHistorySuggestions 此前只拿 scheme-less
    的存储 URL 比对，把它过滤光 → 下拉不弹（fixture 用用户库的真实行形状）。 ── */
 await page.evaluate(() => {
-  window.__historyFixture = [
-    { url: 'https://www.baidu.com/', title: '百度一下，你就知道', visitCount: 2, lastVisitAt: 99 },
-  ]
+  window.__historyFixture = [{ url: 'https://www.baidu.com/', title: '百度一下，你就知道', visitCount: 2, lastVisitAt: 99 }]
   window.__actions = []
 })
 await address().click()
 await page.keyboard.press('Meta+A')
 await page.keyboard.type('https://www.baidu.com')
-await page.locator('div[style*="z-index: 40"]').waitFor({ timeout: 3000 }).catch(() => {})
+await page
+  .locator('div[style*="z-index: 40"]')
+  .waitFor({ timeout: 3000 })
+  .catch(() => {})
 const reproRows = await suggestionItems().count()
 check('re-typing the visited full URL (with scheme) still suggests it', reproRows === 1, `${reproRows} rows`)
 await page.keyboard.press('ArrowDown') // 选中条目再 Enter —— 无选中时 Enter 按原文导航（另一条路径）
@@ -502,10 +553,20 @@ await page.evaluate(() => {
   window.__actions = []
 })
 await page.evaluate(() => window.__mount({ tabs: [] }))
-check('a pane with no tab shows the empty state', await page.getByText(EMPTY_COPY).isVisible().catch(() => false))
+check(
+  'a pane with no tab shows the empty state',
+  await page
+    .getByText(EMPTY_COPY)
+    .isVisible()
+    .catch(() => false),
+)
 const emptyRows = await page.locator('[data-pm-empty-item]').count()
 check('…with the recents list rendered from history', emptyRows === 2, `${emptyRows} rows`)
-check('…a titleless row falls back to its host', (await page.locator('[data-pm-empty-item]').nth(1).textContent())?.includes('news.example'), await page.locator('[data-pm-empty-item]').nth(1).textContent())
+check(
+  '…a titleless row falls back to its host',
+  (await page.locator('[data-pm-empty-item]').nth(1).textContent())?.includes('news.example'),
+  await page.locator('[data-pm-empty-item]').nth(1).textContent(),
+)
 await page.locator('[data-pm-empty-item]').first().click()
 await page.waitForTimeout(100)
 const emptyNav = await page.evaluate(() => window.__actions)
@@ -596,7 +657,7 @@ check('…and the corners really are cut (a hit-test at the corner misses the ca
 check('…while 12px in lands on it (the region is painted, not empty)', cornerHit.inside === true, JSON.stringify(cornerHit))
 check('…with the rows inset inside it (a hover fill stays off the corners)', Boolean(g) && g.rowInset >= 4, String(g?.rowInset))
 check(
-  '…and the 最近访问 label sharing the rows\' text edge',
+  "…and the 最近访问 label sharing the rows' text edge",
   Boolean(g) && Math.abs(g.labelInset - g.rowTextInset) <= 1,
   g && `label ${g.labelInset} vs text ${g.rowTextInset}`,
 )
@@ -625,16 +686,32 @@ await page.waitForTimeout(60)
 await shot('pane-empty-state.png')
 
 await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_fresh', url: 'about:blank', title: '', active: true }] }))
-check('a fresh about:blank tab shows the same empty state', await page.getByText(EMPTY_COPY).isVisible().catch(() => false))
+check(
+  'a fresh about:blank tab shows the same empty state',
+  await page
+    .getByText(EMPTY_COPY)
+    .isVisible()
+    .catch(() => false),
+)
 await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_real', url: 'https://www.baidu.com/', title: '百度一下', active: true }] }))
-check('a navigated tab hides the empty state (the webview owns the area)', !(await page.getByText(EMPTY_COPY).isVisible().catch(() => false)))
+check(
+  'a navigated tab hides the empty state (the webview owns the area)',
+  !(await page
+    .getByText(EMPTY_COPY)
+    .isVisible()
+    .catch(() => false)),
+)
 await page.evaluate(() => {
   window.__historyFixture = []
 })
 await page.evaluate(() => window.__mount({ tabs: [] }))
 check(
   'empty history hides the recents block but keeps the guidance',
-  (await page.locator('[data-pm-empty-recents]').count()) === 0 && (await page.getByText(EMPTY_COPY).isVisible().catch(() => false)),
+  (await page.locator('[data-pm-empty-recents]').count()) === 0 &&
+    (await page
+      .getByText(EMPTY_COPY)
+      .isVisible()
+      .catch(() => false)),
 )
 
 /* ── 8. Favorites (PLAN-browser-favorites, review round): the star↔store link
@@ -647,9 +724,7 @@ await page.evaluate(() => {
     { url: 'https://www.baidu.com', title: '百度一下', createdAt: 20, updatedAt: 20 },
     { url: 'https://zhihu.com', title: '知乎', createdAt: 10, updatedAt: 10 },
   ]
-  window.__historyFixture = [
-    { url: 'https://github.com/', title: 'GitHub', visitCount: 5, lastVisitAt: 77 },
-  ]
+  window.__historyFixture = [{ url: 'https://github.com/', title: 'GitHub', visitCount: 5, lastVisitAt: 77 }]
   window.__favWrites = []
   window.__actions = []
 })
@@ -688,9 +763,12 @@ await page.locator('[data-pm-fav-del]').first().click()
 await page.waitForTimeout(150)
 check(
   'the 收藏 block disappears once the last favorite is removed (recents stay)',
-  (await page.locator('[data-pm-fav-row]').count()) === 0
-    && (await page.locator('[data-pm-empty-item]').count()) === 1
-    && (await page.getByText('最近访问').isVisible().catch(() => false)),
+  (await page.locator('[data-pm-fav-row]').count()) === 0 &&
+    (await page.locator('[data-pm-empty-item]').count()) === 1 &&
+    (await page
+      .getByText('最近访问')
+      .isVisible()
+      .catch(() => false)),
 )
 
 // 上一段的空态测试已把 fixture 删空——星标段先重新播种，再挂载带 tab 的面板。
@@ -702,22 +780,33 @@ const starOn = page.locator('div[title="取消收藏"]')
 await starOn.waitFor({ timeout: 2000 })
 const starFill = await starOn.evaluate((el) => el.querySelector('svg')?.getAttribute('fill'))
 check('a favorited active tab shows the filled star (state rides the async has())', starFill === 'currentColor', `fill=${starFill}`)
-await page.evaluate(() => { window.__favWrites = [] })
+await page.evaluate(() => {
+  window.__favWrites = []
+})
 await starOn.click()
 await page.waitForTimeout(150)
 const starWrites1 = await page.evaluate(() => window.__favWrites)
 check(
   'clicking the filled star removes the favorite and flips the button',
-  starWrites1.length === 1 && starWrites1[0][0] === 'remove' && starWrites1[0][1] === 'https://www.baidu.com' && (await page.locator('div[title="收藏此页"]').count()) === 1,
+  starWrites1.length === 1 &&
+    starWrites1[0][0] === 'remove' &&
+    starWrites1[0][1] === 'https://www.baidu.com' &&
+    (await page.locator('div[title="收藏此页"]').count()) === 1,
   JSON.stringify(starWrites1),
 )
-await page.evaluate(() => { window.__favWrites = [] })
+await page.evaluate(() => {
+  window.__favWrites = []
+})
 await page.locator('div[title="收藏此页"]').click()
 await page.waitForTimeout(150)
 const starWrites2 = await page.evaluate(() => window.__favWrites)
 check(
   'clicking again re-adds with the normalized url and the page title',
-  starWrites2.length === 1 && starWrites2[0][0] === 'add' && starWrites2[0][1] === 'https://www.baidu.com' && starWrites2[0][2] === '百度一下' && (await page.locator('div[title="取消收藏"]').count()) === 1,
+  starWrites2.length === 1 &&
+    starWrites2[0][0] === 'add' &&
+    starWrites2[0][1] === 'https://www.baidu.com' &&
+    starWrites2[0][2] === '百度一下' &&
+    (await page.locator('div[title="取消收藏"]').count()) === 1,
   JSON.stringify(starWrites2),
 )
 await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_fresh2', url: 'about:blank', title: '', active: true }] }))
@@ -742,11 +831,7 @@ const drop = await page.evaluate(() => {
   const rows = [...document.querySelectorAll('div[style*="z-index: 40"] > div > div')]
   return { n: rows.length, first: rows[0]?.hasAttribute('data-pm-fav-row') ?? false, second: rows[1]?.hasAttribute('data-pm-fav-row') ?? false }
 })
-check(
-  'typing matches favorites first — the top row is the favorite, history fills below',
-  drop.n >= 2 && drop.first && !drop.second,
-  JSON.stringify(drop),
-)
+check('typing matches favorites first — the top row is the favorite, history fills below', drop.n >= 2 && drop.first && !drop.second, JSON.stringify(drop))
 await page.locator('[data-pm-fav-row]').first().hover()
 await page.locator('[data-pm-fav-del]').first().click()
 await page.waitForTimeout(150)
@@ -779,24 +864,30 @@ const paneWidth = () => dragHandle.evaluate((el) => el.parentElement.getBounding
 // stub it for the staging dispatch only (restored before any real-mouse step).
 const stageStuckDrag = async (button = 0, buttons = 1) => {
   const hb = await dragHandle.boundingBox()
-  await page.evaluate(({ x, y, button, buttons }) => {
-    const proto = Element.prototype
-    const real = proto.setPointerCapture
-    proto.setPointerCapture = function () {}
-    document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
-      new PointerEvent('pointerdown', { bubbles: true, button, buttons, pointerId: 1, clientX: x, clientY: y }),
-    )
-    proto.setPointerCapture = real
-  }, { x: hb.x + hb.width / 2, y: hb.y + hb.height / 2, button, buttons })
+  await page.evaluate(
+    ({ x, y, button, buttons }) => {
+      const proto = Element.prototype
+      const real = proto.setPointerCapture
+      proto.setPointerCapture = function () {}
+      document
+        .querySelector('[data-pm-pane-drag-handle]')
+        .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button, buttons, pointerId: 1, clientX: x, clientY: y }))
+      proto.setPointerCapture = real
+    },
+    { x: hb.x + hb.width / 2, y: hb.y + hb.height / 2, button, buttons },
+  )
 }
 const edgeX = async () => (await dragHandle.boundingBox()).x + 3
 const synthMove = async (clientX, btns) => {
   const hb = await dragHandle.boundingBox()
-  await page.evaluate(({ x, y, btns }) => {
-    document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
-      new PointerEvent('pointermove', { bubbles: true, buttons: btns, pointerId: 1, clientX: x, clientY: y }),
-    )
-  }, { x: clientX, y: hb.y + 10, btns })
+  await page.evaluate(
+    ({ x, y, btns }) => {
+      document
+        .querySelector('[data-pm-pane-drag-handle]')
+        .dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: btns, pointerId: 1, clientX: x, clientY: y }))
+    },
+    { x: clientX, y: hb.y + 10, btns },
+  )
 }
 
 const w0 = await paneWidth()
@@ -825,9 +916,7 @@ await synthMove((await edgeX()) - 10, 1)
 const wC1 = await paneWidth()
 check('while the stuck drag is live, moves still resize it (staging sanity)', wC1 > w1 + 5, `${w1} → ${wC1}`)
 await page.evaluate(() => {
-  document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
-    new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }),
-  )
+  document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))
 })
 await page.waitForTimeout(60) // clear the 40ms setWidth throttle: a live drag must be able to fire
 await synthMove((await edgeX()) - 30, 1)
@@ -871,12 +960,24 @@ const manyTabs = Array.from({ length: 12 }, (_, i) => ({
 await page.evaluate((tabs) => window.__mount({ tabs }), manyTabs)
 await page.waitForFunction(() => document.querySelectorAll('[data-tab-id]').length === 12)
 const fadeEdges = () =>
-  page.evaluate(() => Array.from(document.querySelectorAll('[data-strip-fade]')).map((el) => el.getAttribute('data-strip-fade')).sort())
+  page.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-strip-fade]'))
+      .map((el) => el.getAttribute('data-strip-fade'))
+      .sort(),
+  )
 const paneStrip = () => page.locator('.pm-pane-tabstrip')
-await paneStrip().evaluate((el) => { el.scrollLeft = 0 })
+await paneStrip().evaluate((el) => {
+  el.scrollLeft = 0
+})
 await page.waitForTimeout(150)
-check('12 tabs: the browser strip fades its RIGHT edge (the same hint the file strip carries)', JSON.stringify(await fadeEdges()) === '["right"]', JSON.stringify(await fadeEdges()))
-await paneStrip().evaluate((el) => { el.scrollLeft = el.scrollWidth })
+check(
+  '12 tabs: the browser strip fades its RIGHT edge (the same hint the file strip carries)',
+  JSON.stringify(await fadeEdges()) === '["right"]',
+  JSON.stringify(await fadeEdges()),
+)
+await paneStrip().evaluate((el) => {
+  el.scrollLeft = el.scrollWidth
+})
 await page.waitForTimeout(150)
 check('…and its LEFT edge at the far end', JSON.stringify(await fadeEdges()) === '["left"]', JSON.stringify(await fadeEdges()))
 const stripBox = await paneStrip().boundingBox()
@@ -895,14 +996,83 @@ const titlePoint = await page.evaluate(
   { x0: stripBox.x, y: stripBox.y + stripBox.height / 2 },
 )
 check('a tab title sits under the left mask here too (mask not hit-testable, tab found)', !!titlePoint, JSON.stringify(titlePoint))
-await page.evaluate(() => { window.__actions = [] })
+await page.evaluate(() => {
+  window.__actions = []
+})
 await page.mouse.click(stripBox.x + titlePoint.dx, stripBox.y + stripBox.height / 2)
 await page.waitForTimeout(200)
 const picked = await page.evaluate(() => window.__actions.filter((a) => a.op === 'selectTab').map((a) => a.tabId))
-check('…and clicking under the mask reaches the tab (one selectTab action, not swallowed)', JSON.stringify(picked) === JSON.stringify([titlePoint.id]), JSON.stringify(picked))
+check(
+  '…and clicking under the mask reaches the tab (one selectTab action, not swallowed)',
+  JSON.stringify(picked) === JSON.stringify([titlePoint.id]),
+  JSON.stringify(picked),
+)
 await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
 await page.waitForTimeout(150)
 check('…and a strip with two tabs fades nothing (nothing is hidden)', JSON.stringify(await fadeEdges()) === '[]', JSON.stringify(await fadeEdges()))
+
+/* ── 9. Far-left ▾ quick-switcher (2026-11-01 用户裁定「页面页签与文件页签
+        一致」): the file strip's affordance — one dropdown listing every open
+        tab, the chip's own call on pick. Portaled because the strip row clips
+        overflow; its open height rides the overlay channel because the native
+        view paints above all DOM. ─────────────────────────────────────────── */
+await page.evaluate((tabs) => window.__mount({ tabs }), MANY_TABS)
+await address().waitFor()
+const qsBtn = page.locator('[data-pane-tabstrip-menu]')
+const qsBtnBox = await qsBtn.boundingBox()
+const firstChipBox = await page.locator('[data-tab-id]').first().boundingBox()
+check(
+  "the ▾ sits at the strip's far left, a 22px button before the first chip",
+  !!qsBtnBox && !!firstChipBox && qsBtnBox.x < firstChipBox.x && Math.abs(qsBtnBox.width - 22) < 1.5,
+  `x=${qsBtnBox?.x} w=${qsBtnBox?.width} vs chip x=${firstChipBox?.x}`,
+)
+await qsBtn.click()
+await page.waitForFunction(() => document.querySelectorAll('[data-pm-tab-menu-item]').length > 0)
+check(
+  'clicking ▾ lists every open tab (8 rows, portaled out of the pane DOM)',
+  (await page.locator('[data-pm-tab-menu-item]').count()) === 8,
+  `${await page.locator('[data-pm-tab-menu-item]').count()} rows`,
+)
+const qsActiveWeight = await page.evaluate(() => getComputedStyle(document.querySelector('[data-pm-tab-menu-item="tab_many_1"]')).fontWeight)
+check("the active tab's row is marked (weight 600, the file strip's selectedKeys equivalent)", qsActiveWeight === '600', `fontWeight=${qsActiveWeight}`)
+const overlayPx = await page.evaluate(() => window.__paneStore.getState().chromeOverlayHeight)
+check('the open menu reports an overlay past the chrome line (the dock folds the webview away)', overlayPx > 0, `overlay=${overlayPx}px`)
+await page.evaluate(() => {
+  window.__actions = []
+})
+await page.locator('[data-pm-tab-menu-item="tab_many_3"]').click()
+await page.waitForTimeout(80)
+const qsActions = await page.evaluate(() => window.__actions)
+const qsSwitchedWeight = await page.evaluate(() => getComputedStyle(document.querySelector('[data-tab-id="tab_many_3"]')).fontWeight)
+check(
+  'picking a row sends exactly one selectTab, closes the menu, and paints the optimistic highlight',
+  qsActions.length === 1 &&
+    qsActions[0].op === 'selectTab' &&
+    qsActions[0].tabId === 'tab_many_3' &&
+    (await page.locator('[data-pm-tab-menu-item]').count()) === 0 &&
+    qsSwitchedWeight === '600',
+  `actions=${JSON.stringify(qsActions)} weight=${qsSwitchedWeight}`,
+)
+await qsBtn.click()
+await page.waitForFunction(() => document.querySelectorAll('[data-pm-tab-menu-item]').length > 0)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(80)
+const overlayAfter = await page.evaluate(() => window.__paneStore.getState().chromeOverlayHeight)
+check(
+  'Escape closes the ▾ menu and the overlay reports 0 again',
+  (await page.locator('[data-pm-tab-menu-item]').count()) === 0 && overlayAfter === 0,
+  `overlay=${overlayAfter}`,
+)
+await page.evaluate(() => window.__mount({ tabs: [] }))
+await address().waitFor()
+const qsEmpty = await page
+  .locator('[data-pane-tabstrip-menu]')
+  .evaluate((el) => ({ w: el.getBoundingClientRect().width, opacity: getComputedStyle(el).opacity }))
+check(
+  'zero tabs: the ▾ greys out but keeps its 22px (row geometry never shifts)',
+  Math.abs(qsEmpty.w - 22) < 1.5 && qsEmpty.opacity === '0.35',
+  JSON.stringify(qsEmpty),
+)
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

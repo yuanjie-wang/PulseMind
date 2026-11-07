@@ -20,14 +20,17 @@ import { useCallback, useEffect, type RefObject } from 'react'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
 import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
-import { useWorkbenchStore } from '../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary } from '../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
 import { IS_PROJECT_WINDOW } from '../popout/boot'
 import {
-  IMMERSIVE_BROWSER_BOTTOM_INSET,
-  IMMERSIVE_BROWSER_RIGHT_INSET,
-  IMMERSIVE_BROWSER_TOP_INSET,
-} from '../popout/ImmersivePanels'
+  WORKBENCH_CARD_BOTTOM_INSET,
+  WORKBENCH_CARD_MARGIN,
+  WORKBENCH_CARD_RIGHT_INSET,
+  WORKBENCH_CARD_TOP_INSET,
+  PRIMARY_PANE_CHROME_HEIGHT,
+} from '../../../shared/browser/pane'
+import { IMMERSIVE_BROWSER_BOTTOM_INSET, IMMERSIVE_BROWSER_RIGHT_INSET, IMMERSIVE_BROWSER_TOP_INSET } from '../popout/ImmersivePanels'
 import { clampPaneWidth, type BrowserPaneAction } from '../../../shared/browser/pane'
 
 /** The pane-action/pushWidth pair without the push effect — the immersive
@@ -55,6 +58,12 @@ export function useBrowserPaneBinding(
    *  (created with useRef there and passed to ref=) — this hook only reads
    *  it inside effects. */
   rootRef: RefObject<HTMLDivElement | null>,
+  /** 主窗卡片形态（ChatView 的 card prop 直通）：工作台是圆角卡，浏览器 tab
+   *  在前时原生 view 要收进卡的内容盒——推送随状态携带
+   *  WORKBENCH_CARD_*_INSET 三补偿。主窗 App.tsx 与会话弹出窗口 PopoutApp
+   *  都传 true（2026-11-04 两窗统一）；缺省 false = 项目沉浸窗口的贴边 dock
+   *  几何逐字节不变。 */
+  cardMode = false,
 ) {
   const viewKind = useNavigationStore((s) => s.view.kind)
   const chatAreaWidth = useBrowserPaneStore((s) => s.chatAreaWidth)
@@ -64,11 +73,17 @@ export function useBrowserPaneBinding(
   // 沉浸窗口读右卡面板态（订阅对其它窗口无害——selector 结果只在项目分支用）。
   const rightPanel = useSecondaryLayoutStore((s) => s.rightPanel)
   const immersiveCardWidth = useBrowserPaneStore((s) => s.immersiveCardWidth)
-  const workbenchOpen = useWorkbenchStore(
-    (s) => s.openByConversation[conversationId ?? DRAFT_CONVERSATION_KEY] ?? false,
-  )
+  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[conversationId ?? DRAFT_CONVERSATION_KEY] ?? false)
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
-  const browserActive = workbenchOpen && workbenchTab === 'browser'
+  // 视图模式（PLAN-layout-modes）：浏览器主视图时浏览器恒在前（它就是主卡），
+  // 侧栏集合里没有浏览器 tab，workbenchTab 判定不适用。
+  const primary = useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)
+  const workbenchWidth = useWorkbenchWidth()
+  const primaryPaneWidth = useBrowserPaneStore((s) => s.primaryPaneWidth)
+  // 浮窗让位（十三期）：useFloatOverlayShift 量出的左右内收 px。
+  const floatOverlay = useBrowserPaneStore((s) => s.floatOverlay)
+  const browserPrimary = primary === 'browser'
+  const browserActive = browserPrimary || (workbenchOpen && workbenchTab === 'browser')
   // The address bar's suggestion dropdown overhangs the webview area — the
   // dock must shift the WebContentsView down while it is open (T3.5).
   const chromeOverlayHeight = useBrowserPaneStore((s) => s.chromeOverlayHeight)
@@ -116,14 +131,63 @@ export function useBrowserPaneBinding(
       })
       return
     }
+    if (browserPrimary) {
+      // 浏览器主视图（PLAN-layout-modes 2026-11-03）：原生 view 收进主卡内容
+      // 盒。几何全部经现有字段表达——dock 的右锚公式 x = w − width −
+      // rightInset + 2 配 paneWidth 直通（内容宽 + 3，沉浸卡同款算术）与
+      // rightInset = reserve + 卡边距 5 时，落点恰好是主卡内容盒
+      // （contentW = w − reserve − 12 → x = 卡左边框内 6、右缘 = 内容右缘）。
+      // chromeHeight=68：主卡没有工作台页签条，pane 页签条 32 + 地址行 36。
+      // 卡片 insets 只在 cardMode 生效：主窗与会话弹出窗口都套卡（2026-11-04
+      // 两窗统一），项目沉浸窗口走上面的沉浸分支；仍有宿主不套卡，此时
+      // insets 必须缺席，否则原生 view 落位偏 5-6px 且右边多留一条缝。
+      const reserve = workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) + (cardMode ? WORKBENCH_CARD_MARGIN : 0) : 0
+      void window.electronAPI.browserPaneSetState({
+        viewKind,
+        conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
+        chatAreaWidth,
+        browserActive: viewKind === 'chat',
+        chromeOverlayHeight,
+        ...(cardMode ? { topInset: WORKBENCH_CARD_TOP_INSET, bottomInset: WORKBENCH_CARD_BOTTOM_INSET } : {}),
+        rightInset: reserve + (cardMode ? WORKBENCH_CARD_MARGIN : 0),
+        ...(primaryPaneWidth != null ? { paneWidth: primaryPaneWidth + 3 } : {}),
+        chromeHeight: PRIMARY_PANE_CHROME_HEIGHT,
+        leftOverlay: floatOverlay.left,
+        rightOverlay: floatOverlay.right,
+      })
+      return
+    }
     void window.electronAPI.browserPaneSetState({
       viewKind,
       conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
       chatAreaWidth,
       browserActive: viewKind === 'chat' ? browserActive : false,
       chromeOverlayHeight,
+      // 卡片形态：原生 view 收进工作台卡的内容盒（沉浸分支同款补偿，常量在
+      // shared/browser/pane——右缘不含边框，由 webviewBox 自身内缩吸收）。
+      ...(cardMode
+        ? {
+            topInset: WORKBENCH_CARD_TOP_INSET,
+            rightInset: WORKBENCH_CARD_RIGHT_INSET,
+            bottomInset: WORKBENCH_CARD_BOTTOM_INSET,
+          }
+        : {}),
     })
-  }, [viewKind, conversationId, chatAreaWidth, browserActive, chromeOverlayHeight, rightPanel, immersiveCardWidth])
+  }, [
+    viewKind,
+    conversationId,
+    chatAreaWidth,
+    browserActive,
+    browserPrimary,
+    chromeOverlayHeight,
+    rightPanel,
+    immersiveCardWidth,
+    primaryPaneWidth,
+    floatOverlay,
+    workbenchOpen,
+    workbenchWidth,
+    cardMode,
+  ])
 
   const { pushWidth, action } = useBrowserPaneActions()
 

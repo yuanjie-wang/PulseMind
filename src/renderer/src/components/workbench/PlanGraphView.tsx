@@ -639,6 +639,46 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
 function TodoListView({ plan, onJumpToStep }: { plan: Plan; onJumpToStep: (msgId: string) => void }): React.ReactElement {
   const settled = plan.nodes.filter(n => n.status !== 'pending').length
   const pct = plan.nodes.length > 0 ? Math.round((settled / plan.nodes.length) * 100) : 0
+  // 用户裁定 2026-11-06: 全绿的清单折叠成一行。面板的职责是「现在进展到哪」，
+  // 一旦没有任何 open 条目，28 行历史就是纯噪声；明细仍留在一击之外。
+  // 折叠态在清单「离开已完成」时重新武装（下面那个 effect），所以续写一条
+  // 新条目会自己弹开，不需要用户先手动展开。
+  const [doneExpanded, setDoneExpanded] = useState(false)
+  const wasCompleted = useRef(plan.completed)
+  useEffect(() => {
+    if (plan.completed && !wasCompleted.current) setDoneExpanded(false)
+    wasCompleted.current = plan.completed
+  }, [plan.completed])
+  if (plan.completed && !doneExpanded) {
+    return (
+      <div style={{ padding: '10px 12px' }}>
+        <button
+          type="button"
+          data-todo-collapsed
+          onClick={() => setDoneExpanded(true)}
+          title={plan.objective}
+          style={{
+            display: 'flex', width: '100%', alignItems: 'center', gap: 8,
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+          }}
+        >
+          <svg width={12} height={12} viewBox="0 0 12 12" style={{ flexShrink: 0 }}>
+            <StatusIcon kind="check" x={0} y={0} color={DONE_GREEN} />
+          </svg>
+          <span style={{ fontSize: 12, color: 'var(--pm-graph-ink-dim)', flexShrink: 0 }}>
+            {`${plan.nodes.length} 条已完成`}
+          </span>
+          <span style={{
+            flex: 1, minWidth: 0, fontSize: 12, color: 'var(--pm-text-muted)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {plan.objective}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--pm-graph-ink)', flexShrink: 0 }}>展开</span>
+        </button>
+      </div>
+    )
+  }
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <style>{`
@@ -665,9 +705,23 @@ function TodoListView({ plan, onJumpToStep }: { plan: Plan; onJumpToStep: (msgId
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--pm-border-hairline)', overflow: 'hidden' }}>
             <div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: 'var(--pm-text)', transition: 'width 0.3s' }} />
           </div>
-          <span style={{ fontSize: 11, color: 'var(--pm-graph-ink-dim)', flexShrink: 0 }}>
-            {plan.completed ? '已完成' : `${settled}/${plan.nodes.length}`}
-          </span>
+          {plan.completed ? (
+            <button
+              type="button"
+              data-todo-collapse-toggle
+              onClick={() => setDoneExpanded(false)}
+              style={{
+                flexShrink: 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                fontSize: 11, color: 'var(--pm-graph-ink)', fontFamily: 'inherit',
+              }}
+            >
+              已完成 · 收起
+            </button>
+          ) : (
+            <span style={{ fontSize: 11, color: 'var(--pm-graph-ink-dim)', flexShrink: 0 }}>
+              {settled}/{plan.nodes.length}
+            </span>
+          )}
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '6px 8px' }}>

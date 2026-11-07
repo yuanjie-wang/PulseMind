@@ -18,7 +18,7 @@ const chatView = readFileSync(join(ROOT, 'src/renderer/src/components/layout/Cha
 
 describe('persisted workbench width is clamped at consumption', () => {
   it('non-vacuity: the scans read the real persisted-width consumers', () => {
-    expect(workbench).toContain('const width = useWorkbenchStore((s) => s.width)')
+    expect(workbench).toContain('const width = useWorkbenchWidth()')
     expect(workbench).toContain('clampPaneWidth(d.startWidth + (d.startX - e.clientX), chatAreaWidth)')
     expect(chatView).toContain('paddingRight: workbenchOpen ?')
   })
@@ -33,6 +33,41 @@ describe('persisted workbench width is clamped at consumption', () => {
   })
 
   it('ChatView reserves the clamped width for the chat column', () => {
-    expect(chatView).toContain('paddingRight: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) : 0')
+    // 卡片形态（2026-11-03）reserve 再加一个卡边距；非卡片形态（弹窗）零加宽。
+    expect(chatView).toContain('paddingRight: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) + (card ? WORKBENCH_CARD_MARGIN : 0) : 0')
+  })
+
+  it('卡片形态：对话卡与工作台卡成对出现，浏览器 dock 三 inset 随形态携带', () => {
+    // ChatView 只在 card 形态把 card 传给 WorkbenchPane 与 pane binding——
+    // 沉浸窗口这条旧路径不携带，几何逐字节不变（2026-11-04 起会话弹出窗口
+    // 也套卡，见下一条）。
+    expect(chatView).toContain('card={card}')
+    expect(chatView).toContain('useBrowserPaneBinding(conversationId, paneRootRef, card)')
+    // 工作台卡：窗口边距 + 1px 全边框接管 borderLeft + 沉浸同款圆角。
+    expect(workbench).toContain('card ? WORKBENCH_CARD_MARGIN : 0')
+    expect(workbench).toContain("border: '1px solid var(--pm-separator-faint)'")
+    expect(workbench).toContain('borderRadius: IMMERSIVE_CARD_RADIUS')
+    // binding 的非沉浸分支按形态携带 dock 补偿（shared/browser/pane 的常量）。
+    const binding = readFileSync(join(ROOT, 'src/renderer/src/hooks/useBrowserPane.ts'), 'utf-8')
+    expect(binding).toContain('cardMode')
+    expect(binding).toContain('topInset: WORKBENCH_CARD_TOP_INSET')
+    expect(binding).toContain('rightInset: WORKBENCH_CARD_RIGHT_INSET')
+    expect(binding).toContain('bottomInset: WORKBENCH_CARD_BOTTOM_INSET')
+  })
+
+  it('会话弹出窗口与主窗同一套卡（2026-11-04 统一）：card 直通 + Layout 灰底底衬', () => {
+    const popout = readFileSync(join(ROOT, 'src/renderer/src/popout/PopoutApp.tsx'), 'utf-8')
+    // 分叉的根因就是这一个 flag：App.tsx 传了、PopoutApp 没传。项目沉浸窗口
+    // 自带 ProjectExplorer 三列卡，所以 card = !isProjectWindow。
+    expect(popout).toContain('const card = !isProjectWindow')
+    expect(popout).toContain('card={card}')
+    // 底衬必须走 antd Layout（它自绘 colorBgLayout），不能自己写颜色——
+    // 卡片是 var(--pm-bg)，白卡放在白底上等于没有卡。
+    expect(popout).toContain("<Layout style={{ flex: 1, minHeight: 0, position: 'relative' }}>")
+    // 子代理 drill-in 覆盖层与主窗同款卡盒（right 收进工作台卡 + 双倍边距）。
+    expect(popout).toContain('clampPaneWidth(workbenchWidth, chatAreaWidth) + WORKBENCH_CARD_MARGIN * 2')
+    // 标题栏底色落在真实存在的变量上（--pm-bg-container 从未定义，取值非法
+    // 即透明，只是碰巧露出了根底色）。
+    expect(popout).not.toContain("'var(--pm-bg-container)'")
   })
 })

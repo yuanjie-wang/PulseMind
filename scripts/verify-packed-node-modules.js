@@ -126,16 +126,27 @@ async function verifyPackedNodeModules (context) {
 
   const unpackedRoot = join(dirname(asarPath), 'app.asar.unpacked')
   const readFile = (virtualPath) => {
-    try {
-      return asar.extractFile(asarPath, virtualPath.replace(/^\//, ''))
-    } catch {
-      // asarUnpack 的条目（better-sqlite3/@img）内容在旁路目录里
+    const rel = virtualPath.replace(/^\//, '')
+    // 分隔符必须跟着打包机走（2026-11-06 Windows CI 实测：386 个包全被判成
+    // package.json unreadable，而同一份代码在 mac 上 392 包全绿）。
+    // asar 头里的层级键是**打包时**按 path.sep 切出来的：Windows 上打的包，
+    // extractFile 的 searchNodeFromDirectory 只认 '\'，传 '/' 会查不到 ——
+    // 上面对 listPackage 的输出做了 '\'→'/' 归一（所以包目录枚举得出来），
+    // 但 extractFile 要的是原始形态。两个都试：mac/linux 第一次即命中，
+    // 不改变既有行为；Windows 走第二次。
+    for (const candidate of [rel, rel.split('/').join('\\')]) {
       try {
-        return readFileSync(join(unpackedRoot, virtualPath.replace(/^\//, '')))
+        return asar.extractFile(asarPath, candidate)
       } catch {
-        return null
+        // asarUnpack 的条目（better-sqlite3/@img）内容在旁路目录里
+        try {
+          return readFileSync(join(unpackedRoot, candidate))
+        } catch {
+          // 换下一种分隔符
+        }
       }
     }
+    return null
   }
 
   const { missing, packages, edges } = collectMissing(entries, readFile, rootDeps)

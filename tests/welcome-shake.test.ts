@@ -160,14 +160,64 @@ describe('wiring', () => {
     // 2026-10-07 「弹出的toast没有水平居中」.
     expect(chatView).toContain('rect.left + rect.width / 2 - window.innerWidth / 2')
     expect(chatView).toContain("style: dx ? { position: 'relative', left: dx } : undefined")
-    // Wired at the welcome mount (the only site that passes sendBlocked); the
-    // in-conversation composer has no blocked state to answer.
-    const welcome = chatView.indexOf('sendBlocked={taskMode')
-    expect(welcome).toBeGreaterThan(-1)
-    expect(chatView.slice(welcome, welcome + 200)).toContain('onSendBlocked={handleBlockedSend}')
+    // 2026-11-04 两形态裁定: the MAIN welcome no longer passes sendBlocked —
+    // project mode with nothing picked hides the composer entirely (below), so
+    // there is nothing to refuse. The refusal path survives in exactly ONE
+    // place: the dock's narrow welcome (ChatBody's welcome arm), which has no
+    // project cards to click — hiding the composer there would dead-end.
+    const chatBody = read('src', 'renderer', 'src', 'components', 'chat', 'ChatBody.tsx')
+    const narrow = chatBody.indexOf("sendBlocked={taskMode === 'project' && !newTaskProjectId}")
+    expect(narrow).toBeGreaterThan(-1)
+    expect(chatBody.slice(narrow, narrow + 200)).toContain('onSendBlocked={onSendBlocked}')
+    expect(chatView).not.toContain('sendBlocked={taskMode')
     // And the refused attempt never reaches the controller's guard below —
     // that warning is the belt for paths that bypass the composer, not the
     // voice of this one.
     expect(composer).toContain('if (sendBlocked)')
+  })
+
+  it('project mode on the main welcome has TWO composer forms, derived from projectId alone', () => {
+    // 未选中: composer not rendered at all (no grey-button limbo). chat stays
+    // unconditional — except for the API-key gate (2026-11-04: a keyless
+    // install hides the welcome composer outright; the guide card takes its
+    // place) — browser stays hidden; the condition must render the composer
+    // for project mode ONLY once a project is picked.
+    expect(chatView).toContain("hasApiKey && (taskMode === 'chat' || (taskMode === 'project' && !!newTaskProjectId))")
+    // 已选: the quick band cedes its height floor to the composer, same rule
+    // as browser mode.
+    const welcomeContent = read('src', 'renderer', 'src', 'components', 'chat', 'WelcomeContent.tsx')
+    expect(welcomeContent).toContain("mode === 'browser' || (mode === 'project' && !!projectId) ? 0 : QUICK_AREA_HEIGHT")
+    // ProjectCards renders the compressed strip (wash background + 更换) and
+    // the picker full — the strip is the only place 更换 clears the pick.
+    const projectCards = read('src', 'renderer', 'src', 'components', 'welcome', 'ProjectCards.tsx')
+    expect(projectCards).toContain('data-welcome-project-strip')
+    expect(projectCards).toContain('onClick={() => setProjectId(null)}')
+    // The swap reads as a transition through the INCOMING surface: a one-shot
+    // WAAPI enter (fade + drift) keyed by the form token on both hosts — the
+    // picker root in ProjectCards, the composer wrapper in ChatView. The
+    // conditional render has no exit arm by design (no dual-tree machinery for
+    // a polish pass).
+    expect(projectCards).toContain('playWelcomeEnter(pickerShakeRef.current')
+    expect(projectCards).toContain('formKey === null')
+    expect(chatView).toContain('playWelcomeEnter(composerShakeRef.current')
+  })
+
+  it('the 对话/项目/浏览器 mode swap gets the same one-shot enter (band root, mode-keyed)', () => {
+    // 用户 2026-11-04: 「项目的 welcome 块的切换动效不错，对话和浏览器这两个
+    // 能加吗」——同一条 playWelcomeEnter 配方，锚点是快捷区 root：它在换档时
+    // 不卸载（只换内部面板），所以是三档共用的稳定过渡面；项目形态自己的
+    // 选中/更换入场仍归 ProjectCards 的 form token。
+    const welcomeContent = read('src', 'renderer', 'src', 'components', 'chat', 'WelcomeContent.tsx')
+    expect(welcomeContent).toContain("playWelcomeEnter(bandRef.current, 'below')")
+    // Keyed on `mode` ALONE: a project pick under the same mode must not
+    // replay the band (ProjectCards owns that beat), and projectId must stay
+    // out of this dep list.
+    expect(welcomeContent).toContain('}, [mode])')
+    // 挂载首跑不播（新挂载必须静止，同 ProjectCards 的 ref 闸门）。
+    expect(welcomeContent).toContain('bandMountedRef.current')
+    // The ref rides the band wrapper — the element that survives the swap.
+    const bandAt = welcomeContent.indexOf('data-welcome-band')
+    expect(bandAt).toBeGreaterThan(-1)
+    expect(welcomeContent.slice(bandAt - 80, bandAt)).toContain('ref={bandRef}')
   })
 })

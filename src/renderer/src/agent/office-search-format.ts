@@ -55,8 +55,18 @@ export function formatOfficeSearchResult(result: OfficeSearchResult): string {
         if (!push(`- ${h.sheet}!${h.address}: ${oneLine(h.snippet)}${row ? ` ｜ 行: ${oneLine(row)}` : ''}`)) break
       }
     }
+    // The row number already lives in every hit's address (C12 → 12) — the
+    // envelope splices the FIRST hit's real row in so the model copies it
+    // instead of converting itself (docx envelope's `[段落号]+1` precedent).
+    // Cross-sheet hits each carry their own sheet!address in the list above;
+    // the offset named here is the first hit's, said so. Hit fields are all
+    // optional in the shared shape — every splice falls back to the honest
+    // placeholder. (review_20261013 低4)
+    const first = hits[0]
+    const firstRow = Number(first?.address?.match(/(\d+)$/)?.[1] ?? NaN)
+    const firstWhere = first?.sheet && first?.address ? ` ${first.sheet}!${first.address}` : ''
     parts.push(
-      `下一步：精读该行 → office_read sheet="${hits[0]?.sheet ?? '<工作表>'}" offset=<行号> limit=5；编辑 → office_edit 的 xlsx 算子（单元格地址 = 行号 + 列字母）。`,
+      `下一步：精读首条命中${firstWhere} → office_read sheet="${first?.sheet ?? '<工作表>'}" offset=${Number.isFinite(firstRow) ? firstRow : '<行号>'} limit=5；跨工作表命中按各行地址取行号；编辑 → office_edit 的 xlsx 算子（单元格地址 = 行号 + 列字母）。`,
     )
   } else if (result.format === 'pptx') {
     if (push('命中形状（页 · [shapeId] 名称: 摘录）:')) {

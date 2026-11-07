@@ -13,7 +13,6 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   useWorkbenchStore,
-  WORKBENCH_DEFAULT_WIDTH,
 } from '../src/renderer/src/stores/workbenchStore'
 
 const KEY = 'conv_test'
@@ -22,7 +21,7 @@ describe('workbenchStore (manual-open contract)', () => {
   beforeEach(() => {
     useWorkbenchStore.setState({
       openByConversation: {},
-      width: WORKBENCH_DEFAULT_WIDTH,
+      widthByTab: {},
       activeTab: 'workspace',
     })
   })

@@ -42,7 +42,7 @@ import {
   DiffOutlined,
   EditOutlined,
   FileOutlined,
-  FileSearchOutlined,
+  FilterOutlined,
   FolderOpenOutlined,
   FolderOutlined,
   PlusOutlined,
@@ -58,7 +58,6 @@ import { buildChangedFilesTree, fileChangeMarks, normalizeChangePath, type Chang
 import { MAX_MATCHES, walkTreeSearch, type TreeSearchResult } from '../../../../shared/workspace-tree-search'
 import type { SessionFileChange, SessionFileChangeKind } from '../../../../shared/agent-protocol'
 import { VerifyPanel } from './VerifyPanel'
-import { SearchPanel } from './SearchPanel'
 
 /** 刀一验证面板的入口旗标（2026-10-31 用户裁定「有点鸡肋，先隐藏让我再
  *  想想」）：false = 工具条按钮不渲染。strip/互斥/失败解析链全部保留在位，
@@ -158,6 +157,10 @@ interface Props {
    *  it; an agent-opened preview highlights itself through the same state). */
   selectedPath: string | null
   onSelectPath: (path: string | null) => void
+  /** 沉浸窗口形态（WorkspacePane 传入）。2026-11-01 用户裁定「只有沉浸模式
+   *  提供全量的编辑和操作能力，普通模式保持简洁」：工具条的「新建」只在
+   *  沉浸形态渲染；工作台形态（缺省）不渲染。 */
+  immersive?: boolean
 }
 
 interface WorkspaceEntry {
@@ -305,18 +308,6 @@ function DiffLines({ text }: { text: string }): React.ReactElement {
   )
 }
 
-/** Is `filePath` reachable in the loaded tree: every ancestor dir present AND
- *  expanded, the file itself among the last ancestor's loaded children. */
-function rowVisible(entries: WorkspaceNode[], ancestors: string[], filePath: string, expanded: ReadonlySet<string>): boolean {
-  let nodes = entries
-  for (const dir of ancestors) {
-    const node = nodes.find((n) => n.key === dir)
-    if (!node || !expanded.has(dir)) return false
-    nodes = (node.children as WorkspaceNode[] | undefined) ?? []
-  }
-  return nodes.some((n) => n.key === filePath)
-}
-
 interface RowProps {
   entry: WorkspaceEntry
   highlight?: string
@@ -356,6 +347,19 @@ function HighlightedName({ name, highlight }: { name: string; highlight?: string
   return <>{parts}</>
 }
 
+/** The hover actions are transient overlay affordances, so they must not take
+ *  DOM focus: a focused button INSIDE a tree row meets the virtualized tree's
+ *  row re-creation on the next expand, and that focus/restore interplay spins
+ *  the renderer dry — a real user's next folder expand after clicking 在系统
+ *  打开/删除/… hard-wedged the process (diagnosed 2026-11-01, exposed by the
+ *  probe's first expand-after-os-click; the synthetic .click() and the hover
+ *  alone are both innocent, only the mousedown-borne focus poisons).
+ *  preventDefault on mousedown is the standard transient-toolbar pattern and
+ *  leaves the click (and its stopPropagation) untouched. */
+function noFocusSteal(e: React.MouseEvent): void {
+  e.preventDefault()
+}
+
 /** One row's title: the name, then the hover actions. Rendered through
  *  `titleRender` so the handlers are always the current ones while the tree
  *  data stays plain data. */
@@ -372,6 +376,7 @@ function TreeRow({ entry, highlight, mark, onDelete, onOpenOs, onRename, onDiff 
             className="pm-ws-btn"
             title="查看本次改动 diff"
             aria-label={`查看 diff ${entry.name}`}
+            onMouseDown={noFocusSteal}
             onClick={(e) => {
               e.stopPropagation()
               onDiff(entry)
@@ -385,6 +390,7 @@ function TreeRow({ entry, highlight, mark, onDelete, onOpenOs, onRename, onDiff 
           className="pm-ws-btn"
           title="在系统中打开"
           aria-label={`在系统中打开 ${entry.name}`}
+          onMouseDown={noFocusSteal}
           onClick={(e) => {
             e.stopPropagation()
             onOpenOs(entry)
@@ -397,6 +403,7 @@ function TreeRow({ entry, highlight, mark, onDelete, onOpenOs, onRename, onDiff 
           className="pm-ws-btn"
           title="重命名"
           aria-label={`重命名 ${entry.name}`}
+          onMouseDown={noFocusSteal}
           onClick={(e) => {
             e.stopPropagation()
             onRename(entry)
@@ -409,6 +416,7 @@ function TreeRow({ entry, highlight, mark, onDelete, onOpenOs, onRename, onDiff 
           className="pm-ws-btn pm-ws-btn-danger"
           title="删除"
           aria-label={`删除 ${entry.name}`}
+          onMouseDown={noFocusSteal}
           onClick={(e) => {
             e.stopPropagation()
             onDelete(entry)
@@ -445,7 +453,7 @@ const SEARCH_DEBOUNCE_MS = 250
  *  one re-read per touched level is all the tree needs. */
 const LIVE_RELIST_DEBOUNCE_MS = 300
 
-export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Props): React.ReactElement {
+export function WorkspaceTree({ conversationId, selectedPath, onSelectPath, immersive }: Props): React.ReactElement {
   const workspaceDir = usePreviewPaneStore((s) => s.workspaceDir)
   const setWorkspaceExpanded = useWorkspaceTreeStore((s) => s.setExpanded)
   // Cached expansion for THIS root; NO_EXPANDED_KEYS is one shared array so the
@@ -517,75 +525,6 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
     }
   }, [workspaceDir, tick, reqKey])
 
-  // ── Reveal (user rulings 2026-10-25: 正在被预览的文件要在树中被选中；
-  //    被折叠了要展开) ──
-  // Selection is controlled from WorkspacePane, but rc-tree can only highlight
-  // a row that is actually rendered. A preview opened WITHOUT a click (agent
-  // auto-preview, chat file chip) may live in folders this lazy tree never
-  // listed, and the user may have collapsed a folder whose file is still on
-  // screen — both shapes leave the selected row unrendered. When the selected
-  // path is not reachable (an ancestor missing from the loaded data OR simply
-  // collapsed), fetch the missing levels — idempotent, `withChildren` keeps
-  // whatever subtrees are already loaded — and expand the whole chain into the
-  // expansion cache, so the row renders selected. Collapsing a folder under an
-  // active selection therefore re-expands it: every collapse writes a new
-  // expandedKeys array, the effect re-runs, and the chain is written back.
-  // A plain tree click never lands here: the clicked row is by definition
-  // visible.
-  // The negative latch guards the two DEAD ends only — an ancestor level that
-  // would not list, or a parent listing without the file (a deleted file whose
-  // dirty draft kept the preview alive). Both would setRoot-loop forever if
-  // chased, so the attempt is remembered per (tree load, path) until the
-  // selection moves or 刷新 re-reads. Every REACHABLE shape resolves through
-  // its expansion/root write and never touches the latch.
-  const revealDoneRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!workspaceDir || !selectedPath || !current) return
-    if (!selectedPath.startsWith(workspaceDir + '/')) return
-    const segs = selectedPath.slice(workspaceDir.length + 1).split('/')
-    const ancestors: string[] = []
-    let dir = workspaceDir
-    for (const seg of segs.slice(0, -1)) {
-      dir += '/' + seg
-      ancestors.push(dir)
-    }
-    // Nothing to expand for a root-level path; if its row is missing the tree
-    // simply has nothing to reveal.
-    if (ancestors.length === 0) return
-    if (rowVisible(current.entries, ancestors, selectedPath, new Set(expandedKeys))) return
-    const latch = `${reqKey}::${selectedPath}`
-    if (revealDoneRef.current === latch) return
-    let cancelled = false
-    void (async (): Promise<void> => {
-      const fetched: string[] = []
-      let deepest: WorkspaceEntry[] | null = null
-      for (const key of ancestors) {
-        const level = await window.electronAPI.listDir(key)
-        if (cancelled) return
-        if (level) {
-          fetched.push(key)
-          deepest = level.entries
-          setRoot((prev) => (prev && prev.key === reqKey ? { ...prev, entries: withChildren(prev.entries, key, level.entries.map(entryToNode)) } : prev))
-        }
-      }
-      if (cancelled) return
-      if (fetched.length > 0) {
-        const store = useWorkspaceTreeStore.getState()
-        const cached = store.expandedByDir[workspaceDir] ?? []
-        const merged = [...new Set([...cached, ...fetched])]
-        if (merged.length > cached.length) store.setExpanded(workspaceDir, merged)
-      }
-      // Latch only when the chain is truly dead: a level refused to list, or
-      // the file is absent from its parent's fresh listing. Otherwise the
-      // writes above make the row visible and the next effect pass
-      // early-returns on rowVisible.
-      if (!deepest || !deepest.some((e) => e.path === selectedPath)) revealDoneRef.current = latch
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceDir, selectedPath, current, reqKey, expandedKeys])
-
   const loadData = useCallback(
     async (node: EventDataNode<DataNode>): Promise<void> => {
       const res = await window.electronAPI.listDir(String(node.key))
@@ -623,23 +562,23 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   // diff; an empty diff means the change is staged (or the disk moved back).
   const [diffTarget, setDiffTarget] = useState<string | null>(null)
   const [diffState, setDiffState] = useState<{ kind: 'loading' | 'repo' | 'norepo' | 'empty' | 'error'; text: string } | null>(null)
-  // ── 验证面板 (PLAN-project-ide 刀一) + 内容搜索 (刀二) ──
-  // The diff strip's siblings: ONE strip at a time — two half-height strips
-  // would starve the tree they sit under. Every opener closes the other two;
+  // ── 验证面板 (PLAN-project-ide 刀一) ──
+  // The diff strip's sibling: ONE strip at a time — two half-height strips
+  // would starve the tree they sit under. Every opener closes the other;
   // the verify button itself is hidden behind VERIFY_ENTRY_ENABLED (2026-10-31
   // user ruling: 「有点鸡肋，先隐藏让我再想想」) — the strip wiring stays.
+  // （内容搜索 strip 已随其工具条入口退场，2026-11-01 用户裁定：全文搜索
+  //  按钮两形态都去掉、普通模式保持简洁——该能力的唯一入口是沉浸左卡切换
+  //  器（WorkspacePane 的 SearchPanel 整卡形态），树列底条不再保留。）
   const [verifyOpen, setVerifyOpen] = useState(false)
-  const [contentSearchOpen, setContentSearchOpen] = useState(false)
   const closeStrips = (): void => {
     setDiffTarget(null)
     setDiffState(null)
     setVerifyOpen(false)
-    setContentSearchOpen(false)
   }
   const showDiff = async (entry: WorkspaceEntry): Promise<void> => {
     if (!workspaceDir) return
     setVerifyOpen(false)
-    setContentSearchOpen(false)
     setDiffTarget(entry.path)
     setDiffState({ kind: 'loading', text: '' })
     try {
@@ -684,7 +623,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   // Live re-list: a file the session just CREATED is missing from the level
   // the tree already listed (rewrites need nothing — the row exists, only its
   // ink changes). Re-read the nearest loaded ancestor of each new file, in
-  // place through setRoot like the reveal effect does, never through `tick`
+  // place through setRoot, never through `tick`
   // (which remounts the tree: spinner, lost scroll). Entries handled for this
   // tree load are remembered so a later ledger event re-reads only what is
   // new; a fresh load (new reqKey) already reflects the disk and starts over.
@@ -935,9 +874,11 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <style>{TREE_CSS}</style>
-      {/* Tree header: search + 只看改动 + 刷新. The root path lives in the
-          address bar. In 改动 mode the search box is hidden — the view is
-          already the filter. */}
+      {/* Tree header: search + 只看改动 + (沉浸形态)新建 + 刷新. The root
+          path lives in the address bar. In 改动 mode the search box is hidden
+          — the view is already the filter. 全文搜索按钮已退场（2026-11-01
+          用户裁定，两形态都去；能力走沉浸左卡切换器），新建只在沉浸形态
+          渲染（普通模式保持简洁）。 */}
       <div
         style={{
           flexShrink: 0,
@@ -971,7 +912,7 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
             type="text"
             size="small"
             aria-label="只看本会话改动"
-            icon={<DiffOutlined style={{ fontSize: 12, color: onlyChanges ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
+            icon={<FilterOutlined style={{ fontSize: 12, color: onlyChanges ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
             disabled={!workspaceDir || changes.length === 0}
             onClick={() => {
               const next = !onlyChanges
@@ -1005,43 +946,30 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
             />
           </Tooltip>
         )}
-        <Tooltip title="全文搜索（工作区内容）">
-          <Button
-            type="text"
-            size="small"
-            aria-label="全文搜索"
-            icon={<FileSearchOutlined style={{ fontSize: 12, color: contentSearchOpen ? 'var(--pm-link)' : 'var(--pm-text-quiet)' }} />}
+        {immersive && (
+          <Dropdown
+            trigger={['click']}
             disabled={!workspaceDir}
-            onClick={() => {
-              const next = !contentSearchOpen
-              if (next) closeStrips()
-              setContentSearchOpen(next)
+            menu={{
+              items: [
+                { key: 'file', icon: <FileOutlined />, label: '新建文件' },
+                { key: 'dir', icon: <FolderOutlined />, label: '新建文件夹' },
+              ],
+              onClick: ({ key }) => openCreate(key === 'dir' ? 'dir' : 'file'),
             }}
-            style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
-          />
-        </Tooltip>
-        <Dropdown
-          trigger={['click']}
-          disabled={!workspaceDir}
-          menu={{
-            items: [
-              { key: 'file', icon: <FileOutlined />, label: '新建文件' },
-              { key: 'dir', icon: <FolderOutlined />, label: '新建文件夹' },
-            ],
-            onClick: ({ key }) => openCreate(key === 'dir' ? 'dir' : 'file'),
-          }}
-        >
-          <Tooltip title="新建（在选中目录或根目录）">
-            <Button
-              type="text"
-              size="small"
-              aria-label="新建"
-              icon={<PlusOutlined style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }} />}
-              disabled={!workspaceDir}
-              style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
-            />
-          </Tooltip>
-        </Dropdown>
+          >
+            <Tooltip title="新建（在选中目录或根目录）">
+              <Button
+                type="text"
+                size="small"
+                aria-label="新建"
+                icon={<PlusOutlined style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }} />}
+                disabled={!workspaceDir}
+                style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+              />
+            </Tooltip>
+          </Dropdown>
+        )}
         <Tooltip title="刷新">
           <Button
             type="text"
@@ -1206,7 +1134,6 @@ export function WorkspaceTree({ conversationId, selectedPath, onSelectPath }: Pr
           sibling of the diff strip (mutually exclusive). Search mode hides it —
           the strip would squeeze the result list it sits under. */}
       {verifyOpen && !searching && workspaceDir != null && <VerifyPanel workspaceDir={workspaceDir} onClose={() => setVerifyOpen(false)} />}
-      {contentSearchOpen && !searching && workspaceDir != null && <SearchPanel workspaceDir={workspaceDir} />}
 
       {/* 新建 / 重命名 Modals（PLAN-project-ide 刀三） */}
       <Modal

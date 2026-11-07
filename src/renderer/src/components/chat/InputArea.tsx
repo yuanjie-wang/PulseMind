@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Tooltip } from 'antd'
 import {
   PlusOutlined,
@@ -16,9 +16,8 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import type { SteerOutcome } from '../../types/agent'
-import { Composer, useInputHistory, COMPOSER_MAX_WIDTH } from './Composer'
+import { Composer, useInputHistory, COMPOSER_MAX_WIDTH, ABOVE_CARD_GAP } from './Composer'
 import type { ComposerHandle } from './Composer'
-import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import { usePendingMessageStore, type StagedMessage } from '../../stores/pendingMessageStore'
 import type { LlmProfile } from '../../types/settings'
 import type { ExpertProfile } from '../../../../shared/types/expert'
@@ -87,6 +86,10 @@ function InputAreaImpl({
   features,
   lastCompaction,
   staging,
+  onAboveCardReserve,
+  onCardBand,
+  quoteRequest,
+  onQuoteConsumed,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -181,6 +184,31 @@ function InputAreaImpl({
      *  Resolves false when the send never left — the row restores in place. */
     onSendNow: (text: string) => Promise<boolean>
   }
+  /** Reports how much bottom padding the transcript must reserve for the
+   *  above-card slot's PERSISTENT content (topSlot + staged strip), already
+   *  including ABOVE_CARD_GAP; 0 when that content is gone. The slot is
+   *  absolutely positioned, so without this the last message is painted over
+   *  by the strip (user report 2026-11-04: 暂存消息会遮挡底部的最新消息).
+   *  Transient overlays (the @-mention popup, the file-drop hint) are
+   *  deliberately NOT measured: they come and go while typing/dragging, and
+   *  reserving for them would pump the transcript up and down mid-gesture. */
+  onAboveCardReserve?: (height: number) => void
+  /** Forwards Composer's card-band measurement (root bottom → card top) to the
+   *  host's transcript reserve. The band is what the 160px constant used to
+   *  stand in for, and the card autosizes (a multi-row draft is ~90px taller),
+   *  so the host must reserve the MEASURED value or the newest message slides
+   *  under the card — and under the staged strip above it. */
+  onCardBand?: (height: number) => void
+  /** 「提问」通道（选中文字工具栏，2026-11-06）：宿主把一段选中文字按 token
+   *  递进来，Composer 把它写成引用块并交还焦点。token 幂等——同一个对象重传
+   *  不重复插入，只有 token 变了才算新的一次请求。 */
+  quoteRequest?: { token: number; text: string } | null
+  /** 引用请求被吃下之后的回调，宿主在这里把它清成 null。这不是可选项：
+   *  「是否已消费」只靠本组件内部的 ref 记，而本组件带 key={conversationId}
+   *  会被换会话重建，ref 随之归零——宿主那边残留的旧请求就会被当成新请求
+   *  再消费一次，A 会话的引用跑到 B 会话里去（2026-11-06 实测）。请求消费
+   *  完就收回，重建后便无物可重放。 */
+  onQuoteConsumed?: () => void
 }): React.ReactElement {
   // Everything on when the prop is absent (the chat); a reuse site lists only
   // what it exposes.
@@ -188,12 +216,36 @@ function InputAreaImpl({
   const showModelPicker = features?.modelPicker ?? features === undefined
   const showExperts = features?.experts ?? features === undefined
   const showAuthorization = (features?.authorization ?? features === undefined) && onChangeApprovalMode !== undefined
-  /** The composer-draft store is a chat/welcome mechanism (starter prompts);
-   *  reuse sites must not consume those drafts. */
-  const acceptsComposerDrafts = features === undefined
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
   const composerRef = useRef<ComposerHandle>(null)
+
+  // ── 选中文字引用（2026-11-06）──
+  // 工具栏的「提问」不把选中文字塞进草稿：草稿里一段 markdown 引用块既看不出
+  // 边界、也删不干净。改成输入框上沿的一枚引用 chip —— 与文件/文件夹引用同一
+  // 套形态：悬停读全文，点 × 摘掉，发送时才落成引用块交出去。所以「输入框里
+  // 看到什么」和「模型收到什么」分开了，和 [file:…] chip 完全同构。
+  // token 幂等：宿主重渲染会原样重传同一个对象，只有 token 变了才算新的一次，
+  // 否则同一段引用会被叠进来两遍。
+  const consumedQuoteRef = useRef(0)
+  const quoteIdRef = useRef(0)
+  const [quotes, setQuotes] = useState<Array<{ id: number; text: string }>>([])
+  useEffect(() => {
+    if (!quoteRequest || quoteRequest.token === consumedQuoteRef.current) return
+    consumedQuoteRef.current = quoteRequest.token
+    quoteIdRef.current += 1
+    const id = quoteIdRef.current
+    setQuotes((prev) => [...prev, { id, text: quoteRequest.text }])
+    // 吃下就收回：宿主清掉请求后，本组件被 key 换会话重建时无物可重放。
+    // 顺序不能反——先记 token 再回调，否则回调引起的重渲染会让守卫失效。
+    onQuoteConsumed?.()
+    // 焦点交还输入框：用户下一步就是写问题，不该再点一次。
+    requestAnimationFrame(() => composerRef.current?.focus())
+  }, [quoteRequest, onQuoteConsumed])
+
+  const removeQuote = useCallback((id: number): void => {
+    setQuotes((prev) => prev.filter((q) => q.id !== id))
+  }, [])
 
   // The autoFocus rule, made re-runnable: on mount (Sender's own autoFocus
   // covers that, this is idempotent) and again on every focusToken change.
@@ -265,18 +317,9 @@ function InputAreaImpl({
     else if (bottom > popup.scrollTop + popup.clientHeight) popup.scrollTop = bottom - popup.clientHeight
   }, [mentionNavIdx, mentionActive, mentionMatches])
 
-  // Welcome starters drop their text here through the one-shot draft store:
-  // subscribe (event-style, not render-driven) so a click lands in the input
-  // whenever it happens, then the draft is consumed.
-  useEffect(() => {
-    if (!acceptsComposerDrafts) return
-    return useComposerDraftStore.subscribe((s) => {
-      if (s.draft !== null) {
-        setInputValue(s.draft)
-        useComposerDraftStore.getState().clearDraft()
-      }
-    })
-  }, [acceptsComposerDrafts])
+  // 一次性草稿通道已退役（2026-11-04 用户裁定）：welcome 的试试 chips 现在
+  // 点一下即发送，不再把文字塞进输入框等第二次确认——composerDraftStore 因此
+  // 没有生产者，整条通道连同订阅一起删除（留着就是邀请下一个人照旧路回去）。
   const { t } = useTranslation()
 
   const history = useInputHistory()
@@ -287,6 +330,32 @@ function InputAreaImpl({
   // conversations' queue traffic never re-renders this box.
   const stagedQueue = usePendingMessageStore((s) => (staging ? s.queues[staging.convId] : undefined))
   const stagedCount = staging && stagedQueue ? stagedQueue.length : 0
+  const hasStagedStrip = stagedCount > 0 && !!staging
+  // The above-card slot's persistent content (caller's topSlot + the staged
+  // strip) — see onAboveCardReserve. Height is re-reported on every resize
+  // (rows staged/removed, plan strip appearing, width-driven reflow).
+  const aboveCardReserveRef = useRef<HTMLDivElement | null>(null)
+  const hasPersistentAboveCard = !!topSlot || hasStagedStrip
+  useEffect(() => {
+    if (!onAboveCardReserve) return
+    const node = aboveCardReserveRef.current
+    if (!node) {
+      // Persistent content unmounted (strip emptied, plan strip gone): release
+      // the reserve this slot was holding.
+      onAboveCardReserve(0)
+      return
+    }
+    const report = () => onAboveCardReserve(node.offsetHeight + ABOVE_CARD_GAP)
+    report()
+    const ro = new ResizeObserver(report)
+    ro.observe(node)
+    return () => {
+      ro.disconnect()
+      // Component itself unmounts with the reserve pinned — the next mount
+      // reports its own height, but the host must not keep a stale number.
+      onAboveCardReserve(0)
+    }
+  }, [onAboveCardReserve, hasPersistentAboveCard])
 
   const isInputDisabled = isAwaitingApproval || isAwaitingInput
 
@@ -337,6 +406,13 @@ function InputAreaImpl({
 
   const getFileName = (path: string) => path.replace(/^.*[\\/]/, '')
 
+  /** 引用 chip 的一行摘要：换行与连续空白压成单空格，过长截断——完整内容在
+   *  Tooltip 里。多行选中若原样铺开，一条 chip 会长到把输入框挤变形。 */
+  const quoteSummary = (text: string): string => {
+    const flat = text.replace(/\s+/g, ' ').trim()
+    return flat.length > 40 ? `${flat.slice(0, 40)}…` : flat
+  }
+
   /** [file:…] 标记把路径原样拼进 prompt、解析侧把 `]` 当结束符 `|` 当分隔符
    *  （full_20261011 M1-P1-2）——名字里带这两个字符的合法文件名曾让 chip 解析
    *  错位、附件丢失、残余文本混进 prompt。这类路径拒绝附件化并明说；四个
@@ -344,13 +420,12 @@ function InputAreaImpl({
   const mergeAttachmentsNotified = (prev: string[], paths: string[]): string[] => {
     const unsafe = paths.filter((p) => /\]|\|/.test(p))
     if (unsafe.length > 0) {
-      notifyFailure(
-        'attach',
-        new Error(unsafe.join(', ')),
-        t('chat.attachNameUnsafe', { names: unsafe.map(getFileName).join(', ') }),
-      )
+      notifyFailure('attach', new Error(unsafe.join(', ')), t('chat.attachNameUnsafe', { names: unsafe.map(getFileName).join(', ') }))
     }
-    return mergeAttachments(prev, paths.filter((p) => !/\]|\|/.test(p)))
+    return mergeAttachments(
+      prev,
+      paths.filter((p) => !/\]|\|/.test(p)),
+    )
   }
 
   const handlePickFile = async () => {
@@ -567,6 +642,7 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
     }
     const outcome = onSteer ? await onSteer(outgoing) : { ok: false as const, reason: 'not_streaming' as const }
     if (outcome?.ok) {
@@ -644,30 +720,34 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
       return false
     }
     // 流中转向（B7 方案 A，PLAN-mid-stream-steer M1）：veto（return false）让
     // 分支在 Sender 自己的 !loading 门之前生效——与暂存分支同一扇门，暂存分支
     // 在前（staging 行为不变）。IME 确认的 Enter 属于输入法，不是转向意图。
-    if (
-      canSteer &&
-      e.key === 'Enter' &&
-      !e.shiftKey &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey &&
-      !e.nativeEvent.isComposing &&
-      inputValue.trim()
-    ) {
+    if (canSteer && e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !e.nativeEvent.isComposing && inputValue.trim()) {
       e.preventDefault()
       void submitSteer(inputValue.trim())
       return false
     }
     history.onKeyDown(e, inputValue, setInputValue)
-  }  /** Compose the outgoing message: attachment refs first, then the typed text. */
+  } /** Compose the outgoing message: attachment refs, then the quoted excerpts,
+   *  then the typed text. The chips are a UI layer only — what the model gets
+   *  is still plain markdown, exactly as if the refs had been typed out. */
   const buildMessage = (text: string): string => {
     const parts = [...selectedFiles.map((p) => `[file:${p}]`), ...selectedFolders.map((p) => `[folder:${p}]`)]
-    return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
+    const refs = parts.join('\n')
+    const quoted = quotes
+      .map((q) =>
+        q.text
+          .split('\n')
+          .map((line) => (line.trim() ? `> ${line}` : '>'))
+          .join('\n'),
+      )
+      .join('\n\n')
+    const head = [refs, quoted].filter(Boolean).join('\n\n')
+    return head ? (text ? `${head}\n\n${text}` : head) : text
   }
 
   /** Send one staged row now. The take IS the commit — the row leaves the
@@ -705,6 +785,7 @@ function InputAreaImpl({
       setInputValue('')
       setSelectedFiles([])
       setSelectedFolders([])
+      setQuotes([])
     }
     // Belt: the Sender routes submits through its loading flag, so this branch
     // is unreachable in practice — but a submit during a run must stage, never
@@ -747,6 +828,7 @@ function InputAreaImpl({
         layout={layout}
         onPaste={handlePaste}
         dropActive={dragActive}
+        onCardBand={onCardBand}
         autoFocus={autoFocus ?? !hasMessages}
         placeholder={
           placeholder ??
@@ -769,27 +851,48 @@ function InputAreaImpl({
           // bottom and painted both overlays on top of the input card.
           // Composer.aboveCard owns the correct anchor (see its doc); here the
           // children stack in document order, popup closest to the card.
-          (topSlot || stagedCount > 0 || (mentionActive && mentionMatches.length > 0) || dragActive) && (
+          //
+          // The PERSISTENT group (topSlot + staged strip) sits in its own
+          // wrapper because it is what the transcript reserves space for
+          // (onAboveCardReserve) — the transient overlays must stay outside it
+          // or the reserve would pump on every `@` keystroke / drag.
+          (topSlot || hasStagedStrip || (mentionActive && mentionMatches.length > 0) || dragActive) && (
             <>
-              {topSlot && <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>}
-              {stagedCount > 0 && staging && (
-                <div
-                  data-staged-strip
-                  style={{
-                    // The popup's glass recipe — the above-card layer is one
-                    // surface family, and a second recipe would drift from it.
-                    maxWidth: COMPOSER_MAX_WIDTH,
-                    margin: '8px auto',
-                    maxHeight: 200,
-                    overflow: 'auto',
-                    background: 'var(--pm-elevated)',
-                    border: '1px solid var(--pm-border-veil)',
-                    borderRadius: 10,
-                    boxShadow: 'var(--pm-shadow-pop)',
-                    padding: '6px 8px 8px',
-                  }}
-                >
-                  {/* The hint is per-state on purpose, and the branch key is
+              {hasPersistentAboveCard && (
+                <div ref={aboveCardReserveRef} data-above-card-reserve style={{ display: 'flex', flexDirection: 'column', gap: ABOVE_CARD_GAP }}>
+                  {topSlot && <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>}
+                  {hasStagedStrip && staging && (
+                    <div
+                      data-staged-strip
+                      style={{
+                        // The popup's glass recipe — the above-card layer is one
+                        // surface family, and a second recipe would drift from it.
+                        maxWidth: COMPOSER_MAX_WIDTH,
+                        // width:100% is load-bearing: the wrapper above is a flex
+                        // COLUMN, and `margin: 0 auto` on a flex item beats
+                        // `align-self: stretch` — without an explicit width the
+                        // strip shrink-to-fits its rows (measured 245 vs the
+                        // card's 952; user report 「还把暂存区宽度缩小了」). Both
+                        // must read as the same centred content column.
+                        width: '100%',
+                        // …and border-box so the 952 cap includes this box's own
+                        // 8px paddings + 1px border (content-box measured 970,
+                        // overflowing the card's 952 column).
+                        boxSizing: 'border-box',
+                        // Vertical spacing comes from the wrapper's gap, which is
+                        // exactly what the reserve measures; a margin here would
+                        // be height the transcript never sees.
+                        margin: '0 auto',
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        background: 'var(--pm-elevated)',
+                        border: '1px solid var(--pm-border-veil)',
+                        borderRadius: 10,
+                        boxShadow: 'var(--pm-shadow-pop)',
+                        padding: '6px 8px 8px',
+                      }}
+                    >
+                      {/* The hint is per-state on purpose, and the branch key is
                       the drain rule itself (staged-drain.ts
                       ACTIVE_TURN_STATUSES): isRequesting covers
                       streaming/executing/retrying/awaiting_approval and
@@ -801,45 +904,47 @@ function InputAreaImpl({
                       pause, loop-limit) it does NOT auto-send — saying "auto-
                       send" there would be a promise the code keeps only
                       sometimes. */}
-                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '0 4px 4px' }}>
-                    {t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
-                  </div>
-                  {(stagedQueue ?? []).map((item) => (
-                    <div key={item.id} data-staged-item style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}>
-                      <div
-                        title={item.text}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          fontSize: 12,
-                          color: 'var(--pm-text-secondary)',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {item.text}
+                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '0 4px 4px' }}>
+                        {t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
                       </div>
-                      <Button
-                        size="small"
-                        type="link"
-                        data-staged-sendnow
-                        onClick={() => sendStagedRowById(item.id)}
-                        style={{ fontSize: 12, height: 'auto', padding: 0, color: 'var(--pm-text-secondary)' }}
-                      >
-                        {t('chatView.staged.sendNow')}
-                      </Button>
-                      <Button
-                        size="small"
-                        type="text"
-                        data-staged-remove
-                        aria-label={t('chatView.staged.remove')}
-                        icon={<CloseOutlined style={{ fontSize: 12 }} />}
-                        onClick={() => usePendingMessageStore.getState().remove(staging.convId, item.id)}
-                        style={{ color: 'var(--pm-text-muted)' }}
-                      />
+                      {(stagedQueue ?? []).map((item) => (
+                        <div key={item.id} data-staged-item style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}>
+                          <div
+                            title={item.text}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              fontSize: 12,
+                              color: 'var(--pm-text-secondary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {item.text}
+                          </div>
+                          <Button
+                            size="small"
+                            type="link"
+                            data-staged-sendnow
+                            onClick={() => sendStagedRowById(item.id)}
+                            style={{ fontSize: 12, height: 'auto', padding: 0, color: 'var(--pm-text-secondary)' }}
+                          >
+                            {t('chatView.staged.sendNow')}
+                          </Button>
+                          <Button
+                            size="small"
+                            type="text"
+                            data-staged-remove
+                            aria-label={t('chatView.staged.remove')}
+                            icon={<CloseOutlined style={{ fontSize: 12 }} />}
+                            onClick={() => usePendingMessageStore.getState().remove(staging.convId, item.id)}
+                            style={{ color: 'var(--pm-text-muted)' }}
+                          />
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
               {mentionActive && mentionMatches.length > 0 && (
@@ -931,7 +1036,7 @@ function InputAreaImpl({
           )
         }
         header={
-          boundExpert || hasAttachments ? (
+          boundExpert || hasAttachments || quotes.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
               {/* Bound-expert chip: the conversation's summoned expert config pack. */}
               {boundExpert && (
@@ -1012,6 +1117,55 @@ function InputAreaImpl({
                   </span>
                 </span>
               ))}
+              {/* 选中文字引用：与文件引用同一排、同一套形态。落在这排末尾，
+                  因为它是「关于对话本身」的上下文，和附加的文件是两回事——
+                  悬停读全文，点 × 摘掉；发送时才在 buildMessage 里落成
+                  markdown 引用块。 */}
+              {quotes.map((q) => (
+                <Tooltip
+                  key={`q-${q.id}`}
+                  title={
+                    <div style={{ whiteSpace: 'pre-wrap', maxHeight: 260, overflow: 'auto', fontSize: 12, lineHeight: 1.55 }}>
+                      {q.text}
+                    </div>
+                  }
+                >
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 3,
+                      background: 'var(--pm-pill-strong)',
+                      borderRadius: 12,
+                      padding: '2px 6px',
+                      fontSize: 12,
+                      maxWidth: 240,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'Georgia, "Times New Roman", serif',
+                        fontSize: 15,
+                        lineHeight: 1,
+                        color: 'var(--pm-text-secondary)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      &rdquo;
+                    </span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: 170 }}>
+                      {quoteSummary(q.text)}
+                    </span>
+                    <span
+                      onClick={() => removeQuote(q.id)}
+                      style={{ cursor: 'pointer', color: 'var(--pm-text-muted)', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                      title={t('chatView.selectionToolbar.removeQuote')}
+                    >
+                      <CloseOutlined style={{ fontSize: 12 }} />
+                    </span>
+                  </span>
+                </Tooltip>
+              ))}
             </div>
           ) : undefined
         }
@@ -1082,7 +1236,14 @@ function InputAreaImpl({
             {/* Right cluster order: compaction chip, context ring, model picker, send button. */}
             {hasMessages && !!lastCompaction && (
               <Tooltip title={compactionHint}>
-                <span style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>{compactionLabel}</span>
+                {/* pm-collapse-chip: Composer's first responsive stage — the
+                    chip is the row's widest piece (~200px pending) and purely
+                    informational, so it hides below the 700px container width
+                    while every control keeps its label; this tooltip still
+                    carries the full accounting. */}
+                <span className="pm-collapse-chip" style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>
+                  {compactionLabel}
+                </span>
               </Tooltip>
             )}
             {hasMessages && contextLength != null && contextLength > 0 && (

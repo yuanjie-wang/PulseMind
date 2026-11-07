@@ -11,6 +11,14 @@
 import { marked } from 'marked'
 import { imageDims, displaySize } from '../../shared/office/image-dims'
 import {
+  DOCX_QUOTE_GAP_PT,
+  DOCX_QUOTE_LIST_HANG_PT,
+  DOCX_QUOTE_LIST_STYLE,
+  DOCX_QUOTE_PAD_X_PT,
+  DOCX_QUOTE_PAD_Y_PT,
+  DOCX_QUOTE_STYLE,
+} from '../../shared/preview/docx-quote'
+import {
   AlignmentType,
   BorderStyle,
   Document,
@@ -31,8 +39,12 @@ import {
   TableCell,
   TableRow,
   TableOfContents,
+  TabStopType,
   TextRun,
   WidthType,
+  type IBordersOptions,
+  type IIndentAttributesProperties,
+  type IShadingAttributesProperties,
 } from 'docx'
 import { highlightToLines } from './docx-highlight'
 
@@ -66,6 +78,12 @@ const BULLET_GLYPHS = ['•', '◦', '▪']
 // 引用块：应用链接蓝（palette.ts LINK #1677ff）+ --pm-link-bg（8% 蓝）落白底的实色。
 // accent 主题（PLAN-docx-native-styles M1）只重着四处：引用块边框/底色、表头
 // 底纹、H1/H2 底线——墨色标题与灰阶代码底是排版正确性，不属于主题。
+const QUOTE_INDENT = 240 // 引用块左缩进（twips，≈12pt）
+// 竖线 1.5pt、70% 主题色：3pt 纯 accent 在打印件里是色标，不是引文（用户
+// 2026-11-04 裁定「引用块的样式还有点丑」）。粗竖线压住正文，细而柔和的线
+// 才是引文的语汇——柔和靠 alpha 叠白，不引入第二种颜色。
+const QUOTE_BAR_HALF = 12
+const QUOTE_BAR_ALPHA = 0.7
 interface DocxTheme {
   quoteBorder: string
   quoteFill: string
@@ -292,6 +310,9 @@ interface GenCtx {
   degrade: Degradations
   images?: Map<string, Buffer>
   codeSize: number
+  /** 文档级缩放（fontSize / BODY_BASE_PT）——引用块内的标题直接落 run 字号，
+   *  需要与 styles 里的 HeadingN 同一把尺子。 */
+  scale: number
   theme: DocxTheme
   /** 已定义脚注 id → 数字 id（M8）；缺省 = 全文无脚注。 */
   footnotes?: Map<string, number>
@@ -452,28 +473,9 @@ function blockChildren(tokens: MarkedToken[], ctx: GenCtx): DocxChild[] {
           }),
         )
         break
-      case 'blockquote': {
-        const quoted = token.tokens ?? []
-        for (const [i, child] of quoted.entries()) {
-          // The quote's own shape (缩进 + 左边框 + 浅色底) wraps each quoted
-          // paragraph; a quoted table renders as itself — quoting a grid is
-          // not a Word concept. 连续引用段之间零间距，底色才是一整块。
-          if (child.type === 'table') {
-            out.push(tableChild(child, ctx))
-            continue
-          }
-          out.push(
-            new Paragraph({
-              indent: { left: 240 },
-              border: { left: { style: BorderStyle.SINGLE, size: 24, color: ctx.theme.quoteBorder, space: 4 } },
-              shading: { type: ShadingType.CLEAR, fill: ctx.theme.quoteFill },
-              spacing: { before: i === 0 ? 160 : 0, after: i === quoted.length - 1 ? 160 : 0, ...LINE_BODY },
-              children: inlineRuns(child.tokens ?? [child], ctx),
-            }),
-          )
-        }
+      case 'blockquote':
+        out.push(...quoteChildren(token, ctx, QUOTE_INDENT))
         break
-      }
       case 'code': {
         const text = String(token.text ?? '')
         const lines = text.split('\n')
@@ -584,6 +586,137 @@ function listChildren(token: MarkedToken, level: number, ctx: GenCtx): DocxChild
         // 编号/子弹落在 left - hanging 处，正文对齐 left。
         indent: { left: LIST_INDENTS[capped], hanging: LIST_HANGING },
         spacing: { after: 80, ...LINE_BODY },
+        ...(token.ordered ? { numbering: { reference: NUMBERING_REFERENCE, level: capped } } : { numbering: { reference: BULLET_REFERENCE, level: capped } }),
+        children: runs,
+      }),
+    )
+    out.push(...nested)
+  }
+  return out
+}
+
+// ── 引用块（2026-11-04 重做）──
+// 旧实现给每个引用段落套「缩进 + 3pt 纯色竖线 + 浅底 + 段间 spacing」，三条
+// 观感缺陷在 PDF 里同时现形：
+//   ① marked 把 `>` 后的空行吐成 space token，每个都渲染成一整条 ~24pt 的
+//      空色带——引用里一有空行就撕出一段空白；
+//   ② 段落的 spacing 在底纹之外，段间 spacing 会把色带切成白条，而 docx-preview
+//      又把 `w:pBdr/@w:space` 整个丢掉——于是文字贴着竖线、上下毫无内边距；
+//   ③ 引用里的列表/标题掉进 inlineRuns 的 default 分支，`- 第一条` 原样当正文
+//      印出来，没有任何列表形状。
+// 现在：竖线收到 1.5pt 并揉进主题色（70% 叠白），横向内边距 Word 侧走
+// `w:space`、HTML 侧走 docxQuoteCss；竖直内边距与段间间隙由**带同一套底纹的
+// 定高空段落**给出，两条渲染引擎对它的渲染完全一致，色带因此是连续一整块。
+function quoteBox(
+  ctx: GenCtx,
+  indent: number,
+): { style: string; indent: IIndentAttributesProperties; shading: IShadingAttributesProperties; border: IBordersOptions } {
+  return {
+    // 段落样式 id 的用途只有一个：给 HTML 侧一个选择器锚点（docx-preview 落成
+    // `.<class>_PulseMindQuote`），让 CSS 补上它丢掉的内边距。
+    style: DOCX_QUOTE_STYLE,
+    indent: { left: indent },
+    shading: { type: ShadingType.CLEAR, fill: ctx.theme.quoteFill },
+    border: {
+      left: { style: BorderStyle.SINGLE, size: QUOTE_BAR_HALF, color: mixOverWhite(ctx.theme.quoteBorder, QUOTE_BAR_ALPHA), space: DOCX_QUOTE_PAD_X_PT },
+      // 右侧补一条与底色同色的「边框」：w:space 只对自己那条边生效，右边没有
+      // 边框时文字会顶到色块右缘（HTML 侧由 CSS padding 对称补齐）。
+      right: { style: BorderStyle.SINGLE, size: 8, color: ctx.theme.quoteFill, space: DOCX_QUOTE_PAD_X_PT },
+    },
+  }
+}
+
+/** 引用块里的列表项盒子：与 `quoteBox` 逐字段相同，只有段落样式 id 换成列表
+ *  锚点（HTML 侧靠它加悬挂缩进）。**`w:ind` 必须与引用正文一致**——段落边框/
+ *  底纹画在段落盒子上，缩进一多整块右移，引用块左缘就断了。 */
+function quoteListBox(ctx: GenCtx, indent: number): ReturnType<typeof quoteBox> {
+  return { ...quoteBox(ctx, indent), style: DOCX_QUOTE_LIST_STYLE }
+}
+
+/** 引用块里的定高空段落（`lineRule: EXACT`）：竖直内边距与段间间隙都靠它。
+ *  `keepNext` 用在顶部/间隙段上——色带的一小截不该孤零零留在页底。 */
+function quoteSpacer(ctx: GenCtx, indent: number, pt: number, keepNext = false): Paragraph {
+  return new Paragraph({
+    ...quoteBox(ctx, indent),
+    spacing: { before: 0, after: 0, line: Math.round(pt * 20), lineRule: LineRuleType.EXACT },
+    ...(keepNext ? { keepNext: true } : {}),
+  })
+}
+
+function quoteChildren(token: MarkedToken, ctx: GenCtx, indent: number): DocxChild[] {
+  const children = (token.tokens ?? []).filter((child) => child.type !== 'space')
+  if (children.length === 0) return []
+  const out: DocxChild[] = [quoteSpacer(ctx, indent, DOCX_QUOTE_PAD_Y_PT, true)]
+  children.forEach((child, i) => {
+    if (i > 0) out.push(quoteSpacer(ctx, indent, DOCX_QUOTE_GAP_PT, true))
+    out.push(...quoteChild(child, ctx, indent))
+  })
+  out.push(quoteSpacer(ctx, indent, DOCX_QUOTE_PAD_Y_PT))
+  return out
+}
+
+function quoteChild(child: MarkedToken, ctx: GenCtx, indent: number): DocxChild[] {
+  switch (child.type) {
+    case 'paragraph':
+      return [new Paragraph({ ...quoteBox(ctx, indent), spacing: { before: 0, after: 0, ...LINE_BODY }, children: inlineRuns(child.tokens ?? [child], ctx) })]
+    case 'heading': {
+      const level = Math.min(Math.max(child.depth ?? 1, 1), 6)
+      // 引用里的标题不挂 HeadingN 样式：w:pStyle 只有一个槽位，挂了标题就丢掉
+      // 引用块的锚点；字号/字重/墨色直接落 run，尺寸与 styles 里的标题同一把尺子。
+      return [
+        new Paragraph({
+          ...quoteBox(ctx, indent),
+          spacing: { before: 0, after: 0, ...LINE_BODY },
+          keepNext: true,
+          children: [new TextRun({ text: plainText(child.tokens), bold: true, color: HEADING_INK, size: Math.round(HEADING_HALF_BASE[level - 1] * ctx.scale) })],
+        }),
+      ]
+    }
+    case 'list':
+      return quoteListChildren(child, 0, ctx, indent)
+    // 引用里的表格按表格本身渲染——引用一个网格不是 Word 的概念；代码块/分隔线
+    // 同理走顶层渲染，它们自带底纹与边框，不套引用块的外框。
+    case 'table':
+      return [tableChild(child, ctx)]
+    case 'blockquote':
+      return quoteChildren(child, ctx, indent + QUOTE_INDENT)
+    default:
+      return blockChildren([child], ctx)
+  }
+}
+
+/** 引用块里的列表：真子弹/编号（旧实现把 `- 第一条` 当正文印出来）。
+ *  缩进台阶**不写进 `w:ind`**——那会把列表行的盒子（竖线 + 底纹）整体推右，
+ *  引用块左缘当场断成两截。盒内缩进在 Word 侧靠制表位（编号后缀的 tab 停在
+ *  文字边 + 一阶处），HTML 侧靠 docxQuoteCss 的 padding + text-indent。 */
+function quoteListChildren(token: MarkedToken, level: number, ctx: GenCtx, quoteIndent: number): DocxChild[] {
+  const capped = Math.min(level, 2)
+  const out: DocxChild[] = []
+  for (const item of token.items ?? []) {
+    const runs: InlineChild[] = []
+    const nested: DocxChild[] = []
+    for (const child of item.tokens ?? []) {
+      if (child.type === 'space') continue
+      if (child.type === 'paragraph') {
+        runs.push(...inlineRuns(child.tokens, ctx))
+        continue
+      }
+      if (child.type === 'list') {
+        nested.push(...quoteListChildren(child, level + 1, ctx, quoteIndent))
+        continue
+      }
+      if (child.type === 'code' || child.type === 'table' || child.type === 'blockquote') {
+        nested.push(...quoteChild(child, ctx, quoteIndent))
+        continue
+      }
+      runs.push(...inlineRuns([child], ctx))
+    }
+    out.push(
+      new Paragraph({
+        ...quoteListBox(ctx, quoteIndent),
+        // 编号后缀的 tab 停在一阶处：文字落在引用正文边 + 12pt，编号留在正文边。
+        tabStops: [{ type: TabStopType.LEFT, position: quoteIndent + DOCX_QUOTE_LIST_HANG_PT * 20 }],
+        spacing: { before: 0, after: 0, ...LINE_BODY },
         ...(token.ordered ? { numbering: { reference: NUMBERING_REFERENCE, level: capped } } : { numbering: { reference: BULLET_REFERENCE, level: capped } }),
         children: runs,
       }),
@@ -736,6 +869,7 @@ export async function markdownToDocxBuffer(md: string, images?: Map<string, Buff
     degrade,
     images,
     codeSize,
+    scale,
     theme: design.accent ? accentTheme(design.accent) : DEFAULT_THEME,
     ...(scanned.footnotes.size > 0 ? { footnotes: scanned.footnotes } : {}),
     ...(design.indent ? { indent: { firstLineTwips: Math.round(2 * (fontSize ?? BODY_BASE_PT) * 20) } } : {}),
@@ -863,6 +997,15 @@ export async function markdownToDocxBuffer(md: string, images?: Map<string, Buff
         }
       : {}),
     styles: {
+      // 引用块的段落样式：不声明任何属性，只提供 HTML 侧的选择器锚点
+      // （docx-preview 把 w:pStyle 落成 `.<class>_PulseMindQuote`，CSS 用它补
+      // 内边距，见 shared/preview/docx-quote.ts 的文件头）。刻意不写 basedOn：
+      // docx 库的出厂样式表里没有 Normal，指向它会悬空。
+      paragraphStyles: [
+        { id: DOCX_QUOTE_STYLE, name: 'PulseMind Quote', quickFormat: true },
+        // 引用块内的列表项：同样只当 HTML 侧锚点（挂悬挂缩进的那条 CSS）。
+        { id: DOCX_QUOTE_LIST_STYLE, name: 'PulseMind Quote List', quickFormat: true },
+      ],
       default: {
         document: { run: { font: BODY_FONT, size: Math.round((fontSize ?? BODY_BASE_PT) * 2) } },
         heading1: { run: headingRun(HEADING_HALF_BASE[0]), paragraph: headingPara(400, 160, true) },

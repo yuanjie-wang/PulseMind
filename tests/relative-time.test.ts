@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeRelativeTime, bucketDayByDate, bucketRunByDate } from '../src/renderer/src/utils/relative-time'
+import { describeRelativeTime, bucketDayByDate, bucketRunByDate, describeSentAt, describeSentAtText, describeSentAtTitle } from '../src/renderer/src/utils/relative-time'
 
 const NOW = Date.parse('2026-09-10T12:00:00')
 const at = (offsetMs: number): string => new Date(NOW - offsetMs).toISOString()
@@ -96,5 +96,87 @@ describe('bucketRunByDate', () => {
     const monday = new Date(2026, 8, 21, 12, 0).getTime()
     expect(bucketRunByDate(localIso(2026, 9, 20, 23), monday)).toBe('yesterday')
     expect(bucketRunByDate(localIso(2026, 9, 19, 12), monday)).toBe('earlier')
+  })
+})
+
+// ── The sent-at stamp under a user bubble (2026-11-06) ──
+// Local-Date fixtures, same discipline as the buckets above: the wall clock and
+// the calendar day asserted here are fixed by construction, so the suite cannot
+// flip with the machine's timezone.
+const stubTranslate = (path: string, values?: Record<string, string | number>): string =>
+  `${path}(${Object.entries(values ?? {}).map(([k, v]) => `${k}=${v}`).join(' ')})`
+
+describe('describeSentAt', () => {
+  it('reads the LOCAL wall clock, zero-padded to HH:mm', () => {
+    expect(describeSentAt(localIso(2026, 9, 16, 18, 2))).toMatchObject({
+      clock: '18:02',
+      year: 2026,
+      month: 9,
+      day: 16
+    })
+    expect(describeSentAt(localIso(2026, 1, 5, 9, 5))?.clock).toBe('09:05')
+    expect(describeSentAt(localIso(2026, 1, 5, 0, 0))?.clock).toBe('00:00')
+    expect(describeSentAt(localIso(2026, 1, 5, 23, 59))?.clock).toBe('23:59')
+  })
+
+  it('takes no clock of its own — the stamp is a pure function of the message', () => {
+    // This is what keeps the render path lint-clean (react-hooks purity rejects
+    // Date.now() during render) and free of a per-minute re-render: there is no
+    // "now" argument to pass, so the answer cannot drift with the wall clock.
+    const stamp = localIso(2026, 9, 16, 18, 2)
+    expect(describeSentAt(stamp)).toEqual(describeSentAt(stamp))
+    expect(describeSentAt(stamp)?.clock).toBe('18:02')
+  })
+
+  it('returns null for missing or unparsable timestamps', () => {
+    expect(describeSentAt(undefined)).toBeNull()
+    expect(describeSentAt(null)).toBeNull()
+    expect(describeSentAt('')).toBeNull()
+    expect(describeSentAt('not-a-date')).toBeNull()
+  })
+
+  it('accepts epoch millis and Date instances', () => {
+    const noon = new Date(2026, 8, 16, 12, 0).getTime()
+    expect(describeSentAt(noon)).toMatchObject({ clock: '12:00', day: 16 })
+    expect(describeSentAt(new Date(noon))).toMatchObject({ clock: '12:00' })
+  })
+})
+
+describe('describeSentAtText', () => {
+  it('always prints the date with the clock — never a bare time', () => {
+    expect(describeSentAtText(localIso(2026, 11, 6, 18, 2), stubTranslate)).toBe('chatView.sentAtDate(month=11 day=6 time=18:02)')
+    // Today's own messages keep their date too: "18:02" on its own says nothing
+    // once the same transcript is read tomorrow, which is the whole point of the
+    // stamp. That is why there is no 今天 branch to drop it.
+    expect(describeSentAtText(localIso(2026, 11, 6, 9, 5), stubTranslate)).toBe('chatView.sentAtDate(month=11 day=6 time=09:05)')
+  })
+
+  it('leaves the year to the tooltip so the inline stamp stays short', () => {
+    const lastYear = localIso(2025, 12, 31, 23, 59)
+    expect(describeSentAtText(lastYear, stubTranslate)).not.toContain('year=')
+    expect(describeSentAtTitle(lastYear, stubTranslate)).toContain('year=2025')
+  })
+
+  it('returns null — not "NaN:NaN" — when the message carries no timestamp', () => {
+    expect(describeSentAtText(undefined, stubTranslate)).toBeNull()
+    expect(describeSentAtText('', stubTranslate)).toBeNull()
+    expect(describeSentAtText('not-a-date', stubTranslate)).toBeNull()
+  })
+})
+
+describe('describeSentAtTitle', () => {
+  it('carries the full date plus the clock, so a scrolled-back stamp is unambiguous', () => {
+    expect(describeSentAtTitle(localIso(2025, 12, 31, 23, 59), stubTranslate)).toBe(
+      'chatView.sentAtDateWithYear(year=2025 month=12 day=31 time=23:59)'
+    )
+    expect(describeSentAtTitle(localIso(2026, 9, 16, 18, 2), stubTranslate)).toBe(
+      'chatView.sentAtDateWithYear(year=2026 month=9 day=16 time=18:02)'
+    )
+  })
+
+  it('returns null — not an empty tooltip — when the message carries no timestamp', () => {
+    expect(describeSentAtTitle(undefined, stubTranslate)).toBeNull()
+    expect(describeSentAtTitle('', stubTranslate)).toBeNull()
+    expect(describeSentAtTitle('not-a-date', stubTranslate)).toBeNull()
   })
 })

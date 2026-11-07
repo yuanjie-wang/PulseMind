@@ -4,9 +4,16 @@ import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '.
 import { SKILLS_DIR } from './index'
 import { getDb } from './database'
 
-const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
+/**
+ * Fresh-install default: no explicit opt-outs, so every skill (built-in,
+ * template-carried, imported) is on. The user ruling behind this (2026-11-04)
+ * is that an absent toggle means ON — the old fallback here named two skills
+ * and thereby made every template/imported skill start disabled on a fresh
+ * machine. `enabledSkills` carries no authority any more, only diagnostics.
+ */
+const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: [], disabledSkills: [] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
-import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, skillContentSignature, type ParsedFrontmatter } from '../utils/skill-parser'
+import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, skillContentSignature, skillProvenanceMatches, type ParsedFrontmatter } from '../utils/skill-parser'
 import { seedSkillResources } from '../utils/skill-resources'
 import { RETIRED_BUILT_IN_SKILLS } from '../../renderer/src/skills/built-in-skills'
 import { parseJsonColumn } from '../utils/json'
@@ -66,17 +73,19 @@ export class SkillStore {
 
   get(): SkillPreferences {
     const row = getDb().prepare('SELECT * FROM skill_preferences WHERE id = 1').get() as any
-    if (!row) return { ...SKILL_PREFS_FALLBACK }
+    if (!row) return { ...SKILL_PREFS_FALLBACK, skillKeywords: {} }
     return {
       enabledSkills: parseJsonColumn(row.enabled_skills, SKILL_PREFS_FALLBACK.enabledSkills),
+      disabledSkills: parseJsonColumn(row.disabled_skills, []),
       skillKeywords: parseJsonColumn(row.skill_keywords, SKILL_PREFS_FALLBACK.skillKeywords ?? {}),
       processedConversations: parseJsonColumn(row.processed_conversations, [])
     }
   }
 
   set(prefs: SkillPreferences): void {
-    getDb().prepare('INSERT OR REPLACE INTO skill_preferences (id, enabled_skills, skill_keywords, processed_conversations) VALUES (1, ?, ?, ?)').run(
-      JSON.stringify(prefs.enabledSkills),
+    getDb().prepare('INSERT OR REPLACE INTO skill_preferences (id, enabled_skills, disabled_skills, skill_keywords, processed_conversations) VALUES (1, ?, ?, ?, ?)').run(
+      JSON.stringify(prefs.enabledSkills || []),
+      JSON.stringify(prefs.disabledSkills || []),
       JSON.stringify(prefs.skillKeywords || {}),
       JSON.stringify(prefs.processedConversations || [])
     )
@@ -97,11 +106,12 @@ export class SkillStore {
       }
       prefs.skillKeywords = kw
     }
-    if (patch.replaceEnabledSkills) {
-      prefs.enabledSkills = patch.replaceEnabledSkills
+    if (patch.replaceDisabledSkills) {
+      prefs.disabledSkills = patch.replaceDisabledSkills
     }
     if (patch.removeSkill) {
       prefs.enabledSkills = (prefs.enabledSkills || []).filter((s) => s !== patch.removeSkill)
+      prefs.disabledSkills = (prefs.disabledSkills || []).filter((s) => s !== patch.removeSkill)
       if (prefs.skillKeywords?.[patch.removeSkill]) {
         const kw = { ...prefs.skillKeywords }
         delete kw[patch.removeSkill]
@@ -114,10 +124,20 @@ export class SkillStore {
   /**
    * Calibrate skill preferences against actual skills on disk.
    * Removes stale entries for skills whose SKILL.md no longer exists.
+   *
+   * A missing row means "never persisted anything" — the default-open state.
+   * Writing a calibrated row there would be actively harmful: calibrate() runs
+   * at startup BEFORE ensureBuiltInSkills seeds the built-ins (index.ts), so a
+   * fresh install's skills dir is empty at this moment and the calibrate would
+   * freeze an empty list into the DB, which is exactly the bug that kept
+   * template skills off. Return early instead; later writes go through the
+   * preferences the manager derives from the live registry.
    */
   async calibrate(): Promise<void> {
     let prefs: SkillPreferences
     try {
+      const row = getDb().prepare('SELECT id FROM skill_preferences WHERE id = 1').get()
+      if (!row) return // nothing persisted yet — default-open, nothing to prune
       prefs = { ...SKILL_PREFS_FALLBACK, ...this.get() }
     } catch {
       return // No prefs yet, nothing to calibrate
@@ -134,6 +154,7 @@ export class SkillStore {
     const valid = (name: string) => onDisk.has(name)
 
     const enabledSkills = (prefs.enabledSkills || []).filter(valid)
+    const disabledSkills = (prefs.disabledSkills || []).filter(valid)
     const skillKeywords: Record<string, string[]> = {}
     for (const [name, keywords] of Object.entries(prefs.skillKeywords || {})) {
       if (valid(name)) skillKeywords[name] = keywords
@@ -141,11 +162,13 @@ export class SkillStore {
 
     const changed =
       enabledSkills.length !== (prefs.enabledSkills || []).length ||
+      disabledSkills.length !== (prefs.disabledSkills || []).length ||
       Object.keys(skillKeywords).length !== Object.keys(prefs.skillKeywords || {}).length
 
     if (changed) {
-      const removed = (prefs.enabledSkills || []).length - enabledSkills.length
+      const removed = (prefs.enabledSkills || []).length - enabledSkills.length + (prefs.disabledSkills || []).length - disabledSkills.length
       prefs.enabledSkills = enabledSkills
+      prefs.disabledSkills = disabledSkills
       prefs.skillKeywords = skillKeywords
       this.set(prefs)
       console.log(`[skill-store] Calibrated: removed ${removed} stale skill pref(s)`)
@@ -165,50 +188,76 @@ export class SkillStore {
     warnings: string[]
   }> {
     await this.ensureSkillsDir()
+    return withZipExtraction(zipPath, (extractDir) => this.importSkillsFromRoot(extractDir))
+  }
+
+  /**
+   * Import skills from an already-extracted directory whose immediate children
+   * are skill directories (SKILL.md + optional reference/ etc.). The template
+   * pack import walks this path — the zip is extracted once for the whole
+   * pack, so re-entering zip extraction per source would be wasted work. Same
+   * behavior as the zip route: duplicates are skipped into errors, never
+   * overwritten.
+   */
+  async importSkillsFromDirectory(skillsRoot: string): Promise<{
+    imported: SkillDefinition[]
+    errors: string[]
+    warnings: string[]
+  }> {
+    await this.ensureSkillsDir()
+    return this.importSkillsFromRoot(skillsRoot)
+  }
+
+  /** Shared body of both import routes: find SKILL.md files under `root` and
+   *  install each enclosing directory (whole-directory copy preserves
+   *  reference/scripts companions). */
+  private async importSkillsFromRoot(root: string): Promise<{
+    imported: SkillDefinition[]
+    errors: string[]
+    warnings: string[]
+  }> {
     const imported: SkillDefinition[] = []
     const errors: string[] = []
     const warnings: string[] = []
 
-    await withZipExtraction(zipPath, async (extractDir) => {
-      const skillFiles = await findSkillFiles(extractDir)
+    const skillFiles = await findSkillFiles(root)
 
-      if (skillFiles.length === 0) {
-        errors.push('No SKILL.md files found in the .zip')
-        return
+    if (skillFiles.length === 0) {
+      errors.push('No SKILL.md files found')
+      return { imported, errors, warnings }
+    }
+
+    for (const filePath of skillFiles) {
+      const content = await readFile(filePath, 'utf-8')
+      let parsed
+      try {
+        parsed = parseSkillMarkdown(content, basename(filePath))
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : `Failed to parse ${basename(filePath)}`)
+        continue
+      }
+      warnings.push(
+        ...validateSkillSpec(parsed, basename(dirname(filePath))).map((w) => `${parsed.name}: ${w}`)
+      )
+
+      // Check for duplicate
+      const skillDir = join(SKILLS_DIR, parsed.name)
+      try {
+        await readdir(skillDir)
+        errors.push(`Skill "${parsed.name}" already exists — skipped`)
+        continue
+      } catch {
+        // Directory doesn't exist, good to proceed
       }
 
-      for (const filePath of skillFiles) {
-        const content = await readFile(filePath, 'utf-8')
-        let parsed
-        try {
-          parsed = parseSkillMarkdown(content, basename(filePath))
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : `Failed to parse ${basename(filePath)}`)
-          continue
-        }
-        warnings.push(
-          ...validateSkillSpec(parsed, basename(dirname(filePath))).map((w) => `${parsed.name}: ${w}`)
-        )
+      // Write skill file — copy the entire directory containing SKILL.md
+      // so that supporting files (scripts, configs, assets) are preserved.
+      await mkdir(skillDir, { recursive: true })
+      const skillSrcDir = dirname(filePath)
+      await cp(skillSrcDir, skillDir, { recursive: true })
 
-        // Check for duplicate
-        const skillDir = join(SKILLS_DIR, parsed.name)
-        try {
-          await readdir(skillDir)
-          errors.push(`Skill "${parsed.name}" already exists — skipped`)
-          continue
-        } catch {
-          // Directory doesn't exist, good to proceed
-        }
-
-        // Write skill file — copy the entire directory containing SKILL.md
-        // so that supporting files (scripts, configs, assets) are preserved.
-        await mkdir(skillDir, { recursive: true })
-        const skillSrcDir = dirname(filePath)
-        await cp(skillSrcDir, skillDir, { recursive: true })
-
-        imported.push(toDefinition(parsed))
-      }
-    })
+      imported.push(toDefinition(parsed))
+    }
 
     return { imported, errors, warnings }
   }
@@ -441,19 +490,19 @@ export class SkillStore {
       const signature = skillContentSignature(skill)
       try {
         const existing = await readFile(mdPath, 'utf-8')
-        let existingSig: string | null = null
+        let existingParsed: ParsedFrontmatter | null = null
         try {
-          existingSig = skillContentSignature(parseSkillMarkdown(existing, `${skill.name}/SKILL.md`))
+          existingParsed = parseSkillMarkdown(existing, `${skill.name}/SKILL.md`)
         } catch {
           // Unparseable counts as user content: never adopted, never overwritten.
         }
-        if (existingSig === signature) {
+        if (existingParsed && skillProvenanceMatches(existingParsed, signature)) {
           // Already exists and IS this built-in's own content: adopt its
           // provenance — a copy seeded before the manifest existed has no other
           // way to become recognizable at retirement, and semantic equality is
           // the only claim that holds after the formatter has moved on.
           recordSeed(skill.name, signature)
-        } else if (existingSig !== null && seeds[skill.name] === existingSig) {
+        } else if (existingParsed && skillProvenanceMatches(existingParsed, seeds[skill.name])) {
           // The manifest recorded seeding exactly this content and the user has
           // not touched the file since — so when the bundled text has moved on,
           // the seed upgrades in place. This is the one write over an existing
@@ -492,9 +541,9 @@ export class SkillStore {
       } catch {
         continue // never seeded, or already swept
       }
-      let signature: string
+      let signature: ParsedFrontmatter | null = null
       try {
-        signature = skillContentSignature(parseSkillMarkdown(content, `${retired.name}/SKILL.md`))
+        signature = parseSkillMarkdown(content, `${retired.name}/SKILL.md`)
       } catch {
         continue // an unparseable file counts as user content
       }
@@ -502,8 +551,10 @@ export class SkillStore {
       // app wrote (or adopted) it, even if the built-in's text has since moved
       // on. Arm 2 — content: still the definition the skill last shipped with,
       // which is what recognizes a pre-manifest seed regardless of which
-      // formatter wrote its frontmatter.
-      if (signature !== seeds[retired.name] && signature !== retired.contentHash) continue
+      // formatter wrote its frontmatter. Both run through the provenance
+      // matcher: a trailing-newline prompt (the historical formatSkillMd/parse
+      // asymmetry) must not strand its own retirement.
+      if (!skillProvenanceMatches(signature, seeds[retired.name], retired.contentHash)) continue
       await rm(skillDir, { recursive: true, force: true })
       if (retired.name in seeds) {
         delete seeds[retired.name]

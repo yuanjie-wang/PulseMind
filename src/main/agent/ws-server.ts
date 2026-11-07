@@ -42,12 +42,19 @@ import { agentClientRegistry, isHostedClientId, type ClientTransport } from './c
 import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
+  adoptUnscopedConversations,
+  claimLegacyScopeConversations,
+  getConversationApprovalMode,
   getConversationOrigin,
+  getConversationTitle,
   hydrateConversation,
   listConversationsByOrigin,
+  releaseDeadScopeConversations,
+  saveConversation,
   updateConversationTitle,
 } from '../storage/conversation.db'
 import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
+import { installHostedPersistence, type HostedPersistenceDeps } from './hosted-persistence'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
 import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -64,9 +71,42 @@ export interface AgentServiceConversations {
   hydrate(id: string): { title: string; messages: unknown[]; historySummary?: string; historySummaryFrontier?: string } | null
   /** Rows for `session.list`. Carries the conversation's stored 授权 level so a
    *  remote client's approval control can show the same value the desktop
-   *  composer shows (absent = never chosen). */
-  listByOrigin(origin: string, limit: number): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
+   *  composer shows (absent = never chosen). `tabKey` scopes to one client-side
+   *  history scope (the extension's per-tab list); omitted = unscoped. */
+  listByOrigin(origin: string, limit: number, tabKey?: string): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
+  /** Hand this origin's unscoped conversations to `tabKey` — the upgrade path
+   *  for rows written before per-tab history existed (and any row the desktop
+   *  side stamped). Optional so lightweight test stores need not implement it. */
+  adoptUnscoped?(origin: string, tabKey: string): void
+  /** Drop the tab_key of rows whose scope is not in `liveScopes` — the
+   *  browser-restart path (review_20261104 中3): chrome.storage.session cleared,
+   *  so every old stamp is dead and the row strands in every UI. Released rows
+   *  become adoptable by the next tab. Optional like `adoptUnscoped`. */
+  releaseDeadScopes?(origin: string, liveScopes: string[]): void
+  /** Move pre-instance-id rows of the base origin onto this install's origin
+   *  (2026-11-05). Chrome and 360 load the same extension binary, so before
+   *  `instanceId` they shared one origin; history written under the bare
+   *  `pulsemind-extension` origin must follow the install that opens the panel,
+   *  or it is stranded in an origin no instance lists. `liveScopes` bounds what
+   *  may be claimed: rows of ANOTHER browser's live tabs (or any scope this
+   *  install does not hold live) stay put — a still-running old-version install
+   *  must not have its current history stolen. Rows with dead scopes stay with
+   *  the legacy origin (unreachable either way; the conservative trade-off is
+   *  deliberate). Optional like the two scope hooks. */
+  claimLegacyScopes?(fromOrigin: string, toOrigin: string, liveScopes: string[]): void
   origin(id: string): string | null
+  /** The conversation's STORED 授权 level (undefined = never chosen / row
+   *  gone) — `session.create` echoes it so a panel can seed its cache even
+   *  while the fresh session is invisible to `session.list` (EXISTS(messages)):
+   *  doCreateSession's last-used seed would otherwise run the engine at a
+   *  level the panel cannot see (review_20261103 高3). */
+  approvalMode(id: string): SandboxApprovalMode | undefined
+  /** The stored title alone (null = row gone) — the hosted-transcript writer
+   *  keeps a user rename across its turn-end rewrite (hosted-persistence.ts). */
+  title(id: string): string | null
+  /** Write a hosted session's transcript (2026-11-02): main-hosted sessions
+   *  have no renderer to persist for them — see hosted-persistence.ts. */
+  persist: HostedPersistenceDeps['save']
   /** May return a promise (the production impl deletes the minted workspace
    *  folder before the row); the delete handler awaits it when present. */
   remove(id: string): void | Promise<void>
@@ -75,8 +115,14 @@ export interface AgentServiceConversations {
 
 const storageConversations: AgentServiceConversations = {
   hydrate: (id) => hydrateConversation(id),
-  listByOrigin: (origin, limit) => listConversationsByOrigin(origin, limit),
+  listByOrigin: (origin, limit, tabKey) => listConversationsByOrigin(origin, limit, tabKey),
+  adoptUnscoped: (origin, tabKey) => adoptUnscopedConversations(origin, tabKey),
+  releaseDeadScopes: (origin, liveScopes) => releaseDeadScopeConversations(origin, liveScopes),
+  claimLegacyScopes: (fromOrigin, toOrigin, liveScopes) => claimLegacyScopeConversations(fromOrigin, toOrigin, liveScopes),
   origin: (id) => getConversationOrigin(id),
+  approvalMode: (id) => getConversationApprovalMode(id),
+  title: (id) => getConversationTitle(id),
+  persist: (conversation) => saveConversation(conversation),
   remove: (id) => deleteConversationWithWorkspace(id),
   rename: (id, title) => updateConversationTitle(id, title),
 }
@@ -93,12 +139,31 @@ export interface AgentServiceHandle {
 
 interface ClientConn {
   socket: WebSocket
+  /** Protocol clientId, base form: capability gates read THIS (the hosted
+   *  registry keys on the binary's identity, not the install's). */
   clientId: string
+  /** Sanitized per-install suffix from hello (undefined = legacy client). */
+  instanceId?: string
+  /** Conversation namespace stamped on rows this connection creates. Same as
+   *  `clientId` for legacy clients, `clientId:instanceId` otherwise — two
+   *  installs of the same binary must not share one history. */
+  origin: string
+  /** `byClient` key: clientId plus instanceId, so installs that share a binary
+   *  coexist (2026-11-05) while a reconnect of the SAME install still replaces
+   *  its own ghost. */
+  key: string
   /** Session ids this client created or addressed (event routing). */
   sessions: Set<string>
   /** Transports minted for in-flight asks — dropped together on disconnect. */
   transports: Set<ClientTransport>
   alive: boolean
+}
+
+/** Accept only the same charset the DB origin can carry. Anything else is
+ *  treated as absent: a malformed suffix must degrade to legacy behaviour, not
+ *  create an origin nobody else can ever name. */
+function sanitizeInstanceId(raw: unknown): string | undefined {
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? raw : undefined
 }
 
 function parseEnvelopes(raw: WebSocket.RawData): JsonRpcRequest[] {
@@ -191,8 +256,11 @@ export async function startAgentService(
 
   const wss = new WebSocketServer({ server: httpServer })
   const conns = new Set<ClientConn>()
-  /** clientId → current connection. A newer connection with the same clientId
-   *  (browser restart, profile duplicate) replaces — kicks — the old one. */
+  /** connection identity (clientId + instanceId) → current connection. A newer
+   *  connection from the same INSTALL replaces — kicks — the old one (browser
+   *  restart / duplicate content scripts); another install sharing the same
+   *  binary id lives alongside (2026-11-05: Chrome and 360 otherwise kicked
+   *  each other in an endless reconnect loop). */
   const byClient = new Map<string, ClientConn>()
 
   wss.on('connection', (socket, req: IncomingMessage) => {
@@ -209,7 +277,15 @@ export async function startAgentService(
       return
     }
 
-    const conn: ClientConn = { socket, clientId: 'unknown', sessions: new Set(), transports: new Set(), alive: true }
+    const conn: ClientConn = {
+      socket,
+      clientId: 'unknown',
+      origin: 'unknown',
+      key: 'unknown',
+      sessions: new Set(),
+      transports: new Set(),
+      alive: true,
+    }
     conns.add(conn)
 
     const send = (res: JsonRpcResponse): void => {
@@ -246,21 +322,30 @@ export async function startAgentService(
         const params = (msg.params ?? {}) as Record<string, unknown>
         switch (msg.method) {
           case Methods.hello: {
-            conn.clientId = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
-            // Same-clientId replacement: kick the ghost connection (M2.2).
-            const prior = byClient.get(conn.clientId)
+            const base = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
+            const instanceId = sanitizeInstanceId(params.instanceId)
+            if (conn.key !== 'unknown' && byClient.get(conn.key) === conn) byClient.delete(conn.key)
+            conn.clientId = base
+            conn.instanceId = instanceId
+            // The namespace split is what keeps two installs' histories apart;
+            // the identity split is what keeps their connections apart. Both
+            // come from the same hello field so they can never disagree.
+            conn.origin = instanceId ? `${base}:${instanceId}` : base
+            conn.key = `${base}\u0000${instanceId ?? ''}`
+            // Same-INSTALL replacement: kick the ghost connection (M2.2).
+            const prior = byClient.get(conn.key)
             if (prior && prior !== conn) {
               prior.socket.close(4409, 'replaced by a newer connection')
               conns.delete(prior)
             }
-            byClient.set(conn.clientId, conn)
+            byClient.set(conn.key, conn)
             if (params.protocolVersion !== PROTOCOL_VERSION) {
               send(makeError(msg.id ?? null, ErrorCodes.protocolVersionMismatch,
                 `protocol version mismatch: client ${String(params.protocolVersion)}, service ${PROTOCOL_VERSION}`))
               // Close instead of leaving the socket half-alive: the client has
               // its answer, and a connection that can never speak the protocol
               // must not sit in `conns` (it would be kicked only by the NEXT
-              // hello of the same clientId).
+              // hello of the same install).
               socket.close(CloseCodes.protocolMismatch, 'protocol version mismatch')
               break
             }
@@ -272,6 +357,10 @@ export async function startAgentService(
             const agentId = typeof params.agentId === 'string' ? params.agentId : undefined
             const pageContext = sanitizePageContext(params.pageContext)
             const title = (typeof params.title === 'string' && params.title.trim()) || pageContext?.title || undefined
+            // The client's history scope (the extension's per-tab list). Cheap
+            // junk-proofing: a scope is an opaque token, nothing else.
+            const tabKey =
+              typeof params.tabKey === 'string' && params.tabKey && params.tabKey.length <= 128 ? params.tabKey : undefined
             void (async () => {
               let sessionId = requestedId
               let resumed = false
@@ -282,7 +371,7 @@ export async function startAgentService(
                   // conversation so a desktop restart or a fresh SW keeps the
                   // thread going. Same fill-in of tool_result content the
                   // desktop "continue conversation" path uses.
-                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.clientId })
+                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.origin, tabKey })
                   await sessions.hydrate(
                     sessionId,
                     conv.messages,
@@ -295,7 +384,7 @@ export async function startAgentService(
               }
               if (!sessionId) {
                 sessionId = `ws_${Date.now()}_${shortUuid(8)}`
-                await sessions.createSession(sessionId, { agentId, title, clientId: conn.clientId })
+                await sessions.createSession(sessionId, { agentId, title, clientId: conn.origin, tabKey })
               }
               conn.sessions.add(sessionId)
               // Bind here too (2026-10-10): agentAsk was the ONLY bind site, so
@@ -308,14 +397,67 @@ export async function startAgentService(
               // continuation. Hosted clients only: the registry's isHostedCapable
               // gate keeps page tools extension-owned.
               if (isHostedClientId(conn.clientId)) agentClientRegistry.bind(sessionId, transport)
-              send(makeResult(msg.id ?? null, { sessionId, agentId: agentId ?? 'default', resumed }))
+              // The seeded 授权 rides the answer (review_20261103 高3): a fresh
+              // normal session was just seeded with the global last-used level,
+              // and neither session.list (EXISTS(messages)) nor a cold snapshot
+              // (the bridge already holds a mirror) will surface it. Best-effort
+              // like every column read — a storage failure must not cost the
+              // client its create answer.
+              let approvalMode: SandboxApprovalMode | undefined
+              try { approvalMode = store.approvalMode(sessionId) } catch { /* best effort */ }
+              send(makeResult(msg.id ?? null, { sessionId, agentId: agentId ?? 'default', resumed, approvalMode }))
             })().catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
             break
           }
           case Methods.sessionList: {
             const rawLimit = typeof params.limit === 'number' ? params.limit : 50
             const limit = Math.min(Math.max(Math.floor(rawLimit), 1), 200)
-            const rows = store.listByOrigin(conn.clientId, limit)
+            const tabKey =
+              typeof params.tabKey === 'string' && params.tabKey && params.tabKey.length <= 128 ? params.tabKey : undefined
+            // The extension's live scope set (review_20261104 中3): scopes from
+            // previous browser sessions are dead — release their stamps BEFORE
+            // the adoption below so the released rows land in this very list.
+            const liveScopes = Array.isArray(params.liveScopes)
+              ? params.liveScopes.filter((s): s is string => typeof s === 'string' && s.length > 0 && s.length <= 128).slice(0, 256)
+              : []
+            if (tabKey && liveScopes.length > 0) {
+              try {
+                store.releaseDeadScopes?.(conn.origin, liveScopes)
+              } catch {
+                /* best effort */
+              }
+            }
+            // Pre-instance-id rows sit under the bare client id: an install
+            // that now has its own origin takes them along — otherwise its
+            // upgrade would show an empty 历史会话 while the old rows stay in a
+            // namespace nothing lists (2026-11-05). Live other-install scopes
+            // are NOT claimable (see claimLegacyScopes).
+            if (conn.instanceId && tabKey) {
+              try {
+                store.claimLegacyScopes?.(conn.clientId, conn.origin, liveScopes)
+              } catch {
+                /* best effort */
+              }
+            }
+            // Rows stamped before the column existed (and every row the desktop
+            // side stamped with an extension origin) carry no scope. Hand them to
+            // this tab on first sight instead of hiding the user's history.
+            if (tabKey) {
+              try { store.adoptUnscoped?.(conn.origin, tabKey) } catch { /* best effort */ }
+            }
+            const rows = store.listByOrigin(conn.origin, limit, tabKey)
+            // The conversation store's rows are `{ id, title, updatedAt, … }`;
+            // the protocol's list items are `{ sessionId, … }` like every other
+            // session.* payload. Shipping the raw row made every panel row's
+            // `sessionId` undefined: the 历史会话 menu rendered titles but no row
+            // could be resumed (clicking one unbound the tab and answered an
+            // empty snapshot) and `currentId` never matched (2026-11-02).
+            const listed = rows.map((r) => ({
+              sessionId: r.id,
+              title: r.title,
+              updatedAt: r.updatedAt,
+              approvalMode: r.approvalMode,
+            }))
             // The model state rides along: every panel snapshot calls this
             // anyway, so the picker's inventory costs no extra round trip. A
             // failure to read settings must not cost the caller the list it
@@ -323,7 +465,7 @@ export async function startAgentService(
             void sessions
               .modelState()
               .catch(() => undefined)
-              .then((model) => send(makeResult(msg.id ?? null, { sessions: rows, model })))
+              .then((model) => send(makeResult(msg.id ?? null, { sessions: listed, model })))
             break
           }
           case Methods.modelList: {
@@ -361,7 +503,7 @@ export async function startAgentService(
             void (async () => {
               if (!sessionId) throw new Error('sessionId is required')
               const origin = store.origin(sessionId)
-              if (origin && origin !== conn.clientId) {
+              if (origin && origin !== conn.origin) {
                 send(makeError(msg.id ?? null, ErrorCodes.forbidden, 'not your session'))
                 return
               }
@@ -380,7 +522,7 @@ export async function startAgentService(
               break
             }
             const origin = store.origin(sessionId)
-            if (origin && origin !== conn.clientId) {
+            if (origin && origin !== conn.origin) {
               send(makeError(msg.id ?? null, ErrorCodes.forbidden, 'not your session'))
               break
             }
@@ -503,7 +645,7 @@ export async function startAgentService(
 
     const drop = (): void => {
       conns.delete(conn)
-      if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId)
+      if (byClient.get(conn.key) === conn) byClient.delete(conn.key)
       // Settle everything this connection owed: in-flight tool calls reject,
       // pending confirmations are rejected/answered per timeout semantics.
       for (const transport of conn.transports) {
@@ -520,7 +662,7 @@ export async function startAgentService(
   // ── Heartbeat: terminate half-open connections ──
   const heartbeat = setInterval(() => {
     for (const conn of conns) {
-      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId); continue }
+      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); if (byClient.get(conn.key) === conn) byClient.delete(conn.key); continue }
       conn.alive = false
       conn.socket.ping()
     }
@@ -549,6 +691,32 @@ export async function startAgentService(
   })
 
   hostedPromptRouter.attach(sessions)
+
+  // Hosted transcripts persist at turn end (2026-11-02): the extension's
+  // sessions have no renderer to save for them, so without this every
+  // extension conversation stayed a message-less stub the 历史会话 menu could
+  // not list (session.list's EXISTS(messages)) and a desktop restart lost.
+  // Runs on the same event sink chain; its own failures are caught inside.
+  const unsubHostedPersistence = installHostedPersistence({
+    // An arrow, not the method reference `sessions.onEvent`: detached, its
+    // `this` is gone and the real manager's eventSinks read throws.
+    onEvent: (sink) => sessions.onEvent(sink),
+    snapshot: (id) => sessions.snapshot(id),
+    origin: store.origin,
+    title: store.title,
+    // The engine's summary cache rides the turn-end save (review_20261103
+    // 中2): the upsert writes history_summary unconditionally, so a save
+    // without it NULLed the column every turn and compacted sessions paid a
+    // fresh compaction LLM call after every restart.
+    historySummary: async (id) => {
+      try {
+        return ((await sessions.engineCall(id, 'getHistorySummary')) as { text: string; firstKeptId?: string } | null) ?? null
+      } catch {
+        return null // session gone / engine closed — save summary-less
+      }
+    },
+    save: store.persist,
+  })
 
   // ── Listen (loopback only) with a deterministic EADDRINUSE scan: the
   // extension discovers us by probing the same range, so a random port from
@@ -609,10 +777,14 @@ export async function startAgentService(
     clients: () =>
       [...conns.values()]
         .filter((conn) => conn.clientId !== 'unknown')
-        .map((conn) => ({ clientId: conn.clientId, sessions: conn.sessions.size })),
+        // The ORIGIN, not the base id: two installs of the same extension
+        // binary are two clients and must be distinguishable in 已连接的客户端
+        // (legacy clients have origin === clientId, unchanged).
+        .map((conn) => ({ clientId: conn.origin, sessions: conn.sessions.size })),
     close: async () => {
       clearInterval(heartbeat)
       unsubEvents()
+      unsubHostedPersistence()
       hostedPromptRouter.detach()
       for (const conn of conns) conn.socket.terminate()
       wss.close()

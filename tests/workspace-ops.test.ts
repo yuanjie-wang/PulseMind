@@ -342,18 +342,24 @@ describe('wiring: WorkspaceTree entry surface', () => {
     expect(tree).toContain('<VerifyPanel workspaceDir={workspaceDir}')
   })
 
-  it('content search strip: toggle + mount + panel wiring', () => {
-    expect(tree).toContain("import { SearchPanel } from './SearchPanel'")
-    expect(tree).toContain('aria-label="全文搜索"')
-    expect(tree).toContain('<SearchPanel workspaceDir={workspaceDir}')
+  it('全文搜索入口从树工具条退场（2026-11-01 用户裁定：普通模式保持简洁）', () => {
+    // 按钮与树列底条 strip 一并退场（SearchPanel 的 strip 变体随之删除）——
+    // 该能力的唯一入口是沉浸左卡切换器（WorkspacePane 的 SearchPanel，
+    // secondary-window.test.ts 钉）。
+    expect(tree).not.toContain('aria-label="全文搜索"')
+    expect(tree).not.toContain('contentSearchOpen')
+    expect(tree).not.toContain("from './SearchPanel'")
   })
 
-  it('strips are mutually exclusive — search and diff both close the others', () => {
-    expect(tree).toMatch(/const showDiff = async[\s\S]{0,220}setContentSearchOpen\(false\)/)
-    expect(tree).toMatch(/const next = !contentSearchOpen[\s\S]{0,120}closeStrips\(\)/)
+  it('strips are mutually exclusive — diff and verify close each other', () => {
+    expect(tree).toMatch(/const showDiff = async[\s\S]{0,200}setVerifyOpen\(false\)/)
+    expect(tree).toMatch(/const closeStrips = [\s\S]{0,120}setDiffTarget\(null\)[\s\S]{0,160}setVerifyOpen\(false\)/)
   })
 
-  it('新建 dropdown and 重命名 row action are wired', () => {
+  it('新建 dropdown renders in the immersive form only; 重命名 row action is wired', () => {
+    // 2026-11-01 用户裁定：只有沉浸模式提供全量的编辑和操作能力，普通模式
+    // 保持简洁——新建按钮随 WorkspaceTree 的 immersive prop 门控。
+    expect(tree).toMatch(/\{immersive && \(\s*<Dropdown/)
     expect(tree).toContain("label: '新建文件'")
     expect(tree).toContain("label: '新建文件夹'")
     expect(tree).toContain('onRename={requestRename}')

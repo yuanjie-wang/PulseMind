@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { assertAllowedUrl } from '../shared/browser-client/protocol'
 import { safeExternalUrl } from './utils/external-url'
+import { windowIconName } from './app-icon'
 import { DATA_DIR } from './storage/index'
 import type { HookWindowHandle, HookWindowOptions } from '../shared/types/hooks'
 
@@ -31,7 +32,7 @@ const DEFAULT_HEIGHT = 768
  *  process.resourcesPath exists only under Electron — vitest runs this
  *  module bare. Same file the main/splash windows and the tray use. */
 function appIconPath(): string {
-  const name = process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'
+  const name = windowIconName()
   const prodBase = process.resourcesPath
   if (prodBase) {
     const prodPath = join(prodBase, 'resources', name)

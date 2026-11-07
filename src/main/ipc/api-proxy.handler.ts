@@ -536,8 +536,10 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
         url,
       })
       // Same opt-in as the hook below — only LLM calls (one-shots over the
-      // Anthropic wire, the connection probe) hook and dump. webfetch hits
-      // arbitrary public URLs with no credentials: no hook, no dump.
+      // Anthropic wire) hook and dump here. The connection probe fetches on
+      // its own in services/llm-probe.ts: it hooks there (probe- requestId),
+      // never dumps. webfetch hits arbitrary public URLs with no credentials:
+      // no hook, no dump.
       const isLlmCall = options.withProfileHeaders === true || options.profileId !== undefined
       const simpleRequestId = `simple-${randomUUID().slice(0, 8)}`
       // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).

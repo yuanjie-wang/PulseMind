@@ -192,6 +192,33 @@
           display: none !important;
         }
       }
+
+      /* 用户气泡悬停工具条 (2026-11-05): 复制 / 重发. Hidden by OPACITY only —
+         the row stays mounted at a fixed 22px, so revealing it never pushes the
+         transcript down (the mount-on-hover version jumped a row every time the
+         pointer crossed a bubble). :focus-within keeps the buttons reachable by
+         keyboard; (hover: none) shows them outright on touch, where there is no
+         hover to reveal anything. The hover scope is the whole message block
+         (.pm-user-msg), so the gap between bubble and row stays part of it. */
+      .pm-user-tools {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+      }
+      .pm-user-msg:hover .pm-user-tools,
+      .pm-user-msg:focus-within .pm-user-tools {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .pm-user-tools button:hover {
+        color: var(--pm-ink);
+      }
+      @media (hover: none) {
+        .pm-user-tools {
+          opacity: 1;
+          pointer-events: auto;
+        }
+      }
     </style>
   </head>
   <body>

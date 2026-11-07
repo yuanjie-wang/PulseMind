@@ -8,7 +8,8 @@
  *   1. 左栏 explorer 在场（目录树 + 地址栏），宽度 = clamp 后的持久值
  *   2. 对话列在场（转录正文 + composer），且它右边的宽度 ≥ chat 下限
  *   3. 工作台 pane 不在 DOM（hideWorkbench —— 否则它的绝对定位会盖住对话列）
- *   4. 头部 = 项目名牌 + 会话切换器，且没有工作台切换按钮
+ *   4. 头部两行：项目名小字行 + 状态灯/会话标题/▾ 行，文字轴对齐；动作簇仅
+ *      「新建会话」直钮（工作台切换无处可切）
  *   5. 启动挑的是项目里 updatedAt 最新的会话（快照按 id 内容区分，能验真）
  *   6. 当前会话已通过 secondaryWatch 报给主进程（单写者链的入口）
  *   7. 头部动作簇仍让开 OS 标题栏按钮条（Windows/Linux 138px）
@@ -41,11 +42,23 @@ const WINDOWS_CONTROLS = { side: 'right', inset: 138 }
 /** Conversation rows exactly as the std listConversations shape carries them
  *  (id/title/pinned/updatedAt/projectId). OUTSIDE_CONV is newer than both but
  *  belongs to another project — it must NOT be picked. */
-const CONVS = [
+const CONVS_BASE = [
   { id: OLD_CONV, title: '旧会话', pinned: false, updatedAt: '2026-10-30T09:00:01.000Z', projectId: PROJECT_ID },
   { id: NEW_CONV, title: '新会话', pinned: false, updatedAt: '2026-10-30T12:00:01.000Z', projectId: PROJECT_ID },
   { id: OUTSIDE_CONV, title: '别的项目的会话', pinned: false, updatedAt: '2026-10-30T13:00:01.000Z', projectId: 'proj_other' },
 ]
+
+/** 22 older fillers so the switcher pages for real (2026-11-01 分页裁定):
+ *  24 in-project rows — first page 10, one 显示更多 click 20, the next 24.
+ *  All older than both originals, so the boot/watch assertions stay untouched. */
+const EXTRA_CONVS = Array.from({ length: 22 }, (_, i) => ({
+  id: `conv_fill_${String(i).padStart(2, '0')}`,
+  title: `填充会话 ${i + 1}`,
+  pinned: false,
+  updatedAt: `2026-10-30T08:00:${String(59 - i).padStart(2, '0')}.000Z`,
+  projectId: PROJECT_ID,
+}))
+const CONVS = [...CONVS_BASE, ...EXTRA_CONVS]
 
 const HARNESS = `
 import { createRoot } from 'react-dom/client'
@@ -121,10 +134,25 @@ window.__projectProbe = () => {
     // ── workbench must be absent (hideWorkbench) ──
     hasWorkbenchPane: !!document.querySelector('[data-pm-pane-drag-handle]'),
     hasTaskSwitcher: !!document.querySelector('[data-welcome-switcher]'),
-    // ── header ──
+    // ── header (2026-11-01 用户裁定：两行) ──
     hasProjectSwitcher: !!document.querySelector('[data-pm-project-switcher]'),
     headerText: (document.querySelector('[data-pm-project-switcher]') || {}).innerText || '',
+    projectNameText: (document.querySelector('[data-pm-project-name]') || {}).innerText || '',
+    // 文字轴对齐：两行文字 span 的中心 X 之差（端槽对称后应 ≤ 1.5px）。
+    titleAxisDelta: (() => {
+      const cx = (sel) => { const el = document.querySelector(sel); if (!el) return null; const r = el.getBoundingClientRect(); return r.left + r.width / 2 }
+      const a = cx('[data-pm-project-name-text]'); const b = cx('[data-pm-switcher-title]')
+      return a == null || b == null ? null : Math.abs(a - b)
+    })(),
+    // 标题行状态灯（与切换器菜单同一张表）：state/动画名照菜单行的读法。
+    headerLight: (() => {
+      const el = document.querySelector('[data-pm-header-light]')
+      if (!el) return null
+      const dot = el.firstElementChild
+      return { state: el.getAttribute('data-pm-header-light'), anim: dot ? getComputedStyle(dot).animationName : null }
+    })(),
     headerActionButtons: document.querySelectorAll('[data-pm-header-actions] button').length,
+    headerNewTask: !!document.querySelector('[data-pm-header-actions] button[aria-label="新建会话"]'),
     headerActionsGap: actions ? Math.round(window.innerWidth - actions.right) : null,
     // ── single-writer entry ──
     watchCalls: window.__watchCalls || [],
@@ -137,7 +165,7 @@ window.__panelProbe = () => {
   const q = (sel) => document.querySelector(sel)
   const chatPanel = q('[data-pm-panel-chat]')
   return {
-    searchVariant: q('[data-ws-search-panel]')?.getAttribute('data-ws-search-variant') ?? null,
+    hasSearchPanel: !!q('[data-ws-search-panel]'),
     hasTreeNow: !!q('.pm-ws-tree'),
     hasSearchHit: !!q('[data-ws-search-hit]'),
     tabStripTabs: document.querySelectorAll('[data-ws-tabstrip-row] [data-tab-path]').length,
@@ -187,9 +215,14 @@ const PAGE_HTML = `<!doctype html><html><head><style>
     // Each conversation's snapshot names its own id in the body, so the probe
     // can tell WHICH conversation booted rather than merely that one did.
     const snapshotFor = (id) => ({
+      // Message ids embed the conversation id — production ids are built as
+      // msg_<convId>_<ts>_<n>, so they NEVER collide across conversations.
+      // The fixture must respect that: buildSegments' prefix-reuse matches
+      // segments by (type, msg id), and shared ids would make a conversation
+      // switch render the previous conversation's cached segment objects.
       messages: [
-        { id: 'm0', role: 'user', contentBlocks: [{ type: 'text', text: '探针用户消息' }], createdAt: '2026-10-30T12:00:00.000Z' },
-        { id: 'm1', role: 'assistant', contentBlocks: [{ type: 'text', text: '正文来自 ' + id }], createdAt: '2026-10-30T12:00:01.000Z' },
+        { id: 'm0_' + id, role: 'user', contentBlocks: [{ type: 'text', text: '探针用户消息' }], createdAt: '2026-10-30T12:00:00.000Z' },
+        { id: 'm1_' + id, role: 'assistant', contentBlocks: [{ type: 'text', text: '正文来自 ' + id }], createdAt: '2026-10-30T12:00:01.000Z' },
       ],
       status: { status: 'completed' }, streamingBlocks: [], plan: null, fileChanges: [],
     })
@@ -209,6 +242,10 @@ const PAGE_HTML = `<!doctype html><html><head><style>
       agentSessionCreate: (opts) => { lastSession = (opts && opts.conversationId) || null; return Promise.resolve({ sessionId: lastSession || '${NEW_CONV}', agentId: 'default', workspaceDir: '${WS_DIR}' }) },
       agentSessionSnapshot: (id) => Promise.resolve(snapshotFor(id)),
       secondaryWatch: (sessionId) => { window.__watchCalls.push(sessionId); return Promise.resolve() },
+      // The draft's materialization must bind the project (2026-11-01 用户报
+      // 「沉浸模式新建的会话归到了普通对话」) — record every write for the
+      // draft-send section below.
+      setConversationProject: (id, pid) => { (window.__projectBindings = window.__projectBindings || []).push([id, pid]); return Promise.resolve() },
       hydrateConversation: (id) => Promise.resolve({ messages: snapshotFor(id).messages, title: '探针会话', historySummary: '', historySummaryFrontier: '' }),
       // The explorer's tree needs a directory listing to render rows at all.
       listDir: () => Promise.resolve({ entries: [
@@ -225,6 +262,9 @@ const PAGE_HTML = `<!doctype html><html><head><style>
       browserPaneAction: () => Promise.resolve(),
       browserHistoryQuery: () => Promise.resolve([]),
       searchWorkspace: () => Promise.resolve({ ok: true, lines: ['${WS_DIR}/README.md:1:探针文件内容'], truncated: false }),
+      // The switcher's status lights fold from broadcast session events — the
+      // harness captures the renderer's subscription so sections can emit.
+      onAgentSessionEvent: (cb) => { (window.__sessionCbs = window.__sessionCbs || []).push(cb); return () => {} },
     }, {
       get: (target, key) => key in target
         ? target[key]
@@ -233,6 +273,8 @@ const PAGE_HTML = `<!doctype html><html><head><style>
         : /Preferences$/.test(key) ? () => Promise.resolve([])
         : () => Promise.resolve(undefined)
     })
+    // Fan one status event out to every live renderer subscription.
+    window.__emitSession = (evt) => { for (const cb of window.__sessionCbs || []) { try { cb(evt) } catch { /* torn subscriber */ } } }
   </script></head><body style="margin:0"><div id="root"></div></body></html>`
 
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
@@ -289,12 +331,12 @@ check('左右卡面板切换器在场（2026-10-31 三面板裁定）', state.ha
 // 纯 Chromium 探针驱动不了原生 WebContentsView——浏览器面板验的是 chrome
 // DOM + pane 状态推送；原生 view 落位（insets 像素级对齐）只有 Electron 实跑可见。
 await page.locator('[data-pm-left-panel-switcher] [data-panel-id="search"]').click()
-await page.waitForSelector('[data-ws-search-variant="panel"]')
+await page.waitForSelector('[data-ws-search-panel]')
 const searchState = await page.evaluate(() => window.__panelProbe())
 check('左卡切到全文检索：整卡面板在场、目录树退场',
-  searchState.searchVariant === 'panel' && !searchState.hasTreeNow,
-  `variant=${searchState.searchVariant} tree=${searchState.hasTreeNow}`)
-await page.fill('[data-ws-search-variant="panel"] input[aria-label="搜索内容"]', '探针')
+  searchState.hasSearchPanel && !searchState.hasTreeNow,
+  `panel=${searchState.hasSearchPanel} tree=${searchState.hasTreeNow}`)
+await page.fill('[data-ws-search-panel] input[aria-label="搜索内容"]', '探针')
 await page.waitForSelector('[data-ws-search-hit]')
 check('全文检索命中行渲染（stub rg 返回 README.md:1）', true)
 await page.locator('[data-ws-search-hit]').first().click()
@@ -358,9 +400,18 @@ check('工作台 pane 不在 DOM（hideWorkbench：否则会盖住对话列）',
 check('欢迎表单的任务切换器不在（项目已钉住，不给逃出项目的口子）', !state.hasTaskSwitcher)
 
 // ── the header ──
-check('头部 = 项目名牌 + 会话切换器', state.hasProjectSwitcher && state.headerText.includes(PROJECT_NAME),
-  `switcher=${state.hasProjectSwitcher} text=${JSON.stringify(state.headerText)}`)
-check('头部没有工作台切换按钮（无处可切）', state.headerActionButtons === 0, `n=${state.headerActionButtons}`)
+// 两行形状（2026-11-01 用户裁定）：第一行 = 小字项目名（data-pm-project-name，
+// 纯身份、不触发切换器），第二行 = 状态灯 + 会话标题 + ▾（data-pm-project-
+// switcher，切换器触发区）。
+check('头部两行 = 项目名行（小字）+ 会话标题行（灯 + 标题 + ▾）',
+  state.hasProjectSwitcher && state.projectNameText.includes(PROJECT_NAME) && state.headerText.includes('新会话'),
+  `switcher=${state.hasProjectSwitcher} project=${JSON.stringify(state.projectNameText)} conv=${JSON.stringify(state.headerText)}`)
+check('上下两行文字轴对齐（|ΔcenterX| ≤ 1.5px，端槽对称配重）',
+  state.titleAxisDelta != null && state.titleAxisDelta <= 1.5,
+  `delta=${state.titleAxisDelta}`)
+check('头部动作 = 仅「新建会话」直钮（工作台切换无处可切）',
+  state.headerActionButtons === 1 && state.headerNewTask,
+  `n=${state.headerActionButtons} new=${state.headerNewTask}`)
 check('macOS：动作簇右边距 = 常规 24px', state.headerActionsGap === 24, `gap=${state.headerActionsGap}`)
 
 // ── boot picked the project's LATEST conversation ──
@@ -378,6 +429,89 @@ check('输入区 composer 卡 ≤ 640（沉浸窗口的宽度帽）', senderWidt
 // 发送按钮的项目配色：accent 类在场（没加载项目 store 时恒是中性 .pm-send）。
 check('发送按钮带项目 accent（.pm-accent-send 在场）', !!(await page.locator('.pm-accent-send').count()))
 
+// ── 头部会话切换器：状态灯 + 分页（2026-11-01 用户裁定）──
+// 状态灯读本窗口的 convLights（statusToLight）：向被挑中的会话发一条
+// streaming，其菜单行带 running 灯（共享 ConversationLightDot，动画名
+// conv-dot-blink——与侧栏同一张表）。分页：默认 10 行，「显示更多」每次
+// +10、原地展开且不关下拉（受控 open 吞掉 menu 来源的那一次关闭）；换
+// 会话照旧关闭。
+await page.evaluate((id) => window.__emitSession({ sessionId: id, data: { type: 'status', status: 'streaming' } }), NEW_CONV)
+await page.waitForTimeout(150)
+// 标题行状态灯（2026-11-01 用户裁定「附加 icon」）：与切换器菜单行同一张表。
+const litState = await page.evaluate(() => window.__projectProbe())
+check('标题行状态灯亮 running（conv-dot-blink）',
+  litState.headerLight?.state === 'running' && litState.headerLight?.anim === 'conv-dot-blink',
+  JSON.stringify(litState.headerLight))
+check('灯亮后文字轴仍对齐（槽位恒占位，亮灭都不挤文字）',
+  litState.titleAxisDelta != null && litState.titleAxisDelta <= 1.5,
+  `delta=${litState.titleAxisDelta}`)
+await page.locator('[data-pm-project-switcher]').click()
+await page.waitForSelector('.pm-switcher-dropdown .ant-dropdown-menu')
+const switcherPage1 = await page.evaluate((newConv) => {
+  const menu = document.querySelector('.pm-switcher-dropdown .ant-dropdown-menu')
+  const more = menu.querySelector('[data-menu-id$="__more__"]')
+  const gutter = menu.querySelector(`[data-menu-id$="${newConv}"] [data-pm-switcher-light]`)
+  const dot = gutter ? gutter.firstElementChild : null
+  return {
+    // rc-menu prefixes keys: data-menu-id="rc-menu-uuid-<key>" — match the
+    // conversation ids by substring, the synthetic keys by suffix.
+    rows: menu.querySelectorAll('[data-menu-id*="conv_"]').length,
+    hasMore: !!more,
+    moreLabel: more ? more.textContent : '',
+    light: gutter ? { state: gutter.getAttribute('data-pm-switcher-light'), anim: dot ? getComputedStyle(dot).animationName : null } : null,
+  }
+}, NEW_CONV)
+check('切换器默认 10 行 + 显示更多（还有 14 条）',
+  switcherPage1.rows === 10 && switcherPage1.hasMore && switcherPage1.moreLabel.includes('14'),
+  `rows=${switcherPage1.rows} more=${JSON.stringify(switcherPage1.moreLabel)}`)
+check('被挑中的会话 streaming → 菜单行带 running 灯（conv-dot-blink 动画）',
+  switcherPage1.light?.state === 'running' && switcherPage1.light?.anim === 'conv-dot-blink',
+  JSON.stringify(switcherPage1.light))
+
+await page.locator('[data-menu-id$="__more__"]').click()
+await page.waitForTimeout(400) // 若吞闭失败，此刻关闭动画已落 display:none
+const menuStillOpen = await page.locator('.pm-switcher-dropdown .ant-dropdown-menu').isVisible()
+const switcherPage2 = await page.evaluate(() => {
+  const menu = document.querySelector('.pm-switcher-dropdown .ant-dropdown-menu')
+  return {
+    rows: menu.querySelectorAll('[data-menu-id*="conv_"]').length,
+    moreLabel: menu.querySelector('[data-menu-id$="__more__"]')?.textContent || '',
+  }
+})
+check('显示更多点击后下拉不关闭 + 第二页 20 行（还有 4 条）',
+  menuStillOpen && switcherPage2.rows === 20 && switcherPage2.moreLabel.includes('4'),
+  `open=${menuStillOpen} rows=${switcherPage2.rows} more=${JSON.stringify(switcherPage2.moreLabel)}`)
+
+await page.locator('[data-menu-id$="__more__"]').click()
+await page.waitForTimeout(200)
+const switcherPage3 = await page.evaluate(() => {
+  const menu = document.querySelector('.pm-switcher-dropdown .ant-dropdown-menu')
+  return {
+    rows: menu.querySelectorAll('[data-menu-id*="conv_"]').length,
+    hasMore: !!menu.querySelector('[data-menu-id$="__more__"]'),
+  }
+})
+check('再点一次：24 行全出、显示更多退场（依次类推到尽头）',
+  switcherPage3.rows === 24 && !switcherPage3.hasMore,
+  `rows=${switcherPage3.rows} more=${switcherPage3.hasMore}`)
+
+// A real switch closes the dropdown (the swallow names __more__ only) and
+// re-attaches onto the target conversation — the transcript proves the pick.
+await page.locator(`[data-menu-id$="${OLD_CONV}"]`).click()
+// The re-attach is content-proven: wait for the TARGET transcript body rather
+// than a blind timeout (the attach is async: snapshot → seed → activate).
+await page.waitForFunction((old) => (document.body.innerText || '').includes('正文来自 ' + old), OLD_CONV, { timeout: 5000 })
+// 等关闭动画真正落 display:none，而不是和 leave motion 赛跑（上一拍 isVisible 仍真）。
+let menuClosedAfterSwitch = true
+try {
+  await page.locator('.pm-switcher-dropdown .ant-dropdown-menu').waitFor({ state: 'hidden', timeout: 3000 })
+} catch { menuClosedAfterSwitch = false }
+const afterSwitch = await page.evaluate(() => window.__projectProbe())
+check('点会话行：下拉关闭 + 切换生效（watch 末次 = 目标会话，转录验真）',
+  menuClosedAfterSwitch && afterSwitch.pickedOld && !afterSwitch.pickedNew &&
+    afterSwitch.watchCalls[afterSwitch.watchCalls.length - 1] === OLD_CONV,
+  `closed=${menuClosedAfterSwitch} pickedOld=${afterSwitch.pickedOld} watch=${JSON.stringify(afterSwitch.watchCalls)}`)
+
 // ── Windows/Linux: the action cluster still clears the caption-button strip ──
 const winPage = await loadAndBoot(WINDOWS_CONTROLS)
 const winState = await winPage.evaluate(() => window.__projectProbe())
@@ -385,6 +519,11 @@ console.log('  win32 state:', JSON.stringify(winState))
 await winPage.screenshot({ path: join(SHOTS, 'project-window-win32.png') })
 check('Windows/Linux：动作簇让开标题栏按钮条（≥138px）',
   winState.headerActionsGap !== null && winState.headerActionsGap >= 138,
+  `gap=${winState.headerActionsGap}`)
+// 2026-11-04 用户裁定两次收窄：24 → 9（「间距过大，减少 15px 左右」），再
+// 9 → 0（「干脆把那 9px 也去掉」）——Win/Linux 动作簇贴住 OS 条（inset 138）。
+check('Windows/Linux：动作簇与窗口按钮间距 = 0（期望 138）',
+  winState.headerActionsGap === 138,
   `gap=${winState.headerActionsGap}`)
 
 // ── 空项目 → 草稿面（2026-10-30 用户裁定「新建会话不需要 welcome 页面」）──
@@ -436,6 +575,26 @@ check('…composer wrapper 也不再越列（border-box 生效）',
 check('草稿无会话 id：watch 末次为 null',
   emptyState.watchCalls[emptyState.watchCalls.length - 1] === null,
   JSON.stringify(emptyState.watchCalls))
+
+// ── 沉浸草稿的首条消息必须落进项目（2026-11-01 用户报「沉浸模式新建的会话
+// 归到了普通对话」）──驱动一次真实发送：草稿态由 startProjectDraft 钉住
+// newTaskStore + pendingProjectIdRef，handleRequest 物化行时应带着项目调
+// setConversationProject（stub-insert 语义，DB 层幂等），且单写者链随即认领。
+await emptyPage.fill('textarea', '探针首条消息')
+await emptyPage.keyboard.press('Enter')
+await emptyPage.waitForFunction(() => (window.__projectBindings || []).length > 0, undefined, { timeout: 5000 })
+  .catch(() => {})
+const bindings = await emptyPage.evaluate(() => window.__projectBindings || [])
+const boundConv = bindings[0]?.[0] || ''
+check('沉浸草稿首条消息 → setConversationProject(会话, 项目) 被调（归属随行物化）',
+  bindings.length === 1 && boundConv.startsWith('conv_') && bindings[0][1] === PROJECT_ID,
+  JSON.stringify(bindings))
+await emptyPage.waitForFunction(() => (window.__watchCalls || []).length >= 2, undefined, { timeout: 5000 })
+  .catch(() => {})
+const draftWatch = await emptyPage.evaluate(() => window.__watchCalls || [])
+check('物化后单写者链认领该会话（watch 末次 = 新会话 id）',
+  draftWatch[draftWatch.length - 1] === boundConv && boundConv !== '',
+  JSON.stringify(draftWatch))
 
 await browser.close()
 

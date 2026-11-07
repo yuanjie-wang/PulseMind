@@ -8,7 +8,7 @@ import {
   BarChartOutlined,
   PlusOutlined,
   SortAscendingOutlined,
-  ExportOutlined
+  ExportOutlined,
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
 import ProjectSidebarList from './ProjectSidebarList'
@@ -17,17 +17,19 @@ import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { ViewHost } from './ViewHost'
 import { ProjectModal } from '../project/ProjectModal'
 import CommandPalette from './CommandPalette'
-import { TITLE_BAR_HEIGHT, titleBarRightInset, captionButtonVars } from '../../../../shared/window-chrome'
+import { TITLE_BAR_HEIGHT, titleBarActionsRight, captionButtonVars } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import type { AppView, AppViewKind } from '../../navigation/types'
 import { runSettingsLeaveGuard } from '../settings/settings-leave-guard'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
-import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { useWorkbenchStore, conversationPrimaryOf, useConversationPrimary } from '../../stores/workbenchStore'
+import { PRIMARY_CYCLE_ICON, PRIMARY_CYCLE_TITLE, cyclePrimaryMode } from './primary-cycle'
 import { useSidebarStore } from '../../stores/sidebarStore'
-import { isPoppedOut } from '../../stores/popoutWatchStore'
+import { isPoppedOut, routeToProjectWindow } from '../../stores/popoutWatchStore'
 import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
+import { openPreviewSearchPanel, previewCmHasFocus } from '../preview/preview-cm-seam'
 import { clampSidebarWidth, COLUMN_DRAG_HANDLE_WIDTH } from '../../../../shared/ui/layout-widths'
 import { useColumnDrag } from '../../hooks/useColumnDrag'
 import { buildCommandItems } from '../../navigation/command-palette-items'
@@ -84,7 +86,17 @@ function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?:
 // light — the toggle advertises the state it switches into.
 function SunIcon({ size = 16 }: { size?: number }): React.ReactElement {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
     </svg>
@@ -93,7 +105,17 @@ function SunIcon({ size = 16 }: { size?: number }): React.ReactElement {
 
 function MoonIcon({ size = 16 }: { size?: number }): React.ReactElement {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   )
@@ -111,9 +133,11 @@ const windowControls = window.electronAPI.getWindowControls?.() ?? { side: 'righ
 const CONTROLS_ON_LEFT = windowControls.side === 'left'
 // Where the OS draws the window controls (macOS left, Windows/Linux right) and
 // how far the app's own corner clusters must stay clear of them. The right
-// value is what keeps the chat header's action buttons (side-pane toggle +
-// popout) out from under the Windows/Linux caption buttons.
-const TITLE_BAR_RIGHT_INSET = titleBarRightInset(windowControls)
+// value keeps the chat header's action buttons (view-mode cycle + popout +
+// side-pane toggle) out from under the Windows/Linux caption buttons — it
+// carries its own gutter too, since Windows/Linux uses a tighter one than the
+// header's regular 24px (the caption buttons bring their own whitespace).
+const TITLE_BAR_ACTIONS_RIGHT = titleBarActionsRight(windowControls)
 /** Windows/Linux: the top-right actions wear the caption-button look (they sit
  *  right beside the native min/max/close). macOS keeps the app's rounded icon
  *  button — its traffic lights are on the other side, so there is no neighbour
@@ -138,6 +162,9 @@ const SIDEBAR_BACKGROUND = 'var(--pm-sidebar)'
 // With the sidebar collapsed the header starts at the window's left edge, where the
 // window controls sit, so its content has to clear them.
 const headerLeftInset = (collapsed: boolean): number => (collapsed && CONTROLS_ON_LEFT ? windowControls.inset : 0)
+
+// 会话头模式循环钮的表与换挡动作在 primary-cycle.ts——会话弹出窗口
+// （PopoutApp）用同一份，不在这里重复定义。
 
 interface AppLayoutProps {
   children?: React.ReactNode
@@ -177,6 +204,11 @@ interface AppLayoutProps {
   /** Per-conversation sidebar light, keyed by conversation id (see
    *  useConversationEngine's statusToLight). Absent = unlit. */
   convLights?: Record<string, ConversationLight>
+  /** 会话头模式循环钮的显隐（2026-11-04 裁定：仅会话界面出现，非 welcome）
+   *  ——App 以「welcome 正在显示」的否定式计算（chat 优先 + 零消息 + 非流式
+   *  时隐藏；浏览器任务容器零消息但 browser 优先，不是 welcome，照常显示）。
+   *  absent/falsy = 隐藏循环钮。 */
+  activeConvShowCycle?: boolean
 }
 
 function AppLayout({
@@ -204,7 +236,8 @@ function AppLayout({
   memoryManager,
   knowledgeManager,
   convLights,
-  children
+  activeConvShowCycle,
+  children,
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
   // ── Sidebar drag handle (2026-10-26) ──
@@ -233,14 +266,20 @@ function AppLayout({
   // 守卫拒绝（用户选择留下）即取消整个导航；守卫槽为空（不在设置页）时零
   // 开销直通。navigateKind 同源（settings/usage 入口共用一张闸），但离开
   // settings 的两个 kind 入口才需要判——其余 kind 本就没有登记守卫，直通。
-  const navigate = useCallback(async (next: AppView): Promise<void> => {
-    if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
-    rawNavigate(next)
-  }, [view.kind, rawNavigate])
-  const guardedNavigateKind = useCallback(async (kind: AppViewKind): Promise<void> => {
-    if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
-    navigateKind(kind)
-  }, [view.kind, navigateKind])
+  const navigate = useCallback(
+    async (next: AppView): Promise<void> => {
+      if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
+      rawNavigate(next)
+    },
+    [view.kind, rawNavigate],
+  )
+  const guardedNavigateKind = useCallback(
+    async (kind: AppViewKind): Promise<void> => {
+      if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
+      navigateKind(kind)
+    },
+    [view.kind, navigateKind],
+  )
 
   const { token } = theme.useToken()
   const { t } = useTranslation()
@@ -287,13 +326,20 @@ function AppLayout({
   // The open conversation, resolved once: `''` while nothing is open, which is
   // not a conversation — see conversationKeyOf.
   const activeConvKey = conversationKeyOf(activeConversationKey)
-  const activeConvTitle = activeConvKey
-    ? conversations.find((c) => c.key === activeConvKey)?.label
-    : undefined
+  const activeConvTitle = activeConvKey ? conversations.find((c) => c.key === activeConvKey)?.label : undefined
   // The right-side workbench pane's open state for THIS conversation — the
   // title bar's toggle mirrors it; the draft key covers a not-yet-created row.
   const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
   const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
+  // 本会话生效的主视图模式——循环钮的图标/文案随它换挡（读法走 hook，
+  // 勿裸订阅 primaryByConversation）。
+  const primary = useConversationPrimary(wbKey)
+  // 会话头模式循环钮（2026-11-04 裁定，修订二期「无全局切换器」）：单按钮
+  // chat → files → browser → chat，按会话生效；图标/文案随当前模式换挡。
+  // 换挡动作（含 files/browser 时补开 dock）在 primary-cycle.ts——会话弹出
+  // 窗口用同一份。
+  const cyclePrimary = (): void => cyclePrimaryMode(wbKey, primary)
+  const CycleIcon = PRIMARY_CYCLE_ICON[primary]
   // The 对话 tab covers the loose — project-less — conversations; project-bound
   // ones live under the 项目 tab, so the two tabs never duplicate each other.
   const looseConversations = conversations.filter((c) => !c.projectId)
@@ -314,11 +360,33 @@ function AppLayout({
   // about: the composer in chat mode, the whole project picker in project mode
   // (user 2026-09-23: 「左右摇晃」). The no-guide entries below cancel instead.
   const handleNewTask = (): void => {
+    // 「与当前模式相同」（十四期修正）：当前激活会话是浏览器任务时，本体
+    // 点击进浏览器形态 welcome（URL 表单）；其余沿用 listTab 语义。
+    const currentPrimary = conversationPrimaryOf(activeConvKey)
+    if (currentPrimary === 'browser') {
+      useNewTaskStore.getState().setMode('browser')
+      useNewTaskStore.getState().setProjectId(null)
+      useNewTaskStore.getState().requestShake('browserUrl')
+      onCreateNew()
+      return
+    }
     const mode: NewTaskMode = listTab === 'projects' ? 'project' : 'chat'
     useNewTaskStore.getState().setMode(mode)
     useNewTaskStore.getState().setProjectId(null)
     useNewTaskStore.getState().requestShake(mode === 'project' ? 'projectPicker' : 'composer')
     onCreateNew()
+  }
+
+  // 新建任务子菜单的档位分流（PLAN-layout-modes 十四期）：对话/项目/浏览器
+  // 三档各自进对应形态的 welcome——setMode 后 welcome 切换器自动高亮同档；
+  // 浏览器档的引导面是 URL 输入框（shake 'browserUrl'）。直接点按钮本体仍走
+  // handleNewTask（listTab 语义 = 「与当前模式相同」）。
+  const handleNewTaskWithMode = (mode: NewTaskMode): void => {
+    useNewTaskStore.getState().setMode(mode)
+    useNewTaskStore.getState().setProjectId(null)
+    useNewTaskStore.getState().requestShake(mode === 'project' ? 'projectPicker' : mode === 'browser' ? 'browserUrl' : 'composer')
+    void navigate({ kind: 'chat' })
+    if (canCreateNew) onCreateNew()
   }
 
   // 新增: chats tab → the same fresh form as SidebarNav's 新建任务 (its tooltip
@@ -389,6 +457,14 @@ function AppLayout({
           else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
           break
         case 'open-search':
+          // ⌘F fork (review_20261103 高4): the app-menu accelerator (mac) and
+          // the before-input fallback (win/linux) consume the chord before any
+          // renderer keymap runs, so a focused preview editor can never see
+          // searchKeymap's own ⌘F. When it holds focus, the chord means ITS
+          // search panel — the seam is zero-runtime-import, so this file still
+          // never pulls the lazy CM chunk. Everywhere else ⌘F stays the
+          // navigation search page.
+          if (previewCmHasFocus() && openPreviewSearchPanel()) break
           void navigate({ kind: 'search' })
           break
         case 'open-settings':
@@ -459,7 +535,10 @@ function AppLayout({
     ],
     run: {
       newTask: startPlainNewTask,
-      newProject: () => { setProjectEditTarget(null); setProjectModalOpen(true) },
+      newProject: () => {
+        setProjectEditTarget(null)
+        setProjectModalOpen(true)
+      },
       toggleSidebar: () => setCollapsed((c) => !c),
       toggleWorkbench: () => {
         // Items rebuild every render, so this closes over the current pane
@@ -471,7 +550,10 @@ function AppLayout({
       openUsage: () => void guardedNavigateKind('usage'),
       openSettings: () => void guardedNavigateKind('settings'),
       openSettingsSection: (tab) => void navigate({ kind: 'settings', settingsTab: tab as 'environment' }),
-      openConversation: (key) => { void navigate({ kind: 'chat' }); onSelectConversation(key) },
+      openConversation: (key) => {
+        void navigate({ kind: 'chat' })
+        onSelectConversation(key)
+      },
       newTaskInProject: handleProjectNewTask,
     },
   })
@@ -513,13 +595,7 @@ function AppLayout({
     <Tooltip title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
       <Button
         type="text"
-        icon={
-          collapsed ? (
-            <MenuUnfoldOutlined style={{ fontSize: 18 }} />
-          ) : (
-            <MenuFoldOutlined style={{ fontSize: 18 }} />
-          )
-        }
+        icon={collapsed ? <MenuUnfoldOutlined style={{ fontSize: 18 }} /> : <MenuFoldOutlined style={{ fontSize: 18 }} />}
         onClick={() => setCollapsed(!collapsed)}
         aria-label={t('appLayout.toggleSidebar')}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -540,28 +616,34 @@ function AppLayout({
         style={{
           borderRight: `1px solid ${token.colorBorderSecondary}`,
           background: SIDEBAR_BACKGROUND,
-          transition: sidebarDrag.dragging ? 'none' : undefined
-        }}>
+          transition: sidebarDrag.dragging ? 'none' : undefined,
+        }}
+      >
         {/* Space for the macOS traffic lights; the sidebar title deliberately sits below
             them. Not rendered elsewhere, where the sidebar starts at the top. */}
-        {SIDEBAR_TOP_BAND_HEIGHT > 0 && (
-          <div style={{ height: SIDEBAR_TOP_BAND_HEIGHT, flexShrink: 0, WebkitAppRegion: 'drag' } as React.CSSProperties} />
-        )}
+        {SIDEBAR_TOP_BAND_HEIGHT > 0 && <div style={{ height: SIDEBAR_TOP_BAND_HEIGHT, flexShrink: 0, WebkitAppRegion: 'drag' } as React.CSSProperties} />}
         {/* Sidebar header; the title opts out of dragging. */}
-        <div style={{
-          padding: `${SIDEBAR_TITLE_PADDING_TOP}px 16px 8px`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          WebkitAppRegion: 'drag'
-        } as React.CSSProperties}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => void navigate({ kind: 'settings', settingsTab: 'about' })}>
+        <div
+          style={
+            {
+              padding: `${SIDEBAR_TITLE_PADDING_TOP}px 16px 8px`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              WebkitAppRegion: 'drag',
+            } as React.CSSProperties
+          }
+        >
+          <div
+            style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            onClick={() => void navigate({ kind: 'settings', settingsTab: 'about' })}
+          >
             <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: 'var(--pm-ink)' }}>{t('appLayout.title')}</span>
             {/* Version rides the Vite `define` global (package.json's version). */}
             <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: 'var(--pm-text-muted)', lineHeight: 1 }}>v{__APP_VERSION__}</span>
           </div>
         </div>
-        <SidebarNav canCreateNew={canCreateNew} onCreateNew={handleNewTask} />
+        <SidebarNav canCreateNew={canCreateNew} onCreateNew={handleNewTask} onCreateNewWithMode={handleNewTaskWithMode} />
         {/* Tab switcher is pinned; only the list below it scrolls. */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/* One row: the 对话/项目 pill on the left, its 管理/新增 actions on
@@ -590,9 +672,9 @@ function AppLayout({
                       { key: 'created', label: t('appLayout.projectSortCreated') },
                       { key: 'name', label: t('appLayout.projectSortName') },
                       { key: 'activity', label: t('appLayout.projectSortActivity') },
-                      { key: 'manual', label: t('appLayout.projectSortManual') }
+                      { key: 'manual', label: t('appLayout.projectSortManual') },
                     ],
-                    onClick: ({ key }) => changeProjectSort(key as ProjectSortMode)
+                    onClick: ({ key }) => changeProjectSort(key as ProjectSortMode),
                   }}
                 >
                   <Tooltip title={t('appLayout.projectSort')}>
@@ -630,8 +712,12 @@ function AppLayout({
                   onSelect={(key: string) => {
                     // A popped conversation lives in its own window — raise it
                     // rather than mirroring it here (ruling 2026-10-30).
-                    if (isPoppedOut(key)) { onFocusPoppedConversation?.(key); return }
-                    void navigate({ kind: 'chat' }); onSelectConversation(key)
+                    if (isPoppedOut(key)) {
+                      onFocusPoppedConversation?.(key)
+                      return
+                    }
+                    void navigate({ kind: 'chat' })
+                    onSelectConversation(key)
                   }}
                   onDelete={onDeleteConversation}
                   onRename={onRenameConversation}
@@ -651,8 +737,18 @@ function AppLayout({
                 onEditProject={setProjectEditTarget}
                 onEnterImmersive={(project) => onEnterProjectWindow?.(project.id, project.name)}
                 onOpenConversation={(key: string) => {
-                  if (isPoppedOut(key)) { onFocusPoppedConversation?.(key); return }
-                  void navigate({ kind: 'chat' }); onSelectConversation(key)
+                  if (isPoppedOut(key)) {
+                    onFocusPoppedConversation?.(key)
+                    return
+                  }
+                  // The project's immersive window, when open, owns every click
+                  // on its conversations: raise + switch there (fall back to the
+                  // in-window open when no window is running).
+                  void routeToProjectWindow(conversations, key).then((taken) => {
+                    if (taken) return
+                    void navigate({ kind: 'chat' })
+                    onSelectConversation(key)
+                  })
                 }}
                 onDelete={onDeleteConversation}
                 onRename={onRenameConversation}
@@ -690,8 +786,8 @@ function AppLayout({
               className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
               aria-label={t('menu.settings')}
               icon={<SettingOutlined style={{ fontSize: 16 }} />}
-            onClick={() => navigateKind('settings')}
-          />
+              onClick={() => navigateKind('settings')}
+            />
           </Tooltip>
         </div>
         {/* Drag handle on the Sider's right edge (width drag, 2026-10-26).
@@ -706,37 +802,45 @@ function AppLayout({
             onPointerMove={sidebarDrag.onPointerMove}
             onPointerUp={sidebarDrag.onPointerUp}
             onPointerCancel={sidebarDrag.onPointerUp}
-            style={{
-              position: 'absolute',
-              right: 0,
-              top: 0,
-              bottom: 0,
-              width: COLUMN_DRAG_HANDLE_WIDTH,
-              cursor: 'col-resize',
-              zIndex: 2,
-              background: 'transparent',
-              WebkitAppRegion: 'no-drag'
-            } as React.CSSProperties}
+            style={
+              {
+                position: 'absolute',
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: COLUMN_DRAG_HANDLE_WIDTH,
+                cursor: 'col-resize',
+                zIndex: 2,
+                background: 'transparent',
+                WebkitAppRegion: 'no-drag',
+              } as React.CSSProperties
+            }
           />
         )}
       </Sider>
 
       <Layout style={{ minHeight: 0, overflow: 'hidden' }}>
         <Header
-          style={{
-            background: token.colorBgContainer,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '0 24px',
-            height: TITLE_BAR_HEIGHT,
-            position: 'relative',
-            zIndex: 1,
-            WebkitAppRegion: 'drag'
-          } as React.CSSProperties}
+          style={
+            {
+              background: token.colorBgContainer,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '0 24px',
+              height: TITLE_BAR_HEIGHT,
+              position: 'relative',
+              zIndex: 1,
+              WebkitAppRegion: 'drag',
+            } as React.CSSProperties
+          }
         >
           {/* Sidebar toggle at the left edge. */}
-          <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 12, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <div
+            style={
+              { position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 12, WebkitAppRegion: 'no-drag' } as React.CSSProperties
+            }
+          >
             {sidebarToggle}
           </div>
 
@@ -758,53 +862,59 @@ function AppLayout({
                   minWidth: 0,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
+                {view.kind === 'chat' ? activeConvTitle || '' : t(VIEW_TITLE_KEY[view.kind])}
               </span>
             </div>
           )}
           {/* The chat view's own actions live at the TOP-RIGHT corner, clear of
-              the OS caption buttons on Windows/Linux (TITLE_BAR_RIGHT_INSET) —
+              the OS caption buttons on Windows/Linux (TITLE_BAR_ACTIONS_RIGHT
+              carries their inset plus the tighter gutter used next to them) —
               the OS draws those over the web content, so a button in their
               strip would be both hidden and unclickable. Order left→right:
-              side-pane toggle, then 弹出为独立窗口. */}
+              视图模式循环钮, 弹出为独立窗口, then side-pane toggle
+              （2026-11-04 裁定：开关与弹出换位）。
+              视图模式（PLAN-layout-modes 二期裁定「模式跟任务走」，2026-11-04
+              修订）：welcome 任务表单选「浏览器」的会话即浏览器优先，新建
+              对话天然回整页 welcome；已有会话的换挡入口是下面的循环钮——
+              仅会话界面（welcome 未显示时）出现，按会话生效。 */}
           {view.kind === 'chat' && activeConvKey && (
             <div
               data-pm-header-actions
-              style={{
-                position: 'absolute',
-                right: 24 + TITLE_BAR_RIGHT_INSET,
-                top: 0,
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: CAPTION_STYLE_ACTIONS ? 0 : 8,
-                WebkitAppRegion: 'no-drag',
-                ...(CAPTION_STYLE_ACTIONS ? captionButtonVars(themeMode) : {})
-              } as React.CSSProperties}
+              style={
+                {
+                  position: 'absolute',
+                  right: TITLE_BAR_ACTIONS_RIGHT,
+                  top: 0,
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: CAPTION_STYLE_ACTIONS ? 0 : 8,
+                  WebkitAppRegion: 'no-drag',
+                  ...(CAPTION_STYLE_ACTIONS ? captionButtonVars(themeMode) : {}),
+                } as React.CSSProperties
+              }
             >
-              {/* The workbench pane only renders for an open conversation in the
-                  chat view — hide the toggle when there is nothing to show.
-                  Manual opens land on 工作区 (not the last-active tab); the
-                  auto-open funnel (plan/browser/files) keeps its own tab. */}
-              <Tooltip
-                title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
-              >
-                <Button
-                  type="text"
-                  className={`${CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}${workbenchOpen ? ' on' : ''}`}
-                  aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
-                  icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
-                  onClick={() =>
-                    workbenchOpen
-                      ? useWorkbenchStore.getState().setOpen(wbKey, false)
-                      : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
-                  }
-                />
-              </Tooltip>
-              {/* Pop the active conversation out into its own window. */}
+              {/* 主视图模式循环（chat → files → browser → chat）：图标展示
+                  当前模式（用户裁定：图标即状态，不宣传下一档）。
+                  welcome（chat 优先 + 零消息）不出现——那里已有任务表单
+                  切换器，两处并存只会互相抢戏。 */}
+              {activeConvShowCycle && (
+                <Tooltip title={t(PRIMARY_CYCLE_TITLE[primary])}>
+                  <Button
+                    type="text"
+                    data-pm-primary-cycle
+                    className={CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}
+                    aria-label={t(PRIMARY_CYCLE_TITLE[primary])}
+                    icon={<CycleIcon style={{ fontSize: 14 }} />}
+                    onClick={cyclePrimary}
+                  />
+                </Tooltip>
+              )}
+              {/* Pop the active conversation out into its own window.
+                  （2026-11-04 裁定：弹出与侧边窗口开关换位——弹窗在前。） */}
               {onPopoutConversation && (
                 <Tooltip title={t('conversationSidebar.popOut')}>
                   <Button
@@ -816,26 +926,42 @@ function AppLayout({
                   />
                 </Tooltip>
               )}
+              {/* The workbench pane only renders for an open conversation in the
+                  chat view — hide the toggle when there is nothing to show.
+                  Manual opens land on 工作区 (not the last-active tab); the
+                  auto-open funnel (plan/browser/files) keeps its own tab. */}
+              <Tooltip title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}>
+                <Button
+                  type="text"
+                  className={`${CAPTION_STYLE_ACTIONS ? 'pm-caption-btn' : 'header-pane-btn'}${workbenchOpen ? ' on' : ''}`}
+                  aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
+                  icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
+                  onClick={() =>
+                    workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                  }
+                />
+              </Tooltip>
             </div>
           )}
         </Header>
         <Content
           style={{
             position: 'relative',
-            overflow: 'hidden'
+            overflow: 'hidden',
           }}
         >
           {/* Chat stays mounted; only the active view is visible. */}
           <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%',
-              display: view.kind === 'chat' ? 'flex' : 'none',
-              flexDirection: 'column',
-              overflow: 'hidden', minWidth: 0
-            }}>
-              <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
-                {children}
-              </div>
+            <div
+              style={{
+                height: '100%',
+                display: view.kind === 'chat' ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                minWidth: 0,
+              }}
+            >
+              <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>{children}</div>
             </div>
             {view.kind !== 'chat' && (
               <ViewHost

@@ -6,7 +6,7 @@ import { extractSnippet } from '../../shared/search/snippet'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { buildSearchNeedles } from '../../shared/memory-pages'
 import { escapeLikePattern } from '../../shared/memory/like-pattern'
-import { getDb } from './database'
+import { getDb, isDbHealthy } from './database'
 import { perfTime } from '../perf/perf-log'
 
 /** Guard for the setters below.
@@ -55,16 +55,94 @@ export function deriveConvType(id: string): string {
  * persistence would carry no origin, which both leaks extension sessions into
  * the desktop chat list and hides them from the panel's own session list
  * (PLAN-browser-extension M1.4). */
-export function updateConversationOrigin(id: string, origin: string): void {
+export function updateConversationOrigin(id: string, origin: string, tabKey?: string): void {
   if (!isRealConversationId(id)) return
   const now = new Date().toISOString()
   getDb()
     .prepare(
-      `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, origin)
-       VALUES (?, '', ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET origin = excluded.origin`
+      `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, origin, tab_key)
+       VALUES (?, '', ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         origin = excluded.origin,
+         tab_key = COALESCE(excluded.tab_key, tab_key)`
     )
-    .run(id, now, now, deriveConvType(id), deriveRectId(id), origin)
+    .run(id, now, now, deriveConvType(id), deriveRectId(id), origin, tabKey ?? null)
+}
+
+/** Hand every unscoped conversation of this origin to the calling tab.
+ *
+ * The 历史会话 list is scoped per Chrome tab (`tab_key`), but rows written
+ * before that column existed — and every row the desktop side stamped with an
+ * extension origin — carry none. Filtering them out would make a user's
+ * existing history vanish on upgrade; instead the FIRST tab that opens the
+ * panel adopts them, and isolation holds from then on. Idempotent: once a row
+ * has a key this UPDATE no longer matches it, so a second tab adopting
+ * concurrently takes only what the first left behind. */
+export function adoptUnscopedConversations(origin: string, tabKey: string): void {
+  getDb()
+    .prepare(
+      `UPDATE conversations SET tab_key = ?
+       WHERE origin = ? AND tab_key IS NULL
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)`
+    )
+    .run(tabKey, origin)
+}
+
+/** Release the dead scopes of this origin (review_20261104 中3).
+ *
+ * The extension's scope map lives in chrome.storage.session, which clears on
+ * browser exit: after a restart every stamped row carries a scope nothing
+ * mints anymore — invisible to its scoped list (`tab_key = ?` matches
+ * nothing), never adopted (`tab_key IS NULL` doesn't match), and hidden from
+ * the desktop by the hosted-origin exclusion, so the whole history strands in
+ * every UI while hosted-persistence keeps appending rows. The extension sends
+ * its LIVE scope set with `session.list`; rows outside the set drop their
+ * stamp here, and the adoption that runs next in the same call hands the
+ * batch to the first tab that opens — history survives the browser restart
+ * (same semantics as the desktop), while isolation within a browser session
+ * is untouched (live scopes are never released). */
+export function releaseDeadScopeConversations(origin: string, liveScopes: string[]): void {
+  // Nothing alive ⇒ nothing can be told dead from alive: skip rather than
+  // strip every stamp (a client bug must not mass-unscope the history).
+  if (liveScopes.length === 0) return
+  const placeholders = liveScopes.map(() => '?').join(',')
+  getDb()
+    .prepare(
+      `UPDATE conversations SET tab_key = NULL
+       WHERE origin = ? AND tab_key IS NOT NULL AND tab_key NOT IN (${placeholders})`
+    )
+    .run(origin, ...liveScopes)
+}
+
+/** Hand the legacy origin's rows to the install that now owns its own origin
+ *  (2026-11-05, Chrome + 360 sharing one extension binary).
+ *
+ *  Rows written before `instanceId` carry the bare base origin; once an
+ *  install lists with an instance id, those rows would otherwise live in a
+ *  namespace no connection ever queries again (the panel lists its own origin
+ *  only) — and the desktop's hosted exclusion hides them too, so the user's
+ *  whole pre-upgrade history vanishes. The claim moves them.
+ *
+ *  Conservative by construction: only rows with NO scope (the classic legacy
+ *  shape, adopted by the first tab as before) or with a scope THIS install
+ *  holds live move. A still-running old-version install's live scopes are not
+ *  in the caller's `liveScopes`, so its current history is never stolen; rows
+ *  left behind by a dead browser session keep the legacy origin (unreachable
+ *  from every UI either way — the accepted trade-off). */
+export function claimLegacyScopeConversations(
+  fromOrigin: string,
+  toOrigin: string,
+  liveScopes: string[],
+): void {
+  if (fromOrigin === toOrigin) return
+  const live = liveScopes.length > 0 ? `OR tab_key IN (${liveScopes.map(() => '?').join(',')})` : ''
+  getDb()
+    .prepare(
+      `UPDATE conversations SET origin = ?
+       WHERE origin = ? AND (tab_key IS NULL ${live})
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)`
+    )
+    .run(toOrigin, fromOrigin, ...liveScopes)
 }
 
 /** Read a conversation's client origin (null when never stamped). */
@@ -73,16 +151,50 @@ export function getConversationOrigin(id: string): string | null {
   return row?.origin ?? null
 }
 
+/** Read a conversation's stored title alone (null when the row is gone) — the
+ *  hosted-transcript writer's rename guard, without getConversation's full
+ *  message load. */
+export function getConversationTitle(id: string): string | null {
+  const row = getDb().prepare('SELECT title FROM conversations WHERE id = ?').get(id) as { title: string } | undefined
+  return row?.title ?? null
+}
+
 /** Recent conversations for one client origin — the browser extension's
  *  session list (PLAN-browser-extension M0.4, `session.list`). Carries the
- *  stored 授权 level so a remote client's approval control can show it. */
+ *  stored 授权 level so a remote client's approval control can show it.
+ *
+ *  Only conversations holding at least one message (2026-11-02): the origin
+ *  stamp is an UPSERT at session creation (`updateConversationOrigin` — the
+ *  row has to exist before the first message lands), so every
+ *  `session.create` — a 新会话 click, a stale-id resume falling back to a
+ *  fresh session — leaves a `title=''` stub behind. Listing those filled the
+ *  panel's 历史会话 menu with 未命名会话 rows nothing can resume into (user
+ *  report: 不应该有这么多). The desktop's welcome slices apply the same
+ *  `messageCount > 0` rule. The CURRENT session's 授权 level must therefore
+ *  not be looked up through this list any more — `agent.snapshot` carries it.
+ *
+ *  `tabKey` scopes the list to one Chrome tab (2026-11-03): the panel's
+ *  history belongs to the tab, so a refresh or navigation in that tab reads
+ *  the same list while two tabs never see each other's conversations. Omitted
+ *  = unscoped (any non-panel caller); unscoped rows are adopted by the first
+ *  tab that opens (`adoptUnscopedConversations`), never listed by a scoped
+ *  query. */
 export function listConversationsByOrigin(
   origin: string,
   limit = 50,
+  tabKey?: string,
 ): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }> {
+  const scoped = tabKey ? 'AND c.tab_key = ?' : ''
+  const args = tabKey ? [origin, tabKey, limit] : [origin, limit]
   const rows = getDb()
-    .prepare('SELECT id, title, updated_at, approval_mode FROM conversations WHERE origin = ? ORDER BY updated_at DESC LIMIT ?')
-    .all(origin, limit) as Array<{ id: string; title: string; updated_at: string; approval_mode: string | null }>
+    .prepare(
+      `SELECT c.id, c.title, c.updated_at, c.approval_mode FROM conversations c
+       WHERE c.origin = ?
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
+         ${scoped}
+       ORDER BY c.updated_at DESC LIMIT ?`
+    )
+    .all(...args) as Array<{ id: string; title: string; updated_at: string; approval_mode: string | null }>
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -175,9 +287,30 @@ function newestMessageAt(messages: ReadonlyArray<{ createdAt?: string }>, fallba
  *  free of agent-module imports). */
 const HOSTED_ORIGINS = ['pulsemind-extension', 'anywhere-extension']
 
+/** Origins carry a per-install suffix since 2026-11-05 (`base:instanceId` —
+ *  Chrome and 360 load the same extension binary, so the bare base id named
+ *  both installs at once). The exclusion must therefore catch the prefix
+ *  family too, not just the exact base rows. The suffixes are matched with
+ *  LIKE, whose wildcards (`%`/`_`) the base ids do not contain; the instance
+ *  charset is `[A-Za-z0-9_-]`, so `base:%` cannot over-match a sibling origin. */
+const HOSTED_ORIGIN_PREFIXES = HOSTED_ORIGINS.map((o) => `${o}:`)
+
+/** The hosted-origin exclusion `listConversations` applies, shareable by the
+ *  keyword searches (review_20261103 中1): hosted sessions now carry REAL
+ *  messages and titles (hosted-persistence), so a LIKE hit let the desktop
+ *  search center surface them — and clicking the hit called
+ *  agentSessionCreate, whose UPSERT re-stamped the row's origin 'local' and
+ *  yanked the conversation out of the extension's 历史会话 mid-flight. Same
+ *  rule as the list; `alias` for queries that qualify the column. */
+function hostedOriginExclusion(alias?: string): string {
+  const col = alias ? `${alias}.origin` : 'origin'
+  const placeholders = HOSTED_ORIGINS.map(() => '?').join(', ')
+  const prefixGuards = HOSTED_ORIGIN_PREFIXES.map((p) => `${col} NOT LIKE '${p}%'`).join(' AND ')
+  return `(${col} IS NULL OR (${col} NOT IN (${placeholders}) AND ${prefixGuards}))`
+}
+
 export function listConversations(): ConversationIndexEntry[] {
   const database = getDb()
-  const originPlaceholders = HOSTED_ORIGINS.map(() => '?').join(', ')
   const rows = database
     .prepare(
       `SELECT
@@ -186,7 +319,15 @@ export function listConversations(): ConversationIndexEntry[] {
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
       WHERE c.type = 'normal'
-        AND (c.origin IS NULL OR c.origin NOT IN (${originPlaceholders}))
+        AND ${hostedOriginExclusion('c')}
+        -- 零消息行不是历史会话（2026-11-04 用户裁定「走克制版」）。任何 binding
+        -- 写入（workspace mint / 授权 / 模型 / 项目 / 专家）都会经
+        -- stubInsertConversation 铸一行 title='新对话' 的空存根，重启后它会以
+        -- 「新对话」的身份留在侧栏——用户报的正是这个（浏览器任务容器零消息却
+        -- 在左侧历史里可见）。与 listConversationsByOrigin、welcome 切片的
+        -- messageCount > 0 同一条规则。容器自身的「无 DB 行」裁定不变：这里只是
+        -- 让存根不可见，不阻止它存在。
+        AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
       ORDER BY c.pinned DESC, c.created_at DESC`
     )
     .all(...HOSTED_ORIGINS) as Array<{
@@ -406,6 +547,34 @@ export function updateMessageMetadata(
   const params: unknown[] = []
   if (data.liked !== undefined) { updates.push('liked = ?'); params.push(data.liked ? 1 : 0) }
   if (data.favorited !== undefined) { updates.push('favorited = ?'); params.push(data.favorited ? 1 : 0) }
+  if (updates.length === 0) return
+  params.push(msgId)
+  database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+}
+
+/** Targeted runtime-stats update for the turn clock and token counts.
+ *
+ *  `upsertMsg` already carries these columns, but it only runs on a FULL save —
+ *  and a finished turn never triggers one. The engine stamps the turn's total on
+ *  its final assistant message long after that message was INSERTed, so without
+ *  this write the number reached the renderer's mirror and died there: reopening
+ *  the conversation read the single-round value straight back out of the DB
+ *  (user report 2026-11-06, 「处理时间只算了一部分」). */
+export function updateMessageStats(
+  msgId: string,
+  data: { processingMs?: number; inputTokens?: number; outputTokens?: number; promptCacheHitTokens?: number }
+): void {
+  // Nowhere to write when no DB is open: this runs from the session-manager's
+  // per-notify diff, which the vitest harness exercises without initializing one
+  // (`getDb()` would throw there).
+  if (!isDbHealthy()) return
+  const database = getDb()
+  const updates: string[] = []
+  const params: unknown[] = []
+  if (data.processingMs !== undefined) { updates.push('processing_ms = ?'); params.push(data.processingMs) }
+  if (data.inputTokens !== undefined) { updates.push('input_tokens = ?'); params.push(data.inputTokens) }
+  if (data.outputTokens !== undefined) { updates.push('output_tokens = ?'); params.push(data.outputTokens) }
+  if (data.promptCacheHitTokens !== undefined) { updates.push('cached_tokens = ?'); params.push(data.promptCacheHitTokens) }
   if (updates.length === 0) return
   params.push(msgId)
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
@@ -796,13 +965,16 @@ export function searchConversationsByKeyword(
   // 排序沉底。逐项收口成严格 0/1，WHERE 侧语义不变（NULL 本就不通过）。
   const likeTerm = `COALESCE(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\', 0)`
   const terms = needles.map(() => likeTerm)
-  const conditions: string[] = [`type = 'normal' AND (${terms.join(' OR ')})`]
+  const conditions: string[] = [`type = 'normal' AND (${terms.join(' OR ')})`, hostedOriginExclusion(),
+    // Same zero-message rule as the list (2026-11-04): a 新对话 stub has nothing
+    // to open, so a keyword hit on it must not reintroduce it through 搜索中心.
+    'EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)']
   // 每个 term 的 title/summary/keywords 各一个 ?，占位符按文本序绑定——参数必须
   // 逐 term 展开成 pat×3 连排；若按 pats 整组 spread 重复，会把不同词轮流塞进
   // 同一 term 的三个字段位（探针实测把单词行抬成多词分）。SELECT（matchScore）与
-  // WHERE 各一份，再 dateFilter、limit。
+  // WHERE 各一份，再接托管 origin 排除（WHERE 里 OR terms 之后）、dateFilter、limit。
   const clausePats = pats.flatMap((p) => [p, p, p])
-  const params: unknown[] = [...clausePats, ...clausePats]
+  const params: unknown[] = [...clausePats, ...clausePats, ...HOSTED_ORIGINS]
 
   if (dateFilter) {
     if (dateFilter.createdAfter) { conditions.push('created_at >= ?'); params.push(dateFilter.createdAfter) }
@@ -842,10 +1014,10 @@ export function searchMessagesByKeyword(
             m.role, m.content, m.created_at AS createdAt
      FROM messages m
      JOIN conversations c ON c.id = m.conversation_id
-     WHERE c.type = 'normal' AND m.content LIKE ?
+     WHERE c.type = 'normal' AND ${hostedOriginExclusion('c')} AND m.content LIKE ?
      ORDER BY m.created_at DESC
      LIMIT ?`
-  ).all(`%${query}%`, limit) as Array<{
+  ).all(...HOSTED_ORIGINS, `%${query}%`, limit) as Array<{
     conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; content: string; createdAt: string
   }>
 

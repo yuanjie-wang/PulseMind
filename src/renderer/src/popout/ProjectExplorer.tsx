@@ -13,14 +13,10 @@
 // pane's clamp-every-consumption lesson).
 
 import React, { useEffect, useRef, useState } from 'react'
-import { clampExplorerWidth, COLUMN_DRAG_HANDLE_WIDTH, IMMERSIVE_CARD_GAP } from '../../../shared/ui/layout-widths'
+import { clampExplorerWidth, COLUMN_DRAG_HANDLE_WIDTH, IMMERSIVE_CARD_GAP, IMMERSIVE_CARD_RADIUS } from '../../../shared/ui/layout-widths'
 import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
 import { useColumnDrag } from '../hooks/useColumnDrag'
 import { WorkspacePane } from '../components/workbench/WorkspacePane'
-
-/** 对话卡的圆角（2026-10-31 用户裁定「三列各用圆角矩形包裹」）；树/预览两卡
- *  在 WorkspacePane 的 immersive 分支里用同一个值。 */
-const CARD_RADIUS = 8
 
 /** clamp 的可用行宽扣减：getBoundingClientRect 含四周 padding（内容盒 = 矩形
  *  − 2×gap），explorer↔chat 之间还有一个 gap —— 共 3×IMMERSIVE_CARD_GAP。 */
@@ -119,7 +115,7 @@ export function ProjectExplorer({ conversationId, children }: Props): React.Reac
           boxSizing: 'border-box',
           background: 'var(--pm-bg)',
           border: '1px solid var(--pm-separator-faint)',
-          borderRadius: CARD_RADIUS,
+          borderRadius: IMMERSIVE_CARD_RADIUS,
           overflow: 'hidden',
         }}
       >

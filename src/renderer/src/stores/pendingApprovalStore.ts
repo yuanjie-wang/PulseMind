@@ -5,7 +5,7 @@
 // no conversation to write and the button never moved ("权限选择无法切换"). The
 // choice is held here instead — the button reads it, and useChatController
 // applies it to the conversation the first message creates, before the session
-// starts. Same one-shot shape as composerDraftStore.
+// starts. Same one-shot shape as the retired composer-draft store.
 
 import { create } from 'zustand'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'

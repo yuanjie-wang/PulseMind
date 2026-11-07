@@ -233,6 +233,12 @@ describe('success path: event, one-shot light-only force, notes', () => {
     // overhead-sensitive). Seed the memo with one real build first, or the
     // simulation prices 0 overhead against a build that prices the real thing.
     await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
+    // Production shape: context_compact fires mid-loop, so NEW tool results
+    // arrived after the last build — the copy that build fitted no longer fits.
+    // (Over a byte-identical history the persistent frontier already holds
+    // every droppable cycle, so `nothing_to_drop` is the honest answer: the
+    // next request would have nothing new to shed either.)
+    engine.messages = [...engine.messages, ...toolCycle(100), ...toolCycle(101)]
     const out = await engine.compactForTool({})
     expect(out.ok).toBe(true)
     const prewarmEvent = events.find(e => e.source === 'tool')!

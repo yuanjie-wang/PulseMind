@@ -5,7 +5,9 @@
  * 数据链：edit/read 的 input → edit-reveal.ts 派生最小锚点（行号或 ≤120 字符
  * 文本锚，绝不驻留原始字符串）→ usePreviewPaneSync 在完成拍点随事件携带 →
  * previewPaneStore.revealTargets（tick 防二次 reveal 被首个的过期定时器吞掉）
- * → PreviewContent 定位后交给 TextPreview/CodeHighlight 滚动 + 短暂高亮。
+ * → PreviewContent 定位后交给 CM 实例（FileEditor）滚动 + 短暂高亮
+ * （2026-11-01 PLAN-codemirror-view：TextPreview/CodeHighlight 退役，
+ * `[data-reveal-line]` span 契约换成 CM 行装饰 `pm-cm-reveal`）。
  *
  * 诚实裁定沿 edit-diff.ts：diff 模式 hunk 带真实文件行号 → line 锚；
  * search/replace 模式无文件坐标 → 文本锚，盘面漂移时定位失败即放弃（错滚比
@@ -254,38 +256,36 @@ describe('wiring 扫描', () => {
     expect(sync).toContain('if (ev.force || shouldAutoOpen(abs))')
   })
 
-  it('PreviewContent：定位 → TextPreview 穿透 → tick 守卫消费', () => {
+  it('PreviewContent：定位 → CM 实例穿透 → tick 守卫消费', () => {
     const content = src('src/renderer/src/components/preview/PreviewContent.tsx')
-    expect(content).toContain('revealLine={revealLine ?? undefined}')
+    expect(content).toContain('revealLine={revealLine}')
     expect(content).toContain('st.revealTargets[path]?.tick === capturedTick')
     expect(content).toContain("kind !== 'text'")
     expect(content).toContain('startsWith(target.text)')
   })
 
-  it('CodeHighlight：行号 prop + reveal 的 data 属性与滚动（2026-10-31 快路径，属性产自 fast-code 构建器）', () => {
-    const hl = src('src/renderer/src/components/common/CodeHighlight.tsx')
-    expect(hl).toContain('lineNumbers')
-    expect(hl).toContain('highlightToHtml(code, lang, theme, { lineNumbers, revealLine: revealLine ?? null })')
-    expect(hl).toContain("querySelector(`[data-reveal-line=\"${revealLine}\"]`)")
-    expect(hl).toContain("el?.scrollIntoView({ block: 'center' })")
-    // 值必须字符串化：hast 式属性写入丢弃非字符串属性值（probe 实测）——
-    // 构建器里是显式 String(n)。
-    expect(src('src/renderer/src/components/common/fast-code.ts')).toContain('data-reveal-line="${String(n)}"')
+  it('CodeMirrorEditor：reveal 的行装饰与滚动（StateField 承载，替换旧 data-reveal-line 契约）', () => {
+    const cm = src('src/renderer/src/components/preview/CodeMirrorEditor.tsx')
+    expect(cm).toContain("Decoration.line({ class: 'pm-cm-reveal' })")
+    expect(cm).toContain("EditorView.scrollIntoView(l.from, { y: 'center' })")
+    expect(cm).toContain('applyReveal(view, revealLine ?? null)')
+    // 竞态护栏：reveal 撞上编辑中的文档，clamp 落到末行而不是抛错
+    expect(cm).toContain('clampLine(')
   })
 
-  it('fast-code：带行号的行是 block 行 + 悬挂缩进（2026-10-30 滚动卡顿根因的延续钉）', () => {
+  it('fast-code：行号/reveal 机械随预览路径退役；numberless 换行由 join 交还 pre-wrap 壳', () => {
     const fc = src('src/renderer/src/components/common/fast-code.ts')
-    // 行号盒沿用库自己的算术：<digits>.25em（minWidth）+ paddingRight 1em，
-    // 行行 block + 负缩进一个 gutter——永不回到 display:flex（那是 2026-10-30
-    // 窄列滚动 ~260ms/帧的根因形态）。
-    expect(fc).toContain('String(largest).length + 1.25')
-    expect(fc).toContain("display:block;padding-left:${gutter};text-indent:-${gutter}")
+    // 退役即查无此物：data-reveal-line / pm-code-linenumber / 行 block span
+    // 三种 DOM 形态一个都不该回来（预览的行号与 reveal 已归 CM 实例）。
+    expect(fc).not.toContain('data-reveal-line')
+    expect(fc).not.toContain('pm-code-linenumber')
+    expect(fc).not.toContain('display:block')
+    // 永不回到 display:flex（2026-10-30 窄列滚动 ~260ms/帧的根因形态）。
     expect(fc).not.toContain('display:flex')
-    expect(fc).toContain("display:inline-block;min-width:${String(largest).length + 1.25}em;padding-right:1em;text-align:right;user-select:none")
+    expect(fc).toContain("lines.join('\\n')")
   })
 
-  it('TextPreview 常通行号；CommandCard 路径点击 + completed 门 + reveal 随行', () => {
-    expect(src('src/renderer/src/components/preview/TextPreview.tsx')).toContain('lineNumbers revealLine={revealLine}')
+  it('CommandCard 路径点击 + completed 门 + reveal 随行', () => {
     const card = src('src/renderer/src/components/terminal/CommandCard.tsx')
     expect(card).toContain('openInPreviewPane(clickablePath, cardReveal(block))')
     expect(card).toContain("block.name === 'edit' && block.status === 'completed'")

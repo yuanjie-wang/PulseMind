@@ -44,6 +44,24 @@ export function titleBarRightInset(controls: WindowControlsLayout): number {
   return controls.side === 'right' ? controls.inset : 0
 }
 
+/** The app's own gutter before the top-right action cluster, on top of the
+ *  reserved OS strip. The header's regular 24px is right on macOS, where the
+ *  traffic lights are across the bar and the cluster is the last thing on the
+ *  right. Windows/Linux is the opposite: the caption buttons sit flush against
+ *  the web content and already bring their own whitespace (each glyph is
+ *  centred in a 46px button), so any gutter reads as a hole between the two
+ *  clusters — user rulings 2026-11-04: 先减 15px（24 → 9），随后「干脆把那
+ *  9px 也去掉」，于是 Win/Linux 贴到 OS 条边上、与原生按钮连成一条。 */
+const TITLE_BAR_ACTION_GUTTER = 24
+const CAPTION_ADJACENT_ACTION_GUTTER = 0
+
+/** `right` offset for the header's action cluster: its own gutter plus the OS
+ *  strip it must stay clear of. Both windows read this so they cannot drift. */
+export function titleBarActionsRight(controls: WindowControlsLayout): number {
+  const gutter = controls.side === 'right' ? CAPTION_ADJACENT_ACTION_GUTTER : TITLE_BAR_ACTION_GUTTER
+  return gutter + titleBarRightInset(controls)
+}
+
 export interface TitleBarOverlayColors {
   color: string
   symbolColor: string

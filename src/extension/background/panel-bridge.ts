@@ -19,6 +19,7 @@ import type {
   SessionListResult,
 } from '../../shared/agent-protocol'
 import type { WsClient } from './ws-client'
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { ConnectionState, PanelRequest, PanelResponse, PanelSnapshot, SessionSummary } from '../bridge'
 import {
   bindTabSession,
@@ -26,10 +27,12 @@ import {
   clearTab,
   clearTabApprovalMode,
   clearTabModelId,
+  getLiveTabScopes,
   getSessionForTab,
   getTabApprovalMode,
   getTabForSession,
   getTabModelId,
+  getTabScope,
   isPanelOpen,
   setPanelOpen,
   setTabApprovalMode,
@@ -51,6 +54,17 @@ export interface PanelBridgeDeps {
 
 export class PanelBridge {
   private mirrors = new Map<string, SessionState>()
+  /** The stored 授权 level per session, as last seen by this worker — seeded by
+   *  the cold `agent.snapshot`, written through on every set (the panel's own
+   *  click and the pre-session carry), dropped on delete. It exists because
+   *  `session.list` lists only conversations WITH messages (2026-11-02): a
+   *  fresh session whose 授权 was picked before its first message is not on
+   *  that list, and the snapshot used to read the level off it — so the footer
+   *  would have fallen back to the default right after the click, and after
+   *  any reload, while the column held the real choice. Resolution order in
+   *  snapshot(): the list row (the freshest read of the column) → this cache
+   *  → the tab's pre-session carry. */
+  private approvalModes = new Map<string, SandboxApprovalMode>()
 
   constructor(private deps: PanelBridgeDeps) {}
 
@@ -90,7 +104,7 @@ export class PanelBridge {
         case 'panel/new-session': {
           const client = this.deps.getClient()
           if (!client?.connected) return { ok: false, error: '未连接桌面端' }
-          const created = await this.createSession(client, null, undefined)
+          const created = await this.createSession(client, tabId, null, undefined)
           await clearTab(tabId)
           await bindTabSession(tabId, created.sessionId)
           this.mirrors.set(created.sessionId, freshSessionState())
@@ -99,34 +113,41 @@ export class PanelBridge {
           // does not depend on whether the user sends or hits 新会话 first.
           await this.applyTabApprovalMode(tabId, created.sessionId)
           await this.applyTabModelId(tabId, created.sessionId)
-          const summary = await this.listSessions(client)
-          this.broadcast('panel/sessions', summary)
+          const summary = await this.listSessions(client, tabId)
+          this.sendSessionsTo(tabId, summary)
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
 
         case 'panel/resume-session': {
           const client = this.deps.getClient()
           if (!client?.connected) return { ok: false, error: '未连接桌面端' }
+          // Validate BEFORE clearTab: a malformed row (the 2026-11-02 `id` vs
+          // `sessionId` wire mismatch sent `undefined` here) must not unbind the
+          // tab on its way to failing — that turned a broken click into "this
+          // panel now has no conversation", which reads as the menu doing
+          // nothing.
+          if (!msg.sessionId) return { ok: false, error: '缺少会话 id' }
           await clearTab(tabId)
           await bindTabSession(tabId, msg.sessionId)
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
 
         case 'panel/list-sessions':
-          return { ok: true, data: await this.listSessions(this.requireClient()) }
+          return { ok: true, data: await this.listSessions(this.requireClient(), tabId) }
 
         case 'panel/delete-session': {
           const client = this.requireClient()
           await client.request(Methods.sessionDelete, { sessionId: msg.sessionId })
           this.mirrors.delete(msg.sessionId)
+          this.approvalModes.delete(msg.sessionId)
           await clearSession(msg.sessionId)
-          this.broadcast('panel/sessions', await this.listSessions(client).catch(() => []))
+          this.sendSessionsTo(tabId, await this.listSessions(client, tabId).catch(() => []))
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
 
         case 'panel/rename-session': {
           await this.requireClient().request(Methods.sessionRename, { sessionId: msg.sessionId, title: msg.title })
-          this.broadcast('panel/sessions', await this.listSessions(this.requireClient()))
+          this.sendSessionsTo(tabId, await this.listSessions(this.requireClient(), tabId))
           return { ok: true }
         }
 
@@ -140,6 +161,7 @@ export class PanelBridge {
           const sessionId = await getSessionForTab(tabId)
           if (sessionId) {
             await this.requireClient().request(Methods.sessionSetApprovalMode, { sessionId, mode: msg.mode })
+            this.approvalModes.set(sessionId, msg.mode)
           } else {
             await setTabApprovalMode(tabId, msg.mode)
           }
@@ -237,28 +259,46 @@ export class PanelBridge {
 
   private async createSession(
     client: WsClient,
+    tabId: number,
     sessionId: string | null,
     pageContext: PageContext | undefined,
   ): Promise<SessionCreateResult> {
     // The service answers with the id it actually used: a stale id falls back to
     // a fresh session, so the caller must always store the *returned* id.
-    return (await client.request(Methods.sessionCreate, {
+    const created = (await client.request(Methods.sessionCreate, {
       ...(sessionId ? { sessionId } : {}),
       ...(pageContext ? { pageContext } : {}),
       ...(pageContext?.title ? { title: pageContext.title } : {}),
+      // The tab's 历史会话 scope (2026-11-03): stamped on the conversation row so
+      // `session.list` can hand this tab its own list back after a refresh or
+      // navigation, and never another tab's. Sent on EVERY create — a resume
+      // included, so a session resumed by a tab that did not mint it (a worker
+      // restart re-issuing create) keeps its scope instead of dropping to
+      // unscoped.
+      tabKey: await getTabScope(tabId),
     })) as SessionCreateResult
+    // Seed the cache with the level the service settled on (review_20261103 高3):
+    // doCreateSession plants the global last-used value on every unconfigured
+    // fresh session, and that session reaches neither session.list (no messages
+    // yet) nor the cold snapshot (the caller already holds the mirror) — so
+    // without this the footer showed the default while the engine ran, say,
+    // last-used `auto`. Covers BOTH mint points (panel/new-session and
+    // ensureSession) in one place; an explicit pre-session carry still wins —
+    // applyTabApprovalMode runs after this and writes over the cache.
+    if (created.approvalMode) this.approvalModes.set(created.sessionId, created.approvalMode)
+    return created
   }
 
   /** The tab's session, created (or resumed) if the tab has none yet. */
   async ensureSession(tabId: number, pageContext?: PageContext): Promise<string> {
     const existing = await getSessionForTab(tabId)
-    const created = await this.createSession(this.requireClient(), existing, pageContext)
+    const created = await this.createSession(this.requireClient(), tabId, existing, pageContext)
     if (created.sessionId !== existing) {
       if (!this.mirrors.has(created.sessionId)) this.mirrors.set(created.sessionId, freshSessionState())
       await bindTabSession(tabId, created.sessionId)
       await this.applyTabApprovalMode(tabId, created.sessionId)
       await this.applyTabModelId(tabId, created.sessionId)
-      this.broadcast('panel/sessions', await this.listSessions(this.requireClient()).catch(() => []))
+      this.sendSessionsTo(tabId, await this.listSessions(this.requireClient(), tabId).catch(() => []))
     }
     return created.sessionId
   }
@@ -279,6 +319,7 @@ export class PanelBridge {
     if (!mode) return
     try {
       await this.requireClient().request(Methods.sessionSetApprovalMode, { sessionId, mode })
+      this.approvalModes.set(sessionId, mode)
     } catch {
       /* best effort — the choice is dropped either way, the snapshot shows the session's real mode */
     }
@@ -301,14 +342,23 @@ export class PanelBridge {
   }
 
   /** `session.list` answers with the model state riding along, so the two things
-   *  a mounting panel needs come back in one round trip. */
-  private async inventory(client: WsClient): Promise<{ sessions: SessionSummary[]; model?: ModelState }> {
-    const res = (await client.request(Methods.sessionList, { limit: 50 })) as SessionListResult
+   *  a mounting panel needs come back in one round trip. Scoped to the tab
+   *  (2026-11-03): 历史会话 belongs to this tab — refresh/navigation keeps it,
+   *  a sibling tab's conversations never appear here. */
+  private async inventory(client: WsClient, tabId: number): Promise<{ sessions: SessionSummary[]; model?: ModelState }> {
+    const res = (await client.request(Methods.sessionList, {
+      limit: 50,
+      tabKey: await getTabScope(tabId),
+      // The live scope set (review_20261104 中3): scopes from previous browser
+      // sessions died with chrome.storage.session — the service releases their
+      // stamps so the adoption below reclaims the history for this tab.
+      liveScopes: await getLiveTabScopes(),
+    })) as SessionListResult
     return { sessions: res.sessions ?? [], model: res.model }
   }
 
-  private async listSessions(client: WsClient): Promise<SessionSummary[]> {
-    return (await this.inventory(client)).sessions
+  private async listSessions(client: WsClient, tabId: number): Promise<SessionSummary[]> {
+    return (await this.inventory(client, tabId)).sessions
   }
 
   /** Full state for a (re)mounting panel: binding + history + known status. */
@@ -318,7 +368,7 @@ export class PanelBridge {
     const panelOpen = await isPanelOpen(tabId)
     const client = this.deps.getClient()!
     const inventory = connection.connected
-      ? await this.inventory(client).catch(() => ({ sessions: [] as SessionSummary[], model: undefined }))
+      ? await this.inventory(client, tabId).catch(() => ({ sessions: [] as SessionSummary[], model: undefined }))
       : { sessions: [] as SessionSummary[], model: undefined }
     const sessions = inventory.sessions
     if (!sessionId) {
@@ -362,6 +412,10 @@ export class PanelBridge {
             // keeps the old (message-only, status-blind) behavior.
             const snap = (await client.request(Methods.agentSnapshot, { sessionId })) as AgentSnapshotResult
             seedSessionState(state, snap)
+            // The stored 授权 rides the still-life now (an older service omits
+            // it → the list/tab fallbacks below). Seeded here, before the
+            // snapshot resolves the footer's value a few lines down.
+            if (snap.approvalMode) this.approvalModes.set(sessionId, snap.approvalMode)
           } catch {
             try {
               const history = (await client.request(Methods.agentHistory, { sessionId })) as AgentHistoryResult
@@ -405,7 +459,14 @@ export class PanelBridge {
       model,
       // The desktop's stored mode wins (the tab value is only a pre-session
       // carry-over, and applyTabApprovalMode pushed it into the same column).
-      approvalMode: sessions.find((s) => s.sessionId === sessionId)?.approvalMode ?? (await getTabApprovalMode(tabId)) ?? undefined,
+      // The list row is the freshest read of that column, so it goes first;
+      // the cache covers the session the list no longer carries — one without
+      // messages yet (see `approvalModes`) — before the tab's pre-session carry.
+      approvalMode:
+        sessions.find((s) => s.sessionId === sessionId)?.approvalMode ??
+        this.approvalModes.get(sessionId) ??
+        (await getTabApprovalMode(tabId)) ??
+        undefined,
     }
   }
 
@@ -426,7 +487,9 @@ export class PanelBridge {
     }
   }
 
-  private broadcast(type: 'panel/connection' | 'panel/sessions', payload: unknown): void {
+  /** Connection state is global, so it is the one thing still broadcast to
+   *  every open panel. */
+  private broadcast(type: 'panel/connection', payload: unknown): void {
     void chrome.tabs.query({}).then(async (tabs) => {
       for (const tab of tabs) {
         if (tab.id === undefined || !(await isPanelOpen(tab.id))) continue
@@ -436,6 +499,19 @@ export class PanelBridge {
           /* tab without a content script */
         }
       }
+    })
+  }
+
+  /** Session lists are tab-scoped data (2026-11-03 的 scope；review_20261104
+   *  高1): every refresh point computes the REQUESTING tab's list, so it may
+   *  only be delivered to that tab. The old broadcast replaced every open
+   *  panel's 历史会话 menu with one tab's rows — a sibling could then resume a
+   *  row it was never shown, binding the session away from its owner (whose
+   *  live transcript silently froze) and COALESCE-restamping the row's
+   *  tab_key into the resuming tab's scope for good. */
+  private sendSessionsTo(tabId: number, sessions: SessionSummary[]): void {
+    void chrome.tabs.sendMessage(tabId, { type: 'panel/sessions', payload: sessions }).catch(() => {
+      /* tab without a content script */
     })
   }
 

@@ -1,28 +1,37 @@
 /**
- * Project-mode refused-send feedback probe (real Chromium).
+ * Welcome-page project-mode TWO-FORM probe (real Chromium).
  *
- * 项目模式下未选项目就发送——按钮灰着、Enter 静默——用户读到的是「发送无效」
- * (user report 2026-10-07)。拒绝本身发生在 Composer.send() 的 sendBlocked 分支,
- * 而回答住在知道语义的 ChatView:整个选项目区域摇晃一次(复用新建任务的
- * guidance shake,指向「缺的是项目」)+ 一条 toast 说清原因 + 输入的文字一个
- * 字都不丢。这些都是 DOM 时序事实,jsdom 看不见:
+ * 项目模式两形态（2026-11-04 裁定）：形态完全由 newTaskStore.projectId 派生——
+ * 未选项目 = 输入框整块退场（卡片网格是唯一入口，不再有灰按钮/拒发 toast 的
+ * 「发送无效」迷局）；已选项目 = 输入框出现（自动聚焦），项目选择区压缩成一条
+ * 项目色横条（选中卡的 wash 配方）贴住 composer，「更换」= setProjectId(null)
+ * 回形态一。这些都是 DOM 存在性/时序事实，jsdom 看不见：
  *
- *   - WAAPI 摇晃(el.getAnimations 的 playState)
- *   - antd message toast 的出现与消失
- *   - sendBlocked 拒绝路径完全绕开 InputArea.submit——文本天然保留
- *   - 选择项目后同一根 Enter 正常发送,文本清空(对照)
+ *   - 形态一：composer 挂载点整体不存在（条件渲染，非 display:none），试试
+ *     区也不渲染——没有发送通道，chips 点了无处可发
+ *   - 点卡 → 形态二：横条出现（含项目名 + wash 渐变底）、网格退场、composer
+ *     挂载且自动聚焦，试试区只在这一形态
+ *   - 「更换」→ 回形态一；手打文字不跨卸载（输入文字是 InputArea 的本地
+ *     state，不是持久层；一次性草稿通道已随「点一下即发送」一并退役）
+ *   - 新建任务的 projectPicker 摇晃在两种形态都落在这根 root 上
+ *   - 对话模式不受影响（composer 恒显，Enter 正常发送）
  *
- * Mounts the real `ChatView` in an AppLayout-shaped shell (same harness shape
- * as probe-welcome-focus), driven through the real `newTaskStore`. No Electron,
- * no LLM: `onSendMessage` is a counting stub.
+ * 灰钮拒发路径（shake + toast）只剩 dock 窄面（ChatBody welcome 臂，无项目卡
+ * 可点）——那条路径由 tests/welcome-shake.test.ts 的 wiring 扫描钉住。
+ *
+ * Mounts the real `ChatView` in an AppLayout-shaped shell, driven through the
+ * real `newTaskStore` / `projectStore`. No Electron, no LLM: `onSendMessage`
+ * is a counting stub.
  *
  * Usage: node scripts/probe-project-send-feedback.mjs [--headed]
  */
 import { build } from 'esbuild'
 import { chromium } from 'playwright-core'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const SHOTS = join(mkdtempSync(join(tmpdir(), 'pm-project-forms-shots-')), 'shots')
 
 const OUT = join(mkdtempSync(join(tmpdir(), 'pm-project-send-feedback-')), 'harness.js')
 
@@ -36,13 +45,18 @@ import ChatView from './src/renderer/src/components/layout/ChatView'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
 import { useNavigationStore } from './src/renderer/src/stores/navigationStore'
 
+const PROJECTS = [
+  { id: 'proj_a', name: '项目甲', workspaceDir: '/tmp/proj-a', colorHue: 200, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z' },
+]
+
 const TABLE = {
   expertList: [],
-  projectList: [],
+  projectList: PROJECTS,
   listConversations: [],
   routineList: [],
   routineRuns: [],
   knowledgeListFiles: [],
+  getConversationLastUserMessage: '',
   getSettings: { activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '', workspaceDir: '', autoCleanup: false, locale: 'zh' },
 }
 installThemeVars()
@@ -63,9 +77,6 @@ function ChatShell() {
   const viewKind = useNavigationStore((s) => s.view.kind)
   return (
     <div style={{ display: 'flex', height: 900 }}>
-      {/* 不对称外壳：左侧栏占位。antd message 的 holder 是 body 级 fixed、恒居中
-          于整个窗口；toast 必须居中的是聊天列（composer 与项目卡片同列），两者的
-          中心在有侧栏时相差侧栏宽的一半 —— 这正是用户报告的「没有水平居中」。 */}
       <div id="fake-sidebar" style={{ width: 264, flexShrink: 0 }} />
       <div id="chat-host" style={{ flex: 1, display: viewKind === 'chat' ? 'block' : 'none' }}>
         <ChatView
@@ -111,11 +122,17 @@ window.__ready = true
 
 await build({
   stdin: { contents: HARNESS, resolveDir: process.cwd(), loader: 'tsx', sourcefile: 'harness.tsx' },
-  bundle: true, format: 'iife', platform: 'browser', target: 'chrome114',
-  outfile: OUT, tsconfig: 'tsconfig.web.json', jsx: 'automatic',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'chrome114',
+  outfile: OUT,
+  tsconfig: 'tsconfig.web.json',
+  jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"production"' },
   loader: { '.css': 'text', '.ttf': 'text', '.woff': 'text', '.woff2': 'text', '.png': 'dataurl' },
-  logLevel: 'warning', treeShaking: false,
+  logLevel: 'warning',
+  treeShaking: false,
 })
 
 const results = []
@@ -135,9 +152,12 @@ await page.waitForFunction(() => window.__ready)
 await page.bringToFront()
 
 const setState = (store, action, value) =>
-  page.evaluate(([s, a, v]) => {
-    window.__stores[s].getState()[a](v)
-  }, [store, action, value])
+  page.evaluate(
+    ([s, a, v]) => {
+      window.__stores[s].getState()[a](v)
+    },
+    [store, action, value],
+  )
 
 const shakeState = (target) =>
   page.evaluate((t) => {
@@ -148,87 +168,112 @@ const shakeState = (target) =>
     return anims.some((a) => a.playState === 'running') ? 'running' : 'settling'
   }, target)
 
+const composerPresent = () => page.evaluate(() => document.querySelector('[data-welcome-shake="composer"]') !== null)
+const gridPresent = () => page.evaluate(() => document.querySelector('[data-action="create-project"]') !== null)
+const stripInfo = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('[data-welcome-project-strip]')
+    if (!el) return null
+    return { name: el.textContent ?? '', bg: getComputedStyle(el).backgroundImage }
+  })
 const textarea = () => page.locator('.ant-sender textarea').first()
+const textareaPresent = () => page.evaluate(() => document.querySelector('.ant-sender textarea') !== null)
 const composerText = () => textarea().inputValue()
-const messageVisible = () =>
-  page.evaluate((txt) => {
-    const box = document.querySelector('.ant-message')
-    if (!box) return false
-    return box.textContent?.includes(txt) ?? false
-  }, '请先选择一个项目作为工作目录')
+const focusIsTextarea = () =>
+  page.evaluate(() => {
+    const el = document.activeElement
+    return !!el && el.tagName === 'TEXTAREA' && !!el.closest('.ant-sender')
+  })
 const sends = () => page.evaluate(() => window.__sends.length)
-const sendButtonDisabled = () => page.evaluate(() => {
-  const btn = document.querySelector('.pm-send')
-  return btn ? btn.disabled : null
-})
 
-console.log('\n§1 项目模式未选项目 — 发送被拒的三重回答')
+console.log('\n§1 项目模式未选项目 — 形态一：输入框整块退场')
 await page.evaluate(() => window.__mount())
 await page.waitForTimeout(300)
 await setState('newTask', 'setMode', 'project')
 await page.waitForTimeout(300)
 check('欢迎面进入项目形态(选项目区域已挂载)', (await shakeState('projectPicker')) !== 'missing')
-check('未选项目时发送按钮灰着(sendDisabled)', (await sendButtonDisabled()) === true)
+check('composer 挂载点不存在(条件渲染,不是 display:none)', !(await composerPresent()))
+check('输入框不存在(没有灰按钮可拒发)', !(await textareaPresent()))
+check('卡片网格在(选项目是唯一入口)', await gridPresent())
+mkdirSync(SHOTS, { recursive: true })
+await page.screenshot({ path: join(SHOTS, 'form-1-unpicked.png') })
 
-// 真实键入 + 真实 Enter —— 按钮是灰的,这条走的是 Sender 的键盘提交路径,
-// 也是用户读到「发送无效」的那一拍。
-await textarea().fill('帮我整理这个项目的资料')
-const before = await composerText()
-check('文字已在输入框', before === '帮我整理这个项目的资料', before)
-await textarea().press('Enter')
-await page.waitForTimeout(120)
-
-check('选项目区域摇晃(拒绝的第一重回答:指向缺的东西)', (await shakeState('projectPicker')) === 'running')
-check('toast 说清原因(第二重回答)', await messageVisible())
-check('输入的文字一个字不丢(第三重:拒绝不是删除)', (await composerText()) === before)
-check('没有任何消息发出(onSendMessage 零调用)', (await sends()) === 0)
-check('projectPicker 的信号不波及输入框(按 target 路由)', (await shakeState('composer')) === 'idle')
-
+// 新建任务的引导摇晃仍指向这根 picker root。
+await setState('newTask', 'requestShake', 'projectPicker')
+check('projectPicker 摇晃仍落在选项目区域', (await shakeState('projectPicker')) === 'running')
+check('composer 目标缺失(输入框已退场,无目标可摇)', (await shakeState('composer')) === 'missing')
 await page.waitForTimeout(700)
 check('摇晃自己停(一次性动画)', (await shakeState('projectPicker')) === 'idle')
 
-// 居中断言：此刻 toast 还活着（3s 寿命）、composer 已停摇（rect 不再被 ±10px
-// 的动画污染）。非空转前提先立住：有假侧栏时列中心 ≠ 窗口中心。
-const centers = () =>
-  page.evaluate(() => {
-    const centerOf = (el) => {
-      if (!el) return null
-      const r = el.getBoundingClientRect()
-      return r.left + r.width / 2
-    }
-    return {
-      toast: centerOf(document.querySelector('.ant-message-notice')),
-      composer: centerOf(document.querySelector('[data-welcome-shake="composer"]')),
-      window: window.innerWidth / 2,
-    }
-  })
-const c = await centers()
-check('非空转前提：不对称外壳下列中心确实偏离窗口中心', c.composer !== null && Math.abs(c.composer - c.window) > 50, JSON.stringify(c))
-check('toast 居中于聊天列(与 composer 包裹盒同轴)', c.toast !== null && Math.abs(c.toast - c.composer) <= 2, JSON.stringify(c))
-check('toast 不再是窗口居中(修复前就是窗中心)', c.toast !== null && Math.abs(c.toast - c.window) > 50, JSON.stringify(c))
-
-console.log('\n§2 重复拒绝与解除后的对照')
-await textarea().press('Enter')
-await page.waitForTimeout(120)
-check('再次 Enter 再次摇晃(每次拒绝都有回答,不是只答第一次)', (await shakeState('projectPicker')) === 'running')
-check('仍未发出任何消息', (await sends()) === 0)
-await page.waitForTimeout(700)
-
-// 选了项目,sendBlocked 解除:同一根 Enter 现在必须真的发送 —— 拒绝路径的
-// 存在不能把正常路径也吞了。
-await setState('newTask', 'setProjectId', 'proj_x')
+console.log('\n§2 点卡选中 — 形态二：横条 + 输入框')
+await page.locator('div[role="button"]', { hasText: '项目甲' }).first().click()
+await page.waitForTimeout(60)
+// 形态切换入场（同日追加）：token 变化即播 220ms 淡入+位移，横条与 composer
+// 同期各播一份（transform+opacity，不动布局）。等它播完再做存在性/几何断言。
+const enterRunning = (sel) => page.evaluate((s) => (document.querySelector(s)?.getAnimations().length ?? 0) > 0, sel)
+check('picker root 播入场动画(WAAPI 在播)', await enterRunning('[data-welcome-shake="projectPicker"]'))
+check('composer 同期播入场动画', await enterRunning('[data-welcome-shake="composer"]'))
 await page.waitForTimeout(300)
-check('选了项目后发送按钮解除封锁', (await sendButtonDisabled()) === false)
+const strip = await stripInfo()
+check('压缩横条出现', strip !== null)
+check('横条显示项目名', strip !== null && strip.name.includes('项目甲'), strip?.name ?? '')
+check('横条穿着项目色 wash(渐变底,选中卡配方)', strip !== null && strip.bg.includes('linear-gradient'), strip?.bg ?? '')
+check('卡片网格退场', !(await gridPresent()))
+check('composer 挂载点出现', await composerPresent())
+check('输入框可输入', await textareaPresent())
+
+// focusToken 含 projectId，composer 新挂载即自动聚焦。
+await page.waitForTimeout(200)
+check('选中后自动聚焦输入框', await focusIsTextarea())
+
+await textarea().fill('帮我整理这个项目的资料')
 await textarea().press('Enter')
 await page.waitForTimeout(150)
 check('Enter 正常发出一条消息', (await sends()) === 1, String(await sends()))
-check('发送后输入框清空(对照:拒绝路径保留,成功路径清空)', (await composerText()) === '')
+check('发送后输入框清空', (await composerText()) === '')
+mkdirSync(SHOTS, { recursive: true })
+await page.screenshot({ path: join(SHOTS, 'form-2-selected.png') })
 
-console.log('\n§3 对话形态不受影响')
+// 摇晃机制在压缩形态仍挂同一根 root。
+await setState('newTask', 'requestShake', 'projectPicker')
+check('压缩形态下 projectPicker 摇晃仍落在横条区域', (await shakeState('projectPicker')) === 'running')
+await page.waitForTimeout(700)
+
+console.log('\n§3 更换 — 回形态一；试试区只属于形态二')
+await textarea().fill('手打的字')
+await page.locator('[data-welcome-project-strip] button').first().click()
+await page.waitForTimeout(300)
+check('更换后横条退场', (await stripInfo()) === null)
+check('更换后 composer 退场', !(await composerPresent()))
+check('更换后卡片网格回归', await gridPresent())
+// 手打文字活在 InputArea 的本地 state（一次性草稿通道已随「点一下即发送」
+// 退役），卸载即失——与 browser 模式切走同规，刻意钉住。
+await page.locator('div[role="button"]', { hasText: '项目甲' }).first().click()
+await page.waitForTimeout(300)
+check('重新选中回到形态二', (await stripInfo()) !== null && (await composerPresent()))
+check('手打文字不跨卸载(browser 同规)', (await composerText()) === '', JSON.stringify(await composerText()))
+
+// 试试区只属于形态二（2026-11-04 追加裁定）：选择形态没有输入框，chips 点了
+// 无处可发——整组不渲染；已选形态的横条下方才有。
+const startersCount = () =>
+  page.evaluate(
+    () =>
+      [...document.querySelectorAll('[data-welcome-shake="projectPicker"] span')].filter(
+        (el) => el.textContent?.trim() === '看一下这个项目里的文件，给我讲讲整体结构',
+      ).length,
+  )
+await page.locator('[data-welcome-project-strip] button').first().click()
+await page.waitForTimeout(300)
+check('形态一没有试试区(点了没法用的入口不出现)', (await startersCount()) === 0)
+await page.locator('div[role="button"]', { hasText: '项目甲' }).first().click()
+await page.waitForTimeout(300)
+check('形态二横条下方有试试区(输入框已挂载,点了能落)', (await startersCount()) === 1)
+
+console.log('\n§4 对话形态不受影响')
 await setState('newTask', 'setMode', 'chat')
 await page.waitForTimeout(300)
+check('对话模式 composer 存在', await composerPresent())
 await textarea().fill('普通对话')
-check('对话模式发送按钮可用', (await sendButtonDisabled()) === false)
 await textarea().press('Enter')
 await page.waitForTimeout(150)
 check('对话模式 Enter 正常发送', (await sends()) === 2, String(await sends()))

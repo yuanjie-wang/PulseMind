@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
 
 const { selectEvictionCandidates } = await import('../src/renderer/src/hooks/useConversationEngine')
-const { usePopoutWatchStore, isPoppedOut } = await import('../src/renderer/src/stores/popoutWatchStore')
+const { usePopoutWatchStore, isPoppedOut, routeToProjectWindow } = await import('../src/renderer/src/stores/popoutWatchStore')
 
 // ── 纯逻辑：boot 模式探测（jsdom：真 window.location.search） ────────────────
 
@@ -93,6 +93,49 @@ describe('popoutWatchStore', () => {
     remove('conv_y')
     remove('conv_y') // idempotent
     expect(Object.keys(usePopoutWatchStore.getState().byConversation)).toEqual([])
+  })
+})
+
+// ── 纯逻辑：主窗点击的项目会话路由（沉浸窗口优先，2026-11-01） ────────────────
+
+describe('routeToProjectWindow (click routing)', () => {
+  const convs = [
+    { key: 'loose', label: 'loose' },
+    { key: 'p1', label: 'in project', projectId: 'proj_1' },
+  ]
+  // A REAL jsdom window (not a bare stub): later tests in this file rely on
+  // window.localStorage surviving — a bare object broke the zustand-persist
+  // stores applyPopoutSeed touches.
+  const withElectron = (impl: unknown): void => {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
+    const w = dom.window as unknown as { electronAPI?: unknown }
+    w.electronAPI = { projectWindowFocusConversation: impl }
+    ;(globalThis as unknown as { window: unknown }).window = w
+  }
+
+  it('a project conversation delegates to the immersive window and reports taken', async () => {
+    const focus = vi.fn().mockResolvedValue(true)
+    withElectron(focus)
+    await expect(routeToProjectWindow(convs, 'p1')).resolves.toBe(true)
+    expect(focus).toHaveBeenCalledWith('proj_1', 'p1')
+  })
+
+  it('false from main (no window open) falls through to the in-window open', async () => {
+    const focus = vi.fn().mockResolvedValue(false)
+    withElectron(focus)
+    await expect(routeToProjectWindow(convs, 'p1')).resolves.toBe(false)
+  })
+
+  it('a loose conversation (no projectId) never invokes main', async () => {
+    const focus = vi.fn()
+    withElectron(focus)
+    await expect(routeToProjectWindow(convs, 'loose')).resolves.toBe(false)
+    expect(focus).not.toHaveBeenCalled()
+  })
+
+  it('an IPC failure falls through (never blocks the in-window open)', async () => {
+    withElectron(vi.fn().mockRejectedValue(new Error('boom')))
+    await expect(routeToProjectWindow(convs, 'p1')).resolves.toBe(false)
   })
 })
 
@@ -199,8 +242,8 @@ describe('main: lifecycle + handler registration', () => {
   it('closing the main window closes every popout', () => {
     expect(read('main/index.ts')).toContain("mainWindow.on('closed', closeAllPopouts)")
   })
-  it('theme flips refresh popout title bars too', () => {
-    expect(read('main/index.ts')).toContain('refreshPopoutTitleBarTheme()')
+  it('theme flips refresh popout title bars too (caller-resolved mode, 2026-11-02)', () => {
+    expect(read('main/index.ts')).toContain('refreshPopoutTitleBarTheme(bootThemeMode)')
   })
   it('the popout handler is registered', () => {
     expect(read('main/ipc/index.ts')).toContain('registerPopoutHandlers()')
@@ -242,9 +285,18 @@ describe('renderer: single-writer gate + adoption', () => {
     expect(pers).toContain('adoptConversation,')
   })
 
-  it('follows cross-window title changes into its own list', () => {
+  it('follows cross-window title changes into its own list — WITH the project binding', () => {
     expect(pers).toContain('window.electronAPI.onConversationTitleChanged')
-    expect(pers).toContain('titleInListRef.current(id, title)')
+    // The binding rides the push (2026-11-01 用户报「沉浸模式新建的会话归到了
+    // 普通对话」): a conversation created in a secondary window is unknown to
+    // the other windows' lists — the first-sighting re-add must carry projectId,
+    // or the row groups under 对话 while its DB binding stays correct.
+    expect(pers).toContain('titleInListRef.current(id, title, projectId)')
+    // Main side: the broadcast reads the row's binding at the authoritative
+    // moment (right after the title write), so every window can re-add bound.
+    const handler = read('main/ipc/conversation.handler.ts')
+    expect(handler).toContain('const projectId = getConversationProjectId(id)')
+    expect(handler).toContain('CONVERSATION_TITLE_CHANGED, { id, title, projectId }')
   })
 })
 
@@ -301,14 +353,16 @@ describe('renderer: main entry + App wiring', () => {
     expect(app).toContain('usePopoutWatchStore.getState().remove(sessionId)')
     expect(app).toContain('markConversationRead(sessionId)')
     expect(app).toContain('void adoptConversation(sessionId)')
-    // Seed object: workbench open tab + preview file tabs + active file.
-    expect(app).toContain('window.electronAPI.popoutOpen(key, label, seed)')
+    // Seed object: workbench open tab + preview file tabs + active file + the
+    // conversation's own primary mode (2026-11-04). Assembled once in
+    // popoutSeedFor — every popoutOpen entry point carries the same seed.
+    expect(app).toContain('window.electronAPI.popoutOpen(key, label, popoutSeedFor(key))')
     expect(app).toContain('wb.openByConversation[key] ? wb.activeTab : undefined')
     expect(app).toContain('pp.tabsByConversation[key]?.map((t) => t.path)')
     expect(app).toContain('pp.activeByConversation[key] ?? null')
     expect(app).toContain('onPopoutConversation=')
     // A renderer reload rebuilds the registry empty — re-sync from main.
-    expect(app).toContain('window.electronAPI.popoutList()')
+    expect(app).toMatch(/window\.electronAPI\s*\.\s*popoutList\(\)/)
   })
 
   it('the browser pane: project windows are pane TARGETS now (2026-10-31 三面板) — the old early-return is gone', () => {
@@ -353,6 +407,20 @@ describe('renderer: PopoutApp', () => {
     expect(pop).toContain('<SubAgentSessionView')
   })
 
+  it('wires the browser task entry + float overlay for its browser primary (review_20261105 中1/中3)', () => {
+    // 中1：循环钮把 browser 主视图送进弹窗后，welcome 切到浏览器档必须有真
+    // 通道——与主窗 App 同构：createBrowserTask 铸容器，pane 快照报到「提交
+    // 目标」会话名下再 browserPaneAction 开页签（handlePaneAction 按
+    // event.sender 解析窗口，落弹窗自己的 pane）。prop 已改必填，漏传编译失败。
+    expect(pop).toContain('createBrowserTask,')
+    expect(pop).toContain('onBrowserTaskStart={handleBrowserTaskStart}')
+    expect(pop).toContain("browserPaneAction({ op: 'navigate', url: pending.url })")
+    expect(pop).toContain('useBrowserPaneStore((s) => s.update.conversationId)')
+    // 中3：dock 下拉浮窗左/右侵进原生 view 的遮挡在弹窗同样发生——补挂同一
+    // 测量点；弹窗无换页视图，主窗的 viewKind 门在这里没有对应物。
+    expect(pop).toContain("useFloatOverlayShift(primary === 'browser')")
+  })
+
   it('keeps the boot flag module as the single per-window mode detector', () => {
     const boot = read('renderer/src/popout/boot.ts')
     expect(boot).toContain('new URLSearchParams(window.location.search).get')
@@ -392,8 +460,9 @@ describe('renderer: PopoutApp', () => {
     const chat = read('renderer/src/components/layout/ChatView.tsx')
     expect(chat).toContain('const isConvSwitch = prevConvIdRef.current !== conversationId || !landedOnceRef.current')
     expect(chat).toContain('landedOnceRef.current = true')
-    // 探针锚点：滚动容器的稳定选择器。
-    expect(chat).toContain('data-pm-chat-scroll')
+    // 探针锚点：滚动容器的稳定选择器（PLAN-layout-modes 后住在 ChatBody——
+    // 两个宿主的滚动容器共用同一个选择器）。
+    expect(read('renderer/src/components/chat/ChatBody.tsx')).toContain('data-pm-chat-scroll')
   })
 })
 
@@ -447,13 +516,64 @@ describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
     const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
     const electron = (globalThis as unknown as { window: { electronAPI?: unknown } }).window
     electron.electronAPI = {
-      popoutSeed: (id: string) => Promise.resolve({ workbenchTab: 'plan', previewPaths: [] }),
+      popoutSeed: (_id: string) => Promise.resolve({ workbenchTab: 'plan', previewPaths: [] }),
     }
     await expect(seed.loadAndApplyPopoutSeed('conv_ipc')).resolves.toBeUndefined()
     expect(useWorkbenchStore.getState().openByConversation['conv_ipc']).toBe(true)
     // A rejecting invoke must NOT bubble — the popout boots closed instead.
     electron.electronAPI = { popoutSeed: () => Promise.reject(new Error('ipc down')) }
     await expect(seed.loadAndApplyPopoutSeed('conv_ipc')).resolves.toBeUndefined()
+  })
+
+  // ── 主视图模式（2026-11-04 裁定「对话在主窗是什么视图模式，弹出独立弹窗后
+  // 要保持一致」）── primaryByConversation 不持久化、每窗一份内存态，所以弹窗
+  // 只能靠 donor seed 拿到主窗的模式。
+  it.each(['files', 'browser'] as const)('seeds the %s primary AND opens the dock', async (primary) => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    seed.applyPopoutSeed('conv_mode', { primary })
+    const s = useWorkbenchStore.getState()
+    expect(s.primaryByConversation['conv_mode']).toBe(primary)
+    // chatSlot 只在 dock 里渲染：非 chat 模式不补 setOpen，对话列不可达。
+    expect(s.openByConversation['conv_mode']).toBe(true)
+  })
+
+  it('chat / absent primary adds no map entry (no entry = chat priority)', async () => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    seed.applyPopoutSeed('conv_chat', { primary: 'chat' })
+    seed.applyPopoutSeed('conv_absent', { previewPaths: [] })
+    const s = useWorkbenchStore.getState()
+    expect(s.primaryByConversation['conv_chat']).toBeUndefined()
+    expect(s.primaryByConversation['conv_absent']).toBeUndefined()
+    expect(s.openByConversation['conv_chat']).toBeUndefined()
+  })
+
+  it('a seeded side tab is reconciled against the seeded mode, not the fresh-store chat default', async () => {
+    const seed = await importFresh()
+    const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
+    // 文件优先下工作区就是主卡，dock 的侧栏集合只剩 chat/browser/plan ——
+    // 种子里带的 workspace 必须按模式回落（否则 dock 渲染一个空 body）。
+    seed.applyPopoutSeed('conv_files_tab', { primary: 'files', workbenchTab: 'workspace' })
+    const files = useWorkbenchStore.getState()
+    expect(files.primaryByConversation['conv_files_tab']).toBe('files')
+    expect(files.activeTab).toBe('chat')
+    // 浏览器优先下 workspace 是合法的侧栏成员，照常保留。
+    seed.applyPopoutSeed('conv_browser_tab', { primary: 'browser', workbenchTab: 'workspace' })
+    const browser = useWorkbenchStore.getState()
+    expect(browser.primaryByConversation['conv_browser_tab']).toBe('browser')
+    expect(browser.activeTab).toBe('workspace')
+  })
+
+  it('wiring: the donor assembles the seed from the live mode and both entries carry it', () => {
+    const app = read('renderer/src/App.tsx')
+    expect(app).toContain('primary: conversationPrimaryOf(key)')
+    // 一次组装、两处（新建弹窗 / 聚焦已弹窗）+ welcome 快捷入口，各写一份必然漂移。
+    expect(app.match(/popoutSeedFor\(key\)/g)?.length).toBe(3)
+    expect(app).not.toMatch(/popoutOpen\(key\)\s*$/)
+    // 类型面：seed 携带模式，缺席 = 'chat'（无条目即对话优先）。
+    const bridge = read('shared/types/electron-bridge.ts')
+    expect(bridge).toMatch(/primary\?: 'chat' \| 'files' \| 'browser'/)
   })
 })
 
@@ -465,15 +585,18 @@ describe('renderer: popout UX rulings (2026-10-30 追加)', () => {
     // Both buttons moved out of the centered title group into one absolutely
     // positioned cluster at the top-right corner; the cluster's `right` carries
     // the OS-controls inset, or a button there would be hidden/dead on Windows.
-    expect(layout).toContain('TITLE_BAR_RIGHT_INSET')
-    expect(layout).toContain('right: 24 + TITLE_BAR_RIGHT_INSET')
-    expect(layout).toContain('const TITLE_BAR_RIGHT_INSET = titleBarRightInset(windowControls)')
-    const cluster = layout.indexOf('right: 24 + TITLE_BAR_RIGHT_INSET')
-    expect(layout.indexOf("icon={<PanelRightIcon size={14} filled={workbenchOpen} />}", cluster)).toBeGreaterThan(cluster)
+    // The inset comes from shared/window-chrome's titleBarActionsRight, which
+    // adds the platform's own gutter (24px on macOS, the tighter 9px beside
+    // Windows/Linux caption buttons — user ruling 2026-11-04).
+    expect(layout).toContain('TITLE_BAR_ACTIONS_RIGHT')
+    expect(layout).toContain('right: TITLE_BAR_ACTIONS_RIGHT')
+    expect(layout).toContain('const TITLE_BAR_ACTIONS_RIGHT = titleBarActionsRight(windowControls)')
+    const cluster = layout.indexOf('right: TITLE_BAR_ACTIONS_RIGHT')
+    expect(layout.indexOf('icon={<PanelRightIcon size={14} filled={workbenchOpen} />}', cluster)).toBeGreaterThan(cluster)
     expect(layout.indexOf('onPopoutConversation(activeConvKey, activeConvTitle', cluster)).toBeGreaterThan(cluster)
-    expect(layout).toContain("icon={<ExportOutlined style={{ fontSize: 14 }} />}")
+    expect(layout).toContain('icon={<ExportOutlined style={{ fontSize: 14 }} />}')
     // The popout window's own header follows the same rule.
-    expect(read('renderer/src/popout/PopoutApp.tsx')).toContain('right: 24 + titleBarRightInset(windowControls)')
+    expect(read('renderer/src/popout/PopoutApp.tsx')).toContain('right: TITLE_BAR_ACTIONS_RIGHT')
   })
 
   it('Windows/Linux actions wear the caption-button look (macOS keeps the app one)', () => {
@@ -504,11 +627,70 @@ describe('renderer: popout UX rulings (2026-10-30 追加)', () => {
 
   it('clicking a popped conversation raises its window instead of reopening it', () => {
     // Sidebar + project list select handlers short-circuit on isPoppedOut.
-    expect(layout).toContain('if (isPoppedOut(key)) { onFocusPoppedConversation?.(key); return }')
+    // prettier 展开单行 if 块——对空白鲁棒。
+    expect(layout).toMatch(/if \(isPoppedOut\(key\)\) \{\s*onFocusPoppedConversation\?\.\(key\)\s*return\s*\}/)
     expect(layout).toContain('onFocusPoppedConversation?: (key: string) => void')
     // Welcome quick entries do the same via popoutOpen (which focuses).
-    expect(app).toContain('if (isPoppedOut(key)) { void window.electronAPI.popoutOpen(key); return }')
+    expect(app).toMatch(/if \(isPoppedOut\(key\)\) \{\s*void window\.electronAPI\.popoutOpen\(key, undefined, popoutSeedFor\(key\)\)\s*return\s*\}/)
     // The wiring hands the focus handler down.
-    expect(app).toContain('onFocusPoppedConversation={(key) => { void window.electronAPI.popoutOpen(key) }}')
+    expect(app).toMatch(/onFocusPoppedConversation=\{\(key\) => \{\s*void window\.electronAPI\.popoutOpen\(key, undefined, popoutSeedFor\(key\)\)\s*\}\}/)
+  })
+})
+
+// ── wiring 扫描：沉浸窗口的点击路由（拉起 + 切换，2026-11-01） ────────────────
+
+describe('project immersive window: click → raise + switch (2026-11-01)', () => {
+  it('declares the two new channels (invoke + targeted switch order)', () => {
+    const ch = read('shared/ipc-channels.ts')
+    expect(ch).toContain("PROJECT_WINDOW_FOCUS_CONV: 'project-window:focus-conv'")
+    expect(ch).toContain("POPOUT_SWITCH: 'popout:switch'")
+  })
+
+  it('preload + bridge expose projectWindowFocusConversation / onPopoutSwitch', () => {
+    const pre = read('preload/index.ts')
+    expect(pre).toContain('projectWindowFocusConversation: (projectId: string, convId: string): Promise<boolean>')
+    expect(pre).toContain('ipcRenderer.invoke(IPC_CHANNELS.PROJECT_WINDOW_FOCUS_CONV, projectId, convId)')
+    expect(pre).toContain('onPopoutSwitch:')
+    expect(pre).toContain('ipcRenderer.on(IPC_CHANNELS.POPOUT_SWITCH, listener)')
+    const b = read('shared/types/electron-bridge.ts')
+    expect(b).toContain('projectWindowFocusConversation: (projectId: string, convId: string) => Promise<boolean>')
+    expect(b).toContain('onPopoutSwitch: (callback: (event: { sessionId: string }) => void) => () => void')
+  })
+
+  it('main: focusProjectConversation prefers the conversation popout, then switches the project window', () => {
+    const pop = read('main/popout-window.ts')
+    expect(pop).toContain('export function focusProjectConversation(projectId: string, convId: string): boolean')
+    // popouts first: a single-conversation popout is the precise holder, and
+    // switching a project window onto a popout-held session would put one
+    // conversation in two windows — the invariant openPopoutWindow guards too.
+    expect(pop).toContain('const popout = popouts.get(convId)')
+    // The switch order is a TARGETED send to the holding window only: the main
+    // window's POPOUT_EVENT else-branch would drop the conversation from the
+    // popped registry, and other project windows must not react.
+    expect(pop).toContain('win.webContents.send(IPC_CHANNELS.POPOUT_SWITCH, { sessionId: convId })')
+    expect(pop).not.toContain("broadcastPopoutEvent('switch'")
+  })
+
+  it('the focus-conv invoke is registered in the popout handler', () => {
+    const h = read('main/ipc/popout.handler.ts')
+    expect(h).toContain('IPC_CHANNELS.PROJECT_WINDOW_FOCUS_CONV')
+    expect(h).toContain('focusProjectConversation(projectId, convId)')
+  })
+
+  it('PopoutApp subscribes to the remote switch (project windows only, mount-only)', () => {
+    const pop = read('renderer/src/popout/PopoutApp.tsx')
+    expect(pop).toContain('window.electronAPI.onPopoutSwitch')
+    expect(pop).toContain('switchProjectConversationRef.current(sessionId)')
+    // The subscription is project-window gated; a conversation popout (fixed
+    // convId) has nothing to switch.
+    expect(pop).toContain('if (!isProjectWindow) return\n    return window.electronAPI.onPopoutSwitch')
+  })
+
+  it('both main-window click sites route through routeToProjectWindow before opening in-window', () => {
+    const layout = read('renderer/src/components/layout/AppLayout.tsx')
+    const app = read('renderer/src/App.tsx')
+    // Project sidebar list (项目 tab) + welcome quick entries.
+    expect(layout).toContain('routeToProjectWindow(conversations, key).then((taken) => {')
+    expect(app).toContain('routeToProjectWindow(conversations, key).then((taken) => {')
   })
 })

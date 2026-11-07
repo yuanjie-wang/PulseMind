@@ -15,6 +15,7 @@ import {
   fallbackComboFor,
   formatAccelerator,
   normalizeAccelerator,
+  shouldDispatchMenuAction,
   validateBinding,
 } from '../src/shared/shortcuts'
 
@@ -191,5 +192,44 @@ describe('the shortcuts surface is wired end to end', () => {
   it('a settings save rebuilds the menu (the path that makes a rebind land)', () => {
     expect(SETTINGS_HANDLER).toContain("import { rebuildApplicationMenu } from '../menu'")
     expect(SETTINGS_HANDLER).toContain('rebuildApplicationMenu()')
+  })
+
+  it('AppLayout forks open-search to the preview CM panel when it holds focus (review_20261103 高4)', () => {
+    // The menu accelerator (mac) / before-input fallback (win+linux) consumes
+    // ⌘F before any renderer keymap, so without this fork the chord ALWAYS
+    // navigated to the search page and CodeMirror's searchKeymap was dead in
+    // the main window. The fork must import through the zero-runtime seam —
+    // a direct CodeMirrorEditor import here would break FileEditor's lazy
+    // chunk contract (negative scan).
+    expect(APP_LAYOUT).toContain('previewCmHasFocus()')
+    expect(APP_LAYOUT).toContain('openPreviewSearchPanel()')
+    expect(APP_LAYOUT).toContain("from '../preview/preview-cm-seam'")
+    expect(APP_LAYOUT).not.toContain('CodeMirrorEditor')
+    // The seam really reads focus (not bare registration), so ⌘F elsewhere
+    // in the UI still means the navigation search page.
+    expect(read('src', 'renderer', 'src', 'components', 'preview', 'preview-cm-seam.ts')).toContain('hasFocus')
+  })
+})
+
+describe('menu dispatch focus gate', () => {
+  it('swallows a keyboard accelerator while the main window is not focused', () => {
+    // The mac app menu is app-global: with a popout / immersive window
+    // focused, ⌘N used to fire the menu item and the main window answered
+    // behind the user's back. Non-vacuous: reverting to an unconditional
+    // dispatch flips the first assertion.
+    expect(shouldDispatchMenuAction(true, false)).toBe(false)
+    expect(shouldDispatchMenuAction(true, true)).toBe(true)
+  })
+
+  it('a real menu click always dispatches, focused or not', () => {
+    expect(shouldDispatchMenuAction(false, true)).toBe(true)
+    expect(shouldDispatchMenuAction(false, false)).toBe(true)
+  })
+
+  it('menu.ts hands the triggeredByAccelerator flag into the gate', () => {
+    // Non-vacuous: dropping the flag hand-off (click: () => dispatch...)
+    // fails the first scan; deleting the gate call fails the second.
+    expect(MENU).toContain('event?.triggeredByAccelerator')
+    expect(MENU).toContain('shouldDispatchMenuAction(viaAccelerator, win.isFocused())')
   })
 })

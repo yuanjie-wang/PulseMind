@@ -18,8 +18,17 @@ import type { AskUserRequestParams, ApprovalRequestParams, ToolCallParams } from
  *  is accepted for protocol compatibility with the Anywhere extension (0.3.5 M4.1). */
 export const HOSTED_CLIENT_IDS = new Set(['pulsemind-extension', 'anywhere-extension'])
 
+/** The binary half of a client id. Installs of the same binary now distinguish
+ *  themselves with a `:instanceId` suffix on the CONVERSATION origin (Chrome and
+ *  360 both load `pulsemind-extension`; see ws-server hello). Every capability
+ *  question still names the binary, so the registry must read the base. */
+export function hostedBaseClientId(clientId: string): string {
+  const sep = clientId.indexOf(':')
+  return sep === -1 ? clientId : clientId.slice(0, sep)
+}
+
 export function isHostedClientId(clientId: string): boolean {
-  return HOSTED_CLIENT_IDS.has(clientId)
+  return HOSTED_CLIENT_IDS.has(hostedBaseClientId(clientId))
 }
 
 export interface ClientTransport {

@@ -23,6 +23,7 @@ import { createRequire } from 'node:module'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { inflateSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = process.env.PM_REPO ?? process.cwd()
@@ -40,6 +41,26 @@ function guardHome(dataDir) {
 }
 
 const CONTRACT_MD = '# 聘用合同\n\n甲方：星辰科技有限公司。\n\n乙方：王小明。\n\n## 第一条 合同期限\n\n本合同为固定期限合同，自 2026 年 10 月 1 日起生效。\n\n## 第二条 报告要求\n\n| 项目 | 要求 |\n|---|---|\n| 周报 | 每周五 18:00 前 |\n| 月报 | 每月最后一个工作日 |'
+
+// ── long fixture for the pagination half (P0/P1) ──
+// A generated docx carries NO page-break hints at all (no w:br type=page, no
+// w:lastRenderedPageBreak), so docx-preview renders it as ONE continuous
+// sheet and printToPDF's own paginator slices that sheet wherever it likes —
+// ignoring the docx margins entirely. This fixture is long enough that the
+// slicing would be unmistakable (text at the paper edge, a second page
+// starting without a top margin), and it carries many headings so a fit test
+// that forgets margins strands one.
+const LONG_TITLE = '长文分页验收'
+const LONG_SECTIONS = 22
+function longMarkdown() {
+  const lead = '智能风控引擎在交易链路中承担实时评分与拦截职责，本文逐节说明设计取舍与实现细节，供后续维护者对照代码阅读。'
+  const detail = '评分服务以规则引擎与模型服务双通道并行，任一通道超时即降级为规则结果，保证主链路在高峰期的可用性。'
+  const sections = Array.from({ length: LONG_SECTIONS }, (_, i) => {
+    const n = i + 1
+    return `## ${n}. 第 ${n} 节 设计说明\n\n${lead}\n\n${detail}\n\n${lead}`
+  })
+  return `# ${LONG_TITLE}\n\n${sections.join('\n\n')}`
+}
 
 // ── electron child phase (PM_PHASE=child) ───────────────────────────────
 async function phaseChild() {
@@ -157,7 +178,13 @@ footer: total
     checks.push(['the designed docx converts to PDF', designedPdf.success === true, designedPdf.error])
   }
 
-  writeFileSync(process.env.PM_REPORT, JSON.stringify({ checks, originalPgSzPt }), 'utf-8')
+  // ⑥ 长文分页（P0/P1）：生成的 docx 一个断页提示都没有，docx-preview 会画成
+  // 一张连续长纸；转换页必须自己量测分页。夹具跨 4+ 页，launcher 侧逐页量
+  // 页边距、末行孤行标题、页码与 PDF 大纲/Title。
+  const longDoc = await svcExportDocument({ format: 'pdf', content: longMarkdown(), filePath: join(work, '长文.pdf') })
+  checks.push(['long fixture (multi-page) exports as pdf', longDoc.success === true, longDoc.error])
+
+  writeFileSync(process.env.PM_REPORT, JSON.stringify({ checks, originalPgSzPt, longTitle: LONG_TITLE, longHeadings: LONG_SECTIONS + 1 }), 'utf-8')
   app.exit(checks.every((c) => c[1]) ? 0 : 1)
 }
 
@@ -225,6 +252,11 @@ async function launcher() {
   await verifyPdfWithExpected(join(out, 'work', '合同.pdf'), inlineExpect, 'inline 导出', false)
   await verifyPdfWithExpected(join(out, 'work', '协议.pdf'), docxPagePt(flipped), 'sourcePath 转换', true)
   await verifyDesignedPdf(join(out, 'work', '设计.pdf'))
+  await verifyPaginatedPdf(
+    join(out, 'work', '长文.pdf'),
+    payload.longTitle ?? LONG_TITLE,
+    payload.longHeadings ?? LONG_SECTIONS + 1
+  )
 
   const failed = results.filter((r) => !r.pass).length
   console.log(`\n${results.length - failed}/${results.length} checks passed`)
@@ -302,6 +334,139 @@ async function verifyDesignedPdf(pdfPath) {
   // evaluate fields); the literal frame is the load-bearing part.
   const pageChar = /(页|⻚)/
   check('frontmatter 设计: footer frame renders on body pages (第 X 页 共 Y 页)', pageChar.test(body) && body.includes('第') && body.includes('共'), `p2 footer frame=${pageChar.test(body) && body.includes('第') && body.includes('共')}`)
+}
+
+/** P0/P1 acceptance on a long, hint-free document. Four things must hold:
+ *  (a) every page's content sits inside the docx margins — a hint-free docx
+ *      that pages itself badly gets sliced by Chromium's own print paginator,
+ *      which produced text 13pt from the paper edge and a 1.3pt top gap;
+ *  (b) no page ends on a heading (keep-with-next carried it) and no page count
+ *      disagrees with the folio denominator (which is the SECTION count — an
+ *      extra Chromium slice would show up as a page carrying no folio);
+ *  (c) the PDF outline exists and counts the document's real headings;
+ *  (d) Title = the document's first heading, and headings use a real bold
+ *      face rather than the 400 face with synthetic bold. */
+/** Every font name the artifact actually names. Chromium writes the Latin
+ *  dictionaries as plain objects and everything else inside compressed streams
+ *  (object streams for font descriptors), so the raw scan alone reported two
+ *  names for a six-font document — measured, not assumed. Both layers are read
+ *  here: `/BaseFont` is the embedded subset's PostScript name (the ground truth
+ *  for "which face drew this"), `/FontName` adds Type3/Form references. */
+function pdfFontNames(raw) {
+  const names = new Set()
+  const scan = (buf) => {
+    const text = buf.toString('latin1')
+    for (const re of [/\/BaseFont\s*\/([A-Za-z0-9+.-]+)/g, /\/FontName\s*\/([A-Za-z0-9+.-]+)/g]) {
+      for (const m of text.matchAll(re)) names.add(m[1])
+    }
+  }
+  scan(raw)
+  const text = raw.toString('latin1')
+  let at = text.indexOf('stream')
+  let inflated = 0
+  while (at !== -1) {
+    let start = at + 'stream'.length
+    if (text[start] === '\r') start++
+    if (text[start] === '\n') start++
+    const end = text.indexOf('endstream', start)
+    if (end === -1) break
+    try {
+      scan(inflateSync(raw.subarray(start, end)))
+      inflated++
+    } catch {
+      // Not a deflated stream (image data, or `stream` inside a binary blob) —
+      // the raw pass already covered the uncompressed dictionaries.
+    }
+    at = text.indexOf('stream', end + 'endstream'.length)
+  }
+  return { names: [...names], inflated }
+}
+
+async function verifyPaginatedPdf(pdfPath, expectedTitle, headingCount) {
+  if (!existsSync(pdfPath)) {
+    check('长文分页: pdf exists', false, 'missing — the child conversion failed')
+    return
+  }
+  const raw = readFileSync(pdfPath)
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(raw), isEvalSupported: false }).promise
+  check('长文分页: the fixture really spans multiple pages', doc.numPages >= 3, `${doc.numPages} pages`)
+
+  const meta = await doc.getMetadata()
+  check('长文分页: PDF Title = 文档首个标题（不是转换页的 docx→pdf）',
+    meta?.info?.Title === expectedTitle, `Title="${meta?.info?.Title}" expect="${expectedTitle}"`)
+  check('长文分页: PDF Language 跟随文档（zh-CN）', !meta?.info?.Language || meta.info.Language === 'zh-CN', `Language="${meta?.info?.Language}"`)
+
+  const outline = await doc.getOutline()
+  const outlineTitles = []
+  const walk = (items) => {
+    for (const item of items ?? []) {
+      outlineTitles.push(item.title)
+      walk(item.items)
+    }
+  }
+  walk(outline)
+  check('长文分页: 大纲条目数 = 标题数（promoteHeadings 产出真 h1..h6）',
+    outlineTitles.length >= headingCount,
+    `outline=${outlineTitles.length} expect>=${headingCount}${outlineTitles.length ? `; ${outlineTitles.slice(0, 3).join(' | ')}` : ''}`)
+  check('长文分页: 大纲首条是文档标题', String(outlineTitles[0] ?? '').includes(expectedTitle), outlineTitles[0])
+
+  // Real bold faces: the weight-700 aliases name PostScript faces
+  // (PingFangSC-Semibold …). Without them the PDF names only the 400 face.
+  const { names: fonts, inflated } = pdfFontNames(raw)
+  const read = (re) => fonts.some((f) => re.test(f))
+  const fontList = `${fonts.join(', ') || 'NONE'} (${inflated} deflated streams scanned)`
+  check('长文分页: 标题用真粗体字面（不是 Regular + 合成加粗）', read(/Bold|Semibold/i), fontList)
+  check(
+    '长文分页: 中文字面来自别名表（PingFang / Songti / Heiti / Kaiti）',
+    read(/PingFang|Songti|Heiti|Kaiti|STSong|STHeiti/i),
+    fontList
+  )
+
+  // The generated docx declares no pgMar → the docx library's default 72pt on
+  // all four sides. Anything within ~60pt of an edge means the page was laid
+  // out by Chromium instead of the docx. The folio deliberately lives IN the
+  // bottom margin, so its `n / N` runs are excluded from the measurement.
+  const folioRe = /^(\d+)\s*\/\s*(\d+)$/
+  const headingPt = 13.5
+  const gap = { top: Infinity, bottom: Infinity, left: Infinity, right: Infinity }
+  const stranded = []
+  const folios = []
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n)
+    const vp = page.getViewport({ scale: 1 })
+    const content = await page.getTextContent()
+    const body = []
+    for (const item of content.items) {
+      const text = (item.str ?? '').trim()
+      if (!text) continue
+      if (folioRe.test(text)) {
+        folios.push({ page: n, text })
+        continue
+      }
+      const x = item.transform[4]
+      const y = item.transform[5]
+      const h = item.height || 0
+      body.push({ top: vp.height - (y + h), bottom: vp.height - y, left: x, right: x + (item.width || 0), h, text })
+    }
+    if (body.length === 0) continue
+    gap.top = Math.min(gap.top, Math.min(...body.map((b) => b.top)))
+    gap.bottom = Math.min(gap.bottom, Math.min(...body.map((b) => b.bottom)))
+    gap.left = Math.min(gap.left, Math.min(...body.map((b) => b.left)))
+    gap.right = Math.min(gap.right, vp.width - Math.max(...body.map((b) => b.right)))
+    const last = body[body.length - 1]
+    if (n < doc.numPages && last.h >= headingPt) stranded.push(`p${n}: ${last.text.slice(0, 12)}`)
+  }
+  const MIN_GAP = 60
+  const round1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : 'n/a')
+  check('长文分页: 每页内容都落在 docx 页边距内（没有被 Chromium 切到纸边）',
+    gap.top >= MIN_GAP && gap.bottom >= MIN_GAP && gap.left >= MIN_GAP && gap.right >= MIN_GAP,
+    `worst gaps top=${round1(gap.top)} bottom=${round1(gap.bottom)} left=${round1(gap.left)} right=${round1(gap.right)} (need >=${MIN_GAP})`)
+  check('长文分页: 每页都有 n / N 页码，且 N = PDF 页数（没有多出的切片页）',
+    folios.length === doc.numPages && folios.every((f) => f.text === `${f.page} / ${doc.numPages}`),
+    `${folios.length}/${doc.numPages} folios; ${folios.slice(0, 4).map((f) => f.text).join(', ')}`)
+  check('长文分页: 没有页尾孤行标题（keep-with-next 生效）', stranded.length === 0,
+    stranded.length ? stranded.join('; ') : 'no page ends on a heading')
 }
 
 /** w:pgSz twips → print points, from the docx that fed this pdf. */

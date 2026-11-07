@@ -45,9 +45,11 @@ describe('withPathLock', () => {
     const runs = [0, 1, 2].map((i) =>
       withPathLock('/wl/fifo.txt', async () => {
         order.push(`start-${i}`)
-        await new Promise<void>((r) => { releases[i] = r })
+        await new Promise<void>((r) => {
+          releases[i] = r
+        })
         order.push(`end-${i}`)
-      })
+      }),
     )
     await until(() => order.length === 1 && order[0] === 'start-0')
     releases[0]()
@@ -63,7 +65,9 @@ describe('withPathLock', () => {
     const releases: Array<() => void> = []
     const order: string[] = []
     const holder = withPathLock('/wl/barge.txt', async () => {
-      await new Promise<void>((r) => { releases[0] = r })
+      await new Promise<void>((r) => {
+        releases[0] = r
+      })
     })
     const first = withPathLock('/wl/barge.txt', async () => {
       order.push('first')
@@ -80,7 +84,9 @@ describe('withPathLock', () => {
 
   it('different paths never wait on each other', async () => {
     let releaseA!: () => void
-    const holderGate = new Promise<void>((r) => { releaseA = r })
+    const holderGate = new Promise<void>((r) => {
+      releaseA = r
+    })
     let aDone = false
     const a = withPathLock('/wl/a.txt', async () => {
       await holderGate
@@ -97,7 +103,11 @@ describe('withPathLock', () => {
 
   it('a failing fn releases the lock — the next caller proceeds, error still propagates', async () => {
     const p = '/wl/poison.txt'
-    await expect(withPathLock(p, async () => { throw new Error('boom') })).rejects.toThrow('boom')
+    await expect(
+      withPathLock(p, async () => {
+        throw new Error('boom')
+      }),
+    ).rejects.toThrow('boom')
     await expect(withPathLock(p, async () => 'ok')).resolves.toBe('ok')
   })
 })
@@ -142,5 +152,31 @@ describe('file-ops write serialization (real fs)', () => {
       expect(calls).toBe(2) // once before the read, once before the write — both checks ran
     } finally {
       statMock.mockImplementation(realStat as never)
-    }  })
+    }
+  })
+})
+
+describe('svcEditFile ambiguity gate (2026-11-01)', () => {
+  mkdirSync(DIR, { recursive: true })
+
+  it('non-unique old_str with multi:false is refused with count + line numbers, and writes nothing', async () => {
+    const target = join(DIR, 'ambig.txt')
+    writeFileSync(target, 'A\nB\nA\n', 'utf-8')
+    const res = await svcEditFile({ filePath: target, oldStr: 'A', newStr: 'Z', multi: false })
+    expect(res.success).toBe(false)
+    expect(res.replacements).toBe(0)
+    expect(res.error).toContain('old_str matches 2 places')
+    expect(res.error).toContain('Occurrences start at lines: 1, 3')
+    // The refusal is a refusal: the file is byte-identical afterwards.
+    expect(readFileSync(target, 'utf-8')).toBe('A\nB\nA\n')
+  })
+
+  it('multi:true keeps replacing every occurrence (the documented escape hatch)', async () => {
+    const target = join(DIR, 'ambig-all.txt')
+    writeFileSync(target, 'A\nB\nA\n', 'utf-8')
+    const res = await svcEditFile({ filePath: target, oldStr: 'A', newStr: 'Z', multi: true })
+    expect(res.success).toBe(true)
+    expect(res.replacements).toBe(2)
+    expect(readFileSync(target, 'utf-8')).toBe('Z\nB\nZ\n')
+  })
 })

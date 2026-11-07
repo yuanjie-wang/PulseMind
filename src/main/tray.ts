@@ -1,6 +1,7 @@
 import { Tray, Menu, app, nativeImage } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { trayIconName } from './app-icon'
 
 export interface TrayDeps {
   /** Read the persisted launch-at-login preference. */
@@ -30,13 +31,17 @@ function resourcePath(...segments: string[]): string {
 export function createTray(deps: TrayDeps): Tray {
   // macOS: pulseMind_tray.png (16px + @2x) as a template image — the OS recolors
   // the knocked-out pulse glyph from its alpha channel, so it stays visible on
-  // both light and dark menu bars. Windows: template images are a no-op there
-  // and the macOS glyph is near-invisible on the dark taskbar, so reuse the
-  // app's own pulseMind-win.ico (createFromPath loads ICO on Windows, and it is
-  // Tray's recommended format there; the file carries 256/48/32/16 sizes).
-  const iconPath = process.platform === 'win32'
-    ? resourcePath('pulseMind-win.ico')
-    : resourcePath('pulseMind_tray.png')
+  // both light and dark menu bars. Windows: template images are a no-op there,
+  // so a translucent glyph would just vanish; it takes its own .ico
+  // (createFromPath loads ICO on Windows, and ICO is Tray's recommended format
+  // there). Linux: setTemplateImage is a no-op TOO, which is what used to leave
+  // the white glyph invisible on a light panel — UOS ships one by default — so
+  // Linux takes a colour tile instead.
+  //
+  // The framing deliberately differs from the app icon (~89% vs ~98%): a
+  // notification-area glyph needs margin that a launcher/taskbar icon must not
+  // have. See TRAY_INSET in scripts/generate-icons.mjs.
+  const iconPath = resourcePath(trayIconName())
   const icon = nativeImage.createFromPath(iconPath)
   if (process.platform === 'darwin') icon.setTemplateImage(true)
   const tray = new Tray(icon)

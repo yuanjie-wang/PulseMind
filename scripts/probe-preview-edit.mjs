@@ -24,8 +24,10 @@
  *      refuses to edit;
  *   6. saving an html bumps the iframe key (the frame really remounts);
  *   7. a rejected write (path jail) surfaces the error as a toast;
- *   8. mount cost of the CM editor on ~32KB / ~200KB code files (the 1MB
- *      edit gate stays until this number says otherwise).
+ *   8. mount cost of the CM instance on ~32KB / ~83KB code files — since
+ *      PLAN-codemirror-view (2026-11-01) the VIEW half mounts it first and
+ *      the 编辑 flip is a same-node reconfigure (both halves measured);
+ *      the 1MB edit gate stays until these numbers say otherwise.
  *
  * Usage: node scripts/probe-preview-edit.mjs [--headed]
  */
@@ -42,13 +44,21 @@ import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { buildAntdTheme } from './src/renderer/src/theme/tokens'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { makeDraftFromDisk } from './src/renderer/src/stores/preview-edit'
 import { WorkspacePane } from './src/renderer/src/components/workbench/WorkspacePane'
+import { previewCmHasFocus, openPreviewSearchPanel } from './src/renderer/src/components/preview/preview-cm-seam'
 
 let root = null
 window.__mount = () => {
   if (root) root.unmount()
+  // The app always paints under the palette sheet (main.tsx applies it pre-
+  // React) — without it every var() in component styles is invalid at
+  // computed-value time and nukes whole declarations (observed: an outline
+  // shorthand collapsing to '3px none').
+  installThemeVars()
+  applyThemeAttr('light')
   usePreviewPaneStore.getState().setWorkspaceDir('/w')
   root = createRoot(document.getElementById('root'))
   root.render(
@@ -62,6 +72,9 @@ window.__mount = () => {
 }
 window.__store = usePreviewPaneStore
 window.__makeDraft = makeDraftFromDisk
+// review_20261103 高4: AppLayout 的 ⌘F fork 通过 seam 问「预览编辑器持焦吗」
+// ——应用菜单加速器先吃掉键，searchKeymap 自己的 ⌘F 永远到不了。
+window.__pmSeam = { hasFocus: previewCmHasFocus, open: openPreviewSearchPanel }
 window.__ready = true
 `
 
@@ -130,6 +143,7 @@ await page.addScriptTag({
     '/w/pic.png': 'PNGBYTES',
     '/w/huge.md': '# big\\n' + 'x'.repeat(1024 * 1024 + 100),
     '/w/deny.md': '# deny\\n',
+    '/w/diff.txt': '# 标题\\n正文\\n',
     '/w/perf32.ts': ${JSON.stringify(PY32)},
     '/w/perf200.ts': ${JSON.stringify(PY200)},
   };
@@ -359,33 +373,308 @@ await menuClick('保存')
 await page.getByText('路径被拒绝').waitFor()
 check('a rejected save shows the error as a toast (D9)', true)
 
-/* ── 11. CM mount cost on real-size code files (informs the 1MB gate). ── */
-const mountCost = async (p) => {
-  await openFile(p)
-  const t0 = Date.now()
-  await menuClick('编辑')
-  await cmContent().waitFor({ timeout: 10000 })
-  const ms = Date.now() - t0
-  // A typing latency sample: 10 chars through the real key pipeline.
-  await cmContent().click()
-  await caretToEnd()
-  const baseLen = await page.evaluate(() => window.__pmPreviewCM.state.doc.length)
-  const t1 = Date.now()
-  await page.keyboard.type('0123456789')
-  await page.waitForFunction((base) => window.__pmPreviewCM.state.doc.length > base, baseLen)
-  const typingMs = Date.now() - t1
-  // Leave edit mode (the toggle reads 查看 while editing; the draft is
-  // dropped with the file switch that follows).
-  await menuClick('预览')
-  await page.waitForTimeout(60)
-  return { mountMs: ms, typingMs }
+/* ── 11. The text halves share ONE CM instance (PLAN-codemirror-view). ──
+ * The VIEW half mounts the lazy editor first (read-only shape, probe seam
+ * live, doc text readable); 编辑 reconfigures the SAME node — scroll, undo
+ * history and drafts survive the flip. */
+await page.evaluate(() => { window.__cmNode = null })
+// Playwright serializes the predicate — closure vars don't travel; minLen
+// rides as the arg (perf32 needs >1KB, perf200 >100KB to tell the hosts
+// apart across a switch).
+const viewReady = (minLen) => {
+  const host = document.querySelector('[data-pm-cm-editor]')
+  const view = window.__pmPreviewCM
+  return !!host && host.getAttribute('data-pm-cm-mode') === 'view' &&
+    !host.querySelector('[contenteditable="true"]') && !!view && view.state.doc.length > minLen
 }
-const m32 = await mountCost('/w/perf32.ts')
-check('~32KB code file: CM edit mount < 1000ms (was ~128ms of Prism full-render for VIEW)', m32.mountMs < 1000, JSON.stringify(m32))
-check('~32KB code file: 10-char typing round-trip < 400ms', m32.typingMs < 400, `typing=${m32.typingMs}ms`)
-const m200 = await mountCost('/w/perf200.ts')
-check('~200KB code file: CM edit mount < 1500ms (viewport rendering, not full-doc DOM)', m200.mountMs < 1500, JSON.stringify(m200))
-check('~200KB code file: 10-char typing round-trip < 400ms', m200.typingMs < 400, `typing=${m200.typingMs}ms`)
+await page.locator(`.pm-ws-row[data-ws-path="/w/perf32.ts"] .pm-ws-name`).click()
+const v32t0 = Date.now()
+await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, '/w/perf32.ts')
+await page.waitForFunction(viewReady, 1000, { timeout: 10000 })
+const view32 = Date.now() - v32t0
+check('text view renders through the CM instance (mode=view, no contenteditable — no cursor)', true)
+check('…and the view doc text is the file source (the probe seam is live in view too)',
+  ((await docText()) ?? '').startsWith("import { join } from 'node:path'"), '')
+check('~32KB code file: CM view mount < 1000ms (lazy chunk + first parse)', view32 < 1000, `view=${view32}ms`)
+await page.evaluate(() => { window.__cmNode = document.querySelector('[data-pm-cm-editor]'); return true })
+const f32t0 = Date.now()
+await menuClick('编辑')
+await cmContent().waitFor({ timeout: 10000 })
+const flip32 = Date.now() - f32t0
+const kept32 = await page.evaluate(() => document.querySelector('[data-pm-cm-editor]') === window.__cmNode)
+check('view→edit flip reconfigures in place (the CM node survives — the unification claim)', kept32, `same node=${kept32}`)
+check('…and the flip is a reconfigure, not a mount (< 600ms)', flip32 < 600, `flip=${flip32}ms`)
+await cmContent().click()
+await caretToEnd()
+const base32 = await page.evaluate(() => window.__pmPreviewCM.state.doc.length)
+const t32 = Date.now()
+await page.keyboard.type('0123456789')
+await page.waitForFunction((base) => window.__pmPreviewCM.state.doc.length > base, base32)
+check('~32KB code file: 10-char typing round-trip < 400ms', Date.now() - t32 < 400, `typing=${Date.now() - t32}ms`)
+await menuClick('预览') // back to view; the draft rides the store until the next switch
+await page.waitForTimeout(60)
+
+await page.locator(`.pm-ws-row[data-ws-path="/w/perf200.ts"] .pm-ws-name`).click()
+const v200t0 = Date.now()
+await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, '/w/perf200.ts')
+try {
+  await page.waitForFunction(viewReady, 50000, { timeout: 10000 })
+} catch (err) {
+  const dump = await page.evaluate(() => ({
+    host: !!document.querySelector('[data-pm-cm-editor]'),
+    mode: document.querySelector('[data-pm-cm-editor]')?.getAttribute('data-pm-cm-mode') ?? null,
+    editable: !!document.querySelector('[data-pm-cm-editor] [contenteditable="true"]'),
+    seam: !!window.__pmPreviewCM,
+    docLen: window.__pmPreviewCM ? window.__pmPreviewCM.state.doc.length : -1,
+    addr: document.querySelector('[data-ws-address-path]')?.textContent ?? null,
+  }))
+  console.log('  [perf200 dump]', JSON.stringify(dump))
+  throw err
+}
+const view200 = Date.now() - v200t0
+// 夹具实情：tsSource(125) 实测 83KB（旧探针的「~200KB」标签从未对过账，
+// dump 抓出 docLen=83302）——标签按实数落。
+check('~83KB code file: CM view mount < 1500ms (viewport rendering, not full-doc DOM)', view200 < 1500, `view=${view200}ms`)
+await menuClick('编辑')
+await cmContent().waitFor({ timeout: 10000 })
+await cmContent().click()
+await caretToEnd()
+const base200 = await page.evaluate(() => window.__pmPreviewCM.state.doc.length)
+const t200 = Date.now()
+await page.keyboard.type('0123456789')
+await page.waitForFunction((base) => window.__pmPreviewCM.state.doc.length > base, base200)
+check('~83KB code file: 10-char typing round-trip < 400ms', Date.now() - t200 < 400, `typing=${Date.now() - t200}ms`)
+await menuClick('预览')
+await page.waitForTimeout(60)
+
+/* ── 12. Search + completion (user 2026-11-01, reversing the weak-IDE ruling
+ * for these two). ⌘F must work while READING: the view content carries
+ * tabindex so the keymap reaches it even without contenteditable; typing in
+ * view stays inert (read-only state). Completion lives in the edit group only. */
+await page.locator(`.pm-ws-row[data-ws-path="/w/perf32.ts"] .pm-ws-name`).click()
+await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, '/w/perf32.ts')
+await page.waitForFunction(viewReady, 1000, { timeout: 10000 })
+await page.locator('[data-pm-cm-editor] .cm-content').click()
+const lenBeforeType = await page.evaluate(() => window.__pmPreviewCM.state.doc.length)
+await page.keyboard.type('ZZZ')
+await page.waitForTimeout(80)
+check('view mode: typing is inert (read-only state, no contenteditable)',
+  (await page.evaluate(() => window.__pmPreviewCM.state.doc.length)) === lenBeforeType, '')
+await page.keyboard.press('Meta+F')
+await page.locator('.cm-panel.cm-search').waitFor({ timeout: 3000 })
+check('view mode: ⌘F opens the search panel (content is focusable via tabindex)', true)
+// 2026-11-02: panel i18n + checkbox centering. The harness mounts
+// TranslationProvider initialLocale="zh", so the panel must speak Chinese —
+// the button labels and the placeholder all ride state.phrase().
+{
+  const panelText = await page.locator('.cm-panel.cm-search').innerText()
+  const zhOk = ['下一处', '上一处', '全部', '区分大小写', '正则', '全字匹配'].every((w) => panelText.includes(w))
+  const placeholder = await page.locator('.cm-panel.cm-search input[name="search"]').getAttribute('placeholder')
+  check('…panel labels ride the zh phrases (buttons + Find placeholder)', zhOk && placeholder === '查找', `placeholder=${placeholder}`)
+  const centering = await page.evaluate(() => {
+    const label = document.querySelector('.cm-panel.cm-search label')
+    const box = label?.querySelector('input[type=checkbox]')
+    if (!label || !box) return { ok: false, display: null }
+    const ls = getComputedStyle(label)
+    const lb = box.getBoundingClientRect()
+    // The checkbox's vertical center must sit within 2px of the label's
+    // text line box center (inline-flex + align-items center).
+    const lt = label.getBoundingClientRect()
+    const textCenter = lt.top + lt.height / 2
+    return {
+      // display blockifies to `flex` when the label is itself a flex item of
+      // the round-2 panel row — the internal centering is what matters.
+      ok: ['inline-flex', 'flex'].includes(ls.display) && ls.alignItems === 'center' && Math.abs(lb.top + lb.height / 2 - textCenter) <= 2,
+      display: ls.display, offset: +(lb.top + lb.height / 2 - textCenter).toFixed(1),
+    }
+  })
+  check('…checkbox labels are vertically centered (inline-flex + align-items)', centering.ok, `display=${centering.display} offset=${centering.offset}px`)
+  // Dark mode (2026-11-02 round 3): CM's baseTheme paints .cm-button a LIGHT
+  // gradient via background-image — the editor root is always cm-light (no
+  // {dark:true} theme exists), so the gradient rode over the card color and
+  // glared in dark. background-COLOR alone does not override it. Flip the
+  // palette attr (the sheet carries both blocks) and read computed styles.
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+  const darkBtn = await page.evaluate(() => {
+    const b = document.querySelector('.cm-panel.cm-search button[name="next"]')
+    const cs = getComputedStyle(b)
+    return { img: cs.backgroundImage, bg: cs.backgroundColor }
+  })
+  check('dark mode: 下一处 button wears the dark card, no light gradient', darkBtn.img === 'none' && darkBtn.bg === 'rgb(38, 38, 38)', JSON.stringify(darkBtn))
+  check('dark mode: 下一处 button wears the dark card, no light gradient', darkBtn.img === 'none' && darkBtn.bg === 'rgb(38, 38, 38)', JSON.stringify(darkBtn))
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+}
+// The panel commits the query on keyup/change — fill() only fires `input`,
+// so type for real (the field is focused by openSearchPanel).
+await page.keyboard.type('stage0Validate')
+await page.waitForFunction(() => document.querySelectorAll('.cm-searchMatch').length >= 1, undefined, { timeout: 3000 })
+const matches = await page.evaluate(() => document.querySelectorAll('.cm-searchMatch').length)
+check('…and the query highlights its match in the viewport', matches >= 1, `matches=${matches}`)
+await page.keyboard.press('Escape')
+await page.waitForFunction(() => !document.querySelector('.cm-panel.cm-search'), undefined, { timeout: 3000 })
+check('…and Escape closes the panel', true)
+
+await menuClick('编辑')
+await cmContent().waitFor({ timeout: 10000 })
+await cmContent().click()
+await caretToEnd()
+await page.keyboard.type('\nstage0V')
+await page.locator('.cm-tooltip-autocomplete').waitFor({ timeout: 3000 })
+const option = await page.evaluate(() => [...document.querySelectorAll('.cm-tooltip-autocomplete li')].map((li) => li.textContent || '').find((t) => t.includes('stage0Validate')) ?? null)
+check('edit mode: typing pops the completion tooltip with the in-scope symbol', option !== null, `option=${JSON.stringify(option)}`)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(80)
+check('…and Escape dismisses it', (await page.evaluate(() => !!document.querySelector('.cm-tooltip-autocomplete'))) === false)
+await menuClick('预览')
+await page.waitForTimeout(60)
+
+/* ── 13. Agent-change review diff (2026-11-01 pivot): after an agent
+ * write/edit lands, the VIEW half highlights what the AGENT changed —
+ * pre-change base vs the fresh disk text, read-only, NO accept/reject
+ * controls. The user's own typing earns no diff (user ruling). The probe
+ * drives the store the way usePreviewPaneSync does (the harness mounts
+ * WorkspacePane, not ChatView's sync): loadedTexts is already recorded by
+ * the real read path, then spec + bumpReload. ── */
+await page.locator('.pm-ws-row[data-ws-path="/w/diff.txt"] .pm-ws-name').click()
+await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, '/w/diff.txt')
+await page.waitForFunction(() => {
+  const host = document.querySelector('[data-pm-cm-editor]')
+  return !!host && host.getAttribute('data-pm-cm-mode') === 'view' && !!window.__pmPreviewCM && window.__pmPreviewCM.state.doc.toString().startsWith('# 标题')
+}, undefined, { timeout: 10000 })
+check('view loads the file through the CM instance (loadedTexts recorded by the real read path)',
+  (await page.evaluate((p) => window.__store.getState().loadedTexts[p] === '# 标题\n正文\n', '/w/diff.txt')) === true)
+// The agent edit lands: disk changes, the sync snapshots the pre-change
+// loadedText into the base AT EVENT time (the reload's own read would
+// overwrite it) and resets the explicit hide.
+await page.evaluate(() => {
+  const st = window.__store.getState()
+  window.__files['/w/diff.txt'] = '# 标题\n正文已改写\n新增一行\n'
+  st.setAgentDiffBase('/w/diff.txt', st.loadedTexts['/w/diff.txt'])
+  st.setDiffVisible('/w/diff.txt', true)
+  st.bumpReload('/w/diff.txt')
+})
+await page.waitForFunction(() => document.querySelectorAll('.cm-changedLine').length >= 1, undefined, { timeout: 3000 })
+check('an agent change auto-shows the review diff in VIEW mode (自动显示)', true)
+check('…with no accept/reject controls (mergeControls: false, user ruling)',
+  (await page.evaluate(() => document.querySelectorAll('.cm-deletedChunk button').length)) === 0)
+await menuClick('隐藏改动')
+await page.waitForTimeout(150)
+check('⋯ 隐藏改动 drops the review diff', (await page.locator('.cm-changedLine').count()) === 0)
+await menuClick('显示改动')
+await page.waitForTimeout(150)
+check('…显示改动 brings it back (the base survives the toggle)', (await page.locator('.cm-changedLine').count()) >= 1)
+// Edit mode NEVER mounts the merge — the user's own typing earns no diff.
+await menuClick('编辑')
+await cmContent().waitFor({ timeout: 10000 })
+check('edit mode drops the review diff (user typing is diff-free)', (await page.locator('.cm-changedLine').count()) === 0)
+await cmContent().click()
+await caretToEnd()
+await page.keyboard.type('我的输入')
+await page.waitForTimeout(200)
+check('…typing in edit mode shows no markers either', (await page.locator('.cm-changedLine').count()) === 0)
+// Saving clears the base (the user's own text replaced the disk): back in
+// view, nothing highlights even though the store draft adoption re-reads.
+await page.keyboard.press('Meta+S')
+await page.waitForTimeout(200)
+await menuClick('预览')
+await page.waitForTimeout(150)
+check('a save clears the review base — view shows no diff afterwards', (await page.locator('.cm-changedLine').count()) === 0)
+check('…and the base map is clean', (await page.evaluate(() => Object.keys(window.__store.getState().agentDiffBases).length)) === 0)
+
+/* ── ⋯菜单的 搜索/替换（2026-11-02 round 2）：真实菜单链路 ──
+ * view 态点 替换 → 翻 source（park 意图）→ 面板带替换行打开；替换真正落
+ * doc 并经 onChange 进草稿。顺带钉面板 row 居中（flex）、关闭钮命中面、
+ * 命中高亮的橙色描边（round 2 的 #1/#4/#6）。 */
+await openFile('/w/diff.txt')
+// viewReady gates on doc.length > 1000 (the perf fixtures' bar) — diff.txt
+// is 7 chars; wait on the mount + view-mode attr directly.
+await page.waitForFunction(() => {
+  const host = document.querySelector('[data-pm-cm-editor]')
+  return !!host && host.getAttribute('data-pm-cm-mode') === 'view' && !!window.__pmPreviewCM
+}, undefined, { timeout: 10000 })
+await menuClick('查找替换')
+await page.locator('.cm-panel.cm-search input[name="replace"]').waitFor({ timeout: 3000 })
+const flippedMode = await page.evaluate(() => document.querySelector('[data-pm-cm-editor]')?.getAttribute('data-pm-cm-mode'))
+check('menu 查找替换 in view mode flips to source — panel carries the replace row', flippedMode === 'edit', `mode=${flippedMode}`)
+// openSearchPanel focuses the search field — type the needle, then the
+// replacement, then drive the real 替换 button. CJK rides insertText (no
+// keyup → no panel commit): the replace-field click blurs the search field
+// and its `change` commits the needle; the button click likewise commits
+// the replacement before the handler runs.
+await page.keyboard.type('标题')
+await page.locator('.cm-panel.cm-search input[name="replace"]').click()
+await page.keyboard.type('替换后')
+// CM's replace rhythm: the first 替换 SELECTS the match, the second (selection
+// already on the match) replaces it.
+await page.locator('.cm-panel.cm-search button[name="replace"]').click()
+await page.locator('.cm-panel.cm-search button[name="replace"]').click()
+await page.waitForFunction(() => window.__pmPreviewCM.state.doc.toString().includes('替换后'), undefined, { timeout: 3000 })
+const draftHas = await page.evaluate(() => (window.__store.getState().drafts['/w/diff.txt']?.content ?? '').includes('替换后'))
+check('…replacement lands in the doc AND rides the draft pipeline (onChange)', draftHas)
+// Row centering: input / buttons / labels share one center line (flex).
+const align = await page.evaluate(() => {
+  const panel = document.querySelector('.cm-panel.cm-search')
+  const cs = getComputedStyle(panel)
+  const c = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2 }
+  const input = panel.querySelector('input[name="search"]')
+  const btn = panel.querySelector('button[name="next"]')
+  const label = panel.querySelector('label')
+  return {
+    flex: cs.display === 'flex' && cs.flexWrap === 'wrap' && cs.alignItems === 'center',
+    spread: Math.max(Math.abs(c(input) - c(btn)), Math.abs(c(input) - c(label)), Math.abs(c(btn) - c(label))),
+  }
+})
+check('panel rows are flex-centered (input/buttons/labels one center line)', align.flex && align.spread <= 2, `spread=${align.spread.toFixed(1)}px`)
+const closeBox = await page.evaluate(() => {
+  const r = document.querySelector('.cm-panel.cm-search button[name="close"]').getBoundingClientRect()
+  return `${Math.round(r.width)}x${Math.round(r.height)}`
+})
+check('close button is a real hit target (≥20px square)', (() => { const [w, h] = closeBox.split('x').map(Number); return w >= 20 && h >= 20 })(), closeBox)
+// Match outline (round-2 #6): the replacement above consumed the only match —
+// search a fresh needle so a live match exists, then read the outline.
+await page.locator('.cm-panel.cm-search input[name="search"]').click()
+await page.keyboard.press('Meta+A')
+await page.keyboard.type('正文')
+// CJK rides insertText (no keyup → no panel commit); Enter's keyup commits.
+await page.keyboard.press('Enter')
+await page.waitForFunction(() => document.querySelectorAll('.cm-searchMatch').length >= 1, undefined, { timeout: 3000 })
+const outline = await page.evaluate(() => {
+  const cs = getComputedStyle(document.querySelector('.cm-searchMatch'))
+  return `${cs.outlineWidth} ${cs.outlineStyle}`
+})
+check('match highlight wears the warn outline rectangle', outline === '1px solid', `outline=${outline}`)
+await page.keyboard.press('Escape')
+await page.waitForFunction(() => !document.querySelector('.cm-panel.cm-search'), undefined, { timeout: 3000 })
+// Merged entry in source mode: direct open (panel already carries the
+// replace row) — no second flip.
+await menuClick('查找替换')
+await page.locator('.cm-panel.cm-search').waitFor({ timeout: 3000 })
+check('menu 查找替换 in source mode opens the panel directly', true)
+await page.keyboard.press('Escape')
+await page.waitForFunction(() => !document.querySelector('.cm-panel.cm-search'), undefined, { timeout: 3000 })
+
+// ── §menu-fork: AppLayout 的 ⌘F 分流（review_20261103 高4）─────────────────
+// 应用菜单加速器（mac）/ before-input fallback（win+linux）在渲染层任何
+// keymap 之前吃掉 ⌘F，所以主窗里 searchKeymap 自己的 ⌘F 不可达——AppLayout
+// 收到 open-search 时按「预览编辑器是否持焦」分流到 seam。这里在真 CM 实例
+// 上钉 seam 的焦点语义与 fork 出口；加速器先吃键这一前提是 Electron 原生
+// 行为，普通 Chromium 探不到（也是本批既有 ⌘F 检查在探针里一直绿的原因）。
+await page.locator('.cm-content').click()
+await page.waitForTimeout(80)
+const seamFocused = await page.evaluate(() => window.__pmSeam.hasFocus())
+check('CM 持焦时 seam 报告持焦（AppLayout fork 的条件）', seamFocused === true, `hasFocus=${seamFocused}`)
+const forkFired = await page.evaluate(() => window.__pmSeam.open())
+await page.locator('.cm-panel.cm-search').waitFor({ timeout: 3000 })
+check('fork 出口：seam open 打开搜索面板（聚焦时 ⌘F = CM 面板）', forkFired === true, `open=${forkFired}`)
+await page.keyboard.press('Escape')
+await page.waitForFunction(() => !document.querySelector('.cm-panel.cm-search'), undefined, { timeout: 3000 })
+await page.evaluate(() => {
+  if (document.activeElement) document.activeElement.blur()
+  document.body.focus()
+})
+await page.waitForTimeout(80)
+const seamBlurred = await page.evaluate(() => window.__pmSeam.hasFocus())
+check('焦点移出编辑器后 seam 报告失焦（⌘F 仍 = 导航搜索页）', seamBlurred === false, `hasFocus=${seamBlurred}`)
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

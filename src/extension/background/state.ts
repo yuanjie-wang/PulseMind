@@ -13,6 +13,7 @@ const KEY_SESSION_TABS = 'sessionTabs'
 const KEY_OPEN_PANELS = 'openPanels'
 const KEY_APPROVAL_MODES = 'approvalModes'
 const KEY_MODEL_IDS = 'modelIds'
+const KEY_TAB_SCOPES = 'tabScopes'
 
 type IdMap = Record<string, string>
 type TabMap = Record<string, number>
@@ -94,6 +95,53 @@ export async function clearSession(sessionId: string): Promise<void> {
     write(KEY_TAB_SESSIONS, tabSessions),
     write(KEY_SESSION_TABS, sessionTabs),
   ])
+}
+
+/** The tab's 历史会话 scope (2026-11-03): one Chrome tab owns one scope, so its
+ *  history list survives refresh and navigation (a refresh keeps the tab id)
+ *  while another tab's list stays separate. Minted once per tab and kept in
+ *  session storage — the same store as the tab↔session binding, because both
+ *  must outlive MV3 worker restarts.
+ *
+ *  A random token rather than the raw tab id: tab ids are only unique within
+ *  one browser session and Chrome reuses them across restarts, while this
+ *  storage area is cleared when the browser closes — so a new tab can never
+ *  inherit a previous browser session's conversations.
+ *
+ *  Minting is serialized through a promise chain (review_20261104 中4): the
+ *  read-modify-write spans the whole map, and two concurrent first calls for
+ *  the same tab (panel/attach 的 inventory 与首条消息的 createSession 竞争)
+ *  each minted off the stale map — the loser's write clobbered the winner's,
+ *  but the loser's token was already stamped on a conversation, which then
+ *  never appeared in its own tab's list. Joining the chain makes the second
+ *  caller read the map only after the first one's write has landed. */
+let tabScopeChain: Promise<unknown> = Promise.resolve()
+
+export async function getTabScope(tabId: number): Promise<string> {
+  const run = tabScopeChain.then(async () => {
+    const map = await read<IdMap>(KEY_TAB_SCOPES, {})
+    const existing = map[String(tabId)]
+    if (existing) return existing
+    const minted = `tab_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`
+    map[String(tabId)] = minted
+    await write(KEY_TAB_SCOPES, map)
+    return minted
+  })
+  // A failed mint must not poison every queued caller behind it.
+  tabScopeChain = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
+/** Every scope minted in this browser session (review_20261104 中3): sent
+ *  with `session.list` so the service can tell live scopes from dead ones
+ *  (previous browser sessions — their storage was cleared on exit) and hand
+ *  the dead rows back to adoption instead of letting them strand. */
+export async function getLiveTabScopes(): Promise<string[]> {
+  const map = await read<IdMap>(KEY_TAB_SCOPES, {})
+  return Object.values(map)
 }
 
 export async function isPanelOpen(tabId: number): Promise<boolean> {

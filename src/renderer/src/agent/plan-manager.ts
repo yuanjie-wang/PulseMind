@@ -254,7 +254,7 @@ export class PlanManager {
         this.plan,
         String(t.input?.objective || ''),
         t.input?.items,
-        { msgId: this.anchorOf(t.id) },
+        { msgId: this.anchorOf(t.id), fresh: t.input?.fresh === true },
       )
       this.plan = result.plan
       this.notifyPlanChange()

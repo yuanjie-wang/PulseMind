@@ -13,6 +13,7 @@ import { isPanelRequest, OPEN_OPTIONS_MESSAGE_TYPE, type ConnectionState } from 
 import { resetCspVerdict } from './cdp'
 import { loadConfig, saveConfig, type ExtensionConfig } from './config'
 import { discoverService } from './discovery'
+import { getInstanceId } from './instance'
 import { PanelBridge } from './panel-bridge'
 import { routeToolCall } from './tool-router'
 import { WsClient } from './ws-client'
@@ -135,6 +136,11 @@ async function runEnsureClient(forceRediscover: boolean): Promise<void> {
       wsUrl: state.discovery.wsUrl,
       token,
       clientId: CLIENT_ID,
+      // Chrome and 360 load the very same extension: the constant clientId used
+      // to make their connections replace each other (close 4409) in a loop,
+      // and their histories shared one origin. The per-install id — persisted
+      // across restarts — is what keeps them apart (2026-11-05).
+      instanceId: await getInstanceId(),
       clientVersion: chrome.runtime.getManifest().version,
       // 单一来源（full_20261011 M12-P1-3/X9）：字面量曾与共享常量各走各的——
       // 抬一次 PROTOCOL_VERSION，扩展面板就因握手被拒且 fatal 而致命断连。
@@ -230,11 +236,19 @@ chrome.runtime.onMessage.addListener((msg: { type?: string }, sender, sendRespon
   if (msg?.type === OPEN_OPTIONS_MESSAGE_TYPE) {
     // The panel's 打开设置 banner button: openOptionsPage exists only in
     // extension contexts (a content script's chrome.runtime lacks it), so the
-    // content script forwards here. Fire-and-forget — the sender wants no reply.
-    chrome.runtime.openOptionsPage().catch((err: unknown) => {
-      console.warn('[PulseMind] open options failed:', err instanceof Error ? err.message : err)
-    })
-    return false
+    // content script forwards here. The sender DOES await a reply: a branch
+    // that returns without sendResponse rejects its promise-shaped sendMessage
+    // ("The message port closed before a response was received") — a
+    // false-alarm warn on every SUCCESSFUL open (review_20261010 低5). The
+    // success path answers {ok:true}; genuine failures answer {ok:false}.
+    chrome.runtime
+      .openOptionsPage()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err: unknown) => {
+        console.warn('[PulseMind] open options failed:', err instanceof Error ? err.message : err)
+        sendResponse({ ok: false })
+      })
+    return true // async response — the receipt above needs the port kept open
   }
   if (msg?.type === RECONNECT_MESSAGE_TYPE) {
     void ensureClient(true).then(() => sendResponse(currentState()))

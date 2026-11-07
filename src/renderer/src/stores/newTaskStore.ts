@@ -18,8 +18,11 @@
 
 import { create } from 'zustand'
 
-export type NewTaskMode = 'chat' | 'project'
-export type NewTaskShakeTarget = 'composer' | 'projectPicker'
+/** 新任务形态（PLAN-0.4.0 M8.4；PLAN-layout-modes 二期增 'browser'）：
+ *  chat 普通对话 / project 项目对话 / browser 浏览器任务——物化会话时浏览器
+ *  任务额外绑定该会话的浏览器主视图（模式跟任务走，useChatController）。 */
+export type NewTaskMode = 'chat' | 'project' | 'browser'
+export type NewTaskShakeTarget = 'composer' | 'projectPicker' | 'browserUrl'
 
 export interface NewTaskShake {
   target: NewTaskShakeTarget | null

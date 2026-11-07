@@ -1,6 +1,6 @@
 {
   "name": "pulsemind",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "PulseMind Desktop AI Chat Application",
   "author": {
     "name": "wangyuanjie",
@@ -48,11 +48,13 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "onnxruntime-web": "1.23.2",
     "@ant-design/icons": "^5.5.0",
     "@ant-design/x": "^2.6.0",
     "@ant-design/x-markdown": "^2.5.0",
     "@ant-design/x-sdk": "^2.8.0",
-    "@codemirror/commands": "^6.11.1",
+    "@codemirror/autocomplete": "^6.20.2",
+    "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-go": "^6.0.1",
@@ -66,13 +68,15 @@
     "@codemirror/lang-rust": "^6.0.2",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/lang-yaml": "^6.1.3",
-    "@codemirror/language": "^6.13.1",
-    "@codemirror/legacy-modes": "^6.5.5",
-    "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.15",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/merge": "^6.12.2",
+    "@codemirror/search": "^6.7.0",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
     "@electron/rebuild": "^4.0.4",
     "@eslint/js": "^9.39.0",
-    "@lezer/highlight": "^1.2.5",
+    "@lezer/highlight": "^1.2.3",
     "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^9.6.0",
     "@types/chrome": "^0.2.9",
@@ -132,7 +136,14 @@
       "!out/probe-*",
       "!**/*.map",
       "!.codegraph{,/**/*}",
-      "!node_modules/fluent-ffmpeg/coverage/**"
+      "!node_modules/fluent-ffmpeg/coverage/**",
+      "!node_modules/better-sqlite3/build/Release/obj/**",
+      "!node_modules/better-sqlite3/deps/**",
+      "!node_modules/better-sqlite3/bin/**",
+      "!node_modules/better-sqlite3/src/**",
+      "!node_modules/highlight.js/styles/**",
+      "!node_modules/highlight.js/scss/**",
+      "!node_modules/highlight.js/es/**"
     ],
     "extraResources": [
       {
@@ -167,6 +178,18 @@
         "to": "resources/pulseMind_tray@2x.png"
       },
       {
+        "from": "resources/pulseMind-window.png",
+        "to": "resources/pulseMind-window.png"
+      },
+      {
+        "from": "resources/pulseMind-win-tray.ico",
+        "to": "resources/pulseMind-win-tray.ico"
+      },
+      {
+        "from": "resources/pulseMind-tray-color.png",
+        "to": "resources/pulseMind-tray-color.png"
+      },
+      {
         "from": "templates",
         "to": "templates",
         "filter": [
@@ -178,6 +201,22 @@
         "to": "chromium",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "resources/ocr-models",
+        "to": "ocr-models",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/onnxruntime-web/dist",
+        "to": "ort-web",
+        "filter": [
+          "ort.node.min.js",
+          "ort-wasm-simd-threaded.mjs",
+          "ort-wasm-simd-threaded.wasm"
         ]
       },
       {
@@ -226,7 +265,7 @@
       ]
     },
     "linux": {
-      "icon": "resources/pulseMind.png",
+      "icon": "resources/icons-linux",
       "target": [
         "AppImage",
         "deb"

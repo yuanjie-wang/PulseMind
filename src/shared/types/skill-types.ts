@@ -28,7 +28,18 @@ export interface SkillDefinition {
 }
 
 export interface SkillPreferences {
+  /**
+   * 旧格式的「启用名单」快照，仅供回读/诊断。权威开关是 `disabledSkills`：
+   * 2026-11-04 起技能默认开启（用户裁定「把缺省当作打开」），SkillManager
+   * 只按 disabledSkills 计算，这一列不再驱动任何状态。
+   */
   enabledSkills: string[]
+  /**
+   * 显式关掉的技能。缺省/空数组 = 全部开启：全新安装、以及带着旧格式偏好
+   * 升级上来的机器都是这个缺省值（他们从未在新格式里关过任何技能）。此后
+   * 新出现的技能（升级带来的模板技能、zip 导入）同样默认开启。
+   */
+  disabledSkills?: string[]
   skillKeywords?: Record<string, string[]>
   /** IDs of conversations already processed for experience extraction. */
   processedConversations?: string[]
@@ -47,8 +58,8 @@ export interface SkillPreferences {
 export interface SkillPreferencesPatch {
   /** Keyword backfill: entries are added only when the skill has none yet. */
   setKeywordIfAbsent?: Record<string, string[]>
-  /** Replace the enabled-skills list; keywords and processed ids are kept. */
-  replaceEnabledSkills?: string[]
-  /** Drop one skill's enabled entry and its keywords. */
+  /** Replace the explicitly-disabled list; keywords and processed ids are kept. */
+  replaceDisabledSkills?: string[]
+  /** Drop one skill's entries (enabled snapshot, disabled list) and its keywords. */
   removeSkill?: string
 }

@@ -20,6 +20,7 @@ import {
   getPopoutSeed,
   openProjectWindow,
   recordSecondaryWatchFromSender,
+  focusProjectConversation,
 } from '../popout-window'
 import type { PopoutWorkbenchSeed } from '../../shared/types/electron-bridge'
 
@@ -51,4 +52,10 @@ export function registerPopoutHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SECONDARY_WATCH, (event, sessionId: string | null) => {
     recordSecondaryWatchFromSender(event.sender, sessionId ?? null)
   })
+  // Main-window click on one of a project's conversations: raise the project's
+  // immersive window and switch it onto the clicked conversation. false = no
+  // window open for the project — the caller opens the conversation in-window.
+  ipcMain.handle(IPC_CHANNELS.PROJECT_WINDOW_FOCUS_CONV, (_event, projectId: string, convId: string) =>
+    focusProjectConversation(projectId, convId),
+  )
 }

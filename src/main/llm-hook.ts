@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { HOOKS_DIR } from './storage/index'
+import { logMain, describeError } from './main-log'
 import type { LlmRequestHookContext, LlmRequestHookResult } from '../shared/types/hooks'
 
 const HOOK_FILE = join(HOOKS_DIR, 'llm-request.js')
@@ -32,6 +33,7 @@ function loadHook(): CachedHook | null {
     const fn = (typeof mod === 'function' ? mod : (mod as { default?: unknown } | null)?.default)
     if (typeof fn !== 'function') {
       console.warn('[Hooks] llm-request.js does not export a function, skipping')
+      logMain('WARN', 'hooks', 'llm-request.js does not export a function, skipping')
       cached = null
       return null
     }
@@ -39,6 +41,7 @@ function loadHook(): CachedHook | null {
     return cached
   } catch (err) {
     console.error('[Hooks] Failed to load llm-request.js:', err)
+    logMain('ERROR', 'hooks', `failed to load llm-request.js: ${describeError(err)}`)
     cached = null
     return null
   }
@@ -104,6 +107,7 @@ export async function applyLlmRequestHook(
     }
   } catch (err) {
     console.error('[Hooks] llm-request.js failed:', err)
+    logMain('ERROR', 'hooks', `llm-request.js failed: ${describeError(err)}`)
     return { url, headers, body }
   }
 }

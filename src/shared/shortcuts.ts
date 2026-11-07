@@ -151,6 +151,17 @@ export function fallbackComboFor(accelerator: string): string | null {
   return [...combo, key.toLowerCase()].join('+')
 }
 
+/** Focus gate for the mac app-menu dispatch (menu.ts). The application menu
+ *  is app-global: with a popout / immersive / hook-browser window focused, an
+ *  accelerator still fires the menu item, and dispatching to the main window
+ *  then makes it answer ⌘N/⌘K behind the user's back. So a keyboard
+ *  accelerator (triggeredByAccelerator) is swallowed while the main window is
+ *  not focused; a real menu click always dispatches — the user aimed at the
+ *  item, and the main window is the only surface implementing the actions. */
+export function shouldDispatchMenuAction(viaAccelerator: boolean, mainWindowFocused: boolean): boolean {
+  return !viaAccelerator || mainWindowFocused
+}
+
 const MAC_KEY_LABELS: Record<string, string> = {
   Up: '↑',
   Down: '↓',

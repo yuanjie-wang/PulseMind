@@ -159,4 +159,27 @@ describe('desktop 授权 wiring (new conversation)', () => {
     expect(body).toContain('conversationsRef.current')
     expect(body).toContain('sortConversations(')
   })
+
+  it('the title-in-list re-add carries the project binding (cross-window first sighting)', () => {
+    // The same-window race was pinned above; the CROSS-WINDOW twin stayed open
+    // (2026-11-01 用户报「沉浸模式新建的会话归到了普通对话」): a conversation
+    // created in a secondary window is unknown to the other windows' lists, so
+    // the CONVERSATION_TITLE_CHANGED re-add was their FIRST sighting — and it
+    // minted the entry without projectId, grouping it under 对话 forever while
+    // the DB row stayed correctly bound. The binding now rides the push
+    // ('default' normalizes to absent) and the found-branch backfills too
+    // (heals entries an older build added bare).
+    const from = persistenceSrc.indexOf('const updateConversationTitleInList = ')
+    const end = persistenceSrc.indexOf('── Create new conversation', from)
+    const body = persistenceSrc.slice(from, end)
+    expect(body).toContain('const updateConversationTitleInList = (convId: string, title: string, projectId?: string)')
+    expect(body).toContain("projectId && projectId !== 'default' ? projectId : undefined")
+    // The re-add entry itself carries the binding (pinned as the full shape —
+    // the backfill below also contains the substring, so a bare `toContain`
+    // would pass even with the re-add stripped).
+    expect(body).toContain('{ key: convId, label: title, updatedAt: stamp, projectId: bound }')
+    // …and the found-branch backfill is conditional (an explicit `projectId:
+    // undefined` would Object.assign-wipe an entry that already has it).
+    expect(body).toContain('...(bound ? { projectId: bound } : {})')
+  })
 })

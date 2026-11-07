@@ -1,9 +1,11 @@
 import { describe, expect, it, beforeEach, afterAll } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { skillStore } from '../src/main/storage/skill-store'
 import { SKILLS_DIR } from '../src/main/storage/index'
+import { BUILT_IN_SKILLS } from '../src/renderer/src/skills/built-in-skills'
 import { formatSkillMd, parseSkillMarkdown, skillContentSignature } from '../src/main/utils/skill-parser'
 import type { SkillDefinition } from '../src/shared/types/skill-types'
 
@@ -36,12 +38,12 @@ const v1: SkillDefinition = {
   category: 'probe',
   builtIn: true,
   triggers: ['probeupgrade'],
-  systemPrompt: '## Probe\n\nFirst shipped body — the text a previous release seeded.'
+  systemPrompt: '## Probe\n\nFirst shipped body — the text a previous release seeded.',
 }
 const v2: SkillDefinition = {
   ...v1,
   description: 'Seed upgrade probe, text the current bundle carries.',
-  systemPrompt: '## Probe\n\nSecond shipped body — what the upgraded bundle carries.'
+  systemPrompt: '## Probe\n\nSecond shipped body — what the upgraded bundle carries.',
 }
 
 const writeSkillFile = (content: string) => {
@@ -120,7 +122,69 @@ describe('built-in seed upgrade — provenance decides whose text wins', () => {
     expect(readFileSync(MD_PATH, 'utf-8')).toBe(formatSkillMd(v2))
     // Adoption arm: content already equals the live definition — signature
     // stable, no third state.
-    expect(skillContentSignature(parseSkillMarkdown(readFileSync(MD_PATH, 'utf-8'), `${NAME}/SKILL.md`)))
-      .toBe(skillContentSignature(v2))
+    expect(skillContentSignature(parseSkillMarkdown(readFileSync(MD_PATH, 'utf-8'), `${NAME}/SKILL.md`))).toBe(skillContentSignature(v2))
+  })
+})
+
+describe('the trailing-newline asymmetry — historical seeds must not strand (2026-11-04)', () => {
+  /**
+   * The bug this block pins: browser/office prompts shipped ending with a
+   * trailing newline. `formatSkillMd` wrote it verbatim, `parseSkillMarkdown`
+   * `.trim()`ed it off, so the parsed signature could never equal the
+   * manifest's record (taken from the DEFINITION at seed time) — the upgrade
+   * arm and the adoption arm were both dead for such skills, and every text
+   * update stranded on disk forever. Measured on the dev machine: the browser
+   * manual's disk copy was one revision behind the bundle with zero way to
+   * converge, on the very day the login-wall rule shipped.
+   */
+
+  const v1t: SkillDefinition = { ...v1, systemPrompt: v1.systemPrompt + '\n' }
+
+  it('a trailing-newline seed still upgrades — provenance survives the parse trim', async () => {
+    await skillStore.ensureBuiltInSkills([v1t])
+    expect(readManifest()[NAME]).toBe(skillContentSignature(v1t))
+
+    await skillStore.ensureBuiltInSkills([v2])
+    const upgraded = readFileSync(MD_PATH, 'utf-8')
+    expect(upgraded).toContain('Second shipped body')
+    expect(upgraded).not.toContain('First shipped body')
+    expect(readManifest()[NAME]).toBe(skillContentSignature(v2))
+  })
+
+  it('a trailing-newline seed still gets adopted when its text IS current — future updates must be able to fire', async () => {
+    // The office case on the dev machine: disk text already equals the
+    // bundle, only the record never matched. Adoption must claim it anyway —
+    // without the manifest entry, the NEXT text update would strand.
+    writeSkillFile(formatSkillMd(v1t))
+    await skillStore.ensureBuiltInSkills([v1t])
+    expect(readFileSync(MD_PATH, 'utf-8')).toBe(formatSkillMd(v1t))
+    expect(readManifest()[NAME]).toBe(skillContentSignature(v1t))
+  })
+
+  it('a user edit on a trailing-newline seed is still user content', async () => {
+    await skillStore.ensureBuiltInSkills([v1t])
+    writeSkillFile(formatSkillMd(v1t).replace('First shipped body', 'MY OWN EDIT'))
+
+    await skillStore.ensureBuiltInSkills([v2])
+    expect(readFileSync(MD_PATH, 'utf-8')).toContain('MY OWN EDIT')
+    expect(readManifest()[NAME]).toBe(skillContentSignature(v1t))
+  })
+
+  it('every current built-in round-trips losslessly — no prompt may regain a trailing newline', () => {
+    for (const def of BUILT_IN_SKILLS) {
+      const rt = parseSkillMarkdown(formatSkillMd(def), `${def.name}/SKILL.md`)
+      expect(rt.systemPrompt, `${def.name}.systemPrompt`).toBe(def.systemPrompt)
+      expect(skillContentSignature(rt), `${def.name} signature`).toBe(skillContentSignature(def))
+    }
+  })
+
+  it('wiring: adoption/upgrade/retired-sweep all compare through skillProvenanceMatches', () => {
+    const src = readFileSync(fileURLToPath(new URL('../src/main/storage/skill-store.ts', import.meta.url)), 'utf-8')
+    expect(src.match(/skillProvenanceMatches\(existingParsed, signature\)/u)?.length).toBe(1)
+    expect(src.match(/skillProvenanceMatches\(existingParsed, seeds\[skill\.name\]\)/u)?.length).toBe(1)
+    expect(src).toContain('skillProvenanceMatches(signature, seeds[retired.name], retired.contentHash)')
+    // The naive compares must not come back.
+    expect(src).not.toMatch(/seeds\[skill\.name\] === existingSig/u)
+    expect(src).not.toMatch(/signature !== seeds\[retired\.name\] && signature !== retired\.contentHash/u)
   })
 })

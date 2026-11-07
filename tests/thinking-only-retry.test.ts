@@ -46,7 +46,7 @@ const runnerOf = (engine: InstanceType<typeof AgentEngine>): Runner =>
 function makeStreamHost(): PulseHost & { pump(chunks: string[]): void } {
   const chunkListeners = new Set<(d: { requestId: string; data: string }) => void>()
   const doneListeners = new Set<(d: { requestId: string }) => void>()
-  let queue: string[][] = []
+  const queue: string[][] = []
   const noop = () => Promise.resolve([] as unknown[])
   const host = {
     onApiStreamChunk: (fn: (d: { requestId: string; data: string }) => void) => { chunkListeners.add(fn); return () => { chunkListeners.delete(fn) } },
@@ -96,7 +96,7 @@ const textStream = (finish = 'stop'): string[] => [
   'data: [DONE]\n\n',
 ]
 
-function makeEngine(host: ReturnType<typeof makeStreamHost>) {
+function makeEngine(_host: ReturnType<typeof makeStreamHost>) {
   const engine = new AgentEngine({
     apiKey: 'test-key',
     baseURL: 'https://example.invalid',

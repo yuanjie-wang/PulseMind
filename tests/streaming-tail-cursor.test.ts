@@ -254,7 +254,11 @@ describe('tool-call flush signal', () => {
 // host that reverted to `show={isRequesting}` would blink two cursors again.
 describe('wiring', () => {
   it('both transcript hosts gate the foot cursor on hasLiveTextTail', () => {
-    expect(read(R('components', 'layout', 'ChatView.tsx'))).toContain('show={isRequesting && !hasLiveTextTail(allSegments)}')
+    // PLAN-layout-modes: ChatView computes the gate once (both hosts — primary
+    // card and side dock — render the same ChatBody); TranscriptView keeps its
+    // own composition.
+    expect(read(R('components', 'layout', 'ChatView.tsx'))).toContain('const showCursor = isRequesting && !hasLiveTextTail(allSegments)')
+    expect(read(R('components', 'chat', 'ChatBody.tsx'))).toContain('<StreamingCursor show={showCursor} />')
     expect(read(R('components', 'chat', 'TranscriptView.tsx'))).toContain('show={isRequesting && !hasLiveTextTail(segments)}')
   })
 

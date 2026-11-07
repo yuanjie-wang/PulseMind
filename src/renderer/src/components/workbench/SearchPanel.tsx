@@ -1,20 +1,21 @@
-// ── 工作区内容搜索 strip（PLAN-project-ide 刀二，2026-10-31）──
+// ── 工作区内容搜索（PLAN-project-ide 刀二，2026-10-31）──
 //
-// 树列底部的条形面板：项目级全文搜索，随包 rg（svcSearchWorkspace）固定串
-// 检索。只读通道——与 readFile 同类免确认，键入即搜（防抖 400ms）不弹窗。
+// 沉浸窗口左卡的整卡面板：项目级全文搜索，随包 rg（svcSearchWorkspace）固定
+// 串检索。只读通道——与 readFile 同类免确认，键入即搜（防抖 400ms）不弹窗。
 // 结果行 `path:line:text`，点击 → openInPreviewPane reveal 到行（rg 自己印
-// 的行号是真坐标，与 read/edit/预览的同一套行号坐标系）。
+// 的行号是真坐标，与 read/edit/预览的同一套行号坐标系）。退出由左卡切换器
+// 承担。
 //
-// `variant`（2026-10-31 沉浸三面板裁定）：'strip'（缺省，主窗树列底条，帽
-// 48% 高）| 'panel'（沉浸窗口左卡整卡形态——填满卡片、无顶边框，退出由
-// 左卡切换器承担）。
+// 2026-11-01 用户裁定「只有沉浸模式提供全量的编辑和操作能力，普通模式保持
+// 简洁」：树工具条的全文搜索按钮两形态都退场，曾经的 strip 变体（主窗树列
+// 底条、帽 48% 高）随之再无消费面，一并删除——本组件只剩整卡形态，由
+// WorkspacePane 的沉浸左卡切换器（文件 | 搜索）挂载。
 //
 // 2026-10-31 用户四连裁定（同日）：① 沉浸切换器文案改「文件/搜索」；② 大小写
 // Aa 键去边框改胶囊（旧 1px 边框在深色下糊成一团）；③ 关闭搜索的 ✕ 移除——
-// 主窗工具条按钮本就两向开合（next = !open），沉浸左卡由切换器负责，✕ 三处
-// 冗余；④ 结果行重排：两行结构（路径+行号 / 匹配窗口文本），命中词带
-// --pm-warn-bg 高亮（rg 是 -F 固定串，indexOf 即真坐标），长行取「命中 ±
-// 窗口」而非一刀切头 160。
+// 沉浸左卡由切换器负责开合；④ 结果行重排：两行结构（路径+行号 / 匹配窗口
+// 文本），命中词带 --pm-warn-bg 高亮（rg 是 -F 固定串，indexOf 即真坐标），
+// 长行取「命中 ± 窗口」而非一刀切头 160。
 //
 // 诚实边界：帽截断（truncated）必须说出来——一张看起来完整的列表不能冒充
 // 全量；`--sort path` 给结果确定性（跨两次输入相同前缀时行序稳定）。
@@ -31,8 +32,6 @@ const DEFAULT_MAX_RESULTS = 200
 
 interface Props {
   workspaceDir: string
-  /** 'panel' = 沉浸左卡整卡形态（见头部注释）。 */
-  variant?: 'strip' | 'panel'
 }
 
 /** One search generation's result. Idle (too-short query) is DERIVED in the
@@ -203,19 +202,16 @@ function SearchBody({ workspaceDir }: Props): React.ReactElement {
   )
 }
 
-export function SearchPanel({ workspaceDir, variant = 'strip' }: Props): React.ReactElement {
-  const panel = variant === 'panel'
+export function SearchPanel({ workspaceDir }: Props): React.ReactElement {
   return (
     <div
       data-ws-search-panel
-      data-ws-search-variant={variant}
       style={{
-        // strip：帽 48% 挂树列底；panel：填满沉浸左卡。
-        ...(panel ? { flex: 1, minHeight: 0 } : { flexShrink: 0, maxHeight: '48%' }),
+        // 整卡填充（沉浸左卡）；strip 变体的帽 48% 形态已随主窗入口退场。
+        flex: 1,
+        minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        minHeight: 0,
-        borderTop: panel ? undefined : '1px solid var(--pm-separator-faint)',
         background: 'var(--pm-bg)',
       }}
     >

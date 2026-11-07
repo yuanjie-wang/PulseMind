@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   MAX_PLAN_NODES,
+  MAX_TODO_HISTORY,
   createPlanDag,
   detectPreNarration,
   formatPlanForPrompt,
@@ -146,6 +147,49 @@ describe('reconcileTodo — full-list replace over a live todo', () => {
     expect(JSON.stringify(plan)).toBe(snapshot)
   })
 
+  // The cap counts OUTSTANDING entries, not rows (2026-11-06). Charging settled
+  // history made it un-escapable: retire soft-skips a row but keeps it, so after
+  // 20 lifetime entries every append was refused — and the refusal pointed at
+  // "retire finished entries", the one action that frees nothing.
+  it('the budget counts OUTSTANDING entries — settled history never blocks an append', () => {
+    const all = Array.from({ length: MAX_PLAN_NODES }, (_, i) => ({ description: `s${i + 1}`, status: 'completed' as const }))
+    const settled = reconcileTodo(null, 'o', all).plan
+    expect(settled.nodes).toHaveLength(MAX_PLAN_NODES)
+    expect(settled.completed).toBe(true)
+    const { plan: after } = reconcileTodo(settled, 'o', list(...settled.nodes.map(n => ref(Number(n.id.slice(1)), n.description, { status: 'completed' })), 'next'))
+    expect(after.nodes).toHaveLength(MAX_PLAN_NODES + 1)
+    expect(after.nodes[MAX_PLAN_NODES].id).toBe(`n${MAX_PLAN_NODES + 1}`)
+    expect(after.completed).toBe(false)
+  })
+
+  it('settling and appending in ONE call is legitimate — the budget judges the projected list', () => {
+    const plan = reconcileTodo(null, 'o', Array.from({ length: MAX_PLAN_NODES }, (_, i) => ({ description: `s${i + 1}` }))).plan
+    const done = plan.nodes.map(n => ref(Number(n.id.slice(1)), n.description, { status: 'completed' as const }))
+    const { plan: after } = reconcileTodo(plan, 'o', list(...done, 'fresh-1', 'fresh-2'))
+    expect(after.nodes.filter(n => n.status === 'pending')).toHaveLength(2)
+    expect(after.completed).toBe(false)
+  })
+
+  it('the OUTSTANDING cap still bites — 20 open + one more is rejected whole-unit', () => {
+    const plan = reconcileTodo(null, 'o', Array.from({ length: MAX_PLAN_NODES }, (_, i) => ({ description: `s${i + 1}` }))).plan
+    const snapshot = JSON.stringify(plan)
+    expect(() => reconcileTodo(plan, 'o', list(...plan.nodes.map(n => ref(Number(n.id.slice(1)), n.description)), 'one-too-many')))
+      .toThrow(`maximum ${MAX_PLAN_NODES} outstanding`)
+    expect(JSON.stringify(plan)).toBe(snapshot)
+  })
+
+  it('rows past the history cap drop the OLDEST settled ones — surviving numbers never renumber', () => {
+    let plan = reconcileTodo(null, 'o', Array.from({ length: MAX_PLAN_NODES }, (_, i) => ({ description: `s${i + 1}`, status: 'completed' as const }))).plan
+    for (let i = 0; i < MAX_TODO_HISTORY; i++) {
+      plan = reconcileTodo(plan, 'o', list({ description: `x${i + 1}`, status: 'completed' })).plan
+    }
+    expect(plan.nodes).toHaveLength(MAX_TODO_HISTORY)
+    expect(plan.nodes.some(n => n.id === 'n1')).toBe(false)
+    expect(plan.nodes[plan.nodes.length - 1].id).toBe(`n${MAX_PLAN_NODES + MAX_TODO_HISTORY}`)
+    // A dropped id stops resolving, and the message names what IS there.
+    expect(() => reconcileTodo(plan, 'o', list(ref(1, 'gone')))).toThrow('does not exist')
+  })
+
   it('the completion anchor rides fix.msgId onto the nodes settled this pass', () => {
     const plan = mint()
     const { plan: after } = reconcileTodo(plan, '', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b')), { msgId: 'assistant-1' })
@@ -153,15 +197,34 @@ describe('reconcileTodo — full-list replace over a live todo', () => {
     expect(after.nodes[1].msgId).toBeUndefined()
   })
 
-  it('a completed (any-mode) or delegated plan is not reconciled — a fresh todo mints', () => {
+  it('a delegated plan is not reconciled — a fresh todo mints', () => {
     const delegated = createPlanDag('dag', [{ description: 'x' }])
     const { plan } = reconcileTodo(delegated, 'todo', list('a'))
     expect(plan.mode).toBe('direct')
     expect(plan.nodes.map(n => n.description)).toEqual(['a'])
-    const closed = mint()
-    closed.completed = true
-    const { plan: p2 } = reconcileTodo(closed, 'todo', list('fresh'))
-    expect(p2.nodes.map(n => n.description)).toEqual(['fresh'])
+  })
+
+  // The lost-id bug (2026-11-06): a closed list used to MINT, which renumbers by
+  // position and ignores the incoming ids — a model holding stale numbering got a
+  // silent rewrite instead of an error, and could only guess the next number.
+  it('a CLOSED todo is continued in place: numbering keeps counting, a new pending re-opens it', () => {
+    const settled = reconcileTodo(reconcileTodo(null, 'o', list('a', 'b')).plan, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }))).plan
+    expect(settled.completed).toBe(true)
+    const { plan: after, minted } = reconcileTodo(settled, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }), 'c'))
+    expect(minted).toBe(false)
+    expect(after.nodes.map(n => n.description)).toEqual(['a', 'b', 'c'])
+    expect(after.nodes[2].id).toBe('n3')
+    expect(after.completed).toBe(false)
+  })
+
+  it('fresh=true discards the closed list instead of renumbering it silently', () => {
+    const settled = reconcileTodo(reconcileTodo(null, 'o', list('a', 'b')).plan, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }))).plan
+    expect(settled.completed).toBe(true)
+    const { plan: fresh, minted } = reconcileTodo(settled, 'new', list('x'), { fresh: true })
+    expect(minted).toBe(true)
+    expect(fresh.nodes.map(n => n.description)).toEqual(['x'])
+    expect(fresh.nodes[0].id).toBe('n1')
+    expect(fresh.nodes[0].status).toBe('pending')
   })
 })
 
@@ -275,6 +338,20 @@ describe('prompt section and snapshot rendering', () => {
     expect(text).toContain('todo_write')
     expect(text).not.toContain('dispatched AUTOMATICALLY')
     expect(text).not.toContain('delegated node yourself')
+  })
+
+  // The delta snapshot renders ONLY the entries a call touched, on the explicit
+  // assumption that this section re-injects the full list next turn. Returning
+  // null for a closed list broke that loop exactly when it mattered.
+  it('formatPlanForPrompt: a CLOSED todo still injects its numbering and the way back in', () => {
+    const { plan } = reconcileTodo(null, 'ship', list({ description: 'a', status: 'completed' }, { description: 'b', status: 'completed' }))
+    expect(plan.completed).toBe(true)
+    const text = formatPlanForPrompt(plan) ?? ''
+    expect(text).toContain('STATE: CLOSED')
+    expect(text).toContain('highest is n2')
+    expect(text).toContain('n3')
+    expect(text).toContain('fresh=true')
+    expect(text).not.toContain('dispatched AUTOMATICALLY')
   })
 
   it('formatPlanForPrompt: delegated plans keep the scheduler rules verbatim', () => {
@@ -638,5 +715,18 @@ describe('todo_write wiring', () => {
   it('the plan type carries the current-node marker and the graph exports the mode predicate', () => {
     expect(read('src/shared/types/plan.ts')).toMatch(/currentNodeId\?: string/)
     expect(read('src/shared/plan/graph.ts')).toMatch(/export \{ isTodoPlan \}/)
+  })
+
+  it('fresh is forwarded end-to-end: schema declares it, the manual teaches it, the executor passes it (2026-11-06)', () => {
+    // review_20261106 中1：声明（schema）、教学（manual 第 6 条）、引擎门
+    // （reconcileTodo 的 !fix?.fresh）三处齐备，唯独执行器没转发——模型传了
+    // fresh:true 却被静默按「继续」处理。四段链缺一段即红。
+    expect(read('src/renderer/src/agent/plan-manager.ts')).toMatch(
+      /reconcileTodo\([\s\S]{0,300}input\?\.fresh === true/,
+    )
+    const def = BUILT_IN_TOOLS.find(t => t.name === 'todo_write')
+    expect((def?.input_schema.properties as Record<string, unknown>).fresh).toBeDefined()
+    expect(toolInstructions.todo_write).toContain('`fresh: true`')
+    expect(read('src/shared/plan/graph.ts')).toContain('!fix?.fresh')
   })
 })

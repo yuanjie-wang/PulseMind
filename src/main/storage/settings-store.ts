@@ -539,10 +539,11 @@ const FALLBACK_SETTINGS: AppSettings = {
   activeProfileId: '',
   providers: [],
   profiles: [],
-  // Dark is the app's default look: only a brand-new install or a corrupt file
-  // lands here — existing settings.json files carry an explicit theme and keep
-  // it (PLAN-dark-mode M1; sidebar toggle default 2026-09-20).
-  theme: 'dark',
+  // Light is the default look for the unconfigured case (user ruling
+  // 2026-11-05, flipping PLAN-dark-mode M1's dark default): only a brand-new
+  // install or a corrupt file lands here — existing settings.json files carry
+  // an explicit theme and keep it.
+  theme: 'light',
   myName: '',
   soul: '',
   yourName: '',
@@ -625,7 +626,8 @@ export class SettingsStore {
             : '',
           providers,
           profiles,
-          theme: parsed.theme ?? 'dark',
+          // 无配置默认浅色（用户裁定 2026-11-05，翻转 PLAN-dark-mode 的 dark 缺省）。
+          theme: parsed.theme ?? 'light',
           myName: parsed.myName ?? '',
           soul: parsed.soul ?? '',
           yourName: parsed.yourName ?? '',

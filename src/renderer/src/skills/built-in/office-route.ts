@@ -82,5 +82,8 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 | \`references/xlsx.md\` | 出 Excel：四条公式原则、表结构与类型规范、生成端的边界、编辑要点 |
 | \`references/pptx.md\` | 出 PPT：设计路线全文（风格对齐 → tokens.css → deck.html 的 profile 与图表标注）、每页信息量、配色与字号、模板填充与文本预算 |
 
-只有需要判断"这份交付该长什么样"时才读；一次性的小任务不必读。
-`
+只有需要判断"这份交付该长什么样"时才读；一次性的小任务不必读。`
+// The prompt MUST NOT end with a trailing newline — same round-trip rule as
+// browser.ts: formatSkillMd writes it, parseSkillMarkdown trims it off, and
+// the provenance signature never closes (2026-11-04, see skill-parser's
+// skillProvenanceMatches).

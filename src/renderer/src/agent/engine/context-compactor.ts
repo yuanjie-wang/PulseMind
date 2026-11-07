@@ -125,7 +125,14 @@ export function makeCompactTracking(): CompactTracking {
 // tail prices whole (yesterday's behavior — nano compresses nothing below
 // the quota anyway) and only a marathon tail compresses. The approximation
 // errs toward OVER-reading the shipped copy, never under it.
-const NANO_PLACEHOLDER_COST = 45 // '⟨archived: <uuid>⟩' ≈ 45 latin chars + the two multibyte glyphs
+/** TOKEN-unit placeholder price — the number is NOT a char count. The printed
+ *  placeholder ('⟨archived: <uuid>⟩' + the two multibyte glyphs, ~45 chars)
+ *  is really ~13-20 tokens by estimateTextTokens; 45 keeps the OVER-reading
+ *  direction this section declares (each compressed result prices a little
+ *  high, never low). "Correcting" it to the char-true token count would make
+ *  the ring reading silently sag — re-derive the direction note above in the
+ *  same change or leave it alone. (review_20261025 低3) */
+const NANO_PLACEHOLDER_COST = 45
 /** nano tier quotas, shared by nanoCompact and the ring-side projection
  *  (estimateAfterNanoTokens) — ONE constant: a drifted copy in the projection
  *  would silently misprice every ring reading. */
@@ -162,6 +169,12 @@ export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
     if (fullTiers >= 2) compressTargets[tier] = (fullTiers - 1) * size
   }
   const compressed: Record<number, number> = {}
+  // Assistant messages price per-BLOCK here — estimateMessagesTokens'
+  // outputTokens substitution (context-estimate.ts: a gateway that honestly
+  // reports completion_tokens, thinking included, replaces the block estimate)
+  // is deliberately NOT mirrored. Known approximation, ring-side only: the
+  // tail usually holds the still-streaming newest assistant message, and the
+  // wire-report anchor upstream absorbs most of the residual. (review_20261025 低3)
   let total = 0
   for (const msg of messages) {
     for (const block of msg.contentBlocks) {
@@ -682,7 +695,8 @@ export class ContextCompactor {
     return keepStart
   }
 
-  hardTruncate(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false): AgentMessage[] {
+  /** `record` = persist this pass's cut (see lightCompact's parameter). */
+  hardTruncate(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false, record = true): AgentMessage[] {
     // A forced cut (explicit /compact) targets a slimmer window than the
     // passive 0.9× — the user asked for headroom, not for barely passing the
     // next trigger.
@@ -711,6 +725,14 @@ export class ContextCompactor {
     const pairedStart = this.includePairedToolUses(messages, keepStart)
 
     const truncated = messages.slice(pairedStart)
+    // Same persistent frontier as light's cycle drops (see lightDroppedIds):
+    // hard cuts the OLDEST prefix, and without recording it the very next
+    // request re-derives the cut from the full transcript — the giant
+    // tool_results it just shed ride straight back in and the wire ping-pongs
+    // (conv_20261102222133: 18K → 121K on consecutive requests, driven by
+    // hard's 1-3 drops, not light's). Ids are added before the slice is
+    // returned so the engine's copy and the frontier can never disagree.
+    if (record) for (let i = 0; i < pairedStart; i++) this.lightDroppedIds.add(messages[i].id)
     const dropped = messages.length - truncated.length
     console.log(
       `[AgentEngine] hardTruncate: dropped ${dropped}/${messages.length} oldest messages ` +
@@ -1259,7 +1281,117 @@ export class ContextCompactor {
     return total
   }
 
-  lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false): AgentMessage[] {
+  /** Messages an earlier light/hard pass already shed, and the user messages it
+   *  kept as text-only (the mixed text + tool_result arm). MONOTONE within a
+   *  conversation: an id never leaves the set, so a dropped cycle can never
+   *  ride back into the copy.
+   *
+   *  Why this must exist (conv_20261102222133, 2026-11-02): light re-derived
+   *  its cut from the FULL transcript on every request, and the copy it built
+   *  was discarded — `this.messages` keeps everything. After a heavy pass the
+   *  gateway honestly reported the COMPACTED wire size (~19.5K), which became
+   *  the next pass's `contextTokensOf` anchor; the max-guard then fell back to
+   *  the full-transcript heuristic (~82K), `fits()` read "only a little over",
+   *  and the walk dropped 8 cycles — the previous pass's ~114 holes all
+   *  re-inflated, the wire jumped back to ~120K, and the next pass dropped 114
+   *  again. That 20K ↔ 120K ping-pong ran for the whole session (every request
+   *  re-billed a prefix that had already been shed, and the summary frontier
+   *  never advanced because the same region kept being re-dropped).
+   *
+   *  hardTruncate feeds the same set (its cut is the oldest prefix, so it is
+   *  monotone for the same reason) — the real replay showed hard's 1-3 giant
+   *  tool_results were the bigger swing, and light's frontier alone left the
+   *  18K ↔ 121K alternation intact. */
+  private lightDroppedIds = new Set<string>()
+  private lightStrippedIds = new Set<string>()
+
+  /** Conversation reset — the ids named a history that no longer exists. */
+  clearLightDrops(): void {
+    this.lightDroppedIds.clear()
+    this.lightStrippedIds.clear()
+  }
+
+  /** Re-apply the persistent light decisions to the copy being built. Runs at
+   *  the TOP of both pipelines (prepareLoopRequest / prewarmBody), BEFORE
+   *  nano/light, so the fit walks price what will actually be sent and a
+   *  dropped cycle never re-inflates. Deliberately NOT inside lightCompact:
+   *  its length delta is the engine's "a NEW drop happened" signal, and folding
+   *  historical drops into it would report a light compaction on every request
+   *  (and trip the refill breaker against a rhythm that never happened).
+   *  Identity when nothing was dropped yet — byte-identical requests for
+   *  sessions that never compacted. */
+  applyPersistedDrops(messages: AgentMessage[]): AgentMessage[] {
+    if (this.lightDroppedIds.size === 0 && this.lightStrippedIds.size === 0) return messages
+    let changed = false
+    const out: AgentMessage[] = []
+    // Pairing bookkeeping (review_20261103 高1): the frontier keys MESSAGE ids,
+    // but regroupToolResults re-carriers every tool_result under a synthetic
+    // `regroup_<assistantId>` message whenever the history's wire legality
+    // flips — so an id recorded in one shape half-matches the replayed copy in
+    // the other: the shed call survives (its carrier id is gone) while its
+    // results stay, or the mirror image. Track what the frontier actually shed
+    // at BLOCK level so the sweep below can close both directions.
+    const shedUseIds = new Set<string>()
+    const shedResultUseIds = new Set<string>()
+    for (const msg of messages) {
+      if (this.lightDroppedIds.has(msg.id)) {
+        changed = true
+        for (const b of msg.contentBlocks) {
+          if (b.type === 'tool_use') shedUseIds.add((b as { id: string }).id)
+          else if (b.type === 'tool_result') shedResultUseIds.add(b.tool_use_id)
+        }
+        continue
+      }
+      // The strip arm keeps the user's own words; only the tool_results go.
+      // Same rule as lightCompact's own toStrip branch (text blocks only).
+      if (this.lightStrippedIds.has(msg.id) && msg.contentBlocks.some((b) => b.type !== 'text')) {
+        changed = true
+        for (const b of msg.contentBlocks) {
+          if (b.type === 'tool_result') shedResultUseIds.add(b.tool_use_id)
+        }
+        out.push({ ...msg, contentBlocks: msg.contentBlocks.filter((b) => b.type === 'text') })
+        continue
+      }
+      out.push(msg)
+    }
+    if (!changed) return messages
+    // Pairing closure: strip results whose call the frontier shed, and calls
+    // whose result the frontier shed (a message left with no blocks goes too).
+    // Exact SET membership — never bare absence — so a live in-flight call
+    // (its result simply has not arrived yet) is untouched: its tool_use_id is
+    // in neither set.
+    let mutated = false
+    const closed: AgentMessage[] = []
+    for (const msg of out) {
+      if (!msg.contentBlocks.some((b) => b.type === 'tool_use' || b.type === 'tool_result')) {
+        closed.push(msg)
+        continue
+      }
+      const blocks = msg.contentBlocks.filter((b) => {
+        if (b.type === 'tool_result') return !shedUseIds.has(b.tool_use_id)
+        if (b.type === 'tool_use') return !shedResultUseIds.has((b as { id: string }).id)
+        return true
+      })
+      if (blocks.length === 0) {
+        mutated = true
+        continue
+      }
+      if (blocks.length !== msg.contentBlocks.length) {
+        mutated = true
+        closed.push({ ...msg, contentBlocks: blocks })
+      } else {
+        closed.push(msg)
+      }
+    }
+    return mutated ? closed : out
+  }
+
+  /** `record` = write this pass's decisions into the persistent frontier. A
+   *  real request build records; prewarm's discarded simulation must NOT (its
+   *  force bits cut deeper than the request that follows, and persisting a
+   *  simulated forced cut would permanently deepen the copy every turn — the
+   *  same reason prewarmBody restores nano's compression marks). */
+  lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false, record = true): AgentMessage[] {
     if (!contextLength) return messages
 
     const estimatedTokens = this.contextTokens(messages, fixedOverhead)
@@ -1320,6 +1452,8 @@ export class ContextCompactor {
     // message(s) with the matching tool_results.
     const toDelete = new Set<number>()
     const toStrip: Map<number, ContentBlock[]> = new Map()
+    const droppedIds: string[] = []
+    const strippedIds: string[] = []
 
     let roundsDeleted = 0
     for (let i = 0; i < messages.length - 1; i++) {
@@ -1358,17 +1492,26 @@ export class ContextCompactor {
       if (!userHasText) {
         toDelete.add(i)
         toDelete.add(i + 1)
+        // Persist the decision (see lightDroppedIds): next build starts from
+        // this hole instead of re-deriving it out of existence.
+        droppedIds.push(current.id, next.id)
         droppedH += contributions[i] + contributions[i + 1]
         roundsDeleted++
       } else {
         toDelete.add(i)
         toStrip.set(i + 1, next.contentBlocks.filter(b => b.type === 'text'))
+        droppedIds.push(current.id)
+        strippedIds.push(next.id)
         droppedH += contributions[i] + contributions[i + 1] - this.textContributionOf(next)
         roundsDeleted++
       }
     }
 
     if (roundsDeleted === 0) return messages
+    if (record) {
+      for (const id of droppedIds) this.lightDroppedIds.add(id)
+      for (const id of strippedIds) this.lightStrippedIds.add(id)
+    }
 
     const newMessages: AgentMessage[] = []
     for (let i = 0; i < messages.length; i++) {
@@ -1453,7 +1596,15 @@ export class ContextCompactor {
     let marksAtSuspend = savedMarks
     try {
       const tokensBefore = contextTokensOf(original)
-      const nano = this.nanoCompact(original)
+      // Same persistent holes the next request will start from (see
+      // applyPersistedDrops) — the simulation must price and summarize the
+      // copy the request actually builds, not re-inflate shed cycles.
+      // It READS the frontier and must never extend it: light/hard below pass
+      // record=false, because a simulated forced cut (hardForce, manual/tool
+      // light force) goes deeper than the passive request that follows and
+      // would permanently deepen the copy every turn.
+      const pipeline = this.applyPersistedDrops(original)
+      const nano = this.nanoCompact(pipeline)
       // The simulation must run the SAME force bits the next real request will:
       // manual sticks (manualCompactActive on both layers), tool's one-shot
       // force bypasses ONLY light (hard stays passive, its 0.9× trigger
@@ -1466,8 +1617,8 @@ export class ContextCompactor {
       // record=false: the simulation must not consume the request path's
       // "newly stripped" signal (see strippedThinkingIds).
       const stripped = this.stripStaleThinking(nano, contextLength, overhead, false)
-      const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool')
-      const truncated = this.hardTruncate(light, contextLength, overhead, hardForce)
+      const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool', false)
+      const truncated = this.hardTruncate(light, contextLength, overhead, hardForce, false)
       // Light's cycle drops count too — they are the main dropper once the
       // transcript outgrows the window, and the summary exists to cover
       // everything the copy loses, not just hard's share.
@@ -1482,7 +1633,7 @@ export class ContextCompactor {
         summary.firstKeptId !== summaryBefore.firstKeptId ||
         summary.text !== summaryBefore.text
       const strategies: string[] = []
-      if (nano.some((m, i) => m !== original[i])) strategies.push('nano')
+      if (nano.some((m, i) => m !== pipeline[i])) strategies.push('nano')
       if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
       if (light.length !== stripped.length) strategies.push('light')
       strategies.push('hard')

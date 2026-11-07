@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { interleaveRecallHits } from '../src/shared/recall'
 
 /** E7 recall 输出纯数据化 + 说明文档化（PLAN-recall-result-contract）：
  *  description = 结构文档（When/Parameters/Returns/Follow-ups），result = 纯数据

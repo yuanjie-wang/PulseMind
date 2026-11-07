@@ -1,17 +1,22 @@
 // ── Welcome page content ──
-// Greeting + task form (the capsule switcher above drives chat/project mode via
-// newTaskStore) + functional quick entries between it and the input:
+// Greeting + task form (the capsule switcher above drives chat/project/browser
+// mode via newTaskStore) + functional quick entries between it and the input:
 // chat mode shows recent conversations and daily routines side by side;
-// project mode shows the project cards (select target, jump to latest).
+// project mode shows the project cards (select target, jump to latest);
+// browser mode shows the URL entry + recent visits (PLAN-layout-modes 二期——
+// 提交即物化浏览器任务，模式跟任务走)。
 
-import React from 'react'
-import { Typography, Button, Tooltip } from 'antd'
-import { KeyOutlined, ArrowRightOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import React, { useEffect, useRef } from 'react'
+import { Typography, Tooltip } from 'antd'
+import { ArrowRightOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { WelcomeSuggestions } from '../welcome/WelcomeSuggestions'
 import { ProjectCards } from '../welcome/ProjectCards'
+import { BrowserTaskPanel } from '../welcome/BrowserTaskPanel'
+import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
+import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import type { ConversationLight } from '../../hooks/useConversationEngine'
 import type { ConversationListItem } from '../../types/conversation'
 import pulsemindLogo from '../../assets/pulseMind-black.png'
@@ -52,6 +57,8 @@ export function WelcomeContent({
   conversations,
   convLights = {},
   onOpenConversation,
+  onBrowserTaskStart,
+  onStarterSend,
 }: {
   greeting?: string | null
   hasApiKey: boolean
@@ -60,10 +67,46 @@ export function WelcomeContent({
   /** Per-conversation sidebar light — the recent list's status lights. */
   convLights?: Record<string, ConversationLight>
   onOpenConversation: (key: string) => void
+  /** browser 模式的任务入口：URL 回车/点历史项（宿主铸容器会话 + 开页签）。
+   *  必填（review_20261105 中1）：可选 + 空转函数兜底曾把接线缺口变成静默
+   *  死提交——摆一个点了没反应的表单比不摆更糟，让 TS 兜住所有宿主。 */
+  onBrowserTaskStart: (url: string) => void
+  /** 试试 chips 的发送通道（2026-11-04 裁定：点一下即发送，不是落草稿）。
+   *  缺省 = 整行不渲染（没有 API 密钥就没有可发的地方）。 */
+  onStarterSend?: (text: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
   const mode = useNewTaskStore((s) => s.mode)
+  // 项目模式已选项目 = 压缩形态（选中横条 + 试试 prompts，输入框已出现）：
+  // band 高度让位给 composer，短窗口压缩不出垂直滚动条（browser 同规）。
+  const projectId = useNewTaskStore((s) => s.projectId)
+  // 无密钥时引导卡顶替了 composer 与 browser 的 URL 行：新建任务的两处引导
+  // 摇晃（composer / browserUrl）都落在卡上——否则点「新建任务 ▸ 对话/浏览器」
+  // 在这台机器上摇不到任何东西，而摇晃的空转是静默的（没有提示不等于没有问题）。
+  // 有密钥时卡不挂载，ref.current 为 null，animate 的可选链即空转，不会串场。
+  const guideShakeRef = useRef<HTMLDivElement | null>(null)
+  useWelcomeShake('composer', guideShakeRef)
+  useWelcomeShake('browserUrl', guideShakeRef)
+
+  // 形态切换的一次性入场（2026-11-04 追加，用户裁定「项目的切换动效不错，
+  // 对话和浏览器也加上」）：对话/项目/浏览器三档共用一条换形过渡——mode 变化
+  // 即在快捷区 root 上播 220ms 淡入+位移，与项目形态的选中/更换同一配方
+  // （playWelcomeEnter）。快捷区在换档时不卸载（只换内部面板），所以它是
+  // 「原地换形」的稳定锚点；方向统一为 'below'（新面从下方浮入），'above'
+  // 留给网格的向上展开，别把两套语义混起来。
+  // **挂载首跑刻意不播**：从历史列表打开空会话、切回 welcome 视图都是新挂载，
+  // 必须静止（probe-welcome-focus 钉住）；ref 闸门与 ProjectCards 的同一写法。
+  // transform+opacity 不动布局，探针在 ≥300ms 后读到的都是落定位置。
+  const bandRef = useRef<HTMLDivElement | null>(null)
+  const bandMountedRef = useRef(false)
+  useEffect(() => {
+    if (!bandMountedRef.current) {
+      bandMountedRef.current = true
+      return
+    }
+    playWelcomeEnter(bandRef.current, 'below')
+  }, [mode])
 
   return (
     <div style={{ textAlign: 'center', padding: '24px', width: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -81,7 +124,10 @@ export function WelcomeContent({
           otherwise give them an automatic minimum of 0). The data hooks are
           probe-welcome-layout.mjs's measurement points. */}
       <div data-welcome-spacer style={{ flex: '1 1 0', maxHeight: TOP_SPACER_MAX, minHeight: 0 }} />
-      <div data-welcome-logo style={{ overflow: 'hidden', width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, margin: '0 auto 16px', borderRadius: 8, flexShrink: 0 }}>
+      <div
+        data-welcome-logo
+        style={{ overflow: 'hidden', width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, margin: '0 auto 16px', borderRadius: 8, flexShrink: 0 }}
+      >
         <div
           style={{
             display: 'flex',
@@ -92,7 +138,12 @@ export function WelcomeContent({
           }}
         >
           {Array.from({ length: COPIES }).map((_, i) => (
-            <img key={i} src={pulsemindLogo} alt="" style={{ width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, flexShrink: 0, objectFit: 'cover', filter: 'var(--pm-logo-filter)' }} />
+            <img
+              key={i}
+              src={pulsemindLogo}
+              alt=""
+              style={{ width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, flexShrink: 0, objectFit: 'cover', filter: 'var(--pm-logo-filter)' }}
+            />
           ))}
         </div>
       </div>
@@ -106,23 +157,35 @@ export function WelcomeContent({
           <InfoCircleOutlined style={{ fontSize: 12, color: 'var(--pm-text-faint)', cursor: 'help', marginTop: 4 }} />
         </Tooltip>
       </div>
-      <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20, flexShrink: 0 }}>
+      <Typography.Text
+        type="secondary"
+        style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20, flexShrink: 0 }}
+      >
         {t('welcome.subtitle')}
         <Tooltip title={t('welcome.about')}>
-          <ArrowRightOutlined style={{ marginLeft: 8, cursor: 'pointer', color: 'inherit', fontSize: 14 }} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })} />
+          <ArrowRightOutlined
+            style={{ marginLeft: 8, cursor: 'pointer', color: 'inherit', fontSize: 14 }}
+            onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })}
+          />
         </Tooltip>
       </Typography.Text>
 
       {/* Quick band: fills the space down to the composer. Scrolling lives in
           each mode's content — the project picker renders its heading OUTSIDE
-          its scroll region, so the scrollbar starts below the heading row. */}
+          its scroll region, so the scrollbar starts below the heading row.
+          browser 模式（PLAN-layout-modes 六期）：minHeight 0——短窗口时 band
+          压缩、历史列表自己出滚动条，welcome 页绝不出现垂直滚动条。
+          项目模式已选后（2026-11-04 两形态）：压缩横条 + prompts 本身就矮，
+          输入框又占了下方空间——同样 minHeight 0 让位。 */}
       <div
+        ref={bandRef}
+        data-welcome-band
         style={{
           width: '100%',
           maxWidth: QUICK_AREA_MAX_WIDTH + SCROLL_GUTTER,
           margin: '0 auto',
           flex: 1,
-          minHeight: QUICK_AREA_HEIGHT,
+          minHeight: mode === 'browser' || (mode === 'project' && !!projectId) ? 0 : QUICK_AREA_HEIGHT,
           display: 'flex',
           flexDirection: 'column',
         }}
@@ -130,35 +193,28 @@ export function WelcomeContent({
         {mode === 'chat' ? (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
             <div style={{ maxWidth: QUICK_AREA_MAX_WIDTH, margin: '0 auto' }}>
-              <WelcomeSuggestions convLights={convLights} onOpenConversation={onOpenConversation} />
+              <WelcomeSuggestions convLights={convLights} onOpenConversation={onOpenConversation} onStarterSend={onStarterSend} />
             </div>
           </div>
+        ) : mode === 'browser' ? (
+          // 浏览器面板恒挂、按密钥门禁（2026-11-04 用户裁定改口「输出框还是
+          // 要显示的，只是禁用」）：此前的「未配置密钥整块退场」把 URL 行也
+          // 撤了，welcome 只剩一张密钥卡，用户看不出这个形态本来能做什么。
+          // 现在 URL 输入框与打开钮 disabled、历史行不可点（面板自己收指针/
+          // hover），下方密钥卡给出去处。
+          <BrowserTaskPanel disabled={!hasApiKey} onBrowserTaskStart={onBrowserTaskStart} />
         ) : (
-          <ProjectCards conversations={conversations} onOpenConversation={onOpenConversation} />
+          <ProjectCards conversations={conversations} onOpenConversation={onOpenConversation} onStarterSend={onStarterSend} />
         )}
       </div>
 
+      {/* 未配置密钥的引导卡（2026-11-04 用户裁定重设计）：占 composer 原来的
+          位置——密钥是对话的前提，输入框已由宿主按 hasApiKey 撤下（ChatView
+          welcome 分支），这里给出去处。卡本身见 ApiKeyGuide（与 dock 窄面
+          共用一份）。 */}
       {!hasApiKey && (
-        <div
-          style={{
-            background: 'var(--pm-warn-bg)',
-            border: '1px solid var(--pm-warn-border)',
-            borderRadius: 8,
-            padding: '16px 24px',
-            marginBottom: 24,
-            maxWidth: 400,
-            textAlign: 'center',
-          display: 'inline-block',
-          alignSelf: 'center',
-          flexShrink: 0,
-        }}
-        >
-          <p style={{ margin: '0 0 12px', color: 'var(--pm-warn)' }}>
-            <KeyOutlined /> {t('welcome.noApiKey')}
-          </p>
-          <Button type="primary" onClick={() => navigate({ kind: 'settings', settingsTab: 'settings' })} icon={<KeyOutlined />}>
-            {t('welcome.configureApiKey')}
-          </Button>
+        <div ref={guideShakeRef} data-welcome-shake="apiKeyGuide" style={{ alignSelf: 'center', width: '100%', maxWidth: 560, flexShrink: 0, marginBottom: 8 }}>
+          <ApiKeyGuide />
         </div>
       )}
     </div>

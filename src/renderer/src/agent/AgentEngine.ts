@@ -166,6 +166,15 @@ export interface AgentEngineOptions {
    *  manager before each ask). Rendered in the prompt's dynamic Current Page
    *  section — never enters the cached prefix. */
   pageContext?: PageContext
+  /** Live resolver for the page this session's OWN built-in browser is showing
+   *  (2026-11-04, user ruling: 带上、只放最简信息). `pageContext` is truth a
+   *  client pushed at ask time; this one is PULLED while the state block is
+   *  built, so it stays fresh across the tool loop (the section is rebuilt on
+   *  every iteration, and the agent itself may have navigated a pane tab).
+   *  `pageContext` wins when both are present. Installed by the session
+   *  manager (main side) for desktop sessions; throwing or returning null
+   *  just means the section stays out. */
+  pageContextProvider?: () => PageContext | null
   /** True while a browser-extension client is driving this session. The page
    *  tools exist only then (PLAN-browser-extension §3.4.4): with no client
    *  bound there is nothing to execute them, so they must not appear in the
@@ -1367,7 +1376,13 @@ export class AgentEngine implements EngineCore {
     // estimates missed it once (that is why the oversized request went out),
     // so ignore their thresholds and force the API copy under the limit the
     // provider named. Cleared when a request is accepted again (stream-runner).
-    let pipelineMessages = apiMessages
+    // Cycles an earlier light pass shed stay shed (see applyPersistedDrops):
+    // without this, a compaction pass's honest post-cut report becomes the
+    // next pass's anchor, the max-guard falls back to the full-transcript
+    // heuristic, and the copy ping-pongs 20K ↔ 120K for the life of the
+    // session (conv_20261102222133). Not a new-drop signal — the strategies
+    // below still count only THIS pass's light/hard cuts.
+    let pipelineMessages = this.compactor.applyPersistedDrops(apiMessages)
     let emergencyChanged = false
     if (this.contextOverflowLimit != null) {
       const before = pipelineMessages
@@ -1770,6 +1785,8 @@ export class AgentEngine implements EngineCore {
     this.toolCompactUsedThisTurn = false
     this.compactor.clearMandatedToolResultIds()
     this.compactor.clearStrippedThinkingIds()
+    // The persistent light holes named this history's messages too.
+    this.compactor.clearLightDrops()
     // A fresh conversation has changed no files yet: the ledger (and the tree
     // rows it paints) go with the history. Emits only if there was anything.
     this.toolExecutor.fileChanges.clear()
@@ -1792,6 +1809,11 @@ export class AgentEngine implements EngineCore {
     // history just left the engine.
     this.gatedScan = { scannedMsgs: 0, hitCategories: new Set() }
     this.contextWindowReaim = null
+    // The history was replaced wholesale: the previous copy's light holes name
+    // messages this history may not hold (ids are per-conversation, so a stale
+    // set would only bloat — but the frontier must also start clean so the
+    // first post-resume build re-derives its own, exactly once).
+    this.compactor.clearLightDrops()
     // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
     // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
     // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /

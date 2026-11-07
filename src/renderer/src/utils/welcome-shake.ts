@@ -52,3 +52,27 @@ export function useWelcomeShake(target: NewTaskShakeTarget, ref: RefObject<HTMLE
     ref.current?.animate(SHAKE_KEYFRAMES, { duration: SHAKE_DURATION_MS, easing: 'ease-in-out' })
   }, [shake, target, ref])
 }
+
+// ── The form-swap enter transition ──
+// The welcome page's project-mode forms swap by conditional render (the old
+// tree unmounts instantly — there is no exit animation without briefly keeping
+// both trees alive, machinery a polish pass doesn't justify), so the swap reads
+// as a transition through the INCOMING surface: a one-shot fade + drift played
+// on the picker root at the moment its form token changes. Direction follows
+// the motion's anchor: a selection compresses DOWNWARD into the strip hugging
+// the composer, so the strip rises in from below; 更换 expands back UP into the
+// grid, so it settles in from above. Same WAAPI idiom as the shake above.
+
+export const WELCOME_ENTER_MS = 220
+
+export function playWelcomeEnter(el: HTMLElement | null, from: 'below' | 'above'): void {
+  if (!el) return
+  const y = from === 'below' ? 10 : -8
+  el.animate(
+    [
+      { transform: `translateY(${y}px)`, opacity: '0' },
+      { transform: 'translateY(0px)', opacity: '1' },
+    ],
+    { duration: WELCOME_ENTER_MS, easing: 'ease-out' },
+  )
+}

@@ -1,4 +1,5 @@
-// ── Fast code-to-HTML builder (2026-10-31 perf batch) ──
+// ── Fast code-to-HTML builder (2026-10-31 perf batch; slimmed 2026-11-01,
+//    PLAN-codemirror-view) ──
 //
 // react-syntax-highlighter's render pipeline (refractor → hast → per-token
 // React elements → inline styles) costs ~4ms/KB of BLOCKING on every mount:
@@ -10,13 +11,19 @@
 // (C++) builds the spans, React never sees a per-token element, and repeat
 // mounts of a cached (code, lang, theme) are a Map hit.
 //
+// Consumers since the preview view half moved to CodeMirror: chat code fences
+// (CodeBlock) and the skill browser preview — all numberless, so the
+// line-row/gutter/reveal machinery retired with the preview path (the CM
+// instance owns line numbers and reveal for text files now).
+//
 // Visual contract (captured from the production SyntaxHighlighter DOM,
 // scripts/.capture-code-ref.mjs reference): the caller renders the
 // pre/code shell via `codeShellStyles`; every token span carries the merged
 // inline style of its refractor class names (same `theme[className]` lookup
-// the library performs); with lineNumbers each line is a block row with the
-// hanging gutter (inline number span, minWidth `<digits>.25em` + 1em pad) —
-// the exact geometry the wrapLongLines block-row shape produces.
+// the library performs); a token open across a newline is RE-OPENED on the
+// next line (block comments, template strings), and the lines are joined
+// with literal '\n' — the pre-wrap code shell breaks on those (see the join
+// note in buildHtml).
 
 import { refractor } from 'refractor/core'
 import bash from 'refractor/bash'
@@ -111,27 +118,14 @@ interface HastNode {
   children?: HastNode[]
 }
 
-export interface HighlightOptions {
-  lineNumbers?: boolean
-  revealLine?: number | null
-}
-
 /** Build the highlighted HTML for `code`. Throws nothing: an unregistered
- *  language or a grammar crash falls back to escaped plain text with the same
- *  line-row structure. */
-export function highlightToHtml(code: string, lang: string | null, theme: ThemeObj, opts: HighlightOptions = {}): string {
-  return cached(code, lang, theme, opts, () => buildHtml(code, lang, theme, opts))
+ *  language or a grammar crash falls back to escaped plain text. */
+export function highlightToHtml(code: string, lang: string | null, theme: ThemeObj): string {
+  return cached(code, lang, theme, () => buildHtml(code, lang, theme))
 }
 
-function buildHtml(code: string, lang: string | null, theme: ThemeObj, opts: HighlightOptions): string {
+function buildHtml(code: string, lang: string | null, theme: ThemeObj): string {
   const prepared = prepareTheme(theme)
-  const lineNumbers = opts.lineNumbers ?? false
-  const revealLine = opts.revealLine ?? null
-
-  // The line rows exist when the preview numbers them (its block rows are the
-  // reveal coordinate system). Numberless chat code stays a token flow — the
-  // pre-wrap code shell breaks the lines, no per-line spans needed.
-  const rows: boolean = lineNumbers || revealLine != null
 
   // Tokenize once; a refractor failure degrades to plain text, never a throw.
   let tree: HastNode | null = null
@@ -199,44 +193,19 @@ function buildHtml(code: string, lang: string | null, theme: ThemeObj, opts: Hig
   // `code.replace(/\n$/, '')` and neither should we render one.
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
 
-  const largest = lines.length
-  const gutter = lineNumbers ? `${String(largest).length + 1.25}em` : null
-
-  const parts: string[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const n = i + 1
-    const revealed = n === revealLine
-    if (!rows) {
-      parts.push(lines[i])
-      continue
-    }
-    // The reveal flash rides the row's own style (the React path merged it
-    // through lineProps); `String(n)` because hast-style attribute writers
-    // and querySelector both key on the string form.
-    const revealStyle = revealed ? 'background:var(--pm-warn-bg);border-radius:4px;transition:background 0.4s;' : ''
-    const rowStyle = lineNumbers
-      ? `display:block;padding-left:${gutter};text-indent:-${gutter};${revealStyle}`
-      : revealStyle
-      ? `display:block;${revealStyle}`
-      : ''
-    const numberSpan = lineNumbers
-      ? `<span class="pm-code-linenumber" style="display:inline-block;min-width:${String(largest).length + 1.25}em;padding-right:1em;text-align:right;user-select:none;${prepared.classStyle.get('comment') ?? ''}">${n}</span>`
-      : ''
-    const dataAttr = revealLine != null ? ` data-reveal-line="${String(n)}"` : ''
-    parts.push(`<span${dataAttr} style="${rowStyle}">${numberSpan}${lines[i]}</span>`)
-  }
-  // No separator between rows: the code shell is pre-wrap, so a newline text
-  // node between two block rows renders its own line box — one blank line
-  // between every pair of lines (2026-10-31 user: 两行之间的间距很大). The
-  // block spans break the lines already.
-  return parts.join('')
+  // Lines join with a literal '\n' text node: the code shell is pre-wrap, so
+  // it breaks on those. (The 2026-10-31 original joined with '' because the
+  // line-row mode's block spans broke the lines themselves — that rationale
+  // never applied to the numberless path, and chat fences rendered as one
+  // wrapped blob until the PLAN-codemirror-view slim-down caught it.)
+  return lines.join('\n')
 }
 
 // ── Cache ──
-// Repeat mounts of the same (code, lang, theme, reveal) — flipping between
-// open tabs — must be a Map hit, not a rebuild. Bounded: 12 entries of up to
-// the highlight cap (200K chars) ≈ 5MB worst case; the working set it exists
-// for (the open tabs the user flips between) is a handful.
+// Repeat mounts of the same (code, lang, theme) — re-opening a chat message,
+// re-selecting a skill file — must be a Map hit, not a rebuild. Bounded: 12
+// entries of whatever the callers feed ≈ a few MB worst case; the working set
+// it exists for is a handful of recent fences/previews.
 const CACHE_LIMIT = 12
 const cache = new Map<string, string>()
 let themeIdCounter = 0
@@ -251,8 +220,8 @@ function themeId(theme: ThemeObj): number {
   return id
 }
 
-function cached(code: string, lang: string | null, theme: ThemeObj, opts: HighlightOptions, build: () => string): string {
-  const key = `${themeId(theme)}\u0000${lang ?? ''}\u0000${opts.lineNumbers ? 1 : 0}\u0000${opts.revealLine ?? ''}\u0000${code}`
+function cached(code: string, lang: string | null, theme: ThemeObj, build: () => string): string {
+  const key = `${themeId(theme)}\u0000${lang ?? ''}\u0000${code}`
   const hit = cache.get(key)
   if (hit !== undefined) {
     cache.delete(key)

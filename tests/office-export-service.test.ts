@@ -266,6 +266,9 @@ describe('svcExportDocument pdf target (converter mocked; real conversion in the
     const xml = new AdmZip(received).readAsText('word/document.xml')
     expect(xml).toContain('合同')
     expect(xml).toContain('甲方：某公司。')
+    // PDF metadata Title fallback rides the same call: the export filename's
+    // stem (the conversion page prefers the document's own first heading).
+    expect(vi.mocked(docxToPdfBuffer).mock.calls.at(-1)![1]).toEqual({ title: '合同' })
   })
 
   it('sourcePath → an existing .docx converts byte-for-byte, not re-generated', async () => {
@@ -400,6 +403,33 @@ describe('export_document wiring (source scans; the unit halves live in their ow
       expect(read('src/renderer/docx2pdf/index.ts')).toContain(key)
       expect(read('src/main/office-export/docx-to-pdf.ts')).toContain(key)
     }
+  })
+
+  it('the converter page runs the shared preview passes, then the print-only ones', () => {
+    const fs = require('node:fs') as typeof import('node:fs')
+    const page = fs.readFileSync('src/renderer/docx2pdf/index.ts', 'utf8')
+    // The in-app preview and the PDF must paginate the same way: both import
+    // the SAME passes (a local re-implementation is how they drift apart).
+    expect(page).toContain('docxFontCss')
+    expect(page).toContain('paginateDocxPages')
+    expect(fs.readFileSync('src/renderer/src/components/preview/DocxPreview.tsx', 'utf8')).toContain('paginateDocxPages')
+    // Print-only passes: real headings feed Chromium's PDF outline, folios are
+    // the page numbers docx-preview never draws, title feeds the metadata.
+    for (const fn of ['promoteHeadings', 'addPageNumbers', 'applyDocumentTitle', '__pmDocxTitle']) {
+      expect(page).toContain(fn)
+    }
+    // Running order is load-bearing: promote renames `p.docx_headingN` and
+    // rewrites the generated selectors, so pagination must measure AFTER it.
+    const promoteAt = page.indexOf('promoteHeadings(root)')
+    const paginateAt = page.indexOf('paginateDocxPages(root')
+    expect(promoteAt).toBeGreaterThan(-1)
+    expect(paginateAt).toBeGreaterThan(promoteAt)
+    expect(page).toContain('@page { size:')
+    const main = fs.readFileSync('src/main/office-export/docx-to-pdf.ts', 'utf8')
+    expect(main).toContain('generateDocumentOutline: true')
+    expect(main).toContain('generateTaggedPDF: true')
+    // The service threads the filename stem in as the Title fallback.
+    expect(fs.readFileSync('src/main/services/office-export.ts', 'utf8')).toContain('title: basename(safePath, extname(safePath))')
   })
 })
 

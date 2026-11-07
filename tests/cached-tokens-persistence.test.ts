@@ -21,8 +21,8 @@ describe('cached_tokens persistence wiring', () => {
     const src = read('src/main/storage/database.ts')
     expect(src).toMatch(/CREATE TABLE IF NOT EXISTS messages \([\s\S]*?cached_tokens\s+INTEGER/)
     expect(src).toMatch(/CREATE TABLE IF NOT EXISTS token_usage \([\s\S]*?cached_tokens\s+INTEGER NOT NULL DEFAULT 0/)
-    expect(src).toContain("ALTER TABLE messages ADD COLUMN cached_tokens INTEGER")
-    expect(src).toContain("ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0")
+    expect(src).toContain('ALTER TABLE messages ADD COLUMN cached_tokens INTEGER')
+    expect(src).toContain('ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0')
   })
 
   it('conversation.db: both write paths upsert the column and token_usage records it', () => {
@@ -30,7 +30,7 @@ describe('cached_tokens persistence wiring', () => {
     const upserts = src.match(/INSERT INTO messages[^;]+/g) ?? []
     // Two full-message write paths (saveConversation + appendConversationMessages).
     // The third INSERT (auto-summary injection) writes no tokens by design.
-    const tokenUpserts = upserts.filter(s => s.includes('cached_tokens'))
+    const tokenUpserts = upserts.filter((s) => s.includes('cached_tokens'))
     expect(tokenUpserts).toHaveLength(2)
     for (const upsert of tokenUpserts) {
       expect(upsert).toMatch(/\(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/)

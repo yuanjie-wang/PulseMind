@@ -7,7 +7,12 @@ import type { AgentEventData, PageContext, ModelState, AgentSnapshotResult } fro
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 
 export interface AgentServiceSessions {
-  createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string }): Promise<{ sessionId: string; agentId: string }>
+  /** `tabKey` is the client's history scope, stamped on the conversation row
+   *  (the extension's per-tab 历史会话 list, 2026-11-03). */
+  createSession(
+    sessionId: string,
+    opts: { agentId?: string; title?: string; clientId?: string; tabKey?: string },
+  ): Promise<{ sessionId: string; agentId: string }>
   ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void>
   cancel(sessionId: string): void
   history(sessionId: string): Promise<{ messages: unknown[]; agentId: string }>
