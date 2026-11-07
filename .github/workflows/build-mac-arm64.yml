@@ -155,6 +155,21 @@ jobs:
             exit 1
           fi
 
+          # 随包 Chromium 必须自包含。CFT 内部有 5 条相对符号链接（Versions/Current
+          # -> 153.0.x），cpSync 默认的 verbatimSymlinks:false 会把它们解析成指向
+          # 构建机 Playwright 缓存的绝对路径——包因此依赖那台机器的
+          # ~/Library/Caches，且 codesign --deep 会以 "invalid destination for
+          # symbolic link in bundle" 拒签（2026-11-07 实测）。
+          # 用 find -lname 而不是 case 判断：macOS runner 的 /bin/bash 是 3.2，
+          # 它解析 `case … ;;` 位于 $( ) 内会直接报语法错误（本机 3.2.57 实测复现）。
+          abs_links=$(find resources/chromium -type l -lname '/*' 2>/dev/null || true)
+          if [ -n "$abs_links" ]; then
+            echo "::error::随包 Chromium 含指向 bundle 外的绝对符号链接 —— ensure-chromium 的 verbatimSymlinks 丢了？"
+            printf '%s\n' "$abs_links"
+            exit 1
+          fi
+          echo "chromium symlinks: $(find resources/chromium -type l | wc -l | tr -d ' ') 条，全部相对"
+
       # 第一拍：--dir 只解包不压盘，拿到可签名的 .app。
       - name: Package app dir
         run: |
