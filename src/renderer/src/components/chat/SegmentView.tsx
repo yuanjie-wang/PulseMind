@@ -57,6 +57,9 @@ export interface SegmentViewProps {
   onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
+  /** 运行中「转入后台」(PLAN-background-tasks A). Optional: hosts without the
+   *  handler render the card without the button. */
+  onPromoteTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
 }
 
@@ -168,6 +171,7 @@ export function SegmentView({
   onApproveTool,
   onRejectTool,
   onKillTool,
+  onPromoteTool,
   onRespondToTool,
 }: SegmentViewProps): React.ReactElement {
   if (seg.type === 'streaming') return <StreamingText blocks={seg.blocks} toolsStarted={seg.toolsStarted === true} />
@@ -200,6 +204,7 @@ export function SegmentView({
       onRejectTool={onRejectTool}
       onRespondToTool={onRespondToTool}
       onKillTool={onKillTool ?? onRejectTool}
+      onPromoteTool={onPromoteTool}
       conversationId={conversationId}
       conversationTitle={conversationTitle}
       onOpenSubAgent={onOpenSubAgent}

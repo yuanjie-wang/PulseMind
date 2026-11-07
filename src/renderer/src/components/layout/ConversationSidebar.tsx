@@ -21,6 +21,8 @@ interface ConversationSidebarProps {
    *  menu item. */
   onPopout?: (key: string, label: string) => void
   convLights?: Record<string, ConversationLight>
+  /** 每会话后台运行中任务数（PLAN-background-tasks B）——灯槽小标记。 */
+  bgRunningCounts?: Record<string, number>
 }
 
 function ConversationSidebar({
@@ -31,7 +33,8 @@ function ConversationSidebar({
   onRename,
   onTogglePin,
   onPopout,
-  convLights
+  convLights,
+  bgRunningCounts
 }: ConversationSidebarProps): React.ReactElement {
   const { t } = useTranslation()
 
@@ -49,6 +52,7 @@ function ConversationSidebar({
         conversations={conversations}
         activeKey={activeKey}
         lights={convLights}
+        backgroundCounts={bgRunningCounts}
         groupByDate
         onSelect={onSelect}
         onDelete={onDelete}

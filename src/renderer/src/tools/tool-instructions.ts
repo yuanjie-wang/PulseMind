@@ -161,6 +161,8 @@ Execute a shell command on the local machine.
 - Prefer safe, read-only commands unless the user explicitly asks for modifications; explore the filesystem with \`read\`/\`search\`/\`list_dir\`
 - **The shell persists across calls (macOS/Linux):** every exec runs in this session's own shell, so \`cd\`, \`export\`, \`source .venv/bin/activate\`, \`nvm use\` carry over to later commands — no \`cd x && …\` prefix needed, and an explicit \`cwd\` moves the shell there for good. A command's stdin is /dev/null (interactive prompts read EOF — feed input with pipes or heredocs). A timeout, kill or \`exit\` restarts the shell in the same directory, but exported variables are gone. \`background: true\` starts where the shell currently is. On Windows every command still starts fresh
 - The idle timeout (default 60s) kills a command that produces no output; commands are also hard-capped at a 900s wall-clock — for anything longer-running or persistent, use \`background: true\`. Output is capped at 1MB.
+- **Long commands go to the background, the turn does not wait:** when the user asks to 放后台/别等, or a command will clearly take minutes (local builds, full test suites, training runs), set \`background: true\` up front — the result returns immediately with a pid, the user keeps chatting, and the completion reaches you automatically. A running foreground command can also be moved to the background by the user mid-flight (转入后台).
+- **Remote long operations are watched from the background, never waited on:** after TRIGGERING a remote task (GitHub Actions build, deploy, long-job API), don't block the turn polling it — start ONE local command that blocks until the remote finishes and run IT with \`background: true\` (e.g. \`gh run watch <id> --exit-status\`, or a shell loop that polls until done). Its exit code is the remote result; report it when the background completion arrives.
 - Always explain what the command does and why you are running it
 `,
 
@@ -170,7 +172,7 @@ Read the output log of a background process you started with \`exec background: 
 
 ### Guidelines
 - Poll: call again after a wait to follow progress; each call returns the log TAIL, not the whole history
-- The log's last line is \`[exited code=N]\` once the process has ended — that is how you learn a background process finished (or failed). No other notification arrives.
+- The log's last line is \`[exited code=N]\` once the process has ended. When a background process finishes you are also NOTIFIED automatically (a Background Tasks section in the next turn's context, or a completion report turn) — you don't have to remember to poll.
 - pids are scoped to this session: a pid you did not start here answers "not found"
 `,
 

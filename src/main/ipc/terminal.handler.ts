@@ -158,6 +158,12 @@ export function registerTerminalHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_LOGS, (_event, pid: number, tailBytes?: number) => svcExecLogs(Number(pid), tailBytes))
   ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_KILL, (_event, pid: number) => svcExecKill(Number(pid)))
+  // Foreground promotion (PLAN-background-tasks A): agent-only like the spawn
+  // above — promotion is an engine-side tool-lifecycle action keyed by a
+  // processId only the agent's terminal channels know.
+  ipcMain.handle(IPC_CHANNELS.TERMINAL_PROMOTE_BACKGROUND, () => {
+    throw new Error('foreground promotion is agent-only — this channel has no renderer path')
+  })
   ipcMain.handle(IPC_CHANNELS.EXEC_ALLOWLIST_GET, () => {
     const ctx = currentSessionSandbox()
     return ctx ? [...ctx.execAllowlist] : []

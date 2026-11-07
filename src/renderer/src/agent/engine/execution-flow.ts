@@ -19,6 +19,7 @@ import { requiresApproval } from '../../../../shared/sandbox/policy'
 import { isProjectInstructionsPath } from '../system-prompt-builder'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { commandAllowlistKey, commandMatchesAllowlist } from '../../../../shared/sandbox/command-allowlist'
+import { registerForegroundExec, unregisterForegroundExec } from '../executors/foreground-exec'
 import type { EngineCore } from './engine-core'
 import type { PulseHost } from '../host/types'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './subagent-limiter'
@@ -232,6 +233,7 @@ export class ExecutionFlow {
         targetBlock!.output = outputBuffer; this.engine.notifyCoalesced()
       },
       onExit: d => {
+        unregisterForegroundExec(toolUseId)
         targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.engine.executingToolUseId = null; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
         // Verify-streak reset for the RELEASED path (2026-10-27 验证闭环): an
@@ -244,6 +246,7 @@ export class ExecutionFlow {
       },
       onError: d => {
         if (terminalErrorReceived) return; terminalErrorReceived = true
+        unregisterForegroundExec(toolUseId)
         targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.engine.executingToolUseId = null; targetBlock!.output = d.message; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, `Error: ${d.message}`, true)
       },
@@ -260,6 +263,13 @@ export class ExecutionFlow {
       this.engine.executingProcessId = processId
       this.engine.executingToolUseId = toolUseId
       span.claim(processId)
+      // Promotion handle (PLAN-background-tasks A): the approve-released exec
+      // parks no promise — its loop continuation is the onExit tail — so a
+      // 转入后台 click settles INLINE via promoteReleasedTool below.
+      registerForegroundExec(toolUseId, {
+        processId,
+        promote: () => { this.promoteReleasedTool(toolUseId) },
+      })
     } catch (err) {
       span.stop()
       targetBlock.status = 'completed'; targetBlock.exitCode = -1; targetBlock.output = `Error: ${err instanceof Error ? err.message : 'Failed'}`
@@ -268,6 +278,50 @@ export class ExecutionFlow {
     }
   }
 
+
+  /** 运行中「转入后台」on the approve-released path (PLAN-background-tasks A).
+   *  This path has no parked promise — the loop continues from the span's
+   *  onExit tail — so promotion settles the block INLINE: stop the span, move
+   *  the process to the pid-keyed background channels, settle with the SAME
+   *  background envelope a `background: true` spawn uses, and let
+   *  addToolResult's tail continue the loop exactly as an exit would. Returns
+   *  false when this tool is not the engine's in-flight released command (the
+   *  auto path owns the registry hit in that case). */
+  promoteReleasedTool = (toolUseId: string): boolean => {
+    const processId = this.engine.executingProcessId
+    const ownedToolUseId = this.engine.executingToolUseId
+    if (!processId || ownedToolUseId !== toolUseId) return false
+    const block = this.findToolBlock(toolUseId)
+    if (!block || block.status !== 'running') return false
+    unregisterForegroundExec(toolUseId)
+    // The span and the scalar die together — no further terminal event for
+    // this processId may settle the already-settled block.
+    this.engine.terminalCleanups.forEach((fn: () => void) => { try { fn() } catch { /* already gone */ } })
+    this.engine.terminalCleanups = []
+    this.engine.executingProcessId = null
+    this.engine.executingToolUseId = null
+    block.status = 'completed'
+    void getHost().promoteToBackground(processId)
+      .catch(() => null)
+      .then((promoted) => {
+        if (promoted && promoted.pid > 0) {
+          block.exitCode = 0
+          block.backgroundPid = promoted.pid
+          const note = `Moved to background by the user: pid=${promoted.pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${promoted.pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${promoted.pid}).`
+          block.output = note
+          this.engine.addToolResult(toolUseId, note, false)
+        } else {
+          // The process ended (or could not be adopted) between the click and
+          // the move — settle honestly instead of promising a background run.
+          const msg = 'The command exited before it could be moved to the background.'
+          block.exitCode = -1
+          block.output = msg
+          this.engine.addToolResult(toolUseId, msg, true)
+        }
+        this.engine.notify()
+      })
+    return true
+  }
 
   rejectTool = (toolUseId: string): void => {
     for (const msg of this.engine.messages) {

@@ -87,6 +87,10 @@ export interface SessionEngineHandle {
   approveTool(toolUseId: string, alwaysAllow?: boolean): void
   rejectTool(toolUseId: string): void
   killTool(toolUseId: string): void
+  /** 运行中「转入后台」(PLAN-background-tasks A): the call's outcome rides the
+   *  event stream (the block settles with a backgroundPid); the promise only
+   *  carries the { ok, error? } ack for a failure toast. */
+  promoteToolToBackground(toolUseId: string): Promise<{ ok: boolean; error?: string }>
   respondToTool(toolUseId: string, response: string): void
   extendLoop(): void
   /** Mid-stream steering (PLAN-mid-stream-steer M1): resolve with the engine's
@@ -126,6 +130,11 @@ export interface UseConversationEngineOptions {
   platformInfo: PlatformInfo | undefined
   /** Called when a non-active engine transitions to 'completed' status. */
   onBackgroundComplete?: (convId: string) => void
+  /** A background task of this conversation exited (PLAN-background-tasks B/C):
+   *  the delivery/notification orchestrator's trigger. Fires for EVERY exit,
+   *  watched or not — the orchestrator decides (active + focused + idle →
+   *  deliver; else notify). */
+  onBackgroundTaskExit?: (convId: string, pid: number, code: number | null) => void
   /** Called when a tool/skill state changes (e.g. install_skill). */
   onSkillStateChange?: () => void
 }
@@ -201,6 +210,12 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const [plan, setPlan] = useState<Plan | null>(null)
   const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
   const [convLights, setConvLights] = useState<Record<string, ConversationLight>>({})
+  // ── 后台运行中计数（PLAN-background-tasks B）──
+  // exec 工具结果带 backgroundPid 时 +1（tool_status diff 把 pid 送过线）、
+  // background_task exit 事件 -1。每会话一组：计数是「仍在跑的后台任务数」，
+  // 侧栏状态灯槽画标记用。内存态、不落盘——与 convLights 同命（重启回归零）。
+  const [bgRunningCounts, setBgRunningCounts] = useState<Record<string, number>>({})
+  const bgPidsRef = useRef<Map<string, Set<number>>>(new Map())
 
   // ── Session registry ──
   const ensureSession = useCallback((convId: string): SessionState => {
@@ -271,6 +286,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     approveTool: (toolUseId, alwaysAllow) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId, alwaysAllow === true]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
     killTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'killTool', [toolUseId]) },
+    promoteToolToBackground: (toolUseId) =>
+      window.electronAPI.agentSessionEngineCall(convId, 'promoteToolToBackground', [toolUseId]) as Promise<{ ok: boolean; error?: string }>,
     respondToTool: (toolUseId, response) => { void window.electronAPI.agentSessionEngineCall(convId, 'respondToTool', [toolUseId, response]) },
     extendLoop: () => { void window.electronAPI.agentSessionEngineCall(convId, 'extendLoop', []) },
     steer: (text: string) =>
@@ -374,6 +391,33 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     const summaryPolledAt = new Map<string, number>()
     const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
       const data = raw as AgentEventData
+      // ── background_task exit (PLAN-background-tasks B/C) ──
+      // Handled BEFORE the mirror gate: the event carries no transcript change
+      // (mirror folds it to false), and the light/count bookkeeping must run
+      // even when this window holds no mirror for the session (a popout drove
+      // the exec). Side effects here: running-count decrement, the delivery/
+      // notification callback, and — for a NON-active conversation — the
+      // unread-style light. Watching the conversation at event time counts as
+      // read (the same rule the completed light uses), so no green for the
+      // active view; the delivery path takes over there.
+      if (data.type === 'background_task' && data.phase === 'exit') {
+        const pids = bgPidsRef.current.get(sessionId)
+        pids?.delete(data.pid)
+        setBgRunningCounts((prev) => {
+          const size = pids?.size ?? 0
+          if ((prev[sessionId] ?? 0) === size) return prev
+          const next = { ...prev, [sessionId]: size }
+          if (size <= 0) delete next[sessionId]
+          return next
+        })
+        // 未看本会话 → 亮既有未读绿点（「后台任务完成了」是「回合完成了」的
+        // 同族信号）。本会话正被看着时不亮——投递编排负责播报。
+        if (activeEngineIdRef.current !== sessionId) {
+          setConvLights((prev) => foldConvLight(prev, sessionId, prev[sessionId] ? prev[sessionId] : 'unread'))
+        }
+        onBackgroundTaskExitRef.current?.(sessionId, data.pid, data.code)
+        return
+      }
       const st = statesRef.current.get(sessionId)
       if (!st) return
       // Recency for the mirror-eviction sweep (selectEvictionCandidates): the
@@ -387,6 +431,25 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // is a ref here and four component layers away from the tree) — mirror
       // the fold's result into it so both say the same thing.
       if (data.type === 'file_changes') useSessionFileChangesStore.getState().set(sessionId, st.fileChanges)
+
+      // 后台运行计数 +1（PLAN-background-tasks B）：diff 把 backgroundPid 送过
+      // 线的那一拍登记——去重靠 pid 集合（同 pid 的重复 diff/重放是 no-op）。
+      if (data.type === 'tool_status') {
+        let added = false
+        for (const u of data.updates) {
+          if (typeof u.backgroundPid !== 'number' || u.backgroundPid <= 0) continue
+          let pids = bgPidsRef.current.get(sessionId)
+          if (!pids) { pids = new Set(); bgPidsRef.current.set(sessionId, pids) }
+          if (!pids.has(u.backgroundPid)) { pids.add(u.backgroundPid); added = true }
+        }
+        if (added) {
+          setBgRunningCounts((prev) => {
+            const size = bgPidsRef.current.get(sessionId)?.size ?? 0
+            if ((prev[sessionId] ?? 0) === size) return prev
+            return { ...prev, [sessionId]: size }
+          })
+        }
+      }
 
       if (data.type === 'status') {
         // The light IS the mirrored status, read through statusToLight. 已读 is
@@ -433,6 +496,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const onBackgroundCompleteRef = useRef(options.onBackgroundComplete)
   // eslint-disable-next-line react-hooks/refs -- latest-callback mirror bridged into the mount-only subscription above
   onBackgroundCompleteRef.current = options.onBackgroundComplete
+  const onBackgroundTaskExitRef = useRef<UseConversationEngineOptions['onBackgroundTaskExit']>(undefined)
+  // eslint-disable-next-line react-hooks/refs -- latest-callback mirror bridged into the mount-only subscription above
+  onBackgroundTaskExitRef.current = options.onBackgroundTaskExit
 
   /** The read receipt, callable from BOTH activation paths: this hook's
    *  activateEngine (the send path's activator) and persistence's
@@ -554,6 +620,13 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const approveTool = useCallback((toolUseId: string, alwaysAllow?: boolean) => callActive('approveTool', toolUseId, alwaysAllow === true), [callActive])
   const rejectTool = useCallback((toolUseId: string) => callActive('rejectTool', toolUseId), [callActive])
   const killTool = useCallback((toolUseId: string) => callActive('killTool', toolUseId), [callActive])
+  /** 转入后台 needs the OUTCOME back (the failure toast), like steer — not the
+   *  fire-and-forget callActive. */
+  const promoteToolToBackground = useCallback((toolUseId: string): Promise<{ ok: boolean; error?: string }> => {
+    const convId = activeEngineIdRef.current
+    if (!convId) return Promise.resolve({ ok: false, error: 'no active conversation' })
+    return window.electronAPI.agentSessionEngineCall(convId, 'promoteToolToBackground', [toolUseId]) as Promise<{ ok: boolean; error?: string }>
+  }, [activeEngineIdRef])
   const respondToTool = useCallback((toolUseId: string, response: string) => callActive('respondToTool', toolUseId, response), [callActive])
   const extendLoop = useCallback(() => callActive('extendLoop'), [callActive])
   /** Mid-stream steering needs the OUTCOME back (the UI stages the text when
@@ -609,6 +682,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     streamingBlocks,
     plan,
     convLights,
+    /** 每会话仍在跑的后台任务数（PLAN-background-tasks B）：exec 结果带
+     *  backgroundPid 时 +1、exit 事件 -1；侧栏状态灯槽画「后台运行中」标记。 */
+    bgRunningCounts,
     markConversationRead,
     getOrCreateEngine,
     activateEngine,
@@ -629,6 +705,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     approveTool,
     rejectTool,
     killTool,
+    promoteToolToBackground,
     respondToTool,
     cancelLoop,
     extendLoop,

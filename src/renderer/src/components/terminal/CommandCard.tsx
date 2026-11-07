@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Button, Typography, Space, Spin } from 'antd'
-import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined, HourglassOutlined, EditOutlined } from '@ant-design/icons'
+import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined, HourglassOutlined, EditOutlined, ExportOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolUseBlock } from '../../types/agent'
 import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
@@ -64,6 +64,9 @@ interface CommandCardProps {
   onApprove?: () => void
   onReject?: () => void
   onKill?: () => void
+  /** 运行中「转入后台」（PLAN-background-tasks A）：与终止同位、运行中常驻
+   *  （裁定：短命令转了无害，最简且语义诚实）。前置存在性由宿主判定。 */
+  onPromote?: () => void
   onToolResponse?: (toolUseId: string, response: string) => void
 }
 
@@ -635,7 +638,7 @@ function formatParam(v: unknown): string {
 
 // ── Main component ────────────────────────────────────────────────────
 
-const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject, onKill, onToolResponse }: CommandCardProps): React.ReactElement {
+const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject, onKill, onPromote, onToolResponse }: CommandCardProps): React.ReactElement {
   const { t } = useTranslation()
   const command = String(block.input?.command || '')
   const description = String(block.input?.description || '')
@@ -949,14 +952,27 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
             </Text>
           )}
           {block.status === 'running' && onKill && (
-            <Button
-              size="small"
-              danger
-              icon={<StopOutlined />}
-              onClick={onKill}
-            >
-              {t('commandCard.kill')}
-            </Button>
+            <Space size="small">
+              {onPromote && (
+                // 转入后台（PLAN-background-tasks A）：运行中常驻，与终止同位。
+                // 前台进程才可转——backgroundPid 块走的是后台通道，按钮不出现。
+                <Button
+                  size="small"
+                  icon={<ExportOutlined />}
+                  onClick={onPromote}
+                >
+                  {t('commandCard.promoteToBackground')}
+                </Button>
+              )}
+              <Button
+                size="small"
+                danger
+                icon={<StopOutlined />}
+                onClick={onKill}
+              >
+                {t('commandCard.kill')}
+              </Button>
+            </Space>
           )}
           {/* ask_user's own body already renders 已由用户跳过 — the duplicated
               line here showed it twice (completed carries !isAskUser; this

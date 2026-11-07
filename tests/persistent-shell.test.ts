@@ -276,7 +276,82 @@ describe('wiring', () => {
   })
 })
 
-// ── PLAN-tool-issues Z1-r（2026-10-28）：background 收敛到同一个 agent 侧 shell ──
+// ── PLAN-background-tasks A：运行中「转入后台」的持久 shell 路径 ──────────────
+// 整只 shell 脱离 per-engine 注册表：输出与 fd-3 哨兵改挂以 shell pid 为键的
+// proc log，backgroundByPid 背 shell pid（exec_logs/exec_kill/exit 通知全复用
+// pid 基建），下条命令落新 shell（persistentCwd 恢复 cwd，export 丢失是接受的
+// 代价）。服务本体跑不动（audit store 依赖 Electron ABI）——锁释放、新 shell、
+// 哨兵迟到、续缓冲四个契约按 wiring 扫描钉死，运行时由 probe-persistent-shell
+// 的真机走查承担。
+describe('foreground promotion — the persistent-shell path (PLAN-background-tasks A)', () => {
+  const terminal = src('src/main/services/terminal.ts')
+
+  it('svcPromoteToBackground detaches the shell: registry out, lock released, log opened under the SHELL pid', () => {
+    const start = terminal.indexOf('export function svcPromoteToBackground')
+    const body = terminal.slice(start, terminal.indexOf('export function svcListDetachedShellRuns', start))
+    // 两条路径同函数：先查持久 shell 的在飞命令，再查 per-command spawn 表。
+    const shellPath = body.indexOf('inFlightByProcessId.get(processId)')
+    const spawnPath = body.indexOf('processes.get(processId)')
+    expect(shellPath).toBeGreaterThan(-1)
+    expect(spawnPath).toBeGreaterThan(shellPath)
+    expect(body).toContain('persistentShells.delete(shell.key)')
+    expect(body).toContain('const log = openProcLog(shellPid)')
+    expect(body).toContain('backgroundByPid.set(shellPid, entry)')
+    expect(body).toContain('ctx?.backgroundPids.add(shellPid)')
+    expect(body).toContain('f.release()')
+  })
+
+  it('the detached shell keeps streaming into the log; the late sentinel closes the run and pushes the session', () => {
+    const outFn = terminal.indexOf('function onShellOutput')
+    const outBody = terminal.slice(outFn, terminal.indexOf('function completeCommand', outFn))
+    // 无在飞命令时唯一的合法写者是被转后台的 run——输出续写进 proc log。
+    expect(outBody).toContain('shell.detachedTo.log.write(text)')
+    const ctlFn = terminal.indexOf('function onDetachedControl')
+    const ctlBody = terminal.slice(ctlFn, terminal.indexOf('function onControlData', ctlFn))
+    expect(ctlBody).toContain('run.log.writeExitLine(parsed.code)')
+    expect(ctlBody).toContain('notifySessionBackgroundExit(shell.sessionId, shellPid, parsed.code)')
+    expect(ctlBody).toContain('backgroundByPid.delete(shellPid)')
+    // 哨兵命中后 shell 已空闲——退役，避免一次转后台漏一只 bash。
+    expect(ctlBody).toContain('killShellGroup(shell, false)')
+  })
+
+  it('a shell death with a detached run still closes it (exit line + session push, code=null)', () => {
+    const exitFn = terminal.indexOf('function onShellExit')
+    const body = terminal.slice(exitFn, terminal.indexOf('function onShellError', exitFn))
+    expect(body).toContain('shell.detachedTo')
+    expect(body).toContain('run.log.writeExitLine(null)')
+    expect(body).toContain('notifySessionBackgroundExit(shell.sessionId, shellPid, null)')
+  })
+
+  it('the promoted entry kills by process GROUP (the command is the shell\'s child)', () => {
+    const killFn = terminal.indexOf('function killProcess(')
+    const body = terminal.slice(killFn, terminal.indexOf('function getHomeDir', killFn))
+    expect(body).toContain('entry.groupKill')
+    expect(body).toContain('process.kill(-child.pid, sig)')
+  })
+
+  it('the promoted foreground run re-seats into the background channels on the per-command path', () => {
+    const start = terminal.indexOf('export function svcPromoteToBackground')
+    const body = terminal.slice(start, terminal.indexOf('export function svcListDetachedShellRuns', start))
+    expect(body).toContain('entry.background = true')
+    expect(body).toContain('entry.promotedLog = log')
+    expect(body).toContain('entry.sinkRef!.current = {')
+    // 计时器清干净：idle/wall 任一都不得在转后台后再杀进程。
+    expect(body).toContain('clearTimeout(entry.idleTimer)')
+    expect(body).toContain('clearTimeout(entry.wallTimer)')
+  })
+
+  it('both exec dispatch sites register a promotion handle; the auto path settles with the background envelope', () => {
+    const domain = src('src/renderer/src/agent/executors/domain-tools.ts')
+    expect(domain).toContain('registerForegroundExec(t.id, {')
+    expect(domain).toContain("resolve('promoted')")
+    expect(domain).toContain('getHost().promoteToBackground(claimedPid)')
+    const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
+    expect(flow).toContain('registerForegroundExec(toolUseId, {')
+    expect(flow).toContain('promoteReleasedTool = (toolUseId: string): boolean')
+  })
+})
+
 // 持久 shell 强制 /bin/bash 后，svcExecuteBackground 仍走 $SHELL——前台过的
 // `grep --include=*.ts` 在后台死于 zsh nomatch（~96 次历史失败，10-10 一天 46 次，
 // 10-28 18:44 仍真实发生）。background 只跑工具写的命令（main-host 一方），

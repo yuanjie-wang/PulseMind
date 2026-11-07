@@ -205,5 +205,8 @@ export interface AppSettings {
     webhookSecret?: string
     /** Default true. */
     onSettled?: boolean
+    /** PLAN-background-tasks B: a background task of a conversation the user is
+     *  NOT watching fires an OS notification. Default true. */
+    backgroundComplete?: boolean
   }
 }

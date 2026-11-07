@@ -78,6 +78,9 @@ export function useChatController(options: UseChatControllerOptions) {
   // and the callback needs the engine's session mirror (same pattern as
   // generateTitleRef — breaks the circular dependency).
   const onBackgroundCompleteRef = useRef<(convId: string) => void>(null as any)
+  /** Background-exit orchestration (PLAN-background-tasks C) — declared here,
+   *  assigned below the engine hook (the callbacks it needs live lower). */
+  const onBackgroundTaskExitRef = useRef<((convId: string, pid: number, code: number | null) => void) | null>(null)
   const engineBridgeRef = useRef<{ getOrCreateEngine: (convId: string) => { messages: AgentMessage[] } } | null>(null)
   const onBackgroundComplete = useCallback((convId: string) => {
     if (pendingTitleGenRef.current !== convId) return
@@ -93,6 +96,7 @@ export function useChatController(options: UseChatControllerOptions) {
     ...managers,
     platformInfo: managers.platformInfo ?? undefined,
     onBackgroundComplete: (convId: string) => onBackgroundCompleteRef.current(convId),
+    onBackgroundTaskExit: (convId: string, pid: number, code: number | null) => onBackgroundTaskExitRef.current?.(convId, pid, code),
     onSkillStateChange: managers.refreshSkills,
   })
   /* eslint-disable react-hooks/refs -- latest-instance mirrors: engineBridge is read by child effects, onBackgroundComplete is invoked from engine callbacks */
@@ -532,6 +536,62 @@ export function useChatController(options: UseChatControllerOptions) {
     }, restore)
   }, [engine.agentStatus, persistence.activeConversationKey, handleRequest])
 
+  // ── 7.55 后台任务完成投递（PLAN-background-tasks C）──
+  // 三个触发点全部汇聚到 deliverBackground（主进程幂等闸门，busy/nothing 都
+  // 是安全答案）：
+  //   ① exit 事件 && 本会话正被看 && 窗口有焦点 → 立即投递；
+  //   ② 前台忙 → pendingDelivery 标记，status busy→completed 边沿（复用
+  //      staged-drain 的 shouldDrainOnStatusChange 口径）→ 投递；
+  //   ③ 用户切回本会话 → 投递。
+  // popout 窗口 MVP 不参与投递（savesEnabled=false 即次级窗口）——只享受绿点
+  // 与系统通知。系统通知只在「本会话非我正在看」时发；开关
+  // notifications.backgroundComplete 的门控在主进程（缺省开）。
+  const pendingDeliveryRef = useRef<Set<string>>(new Set())
+  const deliverBackground = useCallback(async (convId: string): Promise<void> => {
+    const result = await window.electronAPI.agentSessionDeliverBackground(convId).catch(() => 'nothing' as const)
+    // delivered/nothing 都清标记；busy 保留，等 ②③ 的下一次触发。
+    if (result !== 'busy') pendingDeliveryRef.current.delete(convId)
+  }, [])
+
+  // ① + 通知编排（经 ref 桥进引擎的 mount-only 订阅，同 onBackgroundComplete）。
+  // eslint-disable-next-line react-hooks/refs -- latest-instance mirror bridged into the mount-only engine subscription
+  onBackgroundTaskExitRef.current = (convId: string, pid: number, code: number | null): void => {
+    // 次级窗口（popout/项目沉浸）不投递也不发通知——主窗的同一订阅会做。
+    if (options.savesEnabled === false) return
+    const watching = engine.activeEngineIdRef.current === convId
+    if (watching && document.hasFocus()) {
+      void deliverBackground(convId)
+      return
+    }
+    pendingDeliveryRef.current.add(convId)
+    if (!watching) {
+      const label = persistence.conversations.find((c) => String(c.key) === convId)?.label ?? ''
+      void window.electronAPI.agentSessionNotifyBackgroundComplete?.(
+        t('background.notifyTitle'),
+        t('background.notifyBody', { title: label, pid, code: code == null ? 'null' : code }),
+      ).catch(() => { /* notifications are best-effort */ })
+    }
+  }
+
+  // ② busy→completed 边沿（same convId 才是边沿；切进已完成的会话由 ③ 接）。
+  const deliveryStatusRef = useRef<{ convId: string | null; status: string } | null>(null)
+  useEffect(() => {
+    const convId = conversationKeyOf(persistence.activeConversationKey) ?? null
+    const status = engine.agentStatus.status
+    const prev = deliveryStatusRef.current
+    deliveryStatusRef.current = { convId, status }
+    if (!convId || !shouldDrainOnStatusChange(prev, { convId, status })) return
+    if (!pendingDeliveryRef.current.has(convId)) return
+    void deliverBackground(convId)
+  }, [engine.agentStatus, persistence.activeConversationKey, deliverBackground])
+
+  // ③ 切回会话（activateConversation 的效果面——activeConversationKey 变化）。
+  useEffect(() => {
+    const convId = conversationKeyOf(persistence.activeConversationKey)
+    if (!convId || !pendingDeliveryRef.current.has(convId)) return
+    void deliverBackground(convId)
+  }, [persistence.activeConversationKey, deliverBackground])
+
   /** 立即发送: stop-first is load-bearing — prepareTurn only aborts the
    *  in-flight LLM stream; it does NOT settle in-flight tool promises or the
    *  sub-agent tree, so a startLoop straight onto a running engine would leave
@@ -599,6 +659,8 @@ export function useChatController(options: UseChatControllerOptions) {
     approveTool: engine.approveTool,
     rejectTool: engine.rejectTool,
     killTool: engine.killTool,
+    /** 运行中「转入后台」（PLAN-background-tasks A）。 */
+    promoteToolToBackground: engine.promoteToolToBackground,
     respondToTool: engine.respondToTool,
     extractRoutine,
     clearError: engine.clearError,
@@ -634,6 +696,8 @@ export function useChatController(options: UseChatControllerOptions) {
     knowledgeManager: managers.knowledgeManager,
     experienceManager: managers.experienceManager,
     convLights: engine.convLights,
+    /** 每会话后台运行中计数（PLAN-background-tasks B），侧栏灯槽标记。 */
+    bgRunningCounts: engine.bgRunningCounts,
     markConversationRead: engine.markConversationRead,
     togglePin: persistence.togglePin,
     bumpConversation: persistence.bumpConversation,

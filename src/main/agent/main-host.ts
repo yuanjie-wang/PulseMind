@@ -38,7 +38,7 @@ import { invokeGitAction } from '../git/git.service'
 import { serverManager } from '../mcp/MCPServerManager'
 import { persistCustomServers, validateMcpConfig } from '../ipc/mcp.handler'
 import { performLlmStream, performSimpleFetch, abortLlmStream } from '../ipc/api-proxy.handler'
-import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecuteBackground, svcExecLogs, svcExecKill } from '../services/terminal'
+import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecuteBackground, svcExecLogs, svcExecKill, svcPromoteToBackground } from '../services/terminal'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import * as fileOps from '../services/file-ops'
 import * as kq from '../services/knowledge-queries'
@@ -150,6 +150,10 @@ export const mainHost: PulseHost = {
   executeBackground: async (command, cwd, shellKey) => svcExecuteBackground(command, cwd, shellKey),
   execLogs: async (pid, tailBytes) => svcExecLogs(pid, tailBytes),
   execKill: async (pid) => svcExecKill(pid),
+  // Foreground promotion (PLAN-background-tasks A): the engineCall path wraps
+  // the dispatch in the session's ALS scope, so the promoted pid lands in the
+  // session's backgroundPids and exec_logs/exec_kill answer for it.
+  promoteToBackground: async (processId) => svcPromoteToBackground(processId),
   getExecAllowlist: async () => {
     const ctx = currentSessionSandbox()
     return ctx ? [...ctx.execAllowlist] : []

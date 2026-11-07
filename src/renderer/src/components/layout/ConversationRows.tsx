@@ -86,6 +86,9 @@ interface ConversationRowsProps {
   activeKey: string | undefined
   /** Per-conversation sidebar light, keyed by conversation id (statusToLight). */
   lights?: Record<string, ConversationLight>
+  /** 每会话仍在跑的后台任务数（PLAN-background-tasks B）——灯槽里的小标记；
+   *  状态灯亮着时让位（灯更紧急），只在灯未亮时画。 */
+  backgroundCounts?: Record<string, number>
   /** Wrap the rows in 置顶 / 今天 / 昨天 / 更早 sections instead of one flat
    *  list. The 对话 tab turns this on; the project tab keeps the flat order. */
   groupByDate?: boolean
@@ -155,6 +158,9 @@ interface ConversationRowProps {
    *  agentStatus (statusToLight): running is the slow-blinking blue dot, the
    *  other three are static solid dots — waiting amber, error red, green. */
   light: ConversationLight | null
+  /** 仍在跑的后台任务数（PLAN-background-tasks B）。灯未亮时灯槽画它的小
+   *  标记；亮着时让位（灯更紧急）。 */
+  backgroundCount: number
   pinned: boolean
   /** Pointer is over the row: reveal the row menu, hide the pin. */
   hovered: boolean
@@ -174,6 +180,7 @@ function ConversationRow({
   timeText,
   active,
   light,
+  backgroundCount,
   pinned,
   hovered,
   menuOpen,
@@ -182,6 +189,7 @@ function ConversationRow({
   onHover,
   onMenuOpenChange
 }: ConversationRowProps): React.ReactElement {
+  const { t } = useTranslation()
   // The active row gets the same treatment as hover: time hidden, row menu
   // revealed — the selected conversation always offers its actions.
   const revealMenu = hovered || menuOpen || active
@@ -205,6 +213,20 @@ function ConversationRow({
           opacity blink on the link-blue dot instead, same 6px as the rest). */}
       <span style={{ width: STATUS_GUTTER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
         {light && <ConversationLightDot light={light} />}
+        {/* 后台运行中标记（PLAN-background-tasks B）：灯未亮时灯槽画它——灯更
+            紧急，亮着就让位。数字即仍在跑的后台任务数。 */}
+        {!light && backgroundCount > 0 && (
+          <span
+            data-bg-running={convKey}
+            title={t('conversationSidebar.bgRunning', { count: backgroundCount })}
+            style={{
+              fontSize: 9, lineHeight: '10px', fontWeight: 600, color: 'var(--pm-link)',
+              fontVariantNumeric: 'tabular-nums', userSelect: 'none',
+            }}
+          >
+            {backgroundCount}
+          </span>
+        )}
       </span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--pm-row-ink)', fontSize: 14, lineHeight: '20px' }}>
         {label}
@@ -242,6 +264,7 @@ function ConversationRows({
   conversations,
   activeKey,
   lights = {},
+  backgroundCounts = {},
   groupByDate = false,
   onSelect,
   onDelete,
@@ -322,6 +345,7 @@ function ConversationRows({
       timeText={describeRelativeTimeText(conv.updatedAt, now, t)}
       active={conv.key === activeKey}
       light={lights[conv.key] ?? null}
+      backgroundCount={backgroundCounts[conv.key] ?? 0}
       pinned={!!conv.pinned}
       hovered={hoveredKey === conv.key}
       menuOpen={openMenuKey === conv.key}

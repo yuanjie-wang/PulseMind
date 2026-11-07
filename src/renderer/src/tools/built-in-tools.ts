@@ -296,7 +296,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         },
         background: {
           type: 'boolean',
-          description: 'Run in the background: the result returns IMMEDIATELY with an OS pid; output goes to a log you read with exec_logs(pid), and you stop the process with exec_kill(pid). Use for dev servers, watchers and anything long-lived.',
+          description: 'Run in the background: the result returns IMMEDIATELY with an OS pid; output goes to a log you read with exec_logs(pid), and you stop the process with exec_kill(pid). Use for dev servers, watchers and anything long-lived. Prefer this when the user asks to 放后台/别等 or the command will clearly take minutes (local builds, test suites, training); for REMOTE long operations (GitHub Actions, deploys, long-job APIs) trigger them first, then watch from the background with a LOCAL blocking command (e.g. `gh run watch <id> --exit-status` or a shell poll loop) — its exit code is the remote result.',
         },
         sudo: {
           type: 'boolean',

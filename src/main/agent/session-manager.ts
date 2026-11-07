@@ -40,10 +40,12 @@ import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalog
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
-import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells } from '../services/terminal'
+import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells, svcExecLogs } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
 import { browserService } from '../browser/BrowserService'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
+import { isActiveStatus } from '../../shared/agent-session/mirror'
+import { BACKGROUND_NOTICE_MARKER } from '../../shared/background-notice'
 import { messageContentSignature } from '../../shared/agent-session/message-content'
 import { setLoopIterationLimit } from '../../renderer/src/agent/agent-utils'
 import { setSubAgentParallelLimit } from '../../renderer/src/agent/engine/subagent-limiter'
@@ -191,6 +193,14 @@ export class AgentSessionManagerImpl {
       } catch (err) {
         console.warn(`[AgentSession] background exit notice failed (${sessionId} pid=${pid}):`, err)
       }
+      // 完成事件面（PLAN-background-tasks B）：后台进程退出同拍发 session 事件
+      // ——渲染端据此亮侧栏灯/减后台计数/触发投递与系统通知。此前 exit 对 UI
+      // 完全不可见（唤醒只搭下一次请求的车）。
+      try {
+        this.emit(sessionId, { type: 'background_task', phase: 'exit', pid, code })
+      } catch (err) {
+        console.warn(`[AgentSession] background exit event failed (${sessionId} pid=${pid}):`, err)
+      }
     })
   }
 
@@ -306,15 +316,15 @@ export class AgentSessionManagerImpl {
    */
   private emitToolStatusDiff(sessionId: string, messages: AgentMessage[]): void {
     const registry = this.toolStatusRegistry.get(sessionId) ?? new Map<string, string>()
-    const updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }> = []
+    const updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string; backgroundPid?: number }> = []
     for (const msg of messages) {
       for (const block of msg.contentBlocks ?? []) {
         if (block.type !== 'tool_use') continue
-        const tu = block as { id?: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }
+        const tu = block as { id?: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string; backgroundPid?: number }
         const key = `${msg.id}:${tu.id ?? ''}`
         const output = typeof tu.output === 'string' ? tu.output : undefined
         const cappedOutput = output && output.length > 200_000 ? output.slice(0, 200_000) : output
-        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}|${tu.subConvId ?? ''}|${tu.planNodeId ?? ''}`
+        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}|${tu.subConvId ?? ''}|${tu.planNodeId ?? ''}|${tu.backgroundPid ?? ''}`
         if (registry.get(key) === signature) continue
         registry.set(key, signature)
         updates.push({
@@ -325,6 +335,7 @@ export class AgentSessionManagerImpl {
           output: cappedOutput,
           subConvId: tu.subConvId,
           planNodeId: tu.planNodeId,
+          backgroundPid: tu.backgroundPid,
         })
       }
     }
@@ -1190,6 +1201,10 @@ export class AgentSessionManagerImpl {
       case 'clearError': return engine.clearError()
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
+      // 运行中「转入后台」（PLAN-background-tasks A）：把一个在飞的前台 exec
+      // 迁到 pid 键控后台通道。审批发生在工具派发之前，转后台不新增也不放松
+      // 任何门（background:true 与转后台都买不到绕过 write 门——同一不变量）。
+      case 'promoteToolToBackground': return engine.promoteToolToBackground(args[0] as string)
       // The 工作区 tree's initial pull (2026-10-28): the desktop client builds its
       // mirror from events alone and never snapshots, so a tree mounted after
       // the writes happened (tab switch, window reload) reads the ledger here.
@@ -1242,6 +1257,57 @@ export class AgentSessionManagerImpl {
         keepAwake.forget(sessionId)
         return undefined
       default: throw new Error(`engine method not allowed: ${method}`)
+    }
+  }
+
+  // ── 后台任务完成投递（PLAN-background-tasks C）─────────────────────────
+  // 引擎唤醒只搭下一次用户消息的车（enqueueBackgroundNotice → state block）；
+  // 本方法是「前台空闲时主动开一回合汇报」的幂等入口，渲染端三个触发点都调
+  // 它。闸门同步判定（主进程单线程下原子）：有未投递通知、引擎非活跃状态、
+  // 全局槽位未满（满了不进 waitingLoops FIFO——投递不该排队）、未在投递中。
+  private deliveringBackground = new Set<string>()
+
+  /** Deliver every pending background-exit notice as ONE synthetic user turn
+   *  (marker-prefixed, so the transcript renders it as a system line, never a
+   *  user bubble). The notices STAY on the engine — its own request builder
+   *  drains them into the state block on this same turn (双保险), and a turn
+   *  the user started in between keeps its normal wake-up. */
+  async deliverBackgroundNotice(sessionId: string): Promise<'delivered' | 'busy' | 'nothing'> {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return 'nothing'
+    if (this.deliveringBackground.has(sessionId)) return 'busy'
+    if (entry.engine.backgroundNotices.length === 0) return 'nothing'
+    if (isActiveStatus(entry.engine.agentStatus)) return 'busy'
+    if (this.runningLoops >= MAX_CONCURRENT_LOOPS) return 'busy'
+    this.deliveringBackground.add(sessionId)
+    try {
+      const notices = [...entry.engine.backgroundNotices]
+      const sandboxCtx = this.sandboxContexts.get(sessionId)
+      const lines: string[] = []
+      for (const n of notices) {
+        // 内联输出尾 2KB：省一次 exec_logs 工具往返。读走会话沙盒（exec_logs
+        // 的 pid 鉴权就是 backgroundPids 会员检查），读不到就如实省略。
+        let tail = ''
+        try {
+          tail = sandboxCtx ? (sessionSandbox.run(sandboxCtx, () => svcExecLogs(n.pid, 2048)) ?? '') : ''
+        } catch { tail = '' }
+        lines.push(`- pid=${n.pid}，退出码 ${n.code ?? 'null'}${tail ? `\n\n输出尾部：\n${tail}` : ''}`)
+      }
+      const content = [
+        `${BACKGROUND_NOTICE_MARKER} 后台任务已完成`,
+        '',
+        '先前转入后台运行的命令已结束：',
+        '',
+        ...lines,
+        '',
+        '请向用户简要汇报每个任务的结果（成功/失败与关键输出），不要重新执行这些命令。',
+      ].join('\n')
+      // ask 自带并发记账（runningLoops / FIFO）与授权/专家上下文刷新；合成
+      // 消息即普通回合——转录、持久化、token 记账全部按既有路径走。
+      await this.ask(sessionId, content)
+      return 'delivered'
+    } finally {
+      this.deliveringBackground.delete(sessionId)
     }
   }
 

@@ -194,6 +194,10 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
           void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
         })}
+        {/* 后台任务完成通知（PLAN-background-tasks B）：缺省开。 */}
+        {toggle('backgroundComplete', settings.notifications?.backgroundComplete ?? true, (value) => {
+          void save({ notifications: { ...settings.notifications, backgroundComplete: value } })
+        })}
         {/* The settlement webhook surface is gated off (feature-flags
             ROUTINE_WEBHOOK_UI): stored url/secret keep working, the fields
             just stop rendering. */}

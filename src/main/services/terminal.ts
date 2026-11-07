@@ -22,6 +22,7 @@ import {
   persistentRestartNotice,
   persistentShellKey,
   usesPersistentShell,
+  type ControlLine,
 } from './persistent-shell-protocol'
 
 interface ProcessEntry {
@@ -34,6 +35,24 @@ interface ProcessEntry {
    *  handle the model sees (exec_logs / exec_kill / the CommandCard kill). */
   osPid?: number
   background?: boolean
+  /** Promoted foreground entries (PLAN-background-tasks A): the spawn-time
+   *  session sandbox captured so the exit path can still name the owning
+   *  session (notifySessionBackgroundExit fires long after the ALS scope of
+   *  the spawn is gone). */
+  sessionCtx?: SessionSandboxContext
+  /** Foreground timers, surfaced so promotion can clear them (the closures
+   *  that created them are unreachable from svcPromoteToBackground). */
+  idleTimer?: NodeJS.Timeout | null
+  wallTimer?: NodeJS.Timeout | null
+  /** Mutable output sink: promotion repoints the stdout/stderr emitters at a
+   *  proc log without re-wiring the spawn closures. */
+  sinkRef?: { current: TerminalEmitSink }
+  /** Detached persistent-shell runs kill by process GROUP (the command is a
+   *  child of the shell; killing only the shell would orphan it). */
+  groupKill?: boolean
+  /** Promotion's own proc-log handle — the exit path needs it to write the
+   *  `[exited code=N]` line when the log was opened at promote time. */
+  promotedLog?: ProcLog
 }
 
 const processes = new Map<string, ProcessEntry>()
@@ -103,6 +122,16 @@ const WIN_UTF8_ENV = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
 function killProcess(entry: ProcessEntry, force = false): void {
   const { process: child } = entry
   if (child.killed) return
+
+  // Detached persistent-shell runs (PLAN-background-tasks A): the foreground
+  // command is a CHILD of the shell inside the shell's own process group, so
+  // killing the shell alone would orphan it — take the group down instead
+  // (the same negative-pid kill killShellGroup uses).
+  if (entry.groupKill && child.pid && process.platform !== 'win32') {
+    const sig = force ? 'SIGKILL' : 'SIGTERM'
+    try { process.kill(-child.pid, sig) } catch { try { child.kill(sig) } catch { /* already gone */ } }
+    return
+  }
 
   if (process.platform === 'win32') {
     if (force) {
@@ -185,6 +214,12 @@ const PERSISTENT_SHELL_BIN = existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh'
 const COMPLETION_DRAIN_MS = 4
 const COMPLETION_DRAIN_MAX_MS = 200
 
+/** Head-kept window of a foreground command's streamed output, re-written into
+ *  the proc log when the command is promoted (PLAN-background-tasks A) — the
+ *  bytes the user watched before clicking 转入后台 must not vanish from the log
+ *  the pid channels later read. */
+const DETACHED_HEAD_MAX = 64 * 1024
+
 interface InFlightCommand {
   processId: string
   emit: TerminalEmitSink
@@ -199,6 +234,24 @@ interface InFlightCommand {
   finalized: boolean
   pendingNotice: string | null
   pendingSignal: 'SIGTERM' | 'SIGKILL' | null
+  /** PLAN-background-tasks A: what ran and where (the promotion's log header
+   *  and the detached entry's audit line), plus a head-kept copy of the output
+   *  already streamed — a promoted run's proc log starts with what the user
+   *  was watching, not an empty file. */
+  command: string
+  cwd?: string
+  head: string
+}
+
+/** A promoted persistent-shell command (PLAN-background-tasks A): the shell is
+ *  off the per-engine registry (the session's next command builds a fresh one
+ *  at persistentCwd) but keeps running THIS command; its stdout/stderr and fd-3
+ *  sentinel are still wired to the shell object, so the run record hangs off
+ *  the shell and routes them into the pid-keyed proc log. */
+interface DetachedShellRun {
+  processId: string
+  command: string
+  log: ProcLog
 }
 
 interface PersistentShell {
@@ -211,7 +264,14 @@ interface PersistentShell {
   ctlBuf: string
   inFlight: InFlightCommand | null
   dead: boolean
+  /** Set while a promoted command still runs inside this (now detached) shell. */
+  detachedTo?: DetachedShellRun | null
 }
+
+/** Detached runs indexed by processId — svcPromoteToBackground's own lookup
+ *  complement (the shell lookup goes through inFlightByProcessId; this map is
+ *  the registry the exit/sweep paths can enumerate). */
+const detachedShellRuns = new Map<string, DetachedShellRun>()
 
 const persistentShells = new Map<string, PersistentShell>()
 const persistentLocks = new Map<string, Promise<void>>()
@@ -264,8 +324,17 @@ function detachInFlight(shell: PersistentShell, f: InFlightCommand): void {
 
 function onShellOutput(shell: PersistentShell, type: 'stdout' | 'stderr', text: string): void {
   const f = shell.inFlight
-  if (!f || !text || f.killing || f.finalized) return
+  if (!f) {
+    // No command parked: the only legitimate writer left on this shell is a
+    // PROMOTED (detached) run — its output streams into the proc log keyed by
+    // the shell pid (PLAN-background-tasks A). Anything else is dropped, as
+    // before (a grandchild orphaned with `&` was always dropped).
+    if (shell.detachedTo && text) shell.detachedTo.log.write(text)
+    return
+  }
+  if (!text || f.killing || f.finalized) return
   f.bytesSeen += text.length
+  f.head = (f.head + text).slice(-DETACHED_HEAD_MAX)
   f.resetIdle()
   if (type === 'stdout') {
     const before = f.stdoutLen
@@ -307,6 +376,26 @@ function scheduleCompletion(shell: PersistentShell, f: InFlightCommand, code: nu
   f.drainTimer = setTimeout(tick, COMPLETION_DRAIN_MS)
 }
 
+/** A promoted run's completion sentinel arrived (PLAN-background-tasks A): the
+ *  command finished — write the exit line, notify the owning session (the same
+ *  push svcExecuteBackground's exit handler makes) and retire the now-idle
+ *  shell; the session has long since moved onto a fresh one. */
+function onDetachedControl(shell: PersistentShell, parsed: ControlLine): void {
+  const run = shell.detachedTo
+  if (!run || parsed.id !== run.processId) return
+  shell.detachedTo = null
+  detachedShellRuns.delete(run.processId)
+  persistentCwd.set(shell.key, parsed.cwd)
+  run.log.writeExitLine(parsed.code)
+  const shellPid = shell.child.pid ?? -1
+  if (shellPid > 0) backgroundByPid.delete(shellPid)
+  notifySessionBackgroundExit(shell.sessionId, shellPid, parsed.code)
+  // The shell is idle (its only command just reported in) — take it down so a
+  // detached run cannot leak one bash per promotion.
+  killShellGroup(shell, false)
+  setTimeout(() => { if (!shell.dead) killShellGroup(shell, true) }, 3000)
+}
+
 function onControlData(shell: PersistentShell, chunk: Buffer): void {
   shell.ctlBuf += shell.ctlDecoder.push(chunk)
   let nl: number
@@ -314,8 +403,13 @@ function onControlData(shell: PersistentShell, chunk: Buffer): void {
     const line = shell.ctlBuf.slice(0, nl)
     shell.ctlBuf = shell.ctlBuf.slice(nl + 1)
     const parsed = parseControlLine(line)
+    if (!parsed) continue
     const f = shell.inFlight
-    if (!parsed || !f || f.killing || f.finalized || parsed.id !== f.processId) continue
+    if (!f || f.killing || f.finalized || parsed.id !== f.processId) {
+      // No parked command for this sentinel: it belongs to a promoted run.
+      onDetachedControl(shell, parsed)
+      continue
+    }
     persistentCwd.set(shell.key, parsed.cwd)
     scheduleCompletion(shell, f, parsed.code)
   }
@@ -324,6 +418,21 @@ function onControlData(shell: PersistentShell, chunk: Buffer): void {
 function onShellExit(shell: PersistentShell, code: number | null, signal: NodeJS.Signals | null): void {
   shell.dead = true
   if (persistentShells.get(shell.key) === shell) persistentShells.delete(shell.key)
+  // A promoted run died WITH its shell (killed via exec_kill, session reap, a
+  // crashed shell) without its sentinel: close the run honestly — the exit
+  // line and the session push must land or the delivery loop waits forever on
+  // a task that is gone. The shell's exit status is not the command's, so the
+  // line says null (the log's note explains why).
+  if (shell.detachedTo) {
+    const run = shell.detachedTo
+    shell.detachedTo = null
+    detachedShellRuns.delete(run.processId)
+    run.log.write(`\n[the session shell exited (code=${code ?? 'null'}) before the command's completion sentinel]\n`)
+    run.log.writeExitLine(null)
+    const shellPid = shell.child.pid ?? -1
+    if (shellPid > 0) backgroundByPid.delete(shellPid)
+    notifySessionBackgroundExit(shell.sessionId, shellPid, null)
+  }
   const f = shell.inFlight
   if (!f || f.finalized) return
   detachInFlight(shell, f)
@@ -400,6 +509,7 @@ function beginCommand(
     idleTimer: null, wallTimer: null, drainTimer: null,
     resetIdle: () => {}, release,
     killing: false, finalized: false, pendingNotice: null, pendingSignal: null,
+    command, cwd, head: '',
   }
   f.resetIdle = () => {
     if (f.finalized || f.killing) return
@@ -562,6 +672,12 @@ export async function svcExecuteCommand(
   }
 
   processes.set(processId, entry)
+  // Promotion bookkeeping (PLAN-background-tasks A): the spawn-time session
+  // context (exit must name the owner long after the ALS scope is gone) and a
+  // mutable sink the promote path repoints at a proc log.
+  entry.sessionCtx = sandboxCtx ?? undefined
+  const entrySink: { current: TerminalEmitSink } = { current: emit }
+  entry.sinkRef = entrySink
 
   // Per-stream decoders: hold incomplete sequences across chunk cuts, fall
   // back to GBK for tools that ignore the UTF-8 prefix above.
@@ -574,22 +690,30 @@ export async function svcExecuteCommand(
   let idleTimer: NodeJS.Timeout | null = null
 
   function resetIdleTimer(): void {
+    // A PROMOTED entry has no timers any more (background processes carry
+    // none, P0-3 #13): the promote path cleared the closures' timers and this
+    // re-arm from a late data event must not resurrect them.
+    if (entry.background) return
     if (idleTimer) clearTimeout(idleTimer)
     idleTimer = setTimeout(() => {
+      entry.idleTimer = null
       if (!child.killed) {
         killProcess(entry)
         const outTail = outDecoder.flush()
         if (outTail) {
           entry.stdout += outTail
-          emit.output(processId, 'stdout', outTail)
+          entrySink.current.output(processId, 'stdout', outTail)
         }
         const errTail = errDecoder.flush()
-        if (errTail) emit.output(processId, 'stderr', errTail)
-        emit.output(processId, 'stderr', idleTimeoutNotice(effectiveTimeout))
-        emit.exit(processId, null, 'SIGTERM')
+        if (errTail) entrySink.current.output(processId, 'stderr', errTail)
+        entrySink.current.output(processId, 'stderr', idleTimeoutNotice(effectiveTimeout))
+        entrySink.current.exit(processId, null, 'SIGTERM')
         processes.delete(processId)
       }
     }, effectiveTimeout)
+    // Surfaced for promotion: the promote path clears THIS object (the same
+    // one the closure reads), so an idle kill cannot fire after the move.
+    entry.idleTimer = idleTimer
   }
 
   resetIdleTimer()
@@ -598,21 +722,22 @@ export async function svcExecuteCommand(
   // raise it. Distinct death reason so the model can tell a silent hang from a
   // long-running job that outlived the cap.
   const wallTimer: NodeJS.Timeout = setTimeout(() => {
-    if (!child.killed && child.exitCode === null) {
+    if (!child.killed && child.exitCode === null && !entry.background) {
       if (idleTimer) clearTimeout(idleTimer)
       killProcess(entry, true)
       const outTail = outDecoder.flush()
       if (outTail) {
         entry.stdout += outTail
-        emit.output(processId, 'stdout', outTail)
+        entrySink.current.output(processId, 'stdout', outTail)
       }
       const errTail = errDecoder.flush()
-      if (errTail) emit.output(processId, 'stderr', errTail)
-      emit.output(processId, 'stderr', `\n[Command exceeded the ${WALL_CLOCK_MAX_MS / 1000}s wall-clock limit (total duration)]`)
-      emit.exit(processId, null, 'SIGKILL')
+      if (errTail) entrySink.current.output(processId, 'stderr', errTail)
+      entrySink.current.output(processId, 'stderr', `\n[Command exceeded the ${WALL_CLOCK_MAX_MS / 1000}s wall-clock limit (total duration)]`)
+      entrySink.current.exit(processId, null, 'SIGKILL')
       processes.delete(processId)
     }
   }, WALL_CLOCK_MAX_MS)
+  entry.wallTimer = wallTimer
 
   // stdout
   if (child.stdout) {
@@ -620,6 +745,13 @@ export async function svcExecuteCommand(
       resetIdleTimer()
       const text = outDecoder.push(chunk)
       if (!text) return // incomplete sequence held for the next chunk
+      // PROMOTED (PLAN-background-tasks A): no memory accumulation, no 1MB
+      // cap-kill (background processes outlive the cap by design) — the log
+      // (the repointed sink) is the only consumer, and it caps itself.
+      if (entry.background) {
+        entrySink.current.output(processId, 'stdout', text)
+        return
+      }
       entry.stdout += text
       if (entry.stdout.length > OUTPUT_LIMIT) {
         // Cap + kill is the runaway guard (a chatty process must not outlive
@@ -633,10 +765,10 @@ export async function svcExecuteCommand(
         if (tail) entry.stdout += tail
         entry.stdout = entry.stdout.slice(0, OUTPUT_LIMIT)
         killProcess(entry)
-        emit.output(processId, 'stderr', '\n[Output limit exceeded: 1MB — the process was stopped; output past the cap was discarded, the kept head is in this result]')
+        entrySink.current.output(processId, 'stderr', '\n[Output limit exceeded: 1MB — the process was stopped; output past the cap was discarded, the kept head is in this result]')
         return
       }
-      emit.output(processId, 'stdout', text)
+      entrySink.current.output(processId, 'stdout', text)
     })
   }
 
@@ -646,8 +778,8 @@ export async function svcExecuteCommand(
       resetIdleTimer()
       const text = errDecoder.push(chunk)
       if (!text) return
-      entry.stderr += text
-      emit.output(processId, 'stderr', text)
+      if (!entry.background) entry.stderr += text
+      entrySink.current.output(processId, 'stderr', text)
     })
   }
 
@@ -657,13 +789,26 @@ export async function svcExecuteCommand(
     clearTimeout(wallTimer)
     processes.delete(processId)
     const outTail = outDecoder.flush()
+    const errTail = errDecoder.flush()
+    // PROMOTED (PLAN-background-tasks A): the executor settled at promote
+    // time — the exit is the BACKGROUND process's death now: exit line into
+    // the pid-keyed log, membership ends, and the owning session gets the
+    // same push svcExecuteBackground's exit handler makes.
+    if (entry.background && entry.promotedLog) {
+      if (outTail) entry.promotedLog.write(outTail)
+      if (errTail) entry.promotedLog.write(errTail)
+      entry.promotedLog.writeExitLine(code)
+      const promotedPid = entry.process.pid ?? -1
+      if (promotedPid > 0) backgroundByPid.delete(promotedPid)
+      if (entry.sessionCtx) notifySessionBackgroundExit(entry.sessionCtx.sessionId, promotedPid, code)
+      return
+    }
     if (outTail) {
       entry.stdout += outTail
-      emit.output(processId, 'stdout', outTail)
+      entrySink.current.output(processId, 'stdout', outTail)
     }
-    const errTail = errDecoder.flush()
-    if (errTail) emit.output(processId, 'stderr', errTail)
-    emit.exit(processId, code, signal)
+    if (errTail) entrySink.current.output(processId, 'stderr', errTail)
+    entrySink.current.exit(processId, code, signal)
   })
 
   // Error (if process can't be spawned at all)
@@ -671,9 +816,19 @@ export async function svcExecuteCommand(
     if (idleTimer) clearTimeout(idleTimer)
     clearTimeout(wallTimer)
     processes.delete(processId)
-    emit.error(processId, `Failed to spawn process: ${err.message}`)
+    // PROMOTED: same contract as the exit branch above — the log line and the
+    // session push replace an emit nobody is subscribed to any more.
+    if (entry.background && entry.promotedLog) {
+      entry.promotedLog.write(`\n[error: ${err.message}]\n`)
+      entry.promotedLog.writeExitLine(null)
+      const promotedPid = entry.process.pid ?? -1
+      if (promotedPid > 0) backgroundByPid.delete(promotedPid)
+      if (entry.sessionCtx) notifySessionBackgroundExit(entry.sessionCtx.sessionId, promotedPid, null)
+      return
+    }
+    entrySink.current.error(processId, `Failed to spawn process: ${err.message}`)
     // Also emit exit so the renderer's tool result callback fires
-    emit.exit(processId, null, 'SIGTERM')
+    entrySink.current.exit(processId, null, 'SIGTERM')
   })
 
   return processId
@@ -922,6 +1077,107 @@ export async function svcExecuteBackground(command: string, cwd?: string, shellK
   })
 
   return { pid, processId }
+}
+
+// ── Foreground → background promotion (PLAN-background-tasks A) ──────────────
+//
+// The 运行中「转入后台」 button: a FOREGROUND command mid-flight becomes a
+// background one — the tool result settles immediately (renderer side), the
+// process keeps running, and its output/exit ride the exact pid-keyed
+// background channels a `background: true` spawn uses (proc log,
+// exec_logs/exec_kill, the session-exit push). Two paths:
+//
+//  - Per-command spawn (Windows / no session / renderer terminal): the entry
+//    in `processes` gains background membership — timers cleared, the output
+//    emitters repointed at a proc log seeded with what was already streamed,
+//    and its own exit handler (above) writes the exit line + session push.
+//  - Persistent shell (macOS/Linux agent sessions): the command runs INSIDE
+//    the session's bash, so the WHOLE SHELL detaches — it leaves the
+//    per-engine registry (the session's next command builds a fresh shell at
+//    persistentCwd), its output and fd-3 sentinel are routed into a proc log
+//    keyed by the SHELL pid, and backgroundByPid carries that shell pid so
+//    exec_logs/exec_kill/notify work with zero new concepts.
+//
+// Known cost (accepted in the plan): the detached shell's exported env is lost
+// for later commands of the same engine (a fresh shell rebuilds cwd only). The
+// alternative — parking the session's shell on the command — is strictly worse.
+
+/** Move a running foreground command to the background channels. Returns null
+ *  when nothing is running under `processId` (already exited / unknown id). */
+export function svcPromoteToBackground(processId: string): { pid: number } | null {
+  const shell = inFlightByProcessId.get(processId)
+  if (shell?.inFlight && shell.inFlight.processId === processId) {
+    const f = shell.inFlight
+    const shellPid = shell.child.pid ?? -1
+    if (shellPid <= 0) return null
+    clearCommandTimers(f)
+    f.finalized = true
+    shell.inFlight = null
+    inFlightByProcessId.delete(processId)
+    // Detach: the shell leaves the per-engine registry — acquireShell builds a
+    // fresh one at the remembered cwd on the session's next command. The lock
+    // releases so the next command is not queued behind a 30-minute watch.
+    if (persistentShells.get(shell.key) === shell) persistentShells.delete(shell.key)
+    const log = openProcLog(shellPid)
+    log.write(`$ [promoted to background] ${f.command}\n`)
+    if (f.head) log.write(f.head)
+    const run: DetachedShellRun = { processId, command: f.command, log }
+    shell.detachedTo = run
+    detachedShellRuns.set(processId, run)
+    // Background membership under the SHELL pid: exec_logs reads the log
+    // written above and below, exec_kill group-kills shell + command, and the
+    // detached sentinel/exit paths push the session wake-up with this pid.
+    const entry: ProcessEntry = {
+      process: shell.child,
+      command: f.command,
+      createdAt: Date.now(),
+      stdout: '',
+      stderr: '',
+      osPid: shellPid,
+      background: true,
+      groupKill: true,
+    }
+    backgroundByPid.set(shellPid, entry)
+    const ctx = currentSessionSandbox()
+    ctx?.backgroundPids.add(shellPid)
+    f.release()
+    return { pid: shellPid }
+  }
+
+  const entry = processes.get(processId)
+  if (!entry || entry.background) return null
+  const child = entry.process
+  if (child.killed || child.exitCode !== null) return null
+  const pid = child.pid ?? -1
+  if (pid <= 0) return null
+  if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = null }
+  if (entry.wallTimer) { clearTimeout(entry.wallTimer); entry.wallTimer = null }
+  // The log opens with the command and everything already streamed — the
+  // bytes the user watched before the click stay part of the log tail.
+  const log = openProcLog(pid)
+  log.write(`$ [promoted to background] ${entry.command}\n`)
+  if (entry.stdout) log.write(entry.stdout)
+  if (entry.stderr) log.write(entry.stderr)
+  entry.background = true
+  entry.osPid = pid
+  entry.promotedLog = log
+  entry.sinkRef!.current = {
+    output: (_p, _type, data) => log.write(data),
+    exit: () => { /* settled at promote time; the child's own exit handler owns the log line */ },
+    error: (_p, message) => log.write(`\n[error: ${message}]`),
+  }
+  processes.delete(processId) // background entries are found via backgroundByPid
+  backgroundByPid.set(pid, entry)
+  entry.sessionCtx?.backgroundPids.add(pid)
+  return { pid }
+}
+
+/** Detached persistent-shell runs still alive (diagnostic surface, and the
+ *  sweep hook for session teardown beyond backgroundByPid — a detached run's
+ *  shell pid IS in backgroundByPid, so reapBackgroundPids already reaches it;
+ *  this exists so future call sites can enumerate without re-deriving). */
+export function svcListDetachedShellRuns(): Array<{ processId: string; command: string }> {
+  return [...detachedShellRuns.values()].map((r) => ({ processId: r.processId, command: r.command }))
 }
 
 /** Tail a background process's log — authorized ONLY for pids this session

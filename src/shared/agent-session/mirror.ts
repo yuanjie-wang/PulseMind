@@ -96,6 +96,10 @@ function patchToolUse(block: ToolUseBlock, u: ToolStatusUpdate): ToolUseBlock {
     // executing), which is exactly what this diff exists for.
     ...(u.subConvId !== undefined ? { subConvId: u.subConvId } : {}),
     ...(u.planNodeId !== undefined ? { planNodeId: u.planNodeId } : {}),
+    // The promotion envelope (PLAN-background-tasks A): a foreground exec the
+    // user moved to background settles with its OS pid after the message was
+    // already on the wire — same after-the-append shape as subConvId.
+    ...(u.backgroundPid !== undefined ? { backgroundPid: u.backgroundPid } : {}),
   }
 }
 
@@ -209,6 +213,15 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       // post-turn prewarm appends nothing) — persistence reads it from here.
       if (data.event.summary) state.historySummary = data.event.summary
       return true
+    }
+    case 'background_task': {
+      // No mirror state to fold (PLAN-background-tasks B): a background
+      // process's exit carries no transcript change — the per-client UI state
+      // (sidebar light, running count, delivery, notification) is kept by each
+      // client's own event subscription. The explicit case documents the event
+      // as consumed-and-ignored here, apart from `default`'s unknown-event
+      // contract (new events must degrade, not crash, on older mirrors).
+      return false
     }
     default:
       return false

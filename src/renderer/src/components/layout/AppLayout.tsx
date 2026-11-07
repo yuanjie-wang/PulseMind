@@ -204,6 +204,8 @@ interface AppLayoutProps {
   /** Per-conversation sidebar light, keyed by conversation id (see
    *  useConversationEngine's statusToLight). Absent = unlit. */
   convLights?: Record<string, ConversationLight>
+  /** 每会话后台运行中任务数（PLAN-background-tasks B）——侧栏灯槽的小标记。 */
+  bgRunningCounts?: Record<string, number>
   /** 会话头模式循环钮的显隐（2026-11-04 裁定：仅会话界面出现，非 welcome）
    *  ——App 以「welcome 正在显示」的否定式计算（chat 优先 + 零消息 + 非流式
    *  时隐藏；浏览器任务容器零消息但 browser 优先，不是 welcome，照常显示）。
@@ -236,6 +238,7 @@ function AppLayout({
   memoryManager,
   knowledgeManager,
   convLights,
+  bgRunningCounts,
   activeConvShowCycle,
   children,
 }: AppLayoutProps): React.ReactElement {
@@ -724,6 +727,7 @@ function AppLayout({
                   onTogglePin={onTogglePinConversation}
                   onPopout={onPopoutConversation}
                   convLights={convLights}
+                  bgRunningCounts={bgRunningCounts}
                 />
               )
             ) : (

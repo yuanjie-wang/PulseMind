@@ -224,6 +224,7 @@ function AppContent(): React.ReactElement {
     approveTool,
     rejectTool,
     killTool,
+    promoteToolToBackground,
     respondToTool,
     extractRoutine,
     clearError,
@@ -241,6 +242,7 @@ function AppContent(): React.ReactElement {
     knowledgeManager,
     experienceManager,
     convLights,
+    bgRunningCounts,
     togglePin,
     reloadConversations,
     updateConversationExpert,
@@ -818,6 +820,7 @@ function AppContent(): React.ReactElement {
               memoryManager={memoryManager}
               knowledgeManager={knowledgeManager}
               convLights={convLights}
+              bgRunningCounts={bgRunningCounts}
             >
               {/* The drill-in is a display layer over the chat pane, not a
                 replacement for it (AppLayout's own view swap is the precedent):
@@ -856,6 +859,7 @@ function AppContent(): React.ReactElement {
                     onApproveTool={approveTool}
                     onRejectTool={rejectTool}
                     onKillTool={killTool}
+                    onPromoteTool={promoteToolToBackground}
                     onRespondToTool={respondToTool}
                     onClearError={clearError}
                     onRetryLast={retryLast}

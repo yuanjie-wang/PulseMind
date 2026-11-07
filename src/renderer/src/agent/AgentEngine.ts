@@ -40,6 +40,7 @@ import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, 
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
+import { promoteForegroundExec } from './executors/foreground-exec'
 import { RepeatCallGuard, formatRepeatHint, toolCallSignature } from './engine/loop-guard'
 import type { CompactionEvent, SessionFileChange } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
@@ -1690,6 +1691,15 @@ export class AgentEngine implements EngineCore {
   approveTool = async (toolUseId: string, alwaysAllow?: boolean): Promise<void> => this.executionFlow.approveTool(toolUseId, alwaysAllow)
   rejectTool = (toolUseId: string): void => this.executionFlow.rejectTool(toolUseId)
   killTool = (toolUseId: string): void => this.executionFlow.killTool(toolUseId)
+  /** 运行中「转入后台」（PLAN-background-tasks A）：把一个在飞的前台 exec
+   *  迁到 pid 键控后台通道。两个派发点都在前台注册表里登记——先查自动路径
+   *  （execSkillCommand 的 span promise），再查审批放行路径（execution-flow
+   *  的在飞标量）。都未命中 = 命令已结束或 id 未知，调用方 toast。 */
+  promoteToolToBackground = (toolUseId: string): { ok: boolean; error?: string } => {
+    if (promoteForegroundExec(toolUseId)) return { ok: true }
+    if (this.executionFlow.promoteReleasedTool(toolUseId)) return { ok: true }
+    return { ok: false, error: 'no running foreground command for this tool call' }
+  }
   pauseExecution = (): void => this.executionFlow.pauseExecution()
   resumeExecution = (): void => this.executionFlow.resumeExecution()
   stopExecution = (): void => this.executionFlow.stopExecution()

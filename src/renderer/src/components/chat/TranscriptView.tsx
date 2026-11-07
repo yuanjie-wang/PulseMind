@@ -55,6 +55,8 @@ export interface TranscriptViewProps {
   onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
+  /** 运行中「转入后台」(PLAN-background-tasks A). Optional. */
+  onPromoteTool?: (toolUseId: string) => void
   onRespondToTool: (toolUseId: string, response: string) => void
   onClearError: () => void
   onRetry: () => void
@@ -76,6 +78,7 @@ export function TranscriptView({
   onApproveTool,
   onRejectTool,
   onKillTool,
+  onPromoteTool,
   onRespondToTool,
   onClearError,
   onRetry,
@@ -229,6 +232,7 @@ export function TranscriptView({
           onApproveTool={onApproveTool}
           onRejectTool={onRejectTool}
           onKillTool={onKillTool}
+          onPromoteTool={onPromoteTool}
           onRespondToTool={onRespondToTool}
         />
       ))}

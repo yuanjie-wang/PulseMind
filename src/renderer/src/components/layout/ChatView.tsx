@@ -65,6 +65,9 @@ interface ChatViewProps {
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
   onClearError: () => void
+  /** 运行中「转入后台」（PLAN-background-tasks A）。Optional：未传的宿主
+   *  （popout 等）渲染的命令卡不带该按钮。 */
+  onPromoteTool?: (toolUseId: string) => void
   onRetryLast?: () => void
   profiles?: LlmProfile[]
   activeProfileId?: string
@@ -190,6 +193,7 @@ function ChatView({
   onApproveTool,
   onRejectTool,
   onKillTool,
+  onPromoteTool,
   onRespondToTool,
   hasApiKey,
   onClearError,
@@ -976,6 +980,7 @@ function ChatView({
         onApproveTool={onApproveTool}
         onRejectTool={onRejectTool}
         onKillTool={onKillTool ?? onRejectTool}
+        onPromoteTool={onPromoteTool}
         onRespondToTool={onRespondToTool}
         conversationId={conversationId}
         conversationTitle={conversationTitle}
@@ -994,6 +999,7 @@ function ChatView({
       onApproveTool,
       onRejectTool,
       onKillTool,
+      onPromoteTool,
       onRespondToTool,
       conversationId,
       conversationTitle,

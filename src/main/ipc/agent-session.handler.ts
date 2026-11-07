@@ -7,6 +7,8 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { agentSessionManager } from '../agent/session-manager'
+import { notify } from '../routine/routine-runner'
+import { settingsStore } from '../storage/settings-store'
 import type { AgentEventData, AgentSessionCreateOptions } from '../../shared/agent-protocol'
 import type { SummonedExpert } from '../../shared/expert-context'
 
@@ -52,5 +54,22 @@ export function registerAgentSessionHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, async (_event, sessionId: string) => {
     await agentSessionManager.refreshOptions(sessionId)
+  })
+
+  // ── 后台任务完成的系统通知（PLAN-background-tasks B）──
+  // 本会话非「我正在看」的窗口才发；标题/正文由渲染端组好（i18n 在那边），
+  // 主进程只管 Electron Notification 的生命周期与点击 focus。设置开关
+  // notifications.backgroundComplete 缺省开（只有显式 false 才关）。
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_NOTIFY_BACKGROUND, async (_event, title: string, body: string) => {
+    try {
+      const settings = await settingsStore.get()
+      if (settings.notifications?.backgroundComplete === false) return
+      notify(String(title ?? '').slice(0, 120), String(body ?? '').slice(0, 300))
+    } catch { /* notifications are best-effort */ }
+  })
+
+  // ── 后台任务完成的空闲投递（PLAN-background-tasks C）──
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_DELIVER_BACKGROUND, (_event, sessionId: string) => {
+    return agentSessionManager.deliverBackgroundNotice(sessionId)
   })
 }

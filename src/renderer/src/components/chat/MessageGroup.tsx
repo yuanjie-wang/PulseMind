@@ -20,13 +20,15 @@ import {
   ScheduleOutlined,
   EllipsisOutlined,
   LoadingOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  BellOutlined
 } from '@ant-design/icons'
 import { Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
 
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
+import { isBackgroundNoticeText, backgroundNoticeBody } from '../../../../shared/background-notice'
 import { describeSentAtText, describeSentAtTitle } from '../../utils/relative-time'
 import { cacheHitRate, formatDuration, formatTokenCount } from '../../../../shared/ui/message-stats'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
@@ -117,6 +119,7 @@ function CollapsibleToolBlock({
   onApproveTool,
   onRejectTool,
   onKillTool,
+  onPromoteTool,
   onRespondToTool,
   onOpenSubAgent,
   completedFromResult = false,
@@ -127,6 +130,10 @@ function CollapsibleToolBlock({
   onApproveTool?: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool?: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
+  /** 运行中「转入后台」(PLAN-background-tasks A): only meaningful for a live
+   *  foreground exec — the host decides availability, the card renders the
+   *  button beside 终止 when the handler is present and the block is running. */
+  onPromoteTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
   /** Open a spawn card's sub-conversation in the host's session view. Absent
    *  means the host has no drill-in (a nested transcript), so no icon shows. */
@@ -317,6 +324,7 @@ function CollapsibleToolBlock({
           <CommandCard
             block={block}
             onKill={() => onKillTool(block.id)}
+            onPromote={block.status === 'running' && block.backgroundPid == null && onPromoteTool ? () => onPromoteTool(block.id) : undefined}
             onToolResponse={onRespondToTool}
           />
         ) : (
@@ -345,6 +353,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   onRejectTool,
   onRespondToTool,
   onKillTool,
+  onPromoteTool,
   conversationId,
   conversationTitle,
   onOpenSubAgent,
@@ -363,6 +372,9 @@ export const MessageGroup = React.memo(function MessageGroup({
   onRejectTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
   onKillTool: (toolUseId: string) => void
+  /** 运行中「转入后台」(PLAN-background-tasks A). Optional: hosts without the
+   *  handler (popout, previews) render the card without the button. */
+  onPromoteTool?: (toolUseId: string) => void
   conversationId?: string
   conversationTitle?: string
   /** Open a spawn_agent card's sub-conversation in the host's session view
@@ -413,6 +425,41 @@ export const MessageGroup = React.memo(function MessageGroup({
   if (!hasDisplayableContent(msg)) return null
 
   const isUser = msg.role === 'user'
+
+  // ── 后台任务完成通知行（PLAN-background-tasks C）──
+  // The delivery turn's content is a synthetic user message with a marker
+  // prefix; the transcript renders it as a slim system row, never a user
+  // bubble (「纤细系统样式行」裁定). One look at the FIRST text block decides.
+  const firstUserText = isUser
+    ? msg.contentBlocks.find((b) => b.type === 'text' && typeof (b as { text?: string }).text === 'string')
+    : undefined
+  const isBackgroundNotice = isUser && isBackgroundNoticeText((firstUserText as { text?: string } | undefined)?.text)
+  if (isBackgroundNotice) {
+    return (
+      <div
+        data-background-notice=""
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          margin: '10px 0',
+          padding: '5px 12px',
+          borderRadius: 999,
+          background: 'var(--pm-well)',
+          border: '1px solid var(--pm-border-soft)',
+          color: 'var(--pm-text-muted)',
+          fontSize: 12,
+          lineHeight: 1.5,
+          maxWidth: 'fit-content',
+        }}
+      >
+        <BellOutlined style={{ fontSize: 12, color: 'var(--pm-link)', flexShrink: 0 }} />
+        <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {backgroundNoticeBody(((firstUserText as { text?: string }).text) || '')}
+        </span>
+      </div>
+    )
+  }
   // Segments rename their message copy (`__text`/`__exec`/`__ask`); the mirror —
   // and therefore the messages row — holds the bare id. Every backend write
   // below (like metadata, knowledge capture) must address the bare id or the
@@ -681,6 +728,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   onApproveTool={onApproveTool}
                   onRejectTool={onRejectTool}
                   onKillTool={onKillTool}
+                  onPromoteTool={onPromoteTool}
                   onRespondToTool={onRespondToTool}
                   onOpenSubAgent={onOpenSubAgent}
                   awaitingApproval={awaitingApproval}

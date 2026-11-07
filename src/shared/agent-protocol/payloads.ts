@@ -341,7 +341,7 @@ export type AgentEventData =
   /** In-place tool_use block mutations (status/exitCode/output, and the spawn
    *  link — subConvId/planNodeId — which is written at dispatch time and has no
    *  other carrier) — diffed, only changed entries. */
-  | { type: 'tool_status'; updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }> }
+  | { type: 'tool_status'; updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string; backgroundPid?: number }> }
   /** In-place MESSAGE-level stat mutations, diffed for the same reason and with
    *  the same shape discipline as `tool_status`: the turn's wall clock is
    *  stamped onto the last assistant message when the turn ends, i.e. after
@@ -363,6 +363,12 @@ export type AgentEventData =
    *  spawn tree. */
   | { type: 'file_changes'; changes: SessionFileChange[] }
   | { type: 'spawn_progress'; message: string }
+  /** A background process of this session exited (PLAN-background-tasks B):
+   *  the completion event face — the mirror is blind to background state
+   *  otherwise (the engine's own backgroundNotices ride the next request's
+   *  state block, invisible to UI). `code` is the process's exit status;
+   *  null = killed/unobservable. */
+  | { type: 'background_task'; phase: 'exit'; pid: number; code: number | null }
   /** The engine compacted the outgoing context copy (or prewarmed the summary
    *  for it). Carries its own numbers so a client can show what happened —
    *  compaction is otherwise invisible, which reads to the user as "the model

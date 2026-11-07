@@ -10,6 +10,7 @@ import { MAX_LIVE_OUTPUT_CHARS } from '../engine/engine-constants'
 import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
 import { MEMORY_PAGE_INLINE_MAX } from '../../../../shared/memory-pages'
 import { interleaveRecallHits, RECALL_DEFAULT_LIMIT, type RecallHit } from '../../../../shared/recall'
+import { registerForegroundExec, unregisterForegroundExec } from './foreground-exec'
 
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
@@ -395,7 +396,13 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
       ex.notify()
       return true
     }
-    await new Promise<void>((resolve) => {
+    // The await resolves 'exit' (the process finished — settle as usual) or
+    // 'promoted' (PLAN-background-tasks A: the user hit 转入后台; the span is
+    // already stopped, the process keeps running main-side and the result
+    // settles with the SAME background envelope a `background: true` spawn
+    // used, so the turn ends now and the model is free to answer other work).
+    let claimedPid: string | null = null
+    const outcome = await new Promise<'exit' | 'promoted'>((resolve) => {
       let stdoutBuf = ''
       let stderrBuf = ''
       let settled = false
@@ -419,19 +426,58 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
       span.start()
       const finish = (exitCode: number | null, isError: boolean) => {
         if (settled) return; settled = true
+        unregisterForegroundExec(t.id)
         span.stop()
         t.exitCode = exitCode
         const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
         t.output = formatted
         ex.addToolResult(t.id, formatted, isError)
         ex.noteVerifyExec?.(command)
-        resolve()
+        resolve('exit')
       }
       // conversationId doubles as the persistent-shell key (review P0-1): this
       // engine's cd/export live in its own shell, apart from its sub-agents'.
       getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined, ex.opts.conversationId)
-        .then(pid => { ex.onProcessStart?.(pid); span.claim(pid) })
+        .then(pid => {
+          ex.onProcessStart?.(pid); span.claim(pid)
+          claimedPid = pid
+          // Promotion handle (PLAN-background-tasks A): registered once the
+          // real processId is known. Promote = settle-as-background — the span
+          // stops (no further terminal events consumed), the await resolves
+          // and the continuation below moves the process into the pid-keyed
+          // background channels via the host.
+          registerForegroundExec(t.id, {
+            processId: pid,
+            promote: () => {
+              if (settled) return; settled = true
+              unregisterForegroundExec(t.id)
+              span.stop()
+              resolve('promoted')
+            },
+          })
+        })
         .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
     })
+    if (outcome === 'promoted') {
+      const promoted = claimedPid ? await getHost().promoteToBackground(claimedPid).catch(() => null) : null
+      if (promoted && promoted.pid > 0) {
+        t.exitCode = 0
+        t.status = 'completed'
+        t.backgroundPid = promoted.pid
+        const note = `Moved to background by the user: pid=${promoted.pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${promoted.pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${promoted.pid}).`
+        t.output = note
+        ex.addToolResult(t.id, note, false)
+      } else {
+        // The process ended (or could not be adopted) between the click and
+        // the move — settle honestly instead of promising a background run.
+        const msg = 'The command exited before it could be moved to the background.'
+        t.exitCode = -1
+        t.status = 'completed'
+        t.output = msg
+        ex.addToolResult(t.id, msg, true)
+      }
+      ex.notify()
+      return true
+    }
     return true
 }

@@ -514,6 +514,7 @@ function readNotificationsSettings(group: Record<string, unknown>): NonNullable<
     webhookUrl: typeof group.webhookUrl === 'string' && group.webhookUrl.trim() ? group.webhookUrl : undefined,
     webhookSecret: typeof group.webhookSecret === 'string' ? group.webhookSecret : undefined,
     onSettled: group.onSettled !== false,
+    backgroundComplete: group.backgroundComplete !== false,
   }
 }
 
