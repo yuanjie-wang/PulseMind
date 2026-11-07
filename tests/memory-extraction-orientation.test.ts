@@ -75,7 +75,6 @@ describe('打捞路径（extractMemoriesFromOldToolPairs）：只收环境/工�
 })
 
 describe('保存循环（extractAndSaveAll）：每轮收获的兜底帽', () => {
-  const src = read('src/renderer/src/memory/MemoryManager.ts')
 
   it('兜底帽随 v2 迁到 agent.parseResponse：非经验 slice(0,3) + 经验 slice(0,1)——提示词失守时结构兜底', () => {
     const agentSrc = read('src/renderer/src/agent/one-shot-agent/SessionReviewAgent.ts')

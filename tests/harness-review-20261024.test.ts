@@ -82,7 +82,7 @@ describe('mixed batch: ask_user alongside a ladder-held call', () => {
   })
 
   it('answering the question repaints awaiting_approval with ONLY the held call', async () => {
-    const { engine, exec } = await runMixed()
+    const { engine } = await runMixed()
     engine.respondToTool('t_ask', '生产')
     expect(engine.agentStatus.status).toBe('awaiting_approval')
     const tools = (engine.agentStatus as { tools?: ToolUseBlock[] }).tools

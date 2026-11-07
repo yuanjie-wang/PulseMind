@@ -272,7 +272,6 @@ try {
   await page.waitForFunction(() => window.__ready === true)
   await page.waitForTimeout(300)
 
-  const url = (p) => page.evaluate((pp) => window.PmLocalFileUrl.localFileUrl(pp), p)
   const settle = async (prefix) => {
     for (let i = 0; i < 40; i++) {
       const r = await frameBody(page, prefix)

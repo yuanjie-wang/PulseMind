@@ -5,7 +5,7 @@ import { effectiveApiText, getDocument, documentationText } from '../src/shared/
 import { BROWSER_API_MANIFEST } from '../src/shared/browser-client/manifest'
 import { memberSupported } from '../src/shared/browser-client/api-policy'
 import type { BackendDescriptor } from '../src/shared/browser-client/protocol'
-import type { BrowserCommand, BrowserCommandResult } from '../src/shared/browser-client/protocol'
+import type { BrowserCommand } from '../src/shared/browser-client/protocol'
 
 const read = (p: string): string => readFileSync(new URL('../' + p, import.meta.url), 'utf-8')
 

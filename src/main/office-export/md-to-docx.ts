@@ -42,7 +42,6 @@ import {
   TabStopType,
   TextRun,
   WidthType,
-  type IBorderOptions,
   type IBordersOptions,
   type IIndentAttributesProperties,
   type IShadingAttributesProperties,

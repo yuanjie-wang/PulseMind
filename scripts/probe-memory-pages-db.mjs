@@ -31,9 +31,6 @@ function guardHome(dataDir) {
   if (!dataDir.startsWith(home)) throw new Error(`DATA_DIR ${dataDir} is outside PM_HOME ${home} — refusing to touch it`)
 }
 
-/** better-sqlite3 is `external` to the bundle and lives in the repo — require
- *  it through a repo-anchored resolver, like probe-project-color-db. */
-const fromRepo = createRequire(join(REPO_ROOT, 'package.json'))
 
 async function openDb() {
   const { DATA_DIR, ensureDataDir } = await import('../src/main/storage/index')
@@ -95,7 +92,6 @@ async function phaseFresh() {
   check('alias 撞他页被拒', !rs[0].ok && /撞名/.test(rs[0].error ?? ''), rs[0].error)
 
   // 11 supersede
-  const oldBody = store.getMemoryPageById(pageId).body
   rs = store.applyPageOps([
     { action: 'supersede', target: '楼花合同全译与术语表', title: '楼花合同重译拍板', type: 'decision', content: '从零重译、术语表重建，不复用旧译本（取代 2026-09 版全译决定）。', aliases: ['从零重译'] },
   ])
@@ -107,7 +103,6 @@ async function phaseFresh() {
   // 12-17 检索栈
   const t1 = store.searchMemoryPages({ query: '楼花合同重译' })
   check('中文 title trigram 命中且 viaFts', t1.length > 0 && t1.some((h) => h.record.title === '楼花合同重译拍板' && h.viaFts))
-  const t2 = store.searchMemoryPages({ query: '字体' })
   store.applyPageOps([{ action: 'create', title: 'macOS字体', type: 'fact', content: '中文字体用 STHeiti/SimHei，等宽 Menlo。' }])
   const t2b = store.searchMemoryPages({ query: '字体' })
   check('2 字词走 LIKE 兜底命中（viaFts=false）', t2b.some((h) => h.record.title === 'macOS字体' && !h.viaFts), JSON.stringify(t2b.map((h) => h.record.title)))

@@ -19,7 +19,7 @@
 import { _electron as electron } from 'playwright-core'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { build } from 'esbuild'
 import { tmpdir } from 'node:os'
 import { join, dirname, sep } from 'node:path'
@@ -206,7 +206,7 @@ if (process.env.PM_SELFTEST) {
   setTimeout(() => {
     const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().startsWith('http'))
     if (!w) {
-      fs.writeFileSync(resultFile, JSON.stringify({ error: 'no window' }))
+      writeFileSync(resultFile, JSON.stringify({ error: 'no window' }))
       electron.app.exit(3)
       return
     }
@@ -222,10 +222,10 @@ if (process.env.PM_SELFTEST) {
       document.body.appendChild(t)
       return await Promise.race([ev, new Promise((res) => setTimeout(() => res('timeout'), 5000))])
     })()`, false).then((r) => {
-      fs.writeFileSync(resultFile, JSON.stringify({ result: r }))
+      writeFileSync(resultFile, JSON.stringify({ result: r }))
       electron.app.exit(0)
     }).catch((e) => {
-      fs.writeFileSync(resultFile, JSON.stringify({ error: String(e).slice(0, 200) }))
+      writeFileSync(resultFile, JSON.stringify({ error: String(e).slice(0, 200) }))
       electron.app.exit(4)
     })
   }, Number(process.env.PM_SELFTEST_DELAY || '8000'))
@@ -325,7 +325,7 @@ try {
   })() `
   const runMatrix = async (label) => {
     for (const mode of ['app', 'string', 'buffer', 'bufferSmall', 'stub']) {
-      const set = await electronApp.evaluate((_e, [m, fp]) => globalThis.__pmSetHandler(m, fp), [mode, REPORT_FILE])
+      await electronApp.evaluate((_e, [m, fp]) => globalThis.__pmSetHandler(m, fp), [mode, REPORT_FILE])
       await wait(300)
       const r = await wcExec(frameTest).catch((e) => 'ERR:' + String(e).slice(0, 60))
       console.log(`  [${label}] mode=${mode.padEnd(11)} iframe=${r}`)
@@ -342,6 +342,10 @@ try {
   await wait(500)
   throw new SkipFlow()
 
+  // Deliberately parked: the throw above short-circuits the rest of this flow,
+  // which stays here as the reproduction recipe for the composer path. Remove
+  // the throw to resume — hence a waiver rather than deleting ~130 lines.
+  /* eslint-disable no-unreachable */
   // Drive the composer: type the task and send.
   const ta = page.locator('textarea').first()
   await ta.waitFor({ timeout: 20000 })
@@ -390,7 +394,7 @@ try {
 
   // Watch the network layer from the MAIN process: does the local-file:
   // navigation ever reach it?
-  await electronApp.evaluate(({ session }, port) => {
+  await electronApp.evaluate(({ session }, _port) => {
     const s = session.defaultSession
     s.webRequest.onBeforeRequest((details, cb) => {
       if (details.url.startsWith('local-file://')) console.log(`[webRequest] ${details.resourceType} ${details.url.slice(0, 150)}`)

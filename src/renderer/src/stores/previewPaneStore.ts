@@ -11,7 +11,7 @@
 import { create } from 'zustand'
 import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
-import { useWorkbenchStore, autoOpenTab } from './workbenchStore'
+import { autoOpenTab } from './workbenchStore'
 import type { DraftEntry } from './preview-edit'
 import { useHtmlEditStore } from './htmlEditStore'
 import type { EditRevealTarget } from '../../../shared/tool-display/edit-reveal'
