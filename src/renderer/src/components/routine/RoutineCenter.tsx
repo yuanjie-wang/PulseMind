@@ -34,6 +34,7 @@ import { useRoutineRunNow } from './RoutineRunModal'
 import { useRoutineBatchRun } from './BatchRunModal'
 import { stopRunConfirm, stopRoutineRun } from './stop-run'
 import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
+import { WorkflowSection } from './WorkflowSection'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 
 export interface RoutineCenterProps {
@@ -585,6 +586,16 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
             </div>
           </aside>
         </div>
+      )}
+
+      {/* 工作流区（PLAN-workflow-engine）：full-width section under the
+          two-column landing layout——工作流是第三种对象（任务/模板/工作流），
+          与右列的运行记录无关（有自己的轮询行）。无历史时整列也在：工作流是
+          入口之一，藏起来会让它不可发现。 */}
+      {historyOfId === null && (
+        <section data-section="workflows" style={{ flexShrink: 0, padding: '20px 24px 24px' }}>
+          <WorkflowSection />
+        </section>
       )}
     </div>
   )

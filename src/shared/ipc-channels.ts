@@ -157,6 +157,10 @@ export const IPC_CHANNELS = {
   TERMINAL_EXECUTE_BACKGROUND: 'terminal:execute-background',
   TERMINAL_EXEC_LOGS: 'terminal:exec-logs',
   TERMINAL_EXEC_KILL: 'terminal:exec-kill',
+  // Foreground → background promotion (PLAN-background-tasks A): the 运行中
+  // 「转入后台」 button lands here through the engine's promoteToBackground
+  // host call.
+  TERMINAL_PROMOTE_BACKGROUND: 'terminal:promote-background',
   // Session exec allowlist (P0-2 #5): the 「本会话总是允许」 prefixes live in the
   // main-process session context; these carry reads/writes over the bridge.
   EXEC_ALLOWLIST_GET: 'exec:allowlist-get',
@@ -226,6 +230,12 @@ export const IPC_CHANNELS = {
   AGENT_SESSION_SNAPSHOT: 'agent-session:snapshot',
   AGENT_SESSION_ENGINE_CALL: 'agent-session:engine-call',
   AGENT_SESSION_REFRESH_OPTIONS: 'agent-session:refresh-options',
+  // PLAN-background-tasks B: a background task finished in a conversation this
+  // window is NOT watching — fire the OS notification (settings-gated).
+  AGENT_SESSION_NOTIFY_BACKGROUND: 'agent-session:notify-background',
+  // PLAN-background-tasks C: the delivery loop's idempotent entry — main
+  // decides (gates) whether a pending notice becomes a synthetic turn now.
+  AGENT_SESSION_DELIVER_BACKGROUND: 'agent-session:deliver-background',
   // ── Conversation popout (PLAN-conversation-popout 2026-10-30) ──
   /** Renderer → main: pop a conversation out into its own BrowserWindow. */
   POPOUT_OPEN: 'popout:open',
@@ -349,6 +359,13 @@ export const IPC_CHANNELS = {
   /** PLAN-routine-triggers M1: the resolved loopback port of the webhook
    *  endpoint (0 = dormant), for the editor's fire-URL display. */
   ROUTINE_TRIGGERS_INFO: 'routine:triggers-info',
+
+  // ── PLAN-workflow-engine: 工作流 + 流水线 ──
+  PIPELINE_WORKFLOWS: 'pipeline:workflows',
+  PIPELINE_RUN: 'pipeline:run',
+  PIPELINE_STOP: 'pipeline:stop',
+  PIPELINE_RUNS: 'pipeline:runs',
+  PIPELINE_ASSIST: 'pipeline:assist',
 
   // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',

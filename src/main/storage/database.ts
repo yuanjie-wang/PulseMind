@@ -413,6 +413,37 @@ function createTables(): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id, started_at DESC);
 
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      id              TEXT PRIMARY KEY,
+      workflow_id     TEXT NOT NULL,
+      workflow_name   TEXT NOT NULL,
+      objective       TEXT,
+      baseline_commit TEXT,
+      workspace_dir   TEXT,
+      status          TEXT NOT NULL,
+      current_node    TEXT,
+      started_at      TEXT NOT NULL,
+      finished_at     TEXT,
+      error           TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS pipeline_stage_runs (
+      id              TEXT PRIMARY KEY,
+      run_id          TEXT NOT NULL,
+      node_id         TEXT NOT NULL,
+      verdict         TEXT,
+      continues       INTEGER NOT NULL DEFAULT 0,
+      conversation_id TEXT,
+      started_at      TEXT NOT NULL,
+      finished_at     TEXT,
+      error           TEXT,
+      artifacts_json  TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pipeline_stage_runs_run ON pipeline_stage_runs(run_id, started_at);
+
     CREATE TABLE IF NOT EXISTS audit_log (
       id          TEXT PRIMARY KEY,
       ts          TEXT NOT NULL,

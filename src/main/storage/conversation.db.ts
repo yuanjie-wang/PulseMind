@@ -40,6 +40,10 @@ export function deriveConvType(id: string): string {
   // 转写不进聊天列表，更不进提取清扫的候选池（type='normal' 过滤）——否则固化
   // 代理自己的叙述会被一阶段扫成回声经验。经技能中心经验卡与完成通知触达。
   if (id.startsWith('sop_')) return 'routine'
+  // 流水线阶段会话（PLAN-workflow-engine）：每阶段一个独立会话，main-authored
+  // 转写与 routine/sop 同一隐藏契约——不进聊天列表/搜索/记忆提取候选池，经
+  // RoutineCenter 工作流运行记录的节点行触达（转写跳转）。
+  if (id.startsWith('pipe_')) return 'routine'
   // The routine / expert editors' form-assistant threads (form-assist family)
   // share the same hiding contract: reached only through their editor column,
   // never a chat row in any 'normal'-filtered surface.

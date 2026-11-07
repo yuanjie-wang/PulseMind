@@ -58,6 +58,12 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode, source),
   setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROFILE, id, profileId, source),
+  // ── PLAN-workflow-engine：工作流 + 流水线 ──
+  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete', arg?: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_WORKFLOWS, op, arg),
+  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUN, params),
+  pipelineStop: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_STOP, runId),
+  pipelineRuns: (runId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUNS, runId, limit),
+  pipelineAssist: (params: { userNeed: string; currentJson: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_ASSIST, params),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
   routineCreate: (input: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CREATE, input),
@@ -239,6 +245,11 @@ const electronAPI = {
   executeBackground: (command: string, cwd?: string): Promise<{ pid: number }> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, command, cwd),
   execLogs: (pid: number, tailBytes?: number): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_LOGS, pid, tailBytes),
   execKill: (pid: number): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_KILL, pid),
+  // Foreground → background promotion (PLAN-background-tasks A). The engine
+  // reaches this through the main-process host; the bridge shape exists for
+  // the PulseHost contract like execLogs/execKill above.
+  promoteToBackground: (processId: string): Promise<{ pid: number } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_PROMOTE_BACKGROUND, processId),
   getExecAllowlist: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_GET),
   addExecAllowlist: (prefix: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_ADD, prefix),
   onTerminalOutput: (callback: (data: TerminalOutputEvent) => void): (() => void) => {
@@ -561,6 +572,12 @@ const electronAPI = {
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),
   agentSessionRefreshOptions: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, sessionId),
+  // PLAN-background-tasks B/C: background-complete OS notification (title/body
+  // pre-composed renderer-side, i18n lives there) and the idle-delivery entry.
+  agentSessionNotifyBackgroundComplete: (title: string, body: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_NOTIFY_BACKGROUND, title, body),
+  agentSessionDeliverBackground: (sessionId: string): Promise<'delivered' | 'busy' | 'nothing'> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_DELIVER_BACKGROUND, sessionId),
   serviceGetStatus: (): Promise<ServiceStatus> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_GET_STATUS),
   serviceSetEnabled: (enabled: boolean): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_ENABLED, enabled),
   serviceSetPort: (port: number): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_PORT, port),

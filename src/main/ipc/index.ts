@@ -23,6 +23,7 @@ import { registerToolStudioHandlers } from './tool.handler'
 import { registerBrowserHandlers } from './browser.handler'
 import { registerHostedHandlers } from './hosted.handler'
 import { registerLlmProbeHandlers } from './llm-probe.handler'
+import { registerPipelineHandlers } from './pipeline.handler'
 
 // Idempotence guard: ipcMain.handle throws 'second handler' if a channel is
 // registered twice, which aborts the whole startup (observed 2026-09-11 21:56,
@@ -62,4 +63,5 @@ export function registerIpcHandlers(): void {
   registerBrowserHandlers()
   registerHostedHandlers()
   registerLlmProbeHandlers()
+  registerPipelineHandlers()
 }

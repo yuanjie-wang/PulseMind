@@ -10,6 +10,7 @@ import type { Conversation, ConversationIndexEntry, Message, TokenStats, ToolRes
 import type { AppSettings } from './settings'
 import type { ToolPreferences } from './tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from './skill-types'
+import type { PipelineRun, PipelineStageRun, WorkflowDefinition } from '../workflow/types'
 import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { MemoryPageRecord, MemoryPageType, PageOp, PageOpResult } from '../memory-pages'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
@@ -304,6 +305,12 @@ export interface ElectronAPI {
   executeBackground: (command: string, cwd?: string, shellKey?: string) => Promise<{ pid: number }>
   execLogs: (pid: number, tailBytes?: number) => Promise<string | null>
   execKill: (pid: number) => Promise<boolean>
+  /** Foreground → background promotion (PLAN-background-tasks A): move a
+   *  running foreground command (per-command spawn or persistent-shell
+   *  command) onto the pid-keyed background channels. Resolves { pid } (the
+   *  OS pid the background channels now answer for) or null when nothing
+   *  runs under the processId any more. */
+  promoteToBackground: (processId: string) => Promise<{ pid: number } | null>
   getExecAllowlist: () => Promise<string[]>
   addExecAllowlist: (prefix: string) => Promise<void>
   onTerminalOutput: (callback: (data: TerminalOutputEvent) => void) => () => void
@@ -369,6 +376,12 @@ export interface ElectronAPI {
    *  conversation's own model. The session re-resolves it on refreshOptions.
    *  Same `source` contract as setConversationApprovalMode. */
   setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') => Promise<void>
+  // ── PLAN-workflow-engine：工作流 + 流水线 ──
+  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete', arg?: unknown) => Promise<WorkflowDefinition[] | WorkflowDefinition | boolean>
+  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string }) => Promise<{ runIds: string[] }>
+  pipelineStop: (runId: string) => Promise<boolean>
+  pipelineRuns: (runId?: string, limit?: number) => Promise<{ runs?: PipelineRun[]; stages?: PipelineStageRun[]; run?: PipelineRun }>
+  pipelineAssist: (params: { userNeed: string; currentJson: string }) => Promise<{ ok: boolean; workflow?: WorkflowDefinition; errors?: string[]; warnings?: string[] }>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
   routineCreate: (input: Partial<Routine>) => Promise<Routine>
@@ -644,6 +657,15 @@ export interface ElectronAPI {
   ) => Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown; fileChanges: unknown[] } | null>
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]) => Promise<unknown>
   agentSessionRefreshOptions: (sessionId: string) => Promise<void>
+  /** PLAN-background-tasks B: fire the background-complete OS notification.
+   *  Title/body are pre-composed in the renderer (its i18n); main gates on
+   *  settings.notifications.backgroundComplete (default on). */
+  agentSessionNotifyBackgroundComplete: (title: string, body: string) => Promise<void>
+  /** PLAN-background-tasks C: idempotent delivery of the session's pending
+   *  background-exit notices. 'delivered' = a synthetic turn was fired;
+   *  'busy' = engine active / slots full / already delivering (retry later);
+   *  'nothing' = no pending notice. */
+  agentSessionDeliverBackground: (sessionId: string) => Promise<'delivered' | 'busy' | 'nothing'>
   serviceGetStatus: () => Promise<ServiceStatus>
   serviceSetEnabled: (enabled: boolean) => Promise<{ running: boolean; port: number | null }>
   serviceSetPort: (port: number) => Promise<{ running: boolean; port: number | null }>
