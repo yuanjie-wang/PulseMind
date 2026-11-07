@@ -107,7 +107,11 @@ describe('renderNodePrompt', () => {
 
   it('全部占位符替换；入口阶段的 prev* 是明确空态标注', () => {
     const out = renderNodePrompt(baseWorkflow.nodes[1].prompt, {
-      runObjective: '落地', workflowObjective: 'W', prevVerdict: 'pass', prevSummary: '还行', visit: 2,
+      runObjective: '落地',
+      workflowObjective: 'W',
+      prevVerdict: 'pass',
+      prevSummary: '还行',
+      visit: 2,
     })
     expect(out).toBe('prev=pass/还行/2')
     const entry = renderNodePrompt(baseWorkflow.nodes[1].prompt, {})
@@ -147,11 +151,7 @@ describe('parsePipelineResult', () => {
   })
 
   it('畸形行跳过：非 JSON、无 verdict、纯前缀都不拦路', () => {
-    const text = [
-      'PIPELINE_RESULT: not-json',
-      'PIPELINE_RESULT: {"summary":"no verdict"}',
-      'PIPELINE_RESULT: {"verdict":"pass"}',
-    ].join('\n')
+    const text = ['PIPELINE_RESULT: not-json', 'PIPELINE_RESULT: {"summary":"no verdict"}', 'PIPELINE_RESULT: {"verdict":"pass"}'].join('\n')
     expect(parsePipelineResult(text)).toEqual({ verdict: 'pass', summary: '', artifacts: [] })
   })
 

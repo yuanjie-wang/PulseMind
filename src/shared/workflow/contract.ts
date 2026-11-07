@@ -14,7 +14,8 @@ export interface PipelineContract {
   artifacts: string[]
 }
 
-const PREFIX = 'PIPELINE_RESULT:'
+/** 契约行前缀（模板教学段与 formatPipelineResult 的同一真源）。 */
+export const PREFIX = 'PIPELINE_RESULT:'
 
 /** artifacts 路径合法性（评审缺口②的校验面）：工作区相对路径，禁绝对路径、
  *  禁 `..`、禁空。保存/启动/助手应用三处的 validate 门也会调它（plan 校验
@@ -42,9 +43,7 @@ function parseContractLine(line: string): PipelineContract | null {
   if (!parsed || typeof parsed !== 'object') return null
   const obj = parsed as Record<string, unknown>
   if (typeof obj.verdict !== 'string' || !obj.verdict.trim()) return null
-  const artifacts = Array.isArray(obj.artifacts)
-    ? obj.artifacts.filter((a): a is string => typeof a === 'string')
-    : []
+  const artifacts = Array.isArray(obj.artifacts) ? obj.artifacts.filter((a): a is string => typeof a === 'string') : []
   return {
     verdict: obj.verdict.trim(),
     summary: typeof obj.summary === 'string' ? obj.summary : '',

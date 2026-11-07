@@ -43,18 +43,14 @@ function capText(text: string, cap: number, label: string): string {
 function formatPrevArtifacts(vars: RenderVars): string {
   const arts = vars.prevArtifacts ?? []
   if (arts.length === 0) return '（上阶段未声明或未产出交付物）'
-  return arts
-    .map((a) => `--- ${a.path} ---\n${capText(a.content, ARTIFACT_CONTENT_CAP, `交付物 ${a.path}`)}`)
-    .join('\n\n')
+  return arts.map((a) => `--- ${a.path} ---\n${capText(a.content, ARTIFACT_CONTENT_CAP, `交付物 ${a.path}`)}`).join('\n\n')
 }
 
 /** 单节点 prompt 渲染。未知占位符原样保留（诚实缺位——模型看得到模板变量
  *  没被替换，比静默吞掉更可诊断）；值缺席的已知占位符替换为明确的空态标注。 */
 export function renderNodePrompt(prompt: string, vars: RenderVars): string {
   const objective = resolveObjective(vars)
-  const planContent = vars.planContent !== undefined
-    ? capText(vars.planContent, PLAN_CONTENT_CAP, 'plan 内容')
-    : '（未提供 plan 内容）'
+  const planContent = vars.planContent !== undefined ? capText(vars.planContent, PLAN_CONTENT_CAP, 'plan 内容') : '（未提供 plan 内容）'
   const replacements: Record<string, string> = {
     objective: objective || '（未提供全局目标）',
     planContent,
