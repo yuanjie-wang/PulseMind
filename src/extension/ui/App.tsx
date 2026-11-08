@@ -140,39 +140,15 @@ export function App(): React.JSX.Element {
           onResume={(id) => void panel.resumeSession(id)}
           onDelete={(id) => void panel.deleteSession(id)}
         />
-        <button
-          className="pm-icon-btn"
-          title="新会话"
-          onClick={() => {
-            setConfirmHandoff(false)
-            void panel.newSession()
-          }}
-        >
+        <button className="pm-icon-btn" title="新会话" onClick={() => void panel.newSession()}>
           <Icon name="plus" />
         </button>
         {/* 转到桌面端继续（PLAN-extension-handoff）：只在已绑定会话时出现——没有
-            会话的页签无可移交。两步确认：第一次点变确认态，再点才发。 */}
-        {panel.sessionId && !confirmHandoff && (
+            会话的页签无可移交。确认不复用头部图标（expand 与「放大」撞形），
+            走头部下方的确认卡——与循环上限卡同族。 */}
+        {panel.sessionId && (
           <button className="pm-icon-btn" title="转到桌面端继续" onClick={() => setConfirmHandoff(true)}>
-            <Icon name="expand" />
-          </button>
-        )}
-        {panel.sessionId && confirmHandoff && (
-          <button
-            className="pm-icon-btn"
-            title="确认转到桌面端"
-            onClick={(e) => {
-              if (!trustedOnly(e)) return
-              setConfirmHandoff(false)
-              void panel.handoff({ url: location.href, title: document.title })
-            }}
-          >
-            <Icon name="check" />
-          </button>
-        )}
-        {confirmHandoff && (
-          <button className="pm-icon-btn" title="取消" onClick={() => setConfirmHandoff(false)}>
-            <Icon name="close" />
+            <Icon name="external" />
           </button>
         )}
         <button className="pm-icon-btn" title={wide ? '还原' : '放大'} onClick={toggleWide}>
@@ -182,6 +158,32 @@ export function App(): React.JSX.Element {
           <Icon name="close" />
         </button>
       </header>
+
+      {/* 转出确认卡（PLAN-extension-handoff，2026-11-08 交互返工）：头部两步图标
+          确认太隐晦（冒出两个陌生图标钮），改成语义卡——说清后果、两个明确按钮。 */}
+      {confirmHandoff && (
+        <div className="pm-iterate">
+          <div className="pm-iterate-title">转到桌面端继续？</div>
+          <div className="pm-iterate-desc">
+            当前会话将在桌面端 PulseMind 打开并继续对话，此页签解除绑定；当前页面与登录状态（cookie）一并带走。
+          </div>
+          <div className="pm-iterate-actions">
+            <button
+              className="pm-iterate-btn pm-iterate-btn-primary"
+              onClick={(e) => {
+                if (!trustedOnly(e)) return
+                setConfirmHandoff(false)
+                void panel.handoff({ url: location.href, title: document.title })
+              }}
+            >
+              转到桌面端
+            </button>
+            <button className="pm-iterate-btn pm-iterate-btn-danger" onClick={() => setConfirmHandoff(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 「已转出」空态横幅（PLAN-extension-handoff）：会话已在桌面端继续，此
           页签解绑；「开始新对话」走 newSession（worker 会清掉 handedOff 标记）。

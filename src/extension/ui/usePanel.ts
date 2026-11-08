@@ -285,6 +285,13 @@ export function usePanel(): PanelApi {
       setError(res.error ?? '转到桌面端失败')
       return false
     }
+    // 「已转出」空态要连旧转录一起清（mirror 重置 + sessionId 置空）——横幅
+    // 底下挂着已移交会话的转录，读起来像两端同时活着（2026-11-08 交互返工）。
+    mirror.current = freshSessionState()
+    setSession({ ...mirror.current })
+    sessionIdRef.current = null
+    setSessionId(null)
+    setBusy(false)
     setHandedOff(true)
     return true
   }, [])
