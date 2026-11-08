@@ -150,7 +150,8 @@ describe('wiring', () => {
 
   it('useGreeting 两处 execute 均传 { style, env: pickGreetingEnv() }，无 execute(undefined 残留', () => {
     expect(hookSrc.match(/const style = pickGreetingStyle\(lastStyleRef\.current\)/g)?.length).toBe(2)
-    expect(hookSrc.match(/execute\(\{ style, env: pickGreetingEnv\(\) \},/g)?.length).toBe(2)
+    // prettier 会把 execute( 换行——匹配须空白容忍
+    expect(hookSrc.match(/execute\(\s*\{ style, env: pickGreetingEnv\(\) \},/g)?.length).toBe(2)
     expect(hookSrc).not.toContain('execute(undefined')
     expect(hookSrc).toContain('lastStyleRef')
   })
