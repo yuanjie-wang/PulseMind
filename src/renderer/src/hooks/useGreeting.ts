@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LlmAdapter } from '../llm/adapter'
 import { GreetingAgent } from '../agent/one-shot-agent/GreetingAgent'
-import { pickGreetingStyle } from '../agent/one-shot-agent/greeting-styles'
+import { pickGreetingEnv, pickGreetingStyle } from '../agent/one-shot-agent/greeting-styles'
 
 export function useGreeting(
   adapter: LlmAdapter,
@@ -26,10 +26,13 @@ export function useGreeting(
     const timer = setTimeout(async () => {
       const style = pickGreetingStyle(lastStyleRef.current)
       lastStyleRef.current = style.id
-      const text = await agentRef.current.execute(style, {
-        llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
-        maxOutputTokens: 4096,
-      })
+      const text = await agentRef.current.execute(
+        { style, env: pickGreetingEnv() },
+        {
+          llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
+          maxOutputTokens: 4096,
+        },
+      )
       if (!cancelled && text) setGreeting(text)
     }, 100)
     return () => {
@@ -45,10 +48,13 @@ export function useGreeting(
     const style = pickGreetingStyle(lastStyleRef.current)
     lastStyleRef.current = style.id
     agentRef.current
-      .execute(style, {
-        llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
-        maxOutputTokens: 4096,
-      })
+      .execute(
+        { style, env: pickGreetingEnv() },
+        {
+          llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
+          maxOutputTokens: 4096,
+        },
+      )
       .then((text) => {
         if (text) setGreeting(text)
       })

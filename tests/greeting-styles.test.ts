@@ -6,7 +6,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { GREETING_STYLES, pickGreetingStyle } from '../src/renderer/src/agent/one-shot-agent/greeting-styles'
+import { GREETING_STYLES, pickGreetingStyle, pickGreetingEnv } from '../src/renderer/src/agent/one-shot-agent/greeting-styles'
 import { GreetingAgent } from '../src/renderer/src/agent/one-shot-agent/GreetingAgent'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -71,6 +71,31 @@ describe('pickGreetingStyle', () => {
   })
 })
 
+// ── 环境要素概率注入（user 2026-11-08 裁定：时段/季节各自 50%）──
+
+describe('pickGreetingEnv', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // rand 被独立调用两次（第一次季节、第二次时段）——用序列桩区分两拍。
+  const seq = (vals: number[]) => {
+    let i = 0
+    return () => vals[i++ % vals.length]
+  }
+
+  it('两次独立判定：各拍 <0.5 上送、≥0.5 缺席，互不联动', () => {
+    expect(pickGreetingEnv(seq([0.1, 0.1]))).toEqual({ season: expect.any(String), slot: expect.any(String) })
+    expect(pickGreetingEnv(seq([0.7, 0.7]))).toEqual({ season: null, slot: null })
+    expect(pickGreetingEnv(seq([0.3, 0.7]))).toEqual({ season: expect.any(String), slot: null })
+    expect(pickGreetingEnv(seq([0.7, 0.3]))).toEqual({ season: null, slot: expect.any(String) })
+  })
+
+  it('边界 0.5 恰好缺席（< 0.5 才上送）', () => {
+    expect(pickGreetingEnv(seq([0.5, 0.5]))).toEqual({ season: null, slot: null })
+  })
+})
+
 // ── GreetingAgent 风格注入 ──
 
 class ProbeGreetingAgent extends GreetingAgent {
@@ -80,10 +105,34 @@ class ProbeGreetingAgent extends GreetingAgent {
 }
 
 describe('GreetingAgent prompt', () => {
+  const style = GREETING_STYLES[2]
+  const req = (env: { season: string | null; slot: string | null }) => ({ style, env })
+
   it('buildSystemPrompt 注入所选风格的 name 与 instruction', () => {
-    const prompt = new ProbeGreetingAgent().expose(GREETING_STYLES[2])
-    expect(prompt).toContain(`风格为「${GREETING_STYLES[2].name}：${GREETING_STYLES[2].instruction}」`)
+    const prompt = new ProbeGreetingAgent().expose(req({ season: null, slot: null }))
+    expect(prompt).toContain(`风格为「${style.name}：${style.instruction}」`)
     expect(prompt).not.toContain('可随机风格')
+  })
+
+  it('环境行条件化：两要素都在/只在一个/全缺席（行号顺延）', () => {
+    const both = new ProbeGreetingAgent().expose(req({ season: '秋天', slot: '下午' }))
+    expect(both).toContain('4. 环境信息： 秋天 下午')
+    expect(both).toContain('5. 禁令')
+    const seasonOnly = new ProbeGreetingAgent().expose(req({ season: '秋天', slot: null }))
+    expect(seasonOnly).toContain('4. 环境信息： 秋天')
+    expect(seasonOnly).toContain('5. 禁令')
+    const none = new ProbeGreetingAgent().expose(req({ season: null, slot: null }))
+    expect(none).not.toContain('环境信息')
+    expect(none).toContain('4. 禁令')
+  })
+
+  it('buildUserMessages：有要素带「当前是…」，全缺席是中性指令', () => {
+    const agent = new ProbeGreetingAgent()
+    const build = (env: { season: string | null; slot: string | null }): string =>
+      (agent as unknown as { buildUserMessages(r: unknown): Array<{ content: string }> }).buildUserMessages(req(env))[0].content
+    expect(build({ season: '春天', slot: '清晨' })).toBe('当前是春天清晨')
+    expect(build({ season: null, slot: '清晨' })).toBe('当前是清晨')
+    expect(build({ season: null, slot: null })).toBe('请输出问候语')
   })
 })
 
@@ -93,15 +142,15 @@ describe('wiring', () => {
   const agentSrc = readFileSync(AGENT_PATH, 'utf-8')
   const hookSrc = readFileSync(HOOK_PATH, 'utf-8')
 
-  it('GreetingAgent 的 TInput 是 GreetingStyle，prompt 含风格插值', () => {
-    expect(agentSrc).toMatch(/OneShotAgent<GreetingStyle,/)
+  it('GreetingAgent 的 TInput 是 GreetingRequest（风格 + 概率环境），prompt 含风格插值', () => {
+    expect(agentSrc).toMatch(/OneShotAgent<GreetingRequest,/)
     expect(agentSrc).toContain('${style.name}')
     expect(agentSrc).toContain('${style.instruction}')
   })
 
-  it('useGreeting 两处 execute 均传 pickGreetingStyle(...)，无 execute(undefined 残留', () => {
+  it('useGreeting 两处 execute 均传 { style, env: pickGreetingEnv() }，无 execute(undefined 残留', () => {
     expect(hookSrc.match(/const style = pickGreetingStyle\(lastStyleRef\.current\)/g)?.length).toBe(2)
-    expect(hookSrc.match(/execute\(style,/g)?.length).toBe(2)
+    expect(hookSrc.match(/execute\(\{ style, env: pickGreetingEnv\(\) \},/g)?.length).toBe(2)
     expect(hookSrc).not.toContain('execute(undefined')
     expect(hookSrc).toContain('lastStyleRef')
   })
