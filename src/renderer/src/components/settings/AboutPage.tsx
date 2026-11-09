@@ -40,7 +40,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.0 把窗口还给了任务：同一段对话可以在对话、工作区、浏览器三种视图间随时轮转，视图跟着任务走、按会话记住；主窗整体换成卡片语言，欢迎页按对话 / 项目 / 浏览器三档开局，输入网址就能直接开一个浏览任务。预览侧换成了带语法高亮、自动补全与 ⌘F 查找替换的代码编辑器，AI 改过的文件以只读审阅高亮「改了什么」；对话与项目都能弹出为独立窗口，工作台补齐全文检索、只看本会话改动与逐文件 diff。浏览器扩展的历史按 Chrome 页签隔离，浏览器重启后照样找得回来。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.1 把重复的活管了起来：任务中心同一列表混排对话式任务与工作流任务，用同一个向导编辑；跑得久的事也看得见了——终端命令一键「转入后台」，输入框上方常驻任务条、悬停即见实时输出，扩展面板的会话还能一键移交桌面接着聊。此前 0.5.0 已把窗口还给了任务：同一段对话在对话 / 工作区 / 浏览器三视图间随时轮转、按会话记住，欢迎页三档开局，预览即编辑，对话与项目都能弹出为独立窗口，浏览器扩展的历史按 Chrome 页签隔离。所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -65,7 +65,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **欢迎页** — 对话 / 项目 / 浏览器三档开局：对话形态是「继续对话 / 开始日常 / 知识沉淀」三类卡片加「试试」提示词；项目形态先挑一个工作目录，选好即压缩成一条横条、随时「更换」；浏览器形态只需输入网址
 - **主窗三视图** — 会话头右上角的循环钮在对话 / 工作区 / 浏览器之间轮转，视图跟着任务走、按会话记住；新建任务也能从侧栏子菜单直接落进对应形态
-- **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务 / 能力 • 知识 • 创作
+- **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务（对话式任务与工作流任务混排）/ 能力 • 知识 • 创作
 - **设置页** — 常规（语言、外观、开机自启、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
@@ -103,14 +103,15 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 ## 日常任务
 
-把重复的事交给日程，到点自动执行。
+任务中心装下两类任务：**对话式任务**是一条提示词的定时 / 批量执行，**工作流任务**是按流程推进的多环节任务。两类卡片同列表混排，用同一个四步向导编辑（基本信息 / 任务内容 / 运行设置 / 触发与批量），「变量」声明两模式同一套。
 
-- **例行任务** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），独立会话运行，完成后通知你
-- **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表，最大 50MB），表头自动映射为任务参数；每行数据用独立会话执行一次任务，并发与单次超时可调，中断可续跑，运行历史按行展示，点击钻入该行的会话
-- **运行历史** — 按天分桶，可删除、清理、设置保留期限
-- **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
+- **定时与触发** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），两类任务同一组配置；定时卡带开关，停用即静默
+- **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表，最大 50MB），表头自动映射为变量；每行数据用独立会话执行一次任务，并发与单次超时可调（工作流批量串行执行），中断可续跑，运行历史按行展示，点击钻入该行的会话
+- **分享与导入** — 两类任务都能导出分享；导入走任务中心头部唯一入口，先预览、确认才落库
+- **运行历史** — 右侧统一栏归并两类任务的运行记录，今天 / 昨天 / 本周 / 更早 分组，可删除、清理、设置保留期限
 - **对话式配置** — 用聊天的方式填表；先出提案卡片，确认后才落库
-- **从对话提炼** — 一段好用的对话，可以直接提炼为例行任务
+- **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
+- **从对话提炼** — 一段好用的对话，可以直接提炼为对话式任务
 
 ## 记忆
 
@@ -151,7 +152,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 33 个内置工具，默认全部启用：
 
 - 文件读写 / 编辑 / 搜索 / 修补，目录浏览；读取自带行号坐标，改哪一行说得清
-- 终端命令执行，实时输出；后台任务完成自动唤醒会话，不用轮询
+- 终端命令执行，实时输出；长命令可「转入后台」，输入框上方常驻任务条、悬停看实时输出，后台任务完成自动唤醒会话，不用轮询
 - Git 状态 / 差异 / 日志 / 提交 / 恢复
 - 网页访问与内置浏览器
 - **recall 统一检索** — 记忆页、历史会话、知识库一次查完
@@ -167,6 +168,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 - **历史不串不丢** — 扩展面板的历史按 Chrome 页签隔离：同一个页签刷新、跳转都读得到同一份，页签之间互不串；浏览器重启后旧历史照样找得回来
 - **收藏** — 地址栏星标收藏常用站点，新标签页直达；也可以对 AI 说「打开我收藏的知乎」，按名字取址、不靠猜
 - **浏览器扩展** — 任意网页右下角点开悬浮球，展开同款对话面板；8 个页面工具直接操作你正在看的标签页，HTML 产物卡在面板里同样可预览
+- **会话移交** — 扩展面板里的会话可以一键移交桌面应用接着聊：同一个会话原样接管，面板上留一条「已转出」
 - **安装** — 「设置 → 浏览器插件」提供服务开关、插件包下载与安装指南
 
 ## Office 文档
@@ -223,7 +225,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 ## 一直都在的核心能力
 
-- **Agent 引擎** — 自主循环、流式渲染（正文句尾一枚光标）、上下文自动压缩
+- **Agent 引擎** — 自主循环、流式渲染（正文句尾一枚光标）、上下文按统一拟合门自动压缩（逼近窗口上限才动手，压完留足余量）
 - **多模型** — Anthropic / OpenAI 双协议适配，模型按供应商分组共享凭据，单个会话还可单独指定模型
 - **记忆** — 手写 MEMORY.md 永远注入，其余自动提取、整理为记忆页（见「记忆」）
 - **经验** — 会话后自动萃取，可固化为 SOP（见「经验」）
@@ -237,7 +239,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.0 hands the window back to the task: one conversation rotates between chat, workspace, and browser views at any moment — the view follows the task and is remembered per conversation. The main window speaks one card language throughout, the welcome page opens in three modes (chat / project / browser) where a URL alone starts a browsing task, and previews became a code editor with syntax highlighting, completion, and ⌘F find-and-replace, while AI-changed files are reviewed read-only as what-changed highlights. Conversations and projects both pop out into their own windows, and the workbench gains full-text search, an only-this-session-changes filter, and per-file diffs. The browser extension's history is scoped per Chrome tab and survives browser restarts. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.1 brings the repetitive work under one roof: the task center mixes conversational tasks and workflow tasks in one list, edited in one wizard; and long-running work becomes visible — a terminal command can be sent to the background with one click, a task strip above the composer shows what is running (hover for live output), and a session started in the extension panel can be handed off to the desktop to continue. Before that, 0.5.0 handed the window back to the task: one conversation rotates between chat, workspace, and browser views and the view is remembered per conversation; the welcome page opens in three modes where a URL alone starts a browsing task; previews became editors with what-changed review; conversations and projects pop out into their own windows; and the extension's history is scoped per Chrome tab. All data stays on your own machine.
 
 ## Quick Start
 
@@ -262,7 +264,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 - **Welcome page** — three ways to begin: chat shows continue-the-conversation / start-a-routine / knowledge cards plus Try-these prompts; project asks for a working folder first, then collapses into a single strip with a change affordance; browser just wants a URL
 - **Three main views** — a cycle button in the conversation header rotates chat / workspace / browser, the view follows the task and is remembered per conversation; New Task's submenu drops you straight into the mode you want
-- **Sidebar** — New Task (chat / project / browser) / Search / Routines / Capability · Knowledge · Studio
+- **Sidebar** — New Task (chat / project / browser) / Search / Routines (conversational and workflow tasks in one list) / Capability · Knowledge · Studio
 - **Settings** — General (language, appearance, launch at login, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
@@ -300,14 +302,15 @@ Every file the AI writes lives here: the address bar lays the workspace path out
 
 ## Routines
 
-Hand the repetitive work to a schedule and let it run itself.
+The task center holds two kinds of tasks: a **conversational task** is one prompt on a schedule or over a batch, and a **workflow task** is a multi-stage task that advances through its flow. Both kinds mix in one list and are edited in the same four-step wizard (basics / content / run settings / triggers & batch), with one shared notion of variables.
 
-- **Routines** — cron-scheduled, manual, or fired by file changes (watching files or folders you name), each run in its own session, with a notification when it finishes
-- **CSV/Excel batch runs** — point a routine at a CSV or an Excel sheet (first worksheet, up to 50MB) and headers map themselves into task parameters; each data row runs the task in its own session, concurrency and the per-row timeout are adjustable, interrupted batches resume, and the run history lists every row, clickable into its session
-- **Run history** — bucketed by day; delete, clear, or set a retention window
-- **Starter templates** — five workplace templates, one click into the editor
+- **Schedules & triggers** — cron schedules, manual runs, or file-change triggers (watching files or folders you name) — the same settings for both kinds; scheduled cards carry an on/off toggle, and a disabled schedule stays silent
+- **CSV/Excel batch runs** — point a task at a CSV or an Excel sheet (first worksheet, up to 50MB) and headers map themselves into variables; each data row runs the task in its own session, concurrency and the per-row timeout are adjustable (workflow batches run serially), interrupted batches resume, and the run history lists every row, clickable into its session
+- **Share & import** — both kinds export as share files; import lives in one place in the task center header, preview first and nothing lands until you confirm
+- **Run history** — one sidebar column merges both kinds' runs, grouped into Today / Yesterday / This week / Earlier; delete, clear, or set a retention window
 - **Conversational setup** — fill the form by chatting; a proposal card comes first, and nothing is saved until you confirm
-- **Distill from a conversation** — turn a conversation that worked into a routine
+- **Starter templates** — five workplace templates, one click into the editor
+- **Distill from a conversation** — turn a conversation that worked into a conversational task
 
 ## Memory
 
@@ -348,7 +351,7 @@ Experiences are working methods grown out of your conversations, distilled to th
 33 built-in tools, all enabled by default:
 
 - file read/write/edit/search/patch and directory listing; reads carry line-number coordinates, so edits name the exact line
-- terminal commands with live output; finished background tasks wake the conversation on their own — no polling
+- terminal commands with live output; a long command can be sent to the background — a strip above the composer lists what is running (hover for live output), and finished background tasks wake the conversation on their own — no polling
 - Git status / diff / log / commit / restore
 - web access and the built-in browser
 - **one-call recall** — memory pages, past conversations, and the knowledge base in a single query
@@ -364,6 +367,7 @@ Experiences are working methods grown out of your conversations, distilled to th
 - **History that never crosses or vanishes** — extension history is scoped per Chrome tab: one tab keeps one history across refreshes and navigations, tabs stay isolated, and restarting the browser finds the old history again
 - **Favorites** — star sites in the address bar and reach them from the new-tab page; or just tell the AI "open my favorited Zhihu" — it resolves by name instead of guessing
 - **Browser extension** — the floating orb on any web page opens the same conversation panel; 8 page tools operate on the tab you are looking at, and HTML artifact cards preview right in the panel too
+- **Session handoff** — a session started in the extension panel can be handed off to the desktop app in one click: the same session is taken over as-is, and the panel leaves a handed-off notice
 - **Install** — Settings → Extension has the service toggle, the extension download, and the guide
 
 ## Office Documents
@@ -420,7 +424,7 @@ Build your own tools from three pieces:
 
 ## The Core That Was Always Here
 
-- **Agent engine** — autonomous loop, streaming rendering (a single caret at the sentence tail), automatic context compaction
+- **Agent engine** — autonomous loop, streaming rendering (a single caret at the sentence tail), context compaction behind one fit gate that only acts as the window fills up
 - **Multi-model** — Anthropic and OpenAI protocols via adapters; group models under shared-credential providers, or pin a different model to a single conversation
 - **Memory** — hand-written MEMORY.md always injected; everything else extracted and curated into memory pages (see Memory)
 - **Experiences** — distilled after sessions, distillable into SOPs (see Experiences)
