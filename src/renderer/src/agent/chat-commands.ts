@@ -42,28 +42,43 @@ export const CHAT_COMMANDS: ChatCommand[] = [
 export function matchChatCommand(text: string): ChatCommand | null {
   const trimmed = text.trim()
   if (!trimmed.startsWith('/')) return null
-  return CHAT_COMMANDS.find((c) => {
-    const rest = trimmed.slice(1 + c.name.length)
-    return trimmed.startsWith(`/${c.name}`) && (rest === '' || /\s/.test(rest[0]))
-  }) ?? null
+  return (
+    CHAT_COMMANDS.find((c) => {
+      const rest = trimmed.slice(1 + c.name.length)
+      return trimmed.startsWith(`/${c.name}`) && (rest === '' || /\s/.test(rest[0]))
+    }) ?? null
+  )
 }
 
 /** The `rest` after the command token, trimmed (`/init 重点测试` → '重点测试'). */
 export function commandArgument(text: string, name: string): string {
-  return text.trim().slice(1 + name.length).trim()
+  return text
+    .trim()
+    .slice(1 + name.length)
+    .trim()
 }
 
 /** The model-facing turn text `/init` becomes. English, like every other
  *  canned prompt in the engine (system-prompt-builder conventions). The file
  *  contract it teaches mirrors buildProjectInstructionsSection exactly: the
  *  .pulsemind/AGENTS.md is the ONLY write surface, a root AGENTS.md is shared
- *  read-only context, and existing lines are never deleted or reworded. */
+ *  read-only context, and existing lines are never deleted or reworded. The
+ *  survey checklist (2026-11-09) names the four dimensions a README usually
+ *  lacks — layering, comment conventions, testing habits, external-dependency
+ *  wrapping — each grounded in files actually read and depth-budgeted, because
+ *  the output rides every request. */
 export function buildInitPrompt(focus?: string): string {
   const lines = [
-    'Initialize this workspace\'s standing-instructions file (.pulsemind/AGENTS.md).',
+    "Initialize this workspace's standing-instructions file (.pulsemind/AGENTS.md).",
     '',
-    '1. Survey the workspace first: directory structure, manifests, README / CONTRIBUTING / an existing root AGENTS.md, and from them the build / test / lint commands and the conventions a contributor would need.',
-    '2. Write `.pulsemind/AGENTS.md` at the workspace root — concise standing instructions for FUTURE work here: a 2-3 line project overview, the commands (and when to run them), and the durable conventions. Keep it tight; this file rides every request.',
+    '1. Survey the workspace first — read real files, not just directory names:',
+    '   - Structure & commands: manifests, README / CONTRIBUTING, any existing root AGENTS.md → the build / test / lint commands and when to run them.',
+    '   - Code layering: the architecture layers (e.g. UI / state / domain / data / integration), each with its path and a ONE-line responsibility — a small table, one row per layer, only layers that actually exist.',
+    '   - Comment conventions: the language comments are written in and the house style (rationale-comments vs doc-blocks, TODO markers), grounded in 1-2 real excerpts you read.',
+    '   - Testing habits: framework, test file locations & naming, run commands, mocking / fixture patterns, coverage gates if configured.',
+    '   - External dependencies: how third-party services are wrapped — API clients, DB / ORM access, queues / caches — each with its wrapper module and the house rules (retry / timeout / error handling).',
+    '   If the workspace is large, sample one or two representative files per layer. Omit any topic the workspace does not have.',
+    '2. Write `.pulsemind/AGENTS.md` at the workspace root — concise standing instructions for FUTURE work here: a 2-3 line project overview, the commands, the layering table, then the conventions above. Keep it tight — a few lines per topic, each claim anchored to a real path; this file rides every request.',
     '3. If a root AGENTS.md already exists, treat it as read-only shared context and record only PulseMind-specific notes in .pulsemind/AGENTS.md. If .pulsemind/AGENTS.md itself already exists, propose ADDITIONS instead of overwriting — never delete or reword its existing lines.',
     '4. When done, summarize what you recorded and point me at the file.',
   ]

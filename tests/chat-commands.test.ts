@@ -84,6 +84,19 @@ describe('buildInitPrompt', () => {
     expect(p).not.toContain('Additional focus')
   })
 
+  it('surveys the four README-absent dimensions, grounded in real files and depth-budgeted (2026-11-09)', () => {
+    const p = buildInitPrompt()
+    expect(p).toContain('Code layering')
+    expect(p).toContain('Comment conventions')
+    expect(p).toContain('Testing habits')
+    expect(p).toContain('External dependencies')
+    // 防编造 + 防硬凑 + 防膨胀——三道闸都写进 prompt 本身。
+    expect(p).toContain('read real files, not just directory names')
+    expect(p).toContain('Omit any topic the workspace does not have')
+    expect(p).toContain('Keep it tight')
+    expect(p).toContain('this file rides every request')
+  })
+
   it('appends the user focus only when given', () => {
     expect(buildInitPrompt('  测试命令  ')).toContain('Additional focus from the user: 测试命令')
     expect(buildInitPrompt('   ')).not.toContain('Additional focus')
@@ -149,7 +162,9 @@ describe('forcedSkills per-turn wiring (source scan)', () => {
   it('the ask chain carries forcedSkills through all five stations', () => {
     expect(read('src/shared/types/electron-bridge.ts')).toMatch(/agentSessionAsk: \([^)]*forcedSkills\?: string\[\] \| null\)/)
     expect(read('src/preload/index.ts')).toContain('AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase, forcedSkills')
-    expect(read('src/main/ipc/agent-session.handler.ts')).toContain('agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase, forcedSkills)')
+    expect(read('src/main/ipc/agent-session.handler.ts')).toContain(
+      'agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase, forcedSkills)',
+    )
     expect(read('src/main/agent/session-manager.ts')).toContain('entry.engine.setForcedSkills(forcedSkills ?? null)')
     expect(read('src/renderer/src/hooks/useConversationEngine.ts')).toContain('agentSessionAsk(convId, content, summon, knowledgeBase, forcedSkills)')
   })
@@ -165,7 +180,7 @@ describe('forcedSkills per-turn wiring (source scan)', () => {
   it('the send path rewrites /init, parses $ after experts, chains claimed spans and passes the pins', () => {
     const ctrl = read('src/renderer/src/hooks/useChatController.ts')
     expect(ctrl).toContain("initCommand?.name === 'init'")
-    expect(ctrl).toContain('buildInitPrompt(commandArgument(content, \'init\'))')
+    expect(ctrl).toContain("buildInitPrompt(commandArgument(content, 'init'))")
     expect(ctrl.indexOf('parseExpertMentions(content')).toBeLessThan(ctrl.indexOf('parseSkillMentions(content'))
     expect(ctrl.indexOf('parseSkillMentions(content')).toBeLessThan(ctrl.indexOf('parseKnowledgeBaseMention(content'))
     expect(ctrl).toContain('[...mentions.spans, ...skillMentions.spans]')
