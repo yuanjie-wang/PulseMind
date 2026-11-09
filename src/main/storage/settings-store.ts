@@ -113,6 +113,9 @@ function normalizeModels(raw: unknown): LlmModelConfig[] {
         ? m.contextLength
         : undefined,
       earlyStopGuard: m.earlyStopGuard === true ? true : undefined,
+      // llm-request 钩子按模型开关：缺席 = 开（缺省开，升级兼容），只有显式
+      // false 才关；显式 true 归一为缺席（true 与 undefined 语义相同）。
+      llmHookEnabled: m.llmHookEnabled === false ? false : undefined,
     }
     out.push(entry as unknown as LlmModelConfig)
   }
@@ -198,6 +201,7 @@ function materializeProfiles(providers: LlmProviderConfig[]): LlmProfile[] {
         maxTokens: m.maxTokens,
         contextLength: m.contextLength,
         earlyStopGuard: m.earlyStopGuard,
+        llmHookEnabled: m.llmHookEnabled,
       })
     }
   }

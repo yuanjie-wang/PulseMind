@@ -347,3 +347,62 @@ describe('memoryLastSweepAt', () => {
     expect((await (await freshStore()).get()).memoryLastSweepAt).toBeUndefined()
   })
 })
+
+/** 按模型的 llm-request 钩子开关（2026-11-10）：字段住在两层格式的模型条目
+ *  上（旧扁平 profiles 本就没有它，无需迁移）。缺席 = 执行（缺省开，升级已
+ *  部署脚本的机器行为不变），显式 false = 忽略脚本，显式 true 归一为缺席；
+ *  物化视图必须把字段带进 profiles——漏了就是写进去读不出来（H1/H2 同病）。 */
+describe('llmHookEnabled — 按模型的 llm-request 钩子开关', () => {
+  const PROVIDERS_BASE = {
+    activeProfileId: 'model_x',
+    providers: [{
+      id: 'prov_x',
+      name: 'P',
+      apiFormat: 'openai',
+      baseURL: 'https://api.example.com',
+      apiKey: 'sk-x',
+      models: [{ id: 'model_x', model: 'm1', maxTokens: 1024 }],
+    }],
+    theme: 'light',
+  }
+
+  it('显式 false 在 providers 与物化 profiles 两视图都存活', async () => {
+    writeRaw({
+      ...PROVIDERS_BASE,
+      providers: [{ ...PROVIDERS_BASE.providers[0], models: [{ id: 'model_x', model: 'm1', maxTokens: 1024, llmHookEnabled: false }] }],
+    })
+    const store = await freshStore()
+    const s = await store.get()
+    expect(s.providers![0].models![0].llmHookEnabled).toBe(false)
+    expect(s.profiles![0].llmHookEnabled).toBe(false)
+  })
+
+  it('缺席 = undefined（两视图）；显式 true 归一为 undefined（与缺席同义 = 开）', async () => {
+    writeRaw(PROVIDERS_BASE)
+    const s1 = await (await freshStore()).get()
+    expect(s1.providers![0].models![0].llmHookEnabled).toBeUndefined()
+    expect(s1.profiles![0].llmHookEnabled).toBeUndefined()
+
+    writeRaw({
+      ...PROVIDERS_BASE,
+      providers: [{ ...PROVIDERS_BASE.providers[0], models: [{ id: 'model_x', model: 'm1', maxTokens: 1024, llmHookEnabled: true }] }],
+    })
+    const s2 = await (await freshStore()).get()
+    expect(s2.providers![0].models![0].llmHookEnabled).toBeUndefined()
+    expect(s2.profiles![0].llmHookEnabled).toBeUndefined()
+  })
+
+  it('整存往返：无关保存（改主题）不抹掉模型条目上的 false', async () => {
+    writeRaw({
+      ...PROVIDERS_BASE,
+      providers: [{ ...PROVIDERS_BASE.providers[0], models: [{ id: 'model_x', model: 'm1', maxTokens: 1024, llmHookEnabled: false }] }],
+    })
+    const store = await freshStore()
+    const rendererCopy = await store.get()
+    await store.set({ ...rendererCopy, theme: 'dark' } as AppSettings)
+    const raw = readRaw()
+    const model = (raw.providers![0].models as Array<Record<string, unknown>>)[0]
+    expect(model.llmHookEnabled).toBe(false)
+    expect(raw.theme).toBe('dark')
+  })
+})

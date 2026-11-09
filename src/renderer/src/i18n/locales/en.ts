@@ -476,6 +476,9 @@ const en: TranslationDict = {
     earlyStopGuard: 'Execution Result Check',
     earlyStopGuardHint:
       'For weaker models: auto-continues when the model stops calling tools mid-task; completion is judged by an agreed marker that never reaches the conversation',
+    llmHook: 'Hooks Script',
+    llmHookHint:
+      'When on, each LLM request for this model first runs ~/.pulsemind/hooks/llm-request.js (may rewrite URL/headers/body); takes effect after saving. Off = the script is ignored',
     apiKey: 'API Key',
     saveProfile: 'Save Configuration',
     saved: 'Saved',

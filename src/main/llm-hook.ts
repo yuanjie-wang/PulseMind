@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { HOOKS_DIR } from './storage/index'
+import { settingsStore } from './storage/settings-store'
 import { logMain, describeError } from './main-log'
 import type { LlmRequestHookContext, LlmRequestHookResult } from '../shared/types/hooks'
 
@@ -57,6 +58,12 @@ export interface ApplyLlmHookOptions {
  * receives { url, headers, body, profileId, requestId } (body JSON-parsed
  * when possible) and may return { url?, headers?, body? } to override them.
  * Failures never block the request — the original values are used.
+ *
+ * Per-model switch (2026-11-10): a model entry with `llmHookEnabled: false`
+ * skips the script entirely. Requests without a model context (one-shot calls
+ * without a profileId, inline probes) or with an unknown profileId default to
+ * running the hook — absent field = enabled, so upgraded installs with a
+ * deployed script keep their behavior.
  */
 export async function applyLlmRequestHook(
   url: string,
@@ -64,6 +71,13 @@ export async function applyLlmRequestHook(
   body: unknown,
   opts: ApplyLlmHookOptions,
 ): Promise<{ url: string; headers: Record<string, string> | undefined; body: unknown }> {
+  // mtime 缓存的 store：命中时这是一次纯内存读，与 api-proxy 的重试码表同款。
+  const settings = await settingsStore.get()
+  const profile = opts.profileId
+    ? (settings.profiles ?? []).find((p) => p.id === opts.profileId)
+    : undefined
+  if (profile?.llmHookEnabled === false) return { url, headers, body }
+
   const hook = loadHook()
   if (!hook) return { url, headers, body }
 

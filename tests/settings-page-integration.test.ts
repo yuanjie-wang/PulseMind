@@ -196,3 +196,64 @@ describe('SettingsPage data and runtime integration', () => {
     }
   })
 })
+
+// ── 按模型的 Hooks 开关（llmHookEnabled，2026-11-10）──
+// 缺省开（字段缺席 = 执行 llm-request.js）；翻关走既有 draft → 保存配置
+// 链路落成显式 false，翻回开落成 undefined（不是 false）——undefined 与
+// false 的区别就是「执行 / 忽略」的区别。
+describe('SettingsPage model-settings integration', () => {
+  const llmInitial = {
+    ...initial,
+    activeProfileId: 'model_x',
+    providers: [{
+      id: 'prov_x',
+      name: 'P',
+      apiFormat: 'openai',
+      baseURL: 'https://api.example.com',
+      apiKey: 'sk-x',
+      models: [{ id: 'model_x', model: 'm1', maxTokens: 1024 }],
+    }],
+  }
+
+  function savedModel(call: unknown[]): Record<string, unknown> {
+    const payload = call[0] as { providers: Array<{ models: Array<Record<string, unknown>> }> }
+    return payload.providers[0].models[0]
+  }
+
+  it('Hooks 开关缺省开；翻关并保存 → 模型条目带 llmHookEnabled: false；翻回 → 字段消失', async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+    const save = vi.fn().mockResolvedValue(undefined)
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = await mountSettingsPage(container, save, { getSettings: async () => llmInitial })
+    try {
+      await openTab(container, '模型设置')
+      const toggle = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Hooks 脚本"]')
+      expect(toggle).not.toBeNull()
+      // 模型条目没带字段 → 开关缺省开（升级安装行为不变）
+      expect(toggle!.getAttribute('aria-checked')).toBe('true')
+
+      // 翻关 → draft 脏 → 保存配置把 false 写进模型条目
+      await act(async () => { toggle!.click(); await flush() })
+      expect(toggle!.getAttribute('aria-checked')).toBe('false')
+      const saveBtn = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('保存配置'))
+      expect(saveBtn).toBeDefined()
+      await act(async () => { saveBtn!.click(); await flush() })
+      expect(save).toHaveBeenCalledTimes(1)
+      expect(savedModel(save.mock.calls[0])).toEqual({ id: 'model_x', model: 'm1', maxTokens: 1024, llmHookEnabled: false })
+
+      // 翻回开 → 草稿与磁盘（无字段）逐字一致 → 不再脏：没有第二次保存，
+      // 按钮回到「已保存」禁用态。undefined（缺席 = 开）就是这里的持久语义。
+      await act(async () => { toggle!.click(); await flush() })
+      expect(toggle!.getAttribute('aria-checked')).toBe('true')
+      expect(save).toHaveBeenCalledTimes(1)
+      const savedBtn = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('已保存'))
+      expect(savedBtn).toBeDefined()
+      expect(savedBtn!.disabled).toBe(true)
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+})

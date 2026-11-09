@@ -608,6 +608,18 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
                     <Text type="secondary" style={{ fontSize: 12 }}>{t('settingsDrawer.earlyStopGuardHint')}</Text>
                   </div>
                 </Field>
+
+                <Field label={t('settingsDrawer.llmHook')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Switch
+                      size="small"
+                      checked={draftModel.llmHookEnabled !== false}
+                      onChange={(v) => updateDraftModel(draftProvider.id, draftModel.id, { llmHookEnabled: v ? undefined : false })}
+                      aria-label={t('settingsDrawer.llmHook')}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('settingsDrawer.llmHookHint')}</Text>
+                  </div>
+                </Field>
               </div>
             )}
           </section>

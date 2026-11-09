@@ -465,6 +465,8 @@ const zh = {
     contextLength: '上下文长度',
     earlyStopGuard: '执行结果检测',
     earlyStopGuardHint: '弱模型专用：任务执行中模型停止调用工具时自动续跑；完成以约定标记判定，标记本身不会出现在对话里',
+    llmHook: 'Hooks 脚本',
+    llmHookHint: '开启后该模型的每次 LLM 请求前执行 ~/.pulsemind/hooks/llm-request.js（可改写请求地址/请求头/请求体），保存配置后生效；关闭则忽略该脚本',
     apiKey: 'API 密钥',
     saveProfile: '保存配置',
     saved: '已保存',

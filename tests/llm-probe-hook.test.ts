@@ -40,7 +40,8 @@ function bumpMtime(path: string): void {
 }
 
 // 已存配置：apiKey 住在供应商层，模型条目 id = profileId。
-function writeSettings(targetBase: string): void {
+// `modelPatch` 合并进模型条目（按模型的 Hooks 开关测试用它带 llmHookEnabled）。
+function writeSettings(targetBase: string, modelPatch: Record<string, unknown> = {}): void {
   mkdirSync(PM_DIR, { recursive: true })
   writeFileSync(
     SETTINGS_PATH,
@@ -52,7 +53,7 @@ function writeSettings(targetBase: string): void {
           apiFormat: 'openai',
           baseURL: targetBase,
           apiKey: 'sk-saved',
-          models: [{ id: 'model_x', model: 'saved-model' }],
+          models: [{ id: 'model_x', model: 'saved-model', ...modelPatch }],
         },
       ],
       activeProfileId: 'model_x',
@@ -280,5 +281,41 @@ describe('探测本体：配置解析与失败翻译', () => {
     expect(outcome.message.length).toBeGreaterThan(0)
     expect(outcome.latencyMs).toBeUndefined()
     expect(seen).toHaveLength(0)
+  })
+})
+
+// ── 按模型的 Hooks 开关（2026-11-10）──
+// 模型条目 llmHookEnabled: false → 该 profile 的请求忽略 llm-request.js
+// （线路字节与无 hook 文件逐字同）；无模型上下文的调用（内联探测，不带
+// profileId）按缺省开处理——脚本照跑，升级安装行为不变。放在文件末尾：
+// 本节改写 settings.json，不污染前面各节的「已存配置」前提。
+describe('按模型的 Hooks 开关（llmHookEnabled）', () => {
+  // 每条跑完恢复基础设置，重排测试顺序也不会把禁用态漏给别的节。
+  afterEach(() => {
+    writeSettings(targetBase)
+  })
+
+  it('llmHookEnabled: false 的模型 → 探测直通，hook 完全不参与', async () => {
+    writeSettings(targetBase, { llmHookEnabled: false })
+    writeHook(`
+      module.exports = async () => ({ headers: { 'x-pm-hook': 'should-not-appear' } })
+    `)
+    const outcome = await testLlmConnection({ profileId: 'model_x' })
+    expect(outcome.ok, outcome.message).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].body).toBe(buildProbeBody('openai', 'saved-model'))
+    expect(seen[0].headers['x-pm-hook']).toBeUndefined()
+    expect(seen[0].headers.authorization).toBe('Bearer sk-saved')
+  })
+
+  it('同一份禁用设置下，无模型上下文的内联探测仍执行脚本（缺省开）', async () => {
+    // 沿用上一条写入的禁用设置（afterEach 在本 describe 结束后才恢复）
+    writeHook(`
+      module.exports = async () => ({ headers: { 'x-pm-hook': 'inline-runs' } })
+    `)
+    const outcome = await testLlmConnection(probeInput())
+    expect(outcome.ok, outcome.message).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].headers['x-pm-hook']).toBe('inline-runs')
   })
 })

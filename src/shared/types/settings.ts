@@ -26,6 +26,11 @@ export interface LlmModelConfig {
    *  自动续跑一次/进展段（哨兵行由冻结核心的任务完成节教授，引擎侧剥离）。
    *  缺省 undefined = 守卫完全惰性，强模型零影响。 */
   earlyStopGuard?: boolean
+  /** 按模型的 llm-request 钩子开关（2026-11-10）：该模型的 LLM 请求发出去前
+   *  是否执行 ~/.pulsemind/hooks/llm-request.js（可改写 url/headers/body）。
+   *  缺席/undefined = 执行（缺省开，升级已部署脚本的机器行为不变）；
+   *  显式 false = 忽略脚本。 */
+  llmHookEnabled?: boolean
 }
 
 /** 供应商（连接层）：baseURL / apiKey / headers 被名下所有模型共享。 */
@@ -61,6 +66,8 @@ export interface LlmProfile {
   contextLength?: number
   /** 物化自所属供应商名下模型条目的 earlyStopGuard。 */
   earlyStopGuard?: boolean
+  /** 物化自所属供应商名下模型条目的 llmHookEnabled（缺席 = 执行 llm-request 钩子）。 */
+  llmHookEnabled?: boolean
   apiKey?: string
   headers?: Record<string, string>
 }
