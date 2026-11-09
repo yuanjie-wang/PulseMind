@@ -639,14 +639,14 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
 function TodoListView({ plan, onJumpToStep }: { plan: Plan; onJumpToStep: (msgId: string) => void }): React.ReactElement {
   const settled = plan.nodes.filter(n => n.status !== 'pending').length
   const pct = plan.nodes.length > 0 ? Math.round((settled / plan.nodes.length) * 100) : 0
-  // 用户裁定 2026-11-06: 全绿的清单折叠成一行。面板的职责是「现在进展到哪」，
-  // 一旦没有任何 open 条目，28 行历史就是纯噪声；明细仍留在一击之外。
-  // 折叠态在清单「离开已完成」时重新武装（下面那个 effect），所以续写一条
-  // 新条目会自己弹开，不需要用户先手动展开。
-  const [doneExpanded, setDoneExpanded] = useState(false)
+  // 用户裁定 2026-11-08（翻转 2026-11-06 的自动折叠臂）: 清单默认恒展开——
+  // 进入 completed 不再自动收成一行。手动收起仍可用（头部「已完成 · 收起」），
+  // 但那是用户的动作；清单离开 completed 时残留的手动折叠态被弹开（下面那个
+  // effect），收起永远不会跨轮继承。
+  const [doneExpanded, setDoneExpanded] = useState(true)
   const wasCompleted = useRef(plan.completed)
   useEffect(() => {
-    if (plan.completed && !wasCompleted.current) setDoneExpanded(false)
+    if (!plan.completed && wasCompleted.current) setDoneExpanded(true)
     wasCompleted.current = plan.completed
   }, [plan.completed])
   if (plan.completed && !doneExpanded) {

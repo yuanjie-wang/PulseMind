@@ -10,9 +10,10 @@
 //     (lightCompact sees force=true, hardTruncate force=false, consumed exactly once),
 //     notes verbatim in the summary message AND the cache text, notes survive a
 //     failed summarizer (notesKept)
-//   - mandated ≠ marks, both directions: a mandated id stays a placeholder across
-//     requests while a quota-compressed (marked) id re-inflates; TIER3 / protection
-//     window / unknown ids are skipped and reported; idempotent
+//   - mandated and gate picks are both byte-stable across builds: the archive is
+//     re-derived from the full-text source every request (W2 retired the one-shot
+//     marks whose bounce re-inflated a gate pick on the next build); TIER3 /
+//     protection window / unknown ids are skipped and reported; idempotent
 //   - simulation == materialization: the prewarm's droppedCount pairs with the next
 //     request build's actual drop
 //   - live history untouched (the compaction only ever sees API copies)
@@ -47,7 +48,10 @@ function userText(id: string, text: string): AgentMessage {
 }
 
 /** One read cycle: assistant tool_use → user tool_result. Tier 2 in nanoCompact's
- *  map (read), so TIER_SIZES[2]=20 and the quota fires at 40+ uses. */
+ *  map (read), so the per-pass cap is TIER_SIZES[2]=20 results (the newest
+ *  batch is kept). Since the merged fit gate (W1) the cap is a CAP, not a
+ *  trigger: the copy also has to cross 60% of the window before anything is
+ *  archived — see the band note on the mandated case below. */
 function toolCycle(i: number, resultChars = RESULT_CHARS): [AgentMessage, AgentMessage] {
   const tu: ToolUseBlock = { type: 'tool_use', id: `tu_${i}`, name: 'read', input: { file_path: `f${i}.txt` }, status: 'completed' }
   const tr: ToolResultBlock = { type: 'tool_result', tool_use_id: `tu_${i}`, content: 'x'.repeat(resultChars), tool_result_id: `tr_${i}`, is_error: false }
@@ -60,6 +64,7 @@ function toolCycle(i: number, resultChars = RESULT_CHARS): [AgentMessage, AgentM
 interface MakeEngineOpts {
   contextLength?: number
   cycles?: number
+  resultChars?: number
   spawnedToolset?: boolean
   onCompaction?: (e: CompactionEvent) => void
 }
@@ -67,7 +72,7 @@ interface MakeEngineOpts {
 function makeEngine(o: MakeEngineOpts = {}): InstanceType<typeof AgentEngine> {
   const messages: AgentMessage[] = [userText('u_start', '跑一个长任务')]
   for (let i = 0; i < (o.cycles ?? 45); i++) {
-    const [a, u] = toolCycle(i)
+    const [a, u] = toolCycle(i, o.resultChars)
     messages.push(a, u)
   }
   const callbacks: AgentEngineCallbacks = {}
@@ -252,32 +257,41 @@ describe('success path: event, one-shot light-only force, notes', () => {
   })
 })
 
-describe('free_results: mandated ≠ marks, both directions', () => {
+describe('free_results: mandated picks and gate picks are both stable across builds', () => {
   async function buildWithMandates(engine: InstanceType<typeof AgentEngine>, freeResults: string[]) {
     const out = await engine.compactForTool({ freeResults })
     await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
     return out
   }
 
-  it('a mandated id keeps its placeholder while a quota-compressed id re-inflates', async () => {
-    // 45 tier-2 uses → quota target 20 (the 20 OLDEST results compress and are
-    // marked). tu_30 sits OUTSIDE the first quota window and OUTSIDE the
-    // protection window (the last 4 result-bearing user messages are 41..44).
-    const engine = makeEngine()
+  it('a mandated id and a fit-gate pick both keep their placeholders (byte-stable archive)', async () => {
+    // The merged fit gate (W1) only archives above 60% of the window, so this
+    // case has to run an over-gate copy or the "gate pick" half is vacuous:
+    // 45 × 5600 latin chars ≈ 63K tokens against a 100K window sits inside the
+    // [60%, 70%] band — gate open, light still passive (it fires above 70%).
+    // The cap then keeps the newest batch of 20, so the 20 OLDEST eligible
+    // results are the archivable set. tu_30 sits inside that set and OUTSIDE
+    // the protection window (the last 4 result-bearing user messages are
+    // 41..44).
+    const engine = makeEngine({ resultChars: 5_600 })
     const out = await buildWithMandates(engine, ['tu_30'])
     expect(out.freedResults).toEqual(['tu_30'])
 
     const copy1 = engineBodies[0]
-    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated: compressed regardless of quota
-    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)   // quota pick (marked)
-    expect(resultContentOf(copy1, 'tu_44')).toMatch(/^x{1500}$/)                   // protection window
+    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated: compressed regardless of the gate
+    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/) // gate pick
+    expect(resultContentOf(copy1, 'tu_44')).toMatch(/^x{5600}$/) // protection window
 
-    // Second build: the marks' bounce applies to the QUOTA pick (it re-inflates
-    // — one-shot nano semantics untouched), the MANDATED id stays a placeholder
-    // on every request (independent persistence).
+    // Second build over the SAME full-text history: the archive is re-derived,
+    // never remembered — the gate re-measures the source (still over 60%, the
+    // archive lives only in the wire copy), picks the same ids and emits the
+    // same placeholder bytes. This byte-stability is what lets the provider
+    // prefix cache hold between frontier advances (W2 of
+    // PLAN-nano-light-trigger-merge retired the one-shot marks whose
+    // "compressed once → re-inflate" bounce broke the cache every round).
     await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
     const copy2 = engineBodies[1]
-    expect(resultContentOf(copy2, 'tu_0')).toMatch(/^x{1500}$/)                    // marked → allowed to re-inflate
+    expect(resultContentOf(copy2, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/) // gate pick: re-derived, byte-stable
     expect(resultContentOf(copy2, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated → stable
   })
 

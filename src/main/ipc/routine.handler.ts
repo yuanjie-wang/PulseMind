@@ -9,9 +9,9 @@ import { previewCsv } from '../routine/batch-source'
 import { routineRunHistory } from '../routine/routine-run-history'
 import { checkCron } from '../../shared/schedule/cron'
 import { checkWorkspacePathFormat } from '../../shared/workspace-path'
-import { normalizeBatchConcurrency, normalizeBatchTimeoutMinutes } from '../../shared/routine/batch'
-import { routineTriggerManager } from '../routine/routine-triggers'
-import type { Routine, RoutineBatchConfig, RoutineParam } from '../../shared/types/routine'
+import { normalizeBatchConfig } from '../storage/task-config-normalize'
+import { taskTriggerManager } from '../task/task-triggers'
+import type { Routine, RoutineParam } from '../../shared/types/routine'
 
 /** The three approval levels a routine may pin (same ladder as the composer's
  *  授权 button); undefined = the unattended default. */
@@ -25,7 +25,7 @@ export function registerRoutineHandlers(): void {
     assertCron(input)
     assertRunContext(input)
     const created = routineStore.create(normalizeInput(input))
-    routineTriggerManager.sync()
+    taskTriggerManager.sync()
     return created
   })
 
@@ -41,7 +41,7 @@ export function registerRoutineHandlers(): void {
     }
     const updated = routineStore.update(id, normalized)
     // Triggers may have changed shape (paths / token / enabled) — reconcile.
-    routineTriggerManager.sync()
+    taskTriggerManager.sync()
     return updated
   })
 
@@ -58,18 +58,18 @@ export function registerRoutineHandlers(): void {
     void routineRunHistory.clearRoutine(id, true).catch((err) => {
       console.warn('[Routine] run-history cleanup failed (rows may remain until next retention):', err)
     })
-    routineTriggerManager.sync()
+    taskTriggerManager.sync()
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_TOGGLE, (_event, id: string, enabled: boolean) => {
     const routine = routineStore.update(id, { enabled })
-    routineTriggerManager.sync()
+    taskTriggerManager.sync()
     return routine
   })
 
   // PLAN-routine-triggers M1: the resolved loopback port (0 = dormant) so the
   // editor can show the full fire URL for a webhook trigger.
-  ipcMain.handle(IPC_CHANNELS.ROUTINE_TRIGGERS_INFO, () => ({ port: routineTriggerManager.port }))
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_TRIGGERS_INFO, () => ({ port: taskTriggerManager.port }))
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_RUN, (_event, id: string, params?: Record<string, string>) => {
     const routine = routineStore.get(id)
@@ -163,21 +163,9 @@ function assertRunContext(input: Partial<Routine>): void {
   }
 }
 
-/** The batch config passes through the same door: a garbage concurrency would
- *  widen the run pool at run time, and a garbage timeout would fire late or
- *  never; only the shape (non-empty csvPath, integer 1–5 concurrency,
- *  integer 1–120 timeoutMinutes, boolean applyToSchedule) is checked here —
- *  the file itself is validated when it is read (preview / batch start). */
-function normalizeBatchConfig(input?: Partial<RoutineBatchConfig>): RoutineBatchConfig | undefined {
-  const csvPath = input?.csvPath?.trim()
-  if (!csvPath) return undefined
-  return {
-    csvPath,
-    concurrency: normalizeBatchConcurrency(input?.concurrency),
-    timeoutMinutes: normalizeBatchTimeoutMinutes(input?.timeoutMinutes),
-    applyToSchedule: input?.applyToSchedule === true,
-  }
-}
+/** The batch config passes through the same door (task-config-normalize, shared
+ *  with the workflow save path): only the shape is checked here — the file
+ *  itself is validated when it is read (preview / batch start). */
 
 /** Fill server-side fields; enabled defaults true. */
 function normalizeInput(input: Partial<Routine>): Omit<Routine, 'id' | 'createdAt' | 'updatedAt'> {

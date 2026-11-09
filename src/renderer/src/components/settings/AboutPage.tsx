@@ -176,7 +176,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 - **设计路线生成** — PPT 从零生成走设计路线：模型先落主题（tokens.css）再写版式（deck.html），引擎用 Chromium 实测布局，输出原生可编辑形状（不是截图）并附保真报告；Markdown 大纲是纯文字的兜底路线
 - **先定位后精读** — office_inspect 看清结构，office_read 按大纲分页读，office_search 坐标锚定的内容搜索——百页大文档也不再盲翻
 - **安全护栏** — 每次编辑展示结果 diff；结构校验不过，整批拒绝、一字不写；首次编辑自动备份
-- **一键导出** — export_document 从 Markdown 生成 Word / Excel / PPT / PDF，永不覆盖已有文件，成品在预览面板即点即看
+- **一键导出** — office_export 从 Markdown 生成 Word / Excel / PPT / PDF，永不覆盖已有文件，成品在预览面板即点即看
 
 ## 数据安全
 
@@ -373,7 +373,7 @@ Experiences are working methods grown out of your conversations, distilled to th
 - **The design route** — PPT generation from scratch goes through the design route: the model pins a theme (tokens.css) and writes the layout (deck.html); the engine measures the real layout with Chromium and emits native editable shapes (not screenshots) with a fidelity report; a Markdown outline stays as the plain-text fallback
 - **Locate, then read** — office_inspect shows the structure, office_read pages through the outline, office_search is coordinate-anchored content search — hundred-page documents no longer get skimmed blind
 - **Safety rails** — every edit shows a result diff; a failed structural check refuses the whole batch and writes nothing; the first edit is backed up automatically
-- **One-step export** — export_document generates Word / Excel / PPT / PDF from Markdown, never overwriting an existing file; results open straight into the preview pane
+- **One-step export** — office_export generates Word / Excel / PPT / PDF from Markdown, never overwriting an existing file; results open straight into the preview pane
 
 ## Data Security
 

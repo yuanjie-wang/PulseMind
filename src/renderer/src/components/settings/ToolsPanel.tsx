@@ -12,11 +12,12 @@ import { Tag, Typography } from 'antd'
 import {
   CodeOutlined,
   FileOutlined,
+  FileWordOutlined,
   ToolOutlined,
   GlobalOutlined,
-  QuestionCircleOutlined,
   DatabaseOutlined,
   BranchesOutlined,
+  PartitionOutlined,
   ReadOutlined,
   TrophyOutlined,
   DashboardOutlined
@@ -30,20 +31,24 @@ import CapabilityCard, {
 
 const { Text, Paragraph } = Typography
 
+// 分类（2026-11-08 重划：office 从 file 拆出、system 拆壳为 shell/plan/skills，
+// session 收编 interaction+context——见 builtin-gate.ts 与分类裁定）。
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
-  system: <CodeOutlined />,
   file: <FileOutlined />,
-  tool: <ToolOutlined />,
-  browser: <GlobalOutlined />,
-  interaction: <QuestionCircleOutlined />,
-  memory: <DatabaseOutlined />,
-  context: <DashboardOutlined />,
-  knowledge: <ReadOutlined />,
+  shell: <CodeOutlined />,
   git: <BranchesOutlined />,
+  office: <FileWordOutlined />,
+  memory: <DatabaseOutlined />,
+  web: <GlobalOutlined />,
+  browser: <GlobalOutlined />,
+  plan: <PartitionOutlined />,
+  skills: <ToolOutlined />,
+  session: <DashboardOutlined />,
+  knowledge: <ReadOutlined />,
   experience: <TrophyOutlined />
 }
 
-const CATEGORY_ORDER = ['file', 'system', 'browser', 'interaction', 'memory', 'context', 'knowledge', 'experience', 'git']
+const CATEGORY_ORDER = ['file', 'shell', 'office', 'memory', 'web', 'browser', 'plan', 'skills', 'session', 'knowledge', 'experience', 'git']
 
 interface ToolsPanelProps {
   tools: ToolState[]
@@ -58,14 +63,17 @@ function ToolsPanel({
 
   const CATEGORY_LABELS: Record<string, string> = {
     file: t('tools.categories.file'),
-    system: t('tools.categories.system'),
-    browser: t('tools.categories.browser'),
-    interaction: t('tools.categories.interaction'),
+    shell: t('tools.categories.shell'),
+    git: t('tools.categories.git'),
+    office: t('tools.categories.office'),
     memory: t('tools.categories.memory'),
-    context: t('tools.categories.context'),
+    web: t('tools.categories.web'),
+    browser: t('tools.categories.browser'),
+    plan: t('tools.categories.plan'),
+    skills: t('tools.categories.skills'),
+    session: t('tools.categories.session'),
     knowledge: t('tools.categories.knowledge'),
-    experience: t('tools.categories.experience'),
-    git: t('tools.categories.git')
+    experience: t('tools.categories.experience')
   }
 
   if (tools.length === 0) {

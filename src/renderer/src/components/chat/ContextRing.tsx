@@ -73,7 +73,7 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
  * quantities on purpose; the header of engine/context-estimate.ts carries the
  * full contract.
  */
-export function estimateContextUsed(messages: AgentMessage[]): number {
+export function estimateContextUsed(messages: AgentMessage[], contextLength?: number): number {
   if (!messages.length) return 0
   // Anchor + tail priced as the NEXT request would carry it: the tail's old
   // tool_results become nano placeholders before anything ships, and pricing
@@ -83,11 +83,17 @@ export function estimateContextUsed(messages: AgentMessage[]): number {
   // quotas/protection over the tail slice alone, so a young tail prices whole
   // (nano compresses nothing below quota anyway) and the reading never drops
   // under what the request will really ship.
+  // `contextLength` is the FULL window even for the tail slice: the merged
+  // fit gate compares the whole copy's usage to the window, which is why the
+  // anchor `t` rides along as the baseline — without it the tail alone would
+  // look small forever and the gate would never open (PLAN-nano-light-
+  // trigger-merge W1). Absent window ⇒ gate closed ⇒ raw pricing, the
+  // conservative direction this reader already documents.
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = messages[i].inputTokens
-    if (t && t > 0) return t + estimateAfterNanoTokens(messages.slice(i + 1))
+    if (t && t > 0) return t + estimateAfterNanoTokens(messages.slice(i + 1), contextLength, t)
   }
-  return estimateAfterNanoTokens(messages)
+  return estimateAfterNanoTokens(messages, contextLength)
 }
 
 /**
@@ -100,8 +106,12 @@ export function estimateContextUsed(messages: AgentMessage[]): number {
  * new turns from the compacted base. Any message without a timestamp (or no
  * event) falls back to the raw estimate.
  */
-export function projectContextUsed(messages: AgentMessage[], compaction: CompactionEvent | null | undefined): number {
-  const raw = estimateContextUsed(messages)
+export function projectContextUsed(
+  messages: AgentMessage[],
+  compaction: CompactionEvent | null | undefined,
+  contextLength?: number,
+): number {
+  const raw = estimateContextUsed(messages, contextLength)
   if (!compaction || !messages.length) return raw
   // ts is the engine's Date.now() at the pass; message createdAt is ISO from
   // the same main-process clock, so plain comparison orders them.
@@ -114,8 +124,9 @@ export function projectContextUsed(messages: AgentMessage[], compaction: Compact
     if (at > cutAt) tailMsgs.push(msg)
   }
   // Same nano pricing as the raw path — the tail's compressible results ride
-  // the next request as placeholders, not whole.
-  const projected = compaction.tokensAfter + estimateAfterNanoTokens(tailMsgs)
+  // the next request as placeholders, not whole — and the compacted copy's
+  // measured size is the baseline the fit gate should judge against.
+  const projected = compaction.tokensAfter + estimateAfterNanoTokens(tailMsgs, contextLength, compaction.tokensAfter)
   // Estimates drift upward as the tail grows; a projection above the raw
   // number would mean the "compacted" copy is bigger than the history — fall
   // back to the raw reading rather than show a ring that grew on compaction.

@@ -122,6 +122,36 @@ export function TranscriptView({
   // the element before its first paint.
   const freshSegKeys = useSegmentEntrance(segments, entranceKey)
 
+  // ── Stable tool handlers (user 2026-11-09「对话区上下滚动有卡顿」) ──
+  // The segment family memoizes on prop identity: message-segments reuses cached
+  // segment objects (「cached segment objects keep their identity so React.memo
+  // can skip them」) and MessageGroup / ExecutionSegment are React.memo — so the
+  // transcript only re-renders the segment that changed... as long as the props
+  // it hands down keep their identity. Most hosts pass fresh arrows every
+  // render (`onApproveTool={(id, always) => session.engineCall('approveTool', …)}`,
+  // FormAssistColumn's exact shape), which replaced the whole prop set on every
+  // streamed chunk and re-rendered EVERY message in the thread. The engine
+  // mirrors to the renderer once per frame while streaming, so a long thread
+  // spent its frame budget re-rendering settled markdown: the frame never
+  // finished, and scrolling (which competes for the same main thread) read as
+  // jank. Measured in scripts/probe-transcript-perf.mjs: one chunk cost 12.4ms
+  // instead of 2.4ms on a 22-message thread, and the gap grows with the thread.
+  //
+  // Forwarding through a ref keeps the identity constant while still calling the
+  // LATEST prop — a stale closure would be a worse bug than the jank (the
+  // assistant's 新会话 swaps the session under a still-mounted column, and a
+  // cached arrow would drive the old one). Written in a layout effect, not in
+  // render: it is a ref, and events can only fire after the commit anyway.
+  const handlersRef = useRef({ onApproveTool, onRejectTool, onKillTool, onPromoteTool, onRespondToTool })
+  useLayoutEffect(() => {
+    handlersRef.current = { onApproveTool, onRejectTool, onKillTool, onPromoteTool, onRespondToTool }
+  })
+  const approveTool = useCallback((id: string, alwaysAllow?: boolean) => handlersRef.current.onApproveTool(id, alwaysAllow), [])
+  const rejectTool = useCallback((id: string) => handlersRef.current.onRejectTool(id), [])
+  const killTool = useCallback((id: string) => handlersRef.current.onKillTool(id), [])
+  const promoteTool = useCallback((id: string) => handlersRef.current.onPromoteTool?.(id), [])
+  const respondToTool = useCallback((id: string, response: string) => handlersRef.current.onRespondToTool(id, response), [])
+
   // Write the view to its tail. A plain scrollTop write, not scrollIntoView:
   // `block: 'end'` stops at the scrollport's edge and leaves the tail the
   // transcript's own bottom padding short of it (measured 7px in the panel
@@ -229,11 +259,11 @@ export function TranscriptView({
           contentInset={contentInset}
           conversationId={conversationId}
           enter={freshSegKeys.has(getSegmentKey(seg))}
-          onApproveTool={onApproveTool}
-          onRejectTool={onRejectTool}
-          onKillTool={onKillTool}
-          onPromoteTool={onPromoteTool}
-          onRespondToTool={onRespondToTool}
+          onApproveTool={approveTool}
+          onRejectTool={rejectTool}
+          onKillTool={killTool}
+          onPromoteTool={onPromoteTool ? promoteTool : undefined}
+          onRespondToTool={respondToTool}
         />
       ))}
       <StreamingCursor show={isRequesting && !hasLiveTextTail(segments)} contentInset={contentInset} />

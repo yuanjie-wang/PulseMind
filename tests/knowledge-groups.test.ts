@@ -82,16 +82,18 @@ describe('scope lifecycle wiring (source-scanned; node-env cannot mount the engi
 
   it('the ask chain carries the base hop by hop (any hop dropping it = silent全库)', () => {
     expect(preload).toContain('knowledgeBase?: { id: string; name: string } | null')
-    expect(preload).toContain('ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase)')
-    expect(handler).toContain('agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase)')
+    // forcedSkills ($技能, 2026-11-08) rides the same ask as a trailing arg.
+    expect(preload).toContain('ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase, forcedSkills)')
+    expect(handler).toContain('agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase, forcedSkills)')
     expect(sessionManager).toContain('knowledgeBase?: { id: string; name: string } | null')
     expect(sessionManager).toContain('entry.engine.setKnowledgeBaseScope(knowledgeBase ?? null)')
   })
 
   it('the renderer parses the mention and hands it to the engine handle', () => {
-    expect(controller).toContain('parseKnowledgeBaseMention(content, bases, mentions.spans)')
-    expect(controller).toContain('engineHandle.startLoop(content, knowledgeBase)')
-    expect(controller).toContain('engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)')
+    // The claimed set now chains the $-skill spans too (expert > skill > base).
+    expect(controller).toContain('parseKnowledgeBaseMention(content, bases, [...mentions.spans, ...skillMentions.spans])')
+    expect(controller).toContain('engineHandle.startLoop(content, knowledgeBase, forcedSkills)')
+    expect(controller).toContain('engineHandle.startSummonedLoop(content, mentioned, knowledgeBase, forcedSkills)')
   })
 })
 
@@ -115,6 +117,8 @@ describe('the @-composer surface is experts-only (user ruling 2026-09-21)', () =
     // The glyph span was the button's whole icon; the popup's own arming rule
     // (typed text, not a click) is what remains, so it must still be there.
     expect(inputArea).not.toContain('>@</span>')
-    expect(inputArea).toContain('const mentionActive')
+    // Generalized 2026-11-08 into the `/` `@` `$` trigger popup; the @ arm is
+    // still the typed-text rule (word-start `@`), not a click.
+    expect(inputArea).toContain("wordStartIdx('@')")
   })
 })

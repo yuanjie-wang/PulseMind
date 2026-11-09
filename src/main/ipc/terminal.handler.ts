@@ -15,7 +15,7 @@
 import { ipcMain, BrowserWindow, dialog } from 'electron'
 import { join, resolve as resolvePath } from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecLogs, svcExecKill } from '../services/terminal'
+import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecLogsForRenderer, svcExecKill } from '../services/terminal'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { auditStore } from '../storage/audit-store'
 import { getConversationWorkspaceDir } from '../storage/conversation.db'
@@ -151,12 +151,17 @@ export function registerTerminalHandlers(): void {
   // reaches these through the main-process host, never through these channels —
   // so the spawn and the allowlist-write REFUSE renderer origins outright (a
   // reach-around here would be unattended RCE / an approval-ladder widening).
-  // The pid-keyed reads/kill are harmless for renderer calls: both key off the
-  // ALS session context, which a renderer invocation never has.
+  // Logs is the renderer-facing exception (PLAN-background-tasks D): the
+  // floating strip's expanded card polls the tail over this channel — the ALS
+  // membership check of svcExecLogs can never pass for an IPC origin, so the
+  // read goes through svcExecLogsForRenderer (app-wide background registry as
+  // the authorization surface). Kill stays ALS-keyed (renderer invocations
+  // have no session scope, so it answers false — by design, kill is the tool
+  // channel's job).
   ipcMain.handle(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, () => {
     throw new Error('background execution is agent-only — this channel has no renderer path')
   })
-  ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_LOGS, (_event, pid: number, tailBytes?: number) => svcExecLogs(Number(pid), tailBytes))
+  ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_LOGS, (_event, pid: number, tailBytes?: number) => svcExecLogsForRenderer(Number(pid), tailBytes))
   ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_KILL, (_event, pid: number) => svcExecKill(Number(pid)))
   // Foreground promotion (PLAN-background-tasks A): agent-only like the spawn
   // above — promotion is an engine-side tool-lifecycle action keyed by a

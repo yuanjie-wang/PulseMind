@@ -118,13 +118,14 @@ export function makeCompactTracking(): CompactTracking {
 // whole) while the next request's nano pass replaces old results with
 // placeholders before anything ships — tool-heavy turns pinned the ring at
 // 79–96% while the wire carried ~60% (conv_20261021155951). This helper
-// mirrors nanoCompact's DECISION deterministically (protection window + tier
-// quotas + placeholder pricing) without touching the compactor's marks or
-// mandates, which only the live engine knows. Tail-only callers pass a
-// slice: quotas/protection are computed over exactly that slice, so a young
-// tail prices whole (yesterday's behavior — nano compresses nothing below
-// the quota anyway) and only a marathon tail compresses. The approximation
-// errs toward OVER-reading the shipped copy, never under it.
+// mirrors nanoCompact's DECISION deterministically (protection window + quota
+// caps + the merged fit gate + placeholder pricing) without the live engine's
+// mandates, which only it knows — the two share planNanoArchival, so neither
+// can drift. Tail-only callers pass a
+// slice: quotas/protection are computed over exactly that slice, and the gate
+// needs the caller's anchor (baselineTokens) because it compares the whole
+// copy's usage to the window. The approximation errs toward OVER-reading the
+// shipped copy, never under it.
 /** TOKEN-unit placeholder price — the number is NOT a char count. The printed
  *  placeholder ('⟨archived: <uuid>⟩' + the two multibyte glyphs, ~45 chars)
  *  is really ~13-20 tokens by estimateTextTokens; 45 keeps the OVER-reading
@@ -138,7 +139,123 @@ const NANO_PLACEHOLDER_COST = 45
  *  would silently misprice every ring reading. */
 const NANO_TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
 
-export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
+// ── Merged fit gate (PLAN-nano-light-trigger-merge W1) ─────────────────
+// nano used to archive on a pure COUNT quota — "two full tier batches exist,
+// so archive all but one" — with no idea how much of the window was actually
+// in use. In a long tool loop that quota fires again and again while the copy
+// sits far below the point where anything MUST be given up, and every fire
+// re-breaks the provider's prefix cache at the oldest archived result:
+// everything after that byte re-bills at full price. light then pays the real
+// weight — it drops from messages[0], so the cached prefix collapses to the
+// system prompt (the 24–33% hit class in conv_20261109101329: 45 of 137 rounds
+// under 50%, ≈70% of that conversation's uncached input).
+//
+// One gate, sized in tokens, replaces the quota as the driver:
+//   used < FIT_GATE_USED_RATIO · window  → archive nothing
+//   once open                            → archive down to the target ratio
+//   unless the pass would reclaim < NANO_MIN_RECLAIM_TOKENS (the break is not
+//   worth it)
+// The tier quota survives as the CAP on how much one pass may take (see
+// planNanoArchival) — the same "keep the newest batch" promise, no longer a
+// reason to break the cache on its own.
+/** Where the fit gate opens. Deliberately BELOW light's own line (light fires
+ *  while remaining ≥ max(30%·window, 30K) ⇒ usage ≤ 70%): the archive arm has
+ *  to fire first, because archiving is reversible (`tool_result_search` can
+ *  fetch the text back) while light's head drop is not. Gating nano without
+ *  that ordering would hand light the weight sooner — 80% breaks turned into
+ *  25% breaks. */
+export const FIT_GATE_USED_RATIO = 0.60
+/** Where an open gate lands the copy. The band between this and the gate is
+ *  the hysteresis that keeps a marathon tool loop from re-breaking the prefix
+ *  every round: one bite per ~10% of the window (≈10K tokens ≈ 20 tool rounds
+ *  on a 100K window) rather than one bite per tier batch. */
+export const FIT_ARCHIVE_TARGET_RATIO = 0.50
+/** Minimum reclaim worth a cache break. Below it the pass defers to the next
+ *  crossing — in fit mode this replaces the old "≥2 full tier batches" guard,
+ *  doing the same job (don't break the cache for a token win) in the currency
+ *  that actually matters. */
+export const NANO_MIN_RECLAIM_TOKENS = 4_000
+
+/** One tool_result's reclaimable weight: its priced text minus the placeholder
+ *  that replaces it, floored at 0 (a result shorter than the placeholder has
+ *  nothing to give; fit mode leaves it alone rather than break the cache). */
+function nanoReclaimableTokens(content: string): number {
+  return Math.max(0, estimateTextTokens(content) - NANO_PLACEHOLDER_COST)
+}
+
+/** A block's raw wire price — shared so the projection's "what would ship
+ *  unarchived" pass and its planned-prefix pass cannot price one block two
+ *  different ways. */
+function nanoBlockPrice(block: ContentBlock): number {
+  if (block.type === 'tool_result') return estimateTextTokens((block as ToolResultBlock).content || '')
+  if (block.type === 'text') return estimateTextTokens((block as TextBlock).text)
+  if (block.type === 'tool_use') return estimateTextTokens(JSON.stringify((block as ToolUseBlock).input) + (block as ToolUseBlock).name)
+  if (block.type === 'thinking') return estimateTextTokens((block as { thinking: string }).thinking)
+  return 0
+}
+
+interface NanoArchivalPlan {
+  /** tool_use ids whose tool_result becomes a placeholder this pass. */
+  ids: Set<string>
+  /** Heuristic tokens the pass takes off the copy. */
+  reclaimedTokens: number
+}
+
+/** What the last nano pass decided. The request build logs one line from this
+ *  so "break frequency × break depth" is measurable without waiting for a
+ *  post-hoc DB query (W3 of PLAN-nano-light-trigger-merge): the gate's own
+ *  inputs (used/target) and its verdict sit next to what light then dropped. */
+export interface NanoArchiveStats {
+  /** Whole-copy usage the gate judged (wire anchor + fixed overhead), in the
+   *  same units light/hard use. 0 when no window was known. */
+  used: number
+  /** 'legacy' = no window ⇒ the pre-merge quota walk, no gate involved. 'open'
+   *  can still mean archived=0 (below the min-reclaim floor, nothing takeable
+   *  under the caps) — that is the deferred case the log must not hide. */
+  gate: 'open' | 'closed' | 'legacy'
+  /** Results this pass archived, and the heuristic tokens they took off. */
+  archived: number
+  reclaimed: number
+  /** Where an open gate bites down to (window × FIT_ARCHIVE_TARGET_RATIO); 0
+   *  without a window. */
+  target: number
+}
+
+/**
+ * THE archival decision, for both consumers: nanoCompact (live, with the
+ * model's mandates) and estimateAfterNanoTokens (ring projection, without
+ * them — it may over-read, never under). ONE implementation, for the same
+ * reason NANO_TIER_SIZES' comment gives for the quotas: a drifted copy in the
+ * projection silently misprices every ring reading.
+ *
+ * The plan is a PURE function of the input copy: the same source re-derives
+ * the same ids and the same placeholder bytes on every request (W2 of
+ * PLAN-nano-light-trigger-merge retired the one-shot marks whose "compressed
+ * once → skip → re-inflate next request" bounce made each archive live
+ * exactly one request and broke the prefix cache every round above the gate).
+ *
+ * `contextLength` ABSENT keeps the pre-merge quota walk byte-for-byte —
+ * callers that do not know the window (tests, and anything not yet threaded
+ * through) keep yesterday's behavior rather than silently archiving nothing.
+ *
+ * The walk stays OLDEST-FIRST in both modes, so the cache break lands as deep
+ * as the archival frontier allows instead of at the head, and the newest batch
+ * stays readable (the cap) — the policy the quota encoded.
+ */
+function planNanoArchival(
+  messages: AgentMessage[],
+  opts: {
+    /** Explicit model picks: compress regardless of gate, caps and min-reclaim. */
+    mandatedIds?: ReadonlySet<string>
+    contextLength?: number
+    /** Wire-anchored usage the gate reads (fit mode only). */
+    estimatedTokens?: number
+  } = {},
+): NanoArchivalPlan {
+  const plan: NanoArchivalPlan = { ids: new Set<string>(), reclaimedTokens: 0 }
+
+  // Protect the newest N user messages carrying tool_results — the live tail
+  // the model is still reasoning over.
   const protectedMsgIds = new Set<string>()
   {
     let found = 0
@@ -148,6 +265,8 @@ export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
       if (msg.contentBlocks.some(b => b.type === 'tool_result')) { protectedMsgIds.add(msg.id); found++ }
     }
   }
+
+  // Name table + per-tier counts over every tool_use (tier3 excluded).
   const toolUseToName = new Map<string, string>()
   const counts: Record<number, number> = {}
   for (const msg of messages) {
@@ -160,48 +279,138 @@ export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
       toolUseToName.set(block.id, block.name)
     }
   }
-  const compressTargets: Record<number, number> = {}
+
+  // Mandates first: an explicit model pick bypasses every size guard below —
+  // this is exactly what the model asked for.
+  const mandated = opts.mandatedIds
+  if (mandated?.size) {
+    for (const msg of messages) {
+      if (msg.role !== 'user') continue
+      for (const block of msg.contentBlocks) {
+        if (block.type !== 'tool_result') continue
+        const id = block.tool_use_id
+        if (!mandated.has(id) || plan.ids.has(id)) continue
+        const name = toolUseToName.get(id)
+        if (!name || NANO_TIER3_NAMES.has(name)) continue
+        const content = (block as ToolResultBlock).content || ''
+        if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => content.startsWith(p))) continue
+        plan.ids.add(id)
+        plan.reclaimedTokens += nanoReclaimableTokens(content)
+      }
+    }
+  }
+
+  // Eligible candidates in document order (oldest first).
+  const candidates: Array<{ id: string; tier: number; saving: number }> = []
+  for (const msg of messages) {
+    if (msg.role !== 'user' || protectedMsgIds.has(msg.id)) continue
+    for (const block of msg.contentBlocks) {
+      if (block.type !== 'tool_result') continue
+      const id = block.tool_use_id
+      if (plan.ids.has(id)) continue
+      const name = toolUseToName.get(id)
+      if (!name || NANO_TIER3_NAMES.has(name)) continue
+      const content = (block as ToolResultBlock).content || ''
+      if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => content.startsWith(p))) continue
+      candidates.push({ id, tier: NANO_TIER_MAP[name] ?? 2, saving: nanoReclaimableTokens(content) })
+    }
+  }
+
+  const window = opts.contextLength
+  if (typeof window !== 'number' || window <= 0) {
+    // ── Pre-merge quota walk (no window known) ─────────────────────────
+    const targets: Record<number, number> = {}
+    for (const [tierStr, count] of Object.entries(counts)) {
+      const tier = Number(tierStr)
+      const size = NANO_TIER_SIZES[tier]
+      if (!size) continue
+      const fullTiers = Math.floor(count / size)
+      if (fullTiers >= 2) targets[tier] = (fullTiers - 1) * size
+    }
+    const taken: Record<number, number> = {}
+    for (const c of candidates) {
+      const target = targets[c.tier]
+      if (!target || target <= 0) continue
+      if ((taken[c.tier] || 0) >= target) continue
+      taken[c.tier] = (taken[c.tier] || 0) + 1
+      plan.ids.add(c.id)
+      plan.reclaimedTokens += c.saving
+    }
+    return plan
+  }
+
+  // ── Fit gate ──────────────────────────────────────────────────────────
+  const used = opts.estimatedTokens ?? 0
+  if (used < window * FIT_GATE_USED_RATIO) return plan
+  let budget = used - window * FIT_ARCHIVE_TARGET_RATIO
+  if (budget <= 0) return plan
+  // The old quota's "keep the newest batch" promise, in cap form: a pass may
+  // take at most count − size results per tier, so the newest full batch of
+  // every tracked tier stays whole however far over the target the copy is (a
+  // genuinely over-full copy is light's problem, not a reason to archive what
+  // the model is still reading).
+  const capLeft: Record<number, number> = {}
   for (const [tierStr, count] of Object.entries(counts)) {
     const tier = Number(tierStr)
     const size = NANO_TIER_SIZES[tier]
     if (!size) continue
-    const fullTiers = Math.floor(count / size)
-    if (fullTiers >= 2) compressTargets[tier] = (fullTiers - 1) * size
+    capLeft[tier] = Math.max(0, count - size)
   }
-  const compressed: Record<number, number> = {}
-  // Assistant messages price per-BLOCK here — estimateMessagesTokens'
-  // outputTokens substitution (context-estimate.ts: a gateway that honestly
+  // Is the pass worth a break at all? Measure under the caps first so the
+  // answer matches what the take loop can actually reach.
+  const probe: Record<number, number> = { ...capLeft }
+  let available = 0
+  for (const c of candidates) {
+    if (c.saving <= 0) continue
+    if (!((probe[c.tier] || 0) > 0)) continue
+    probe[c.tier] = (probe[c.tier] || 0) - 1
+    available += c.saving
+  }
+  if (Math.min(available, budget) < NANO_MIN_RECLAIM_TOKENS) return plan
+  for (const c of candidates) {
+    if (budget <= 0) break
+    if (c.saving <= 0) continue
+    if (!((capLeft[c.tier] || 0) > 0)) continue
+    capLeft[c.tier] = (capLeft[c.tier] || 0) - 1
+    plan.ids.add(c.id)
+    plan.reclaimedTokens += c.saving
+    budget -= c.saving
+  }
+  return plan
+}
+
+/**
+ * Price a message list AS THE NEXT REQUEST WILL CARRY IT: planned tool_results
+ * become placeholders at `NANO_PLACEHOLDER_COST`, everything else prices raw.
+ * `contextLength` + `baselineTokens` open the fit gate — a tail-only caller
+ * passes the anchor it priced the tail against, because the gate compares the
+ * WHOLE copy's usage to the window; passing the slice's own length would leave
+ * the gate shut forever. Absent window ⇒ the pre-merge quota walk.
+ */
+export function estimateAfterNanoTokens(
+  messages: AgentMessage[],
+  contextLength?: number,
+  baselineTokens = 0,
+): number {
+  let raw = 0
+  for (const msg of messages) for (const block of msg.contentBlocks) raw += nanoBlockPrice(block)
+  const plan = planNanoArchival(messages, {
+    contextLength,
+    estimatedTokens: contextLength ? baselineTokens + raw : undefined,
+  })
+  if (plan.ids.size === 0) return raw
+  // Planned blocks price at the constant (the deliberate over-read documented
+  // above), not their own text — the same arithmetic the pre-merge function
+  // did inline. Assistant messages price per-BLOCK throughout:
+  // estimateMessagesTokens' outputTokens substitution (a gateway that honestly
   // reports completion_tokens, thinking included, replaces the block estimate)
-  // is deliberately NOT mirrored. Known approximation, ring-side only: the
-  // tail usually holds the still-streaming newest assistant message, and the
-  // wire-report anchor upstream absorbs most of the residual. (review_20261025 低3)
+  // is deliberately NOT mirrored — ring-side only, and the wire-report anchor
+  // upstream absorbs most of the residual. (review_20261025 低3)
   let total = 0
   for (const msg of messages) {
     for (const block of msg.contentBlocks) {
-      if (block.type === 'tool_result') {
-        const content = (block as ToolResultBlock).content || ''
-        const name = toolUseToName.get((block as ToolResultBlock).tool_use_id)
-        const tier = name ? (NANO_TIER_MAP[name] ?? 2) : undefined
-        // Same skip rules as nanoCompact: user messages only, not protected,
-        // not already a placeholder; quota budget burns oldest-first.
-        if (msg.role === 'user' && name && tier != null && !NANO_TIER3_NAMES.has(name)
-          && !protectedMsgIds.has(msg.id)
-          && !TOOL_RESULT_PLACEHOLDER_PREFIXES.some(p => content.startsWith(p))) {
-          const target = compressTargets[tier]
-          if (target && target > 0 && (compressed[tier] || 0) < target) {
-            compressed[tier] = (compressed[tier] || 0) + 1
-            total += NANO_PLACEHOLDER_COST
-            continue
-          }
-        }
-        total += estimateTextTokens(content)
-      } else if (block.type === 'text') {
-        total += estimateTextTokens((block as TextBlock).text)
-      } else if (block.type === 'tool_use') {
-        total += estimateTextTokens(JSON.stringify((block as ToolUseBlock).input) + (block as ToolUseBlock).name)
-      } else if (block.type === 'thinking') {
-        total += estimateTextTokens((block as { thinking: string }).thinking)
-      }
+      const planned = block.type === 'tool_result' && plan.ids.has(block.tool_use_id)
+      total += planned ? NANO_PLACEHOLDER_COST : nanoBlockPrice(block)
     }
   }
   return total
@@ -566,14 +775,18 @@ export interface ContextCompactorDeps {
 export class ContextCompactor {
   static readonly HARD_TRUNCATE_MIN_REMAINING = 10_000
 
-  private _compressedToolUseIds = new Set<string>()
   /** The model's own nano picks (context_compact's `free_results`,
-   *  PLAN-context-compact-tool D3b). Independently persistent — a mandated id
-   *  compresses EVERY request regardless of the tier quotas, so the placeholder
-   *  the model asked for is stable. Deliberately NOT the marks set below: marks
-   *  mean "compressed once → allowed to re-inflate"; a mandated id entering it
-   *  would pop back to full text on the very next request. Cleared with the
-   *  conversation (engine reset). */
+   *  PLAN-context-compact-tool D3b). A mandated id compresses EVERY request
+   *  regardless of the fit gate and tier caps, so the placeholder the model
+   *  asked for is stable. Cleared with the conversation (engine reset).
+   *
+   *  There is deliberately no "already archived" set beside it (W2 of
+   *  PLAN-nano-light-trigger-merge, 2026-11-09): the plan is a pure function
+   *  of the copy, so every request re-derives the same placeholders from the
+   *  full-text source and the wire copy is byte-stable between frontier
+   *  advances. The retired one-shot marks made each archive live exactly one
+   *  request — the next build re-shipped the full text and broke the provider
+   *  prefix cache again. */
   private mandatedCompressIds = new Set<string>()
   /** Record the model's picks (already validated by the engine against TIER3 /
    *  protection window / existence — see AgentEngine.compactForTool). */
@@ -599,6 +812,13 @@ export class ContextCompactor {
    *  otherwise — the request path reads it to tag the compaction event's
    *  strategies without re-derving the composition from array lengths. */
   lastReminderCount = 0
+  /** The last nanoCompact decision (W3 observability). Written on every pass —
+   *  prewarm's simulation included — and read by the engine IMMEDIATELY after
+   *  its own synchronous call, so the two can never interleave. */
+  lastNanoArchive: NanoArchiveStats | null = null
+  /** Tool cycles the last lightCompact pass dropped. Set to 0 when the pass
+   *  no-ops, so the request log never reports a previous pass's cut. */
+  lastLightDropRounds = 0
   /** Whether the last inject pass landed the model's handover note
    *  (context_compact's `notes`) — read by the engine for the tool envelope's
    *  notesKept. Reset at every inject; a `notes`-less pass always reads false. */
@@ -1102,84 +1322,59 @@ export class ContextCompactor {
     return estimateMessagesTokens(messages ?? this.deps.getMessages())
   }
 
-  nanoCompact(messages: AgentMessage[]): AgentMessage[] {
-    const TIER_MAP = NANO_TIER_MAP
-    const TIER_SIZES = NANO_TIER_SIZES
-    const TIER3_NAMES = NANO_TIER3_NAMES
-    const PROTECTION_WINDOW = NANO_PROTECTION_WINDOW
-
-    // Protect last N user messages with tool_results
-    const protectedMsgIds = new Set<string>()
-    {
-      let found = 0
-      for (let i = messages.length - 1; i >= 0 && found < PROTECTION_WINDOW; i--) {
-        const msg = messages[i]
-        if (msg.role !== 'user') continue
-        if (msg.contentBlocks.some(b => b.type === 'tool_result')) {
-          protectedMsgIds.add(msg.id)
-          found++
-        }
-      }
+  /**
+   * In-place tool_result archival. `contextLength` opens the merged fit gate
+   * (PLAN-nano-light-trigger-merge W1): with a window the pass archives
+   * nothing below FIT_GATE_USED_RATIO and then bites down to
+   * FIT_ARCHIVE_TARGET_RATIO, instead of burning a tier quota every batch and
+   * breaking the provider's prefix cache for a reclaim the copy did not need.
+   * Without a window the pre-merge quota walk runs unchanged — callers that
+   * have not been threaded through keep yesterday's behavior.
+   *
+   * The decision itself lives in planNanoArchival, shared with the ring
+   * projection so the two cannot drift.
+   */
+  nanoCompact(messages: AgentMessage[], contextLength?: number, fixedOverhead = 0): AgentMessage[] {
+    // `contextLength <= 0` and absent are the same thing (no window): the
+    // planner's own guard already says so, and the stats below must read the
+    // gate the same way the decision did.
+    const window = typeof contextLength === 'number' && contextLength > 0 ? contextLength : undefined
+    const used = window ? this.contextTokens(messages, fixedOverhead) : 0
+    const plan = planNanoArchival(messages, {
+      mandatedIds: this.mandatedCompressIds,
+      contextLength: window,
+      // The gate reads the total light reads: the wire-anchored usage plus the
+      // fixed overhead the build prices — the same units lightCompact's own
+      // threshold is expressed in.
+      estimatedTokens: window ? used : undefined,
+    })
+    // Recorded on EVERY path (the early return below included): a stale record
+    // would report the previous request's gate as this one's.
+    this.lastNanoArchive = {
+      used,
+      gate: window === undefined ? 'legacy' : used >= window * FIT_GATE_USED_RATIO ? 'open' : 'closed',
+      archived: plan.ids.size,
+      reclaimed: Math.round(plan.reclaimedTokens),
+      target: window === undefined ? 0 : Math.round(window * FIT_ARCHIVE_TARGET_RATIO),
     }
+    if (plan.ids.size === 0) return messages
 
-    // Count tool_uses by tier
-    const toolUseToName = new Map<string, string>()
-    const counts: Record<number, number> = {}
-    for (const msg of messages) {
-      if (msg.role !== 'assistant') continue
-      for (const block of msg.contentBlocks) {
-        if (block.type !== 'tool_use') continue
-        if (TIER3_NAMES.has(block.name)) continue
-        const tier = TIER_MAP[block.name] ?? 2
-        counts[tier] = (counts[tier] || 0) + 1
-        toolUseToName.set(block.id, block.name)
-      }
-    }
-
-    // Calculate compression targets: only compress when >= 2 full tiers exist
-    const compressTargets: Record<number, number> = {}
-    for (const [tierStr, count] of Object.entries(counts)) {
-      const tier = Number(tierStr)
-      const size = TIER_SIZES[tier]
-      if (!size) continue
-      const fullTiers = Math.floor(count / size)
-      if (fullTiers >= 2) compressTargets[tier] = (fullTiers - 1) * size
-    }
-
-    if (Object.keys(compressTargets).length === 0 && this.mandatedCompressIds.size === 0) return messages
-
-    // Build compressed copy
-    const compressed: Record<number, number> = {}
+    // Re-derive, never remember: the same source yields the same plan and the
+    // same placeholder bytes on EVERY request (the tool_result_id is minted
+    // once onto the source block and survives the DB roundtrip), so between
+    // frontier advances the wire copy is byte-stable and the provider's prefix
+    // cache holds. The retired one-shot marks made each archive live exactly
+    // one request — the next build re-shipped the full text and broke the
+    // cache again (W2, PLAN-nano-light-trigger-merge).
     return messages.map(msg => {
       if (msg.role !== 'user') return msg
-      if (protectedMsgIds.has(msg.id)) return msg
-
       let modified = false
       const newBlocks = msg.contentBlocks.map(block => {
         if (block.type !== 'tool_result') return block
-        const name = toolUseToName.get(block.tool_use_id)
-        if (!name) return block
-        if (TIER3_NAMES.has(name)) return block
-        // Check order IS the semantics (D3b): a mandated id compresses
-        // regardless of the tier quotas and never enters the marks set (the
-        // marks' "compressed once → skip → the block re-inflates" bounce is
-        // the opposite of what the model asked for); a marked id skips so the
-        // one-shot nano compression can re-inflate; the quota walk applies to
-        // everything else.
-        const mandated = this.mandatedCompressIds.has(block.tool_use_id)
-        if (!mandated && this._compressedToolUseIds.has(block.tool_use_id)) return block
         const tr = block as ToolResultBlock
-        if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => tr.content.startsWith(p))) return block
-        if (!mandated) {
-          const tier = TIER_MAP[name] ?? 2
-          const target = compressTargets[tier]
-          if (!target || target <= 0) return block
-          if ((compressed[tier] || 0) >= target) return block
-          compressed[tier] = (compressed[tier] || 0) + 1
-        }
+        if (!plan.ids.has(tr.tool_use_id)) return block
         if (!tr.tool_result_id) tr.tool_result_id = crypto.randomUUID()
         modified = true
-        if (!mandated) this._compressedToolUseIds.add(tr.tool_use_id)
         return { ...tr, content: `⟨archived: ${tr.tool_result_id}⟩` }
       })
       return modified ? { ...msg, contentBlocks: newBlocks } : msg
@@ -1389,9 +1584,11 @@ export class ContextCompactor {
   /** `record` = write this pass's decisions into the persistent frontier. A
    *  real request build records; prewarm's discarded simulation must NOT (its
    *  force bits cut deeper than the request that follows, and persisting a
-   *  simulated forced cut would permanently deepen the copy every turn — the
-   *  same reason prewarmBody restores nano's compression marks). */
+   *  simulated forced cut would permanently deepen the copy every turn). */
   lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false, record = true): AgentMessage[] {
+    // Reset first: the request log reads this beside nano's stats, and a
+    // no-op pass must not inherit the previous request's cut.
+    this.lastLightDropRounds = 0
     if (!contextLength) return messages
 
     const estimatedTokens = this.contextTokens(messages, fixedOverhead)
@@ -1508,6 +1705,7 @@ export class ContextCompactor {
     }
 
     if (roundsDeleted === 0) return messages
+    this.lastLightDropRounds = roundsDeleted
     if (record) {
       for (const id of droppedIds) this.lightDroppedIds.add(id)
       for (const id of strippedIds) this.lightStrippedIds.add(id)
@@ -1542,8 +1740,8 @@ export class ContextCompactor {
    * absorbs the frontier drifting to a less aggressive natural cut later.
    * Operates on the live list only through the same read-only pipeline the
    * request path uses — this.messages is never replaced, the prewarmed copy is
-   * discarded, and nanoCompact's compression marks are restored so they cannot
-   * suppress a real request's nano pass.
+   * discarded, and the archive plan is a pure function of the copy, so the
+   * simulated pass leaves nothing behind that could change a real one.
    * Returns the compaction event for the caller to emit, or null when there
    * was nothing to drop (conversation too small, another prewarm in flight).
    */
@@ -1587,84 +1785,71 @@ export class ContextCompactor {
     notes?: string,
     hardForce = true
   ): Promise<CompactionEvent | null> {
-    const savedMarks = new Set(this._compressedToolUseIds)
-    // Marks snapshot at the suspension point (assigned just before the await):
-    // everything added from there on belongs to a request that interleaved
-    // during the await — JS is single threaded, so the sync pipeline before it
-    // cannot be interrupted — and the finally below must keep those while
-    // still discarding this prewarm's own marks.
-    let marksAtSuspend = savedMarks
-    try {
-      const tokensBefore = contextTokensOf(original)
-      // Same persistent holes the next request will start from (see
-      // applyPersistedDrops) — the simulation must price and summarize the
-      // copy the request actually builds, not re-inflate shed cycles.
-      // It READS the frontier and must never extend it: light/hard below pass
-      // record=false, because a simulated forced cut (hardForce, manual/tool
-      // light force) goes deeper than the passive request that follows and
-      // would permanently deepen the copy every turn.
-      const pipeline = this.applyPersistedDrops(original)
-      const nano = this.nanoCompact(pipeline)
-      // The simulation must run the SAME force bits the next real request will:
-      // manual sticks (manualCompactActive on both layers), tool's one-shot
-      // force bypasses ONLY light (hard stays passive, its 0.9× trigger
-      // untouched), post-turn runs fully passive on light. A mismatched
-      // simulation would promise a drop the request never materializes (or
-      // cover ids the real copy keeps). Same units too: the fit walks are
-      // overhead-sensitive, so the simulation prices the last real request's
-      // fixed overhead, not 0.
-      const overhead = this.lastRequestOverhead
-      // record=false: the simulation must not consume the request path's
-      // "newly stripped" signal (see strippedThinkingIds).
-      const stripped = this.stripStaleThinking(nano, contextLength, overhead, false)
-      const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool', false)
-      const truncated = this.hardTruncate(light, contextLength, overhead, hardForce, false)
-      // Light's cycle drops count too — they are the main dropper once the
-      // transcript outgrows the window, and the summary exists to cover
-      // everything the copy loses, not just hard's share.
-      const droppedCount = stripped.length - truncated.length
-      if (droppedCount <= 0) return null
-      const summaryBefore = this.historySummary ? { ...this.historySummary } : null
-      marksAtSuspend = new Set(this._compressedToolUseIds)
-      const final = await this.injectHistorySummaryInto(original, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
-      const summary = this.historySummary
-      const summaryChanged =
-        !summary || !summaryBefore ||
-        summary.firstKeptId !== summaryBefore.firstKeptId ||
-        summary.text !== summaryBefore.text
-      const strategies: string[] = []
-      if (nano.some((m, i) => m !== pipeline[i])) strategies.push('nano')
-      if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
-      if (light.length !== stripped.length) strategies.push('light')
-      strategies.push('hard')
-      if (summary) strategies.push('summary')
-      console.log(
-        `[AgentEngine] prewarm (${source}): dropped ${droppedCount}, replays ${this.lastInjectReplayCount}, ` +
-        `tokens ~${tokensBefore} → ~${Math.round(contextTokensOf(final))}`
-      )
-      return {
-        ts: Date.now(),
-        source,
-        strategies,
-        droppedMessages: original.length - final.length,
-        replayedUserMessages: this.lastInjectReplayCount,
-        tokensBefore,
-        tokensAfter: contextTokensOf(final),
-        // Pick the wire fields explicitly — the cache carries the internal
-        // covered-id Set, which must not ride the IPC event.
-        summary: summaryChanged ? (summary ? { firstKeptId: summary.firstKeptId, text: summary.text } : null) : undefined,
-      }
-    } finally {
-      // Merge, not whole-restore: this prewarm's own nano marks are still
-      // discarded (the prewarmed copy is thrown away — keeping them would make
-      // the real request's nano pass skip those blocks and re-inflate), but
-      // marks a request wrote while we were suspended must survive — a whole
-      // restore erased them and only placeholder re-derivation + the double
-      // tool_result_id got the copy back (review0924 M2).
-      const current = this._compressedToolUseIds
-      const merged = new Set(savedMarks)
-      for (const id of current) if (!marksAtSuspend.has(id)) merged.add(id)
-      this._compressedToolUseIds = merged
+    // The simulation carries no compaction state of its own anymore: the
+    // archive plan is a pure function of the copy (W2 retired the one-shot
+    // marks this body used to quarantine), light/hard run with record=false,
+    // and the only live state it writes is the summary cache — which is
+    // exactly what it exists to seed.
+    const tokensBefore = contextTokensOf(original)
+    // Same persistent holes the next request will start from (see
+    // applyPersistedDrops) — the simulation must price and summarize the
+    // copy the request actually builds, not re-inflate shed cycles.
+    // It READS the frontier and must never extend it: light/hard below pass
+    // record=false, because a simulated forced cut (hardForce, manual/tool
+    // light force) goes deeper than the passive request that follows and
+    // would permanently deepen the copy every turn.
+    const pipeline = this.applyPersistedDrops(original)
+    // Same units too: the fit walks are overhead-sensitive, so the
+    // simulation prices the last real request's fixed overhead, not 0. The
+    // archive arm is one of those walks now (the merged fit gate) — a
+    // 0-overhead simulation would archive later and less than the request
+    // actually does, and `compaction-prewarm` exists to catch exactly that.
+    const overhead = this.lastRequestOverhead
+    const nano = this.nanoCompact(pipeline, contextLength, overhead)
+    // The simulation must run the SAME force bits the next real request will:
+    // manual sticks (manualCompactActive on both layers), tool's one-shot
+    // force bypasses ONLY light (hard stays passive, its 0.9× trigger
+    // untouched), post-turn runs fully passive on light. A mismatched
+    // simulation would promise a drop the request never materializes (or
+    // cover ids the real copy keeps).
+    // record=false: the simulation must not consume the request path's
+    // "newly stripped" signal (see strippedThinkingIds).
+    const stripped = this.stripStaleThinking(nano, contextLength, overhead, false)
+    const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool', false)
+    const truncated = this.hardTruncate(light, contextLength, overhead, hardForce, false)
+    // Light's cycle drops count too — they are the main dropper once the
+    // transcript outgrows the window, and the summary exists to cover
+    // everything the copy loses, not just hard's share.
+    const droppedCount = stripped.length - truncated.length
+    if (droppedCount <= 0) return null
+    const summaryBefore = this.historySummary ? { ...this.historySummary } : null
+    const final = await this.injectHistorySummaryInto(original, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
+    const summary = this.historySummary
+    const summaryChanged =
+      !summary || !summaryBefore ||
+      summary.firstKeptId !== summaryBefore.firstKeptId ||
+      summary.text !== summaryBefore.text
+    const strategies: string[] = []
+    if (nano.some((m, i) => m !== pipeline[i])) strategies.push('nano')
+    if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
+    if (light.length !== stripped.length) strategies.push('light')
+    strategies.push('hard')
+    if (summary) strategies.push('summary')
+    console.log(
+      `[AgentEngine] prewarm (${source}): dropped ${droppedCount}, replays ${this.lastInjectReplayCount}, ` +
+      `tokens ~${tokensBefore} → ~${Math.round(contextTokensOf(final))}`
+    )
+    return {
+      ts: Date.now(),
+      source,
+      strategies,
+      droppedMessages: original.length - final.length,
+      replayedUserMessages: this.lastInjectReplayCount,
+      tokensBefore,
+      tokensAfter: contextTokensOf(final),
+      // Pick the wire fields explicitly — the cache carries the internal
+      // covered-id Set, which must not ride the IPC event.
+      summary: summaryChanged ? (summary ? { firstKeptId: summary.firstKeptId, text: summary.text } : null) : undefined,
     }
   }
 

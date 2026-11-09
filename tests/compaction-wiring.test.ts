@@ -67,8 +67,13 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
   })
 
   it('the chat surface projects the ring after compaction and renders the chip', () => {
-    expectLines(ring, /export function projectContextUsed\(messages: AgentMessage\[\], compaction: CompactionEvent \| null \| undefined\): number/, 'ContextRing.tsx')
-    expectLines(chatView, /projectContextUsed\(messages, lastCompaction\)/, 'ChatView.tsx')
+    expectLines(ring, /export function projectContextUsed\(/, 'ContextRing.tsx')
+    // The window reaches the projection (PLAN-nano-light-trigger-merge W1):
+    // without it the merged fit gate never opens and the ring prices archived
+    // results whole.
+    expectLines(ring, /export function estimateContextUsed\(messages: AgentMessage\[\], contextLength\?: number\)/, 'ContextRing.tsx')
+    expectLines(ring, /contextLength\?: number,/, 'ContextRing.tsx')
+    expectLines(chatView, /projectContextUsed\(messages, lastCompaction, contextLength\)/, 'ChatView.tsx')
     expectLines(app, /lastCompaction=\{lastCompaction\}/, 'App.tsx')
     expectLines(chatView, /lastCompaction=\{lastCompaction\}/, 'ChatView.tsx', 2) // welcome + main composers
     expectLines(inputArea, /lastCompaction\?: CompactionEvent \| null/, 'InputArea.tsx')

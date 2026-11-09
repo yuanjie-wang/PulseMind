@@ -6,12 +6,13 @@ import { useConversationPersistence } from './useConversationPersistence'
 import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { takePendingProfileId } from '../stores/pendingProfileStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
-import { useWorkbenchStore } from '../stores/workbenchStore'
+import { useWorkbenchStore, conversationPrimaryOf } from '../stores/workbenchStore'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
 import { extractRoutineFromConversation } from '../components/routine/routine-extract'
-import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } from '../../../shared/expert-context'
+import { parseExpertMentions, parseKnowledgeBaseMention, parseSkillMentions, type SummonedExpert } from '../../../shared/expert-context'
+import { matchChatCommand, commandArgument, buildInitPrompt } from '../agent/chat-commands'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
 import { shouldDrainOnStatusChange } from '../utils/staged-drain'
@@ -24,6 +25,10 @@ import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
 // ── Options ──
+
+/** Conversation cap without auto-cleanup — the same number the sidebar's
+ *  新建任务 gate (AppLayout canCreateNew) and the eviction use; /new honors it. */
+const MAX_SESSIONS = 100
 
 interface UseChatControllerOptions {
   apiKey: string | null
@@ -315,6 +320,71 @@ export function useChatController(options: UseChatControllerOptions) {
         return true
       }
 
+      // ── /new [text]: a fresh conversation of the SAME kind ──
+      // The sidebar's 新建任务「与当前模式相同」 rule from the keyboard: a
+      // browser task opens the browser welcome (URL form), a project-bound
+      // conversation the project form with that project preselected (the
+      // project row's own 新建任务 shape), anything else a plain chat. Nothing
+      // is created here — the first message does that (M8.4) — so a bare /new
+      // just lands on the welcome form; trailing text is sent as that new
+      // conversation's first message through the normal materialization below.
+      const newCommand = matchChatCommand(content)
+      if (newCommand?.name === 'new') {
+        // Secondary windows (conversation popout / project window) are bound
+        // to one conversation and never write the list — no place to open a
+        // new one in.
+        if (options.savesEnabled === false) {
+          message.warning(t('chatView.command.newUnavailable'))
+          return true
+        }
+        if (!autoCleanup && persistence.conversations.length >= MAX_SESSIONS) {
+          message.warning(t('chatView.command.newLimit', { max: MAX_SESSIONS }))
+          return true
+        }
+        const current = conversationKeyOf(convId)
+        const currentProjectId = current
+          ? persistence.conversations.find((c) => String(c.key) === current)?.projectId
+          : undefined
+        const task = useNewTaskStore.getState()
+        if (current && conversationPrimaryOf(current) === 'browser') {
+          task.setMode('browser')
+          task.setProjectId(null)
+        } else if (currentProjectId) {
+          task.setMode('project')
+          task.setProjectId(currentProjectId)
+        } else if (current) {
+          task.setMode('chat')
+          task.setProjectId(null)
+        }
+        // No conversation open (already on the welcome form): keep the form's
+        // current kind — it IS the kind being composed.
+        // The user is at the composer already: no guidance shake, and cancel
+        // any one still pending so it does not replay on the welcome mount.
+        task.requestShake(null)
+        await persistence.createNewConversation()
+        const firstMessage = commandArgument(content, 'new')
+        // true = consumed: a bare /new is not a send.
+        if (!firstMessage) return true
+        // Fall through as the first message of the conversation about to be
+        // materialized (no open conversation any more): the materialization
+        // reads the kind just set on the new-task form — project binding,
+        // browser primary view + dock — exactly as a welcome-page first send.
+        convId = ''
+        content = firstMessage
+      }
+
+      // ── /init [focus]: rewrite into the init turn, then fall through ──
+      // Unlike /compact (a command AGAINST the current conversation, never a
+      // message), /init IS a turn: the canned prompt below instructs the agent
+      // to survey the workspace and write .pulsemind/AGENTS.md. Rewriting the
+      // content here lets the whole normal path proceed untouched —
+      // materialization (welcome 首发铸会话), title generation, startLoop.
+      // A trailing text after the token rides along as the user's focus hint.
+      const initCommand = matchChatCommand(content)
+      if (initCommand?.name === 'init') {
+        content = buildInitPrompt(commandArgument(content, 'init'))
+      }
+
       // ── @-summon: resolve expert mentions before anything else ──
       // Summoning IS delegation (spawn_agent): the mentioned experts run their
       // parts as sub-agents inside this conversation — the conversation itself
@@ -339,16 +409,34 @@ export function useChatController(options: UseChatControllerOptions) {
         return false
       }
 
+      // ── $技能 (2026-11-08): resolve the $-pinned skills ──
+      // Runs AFTER the expert parse and skips its claimed spans (既有语义优先:
+      // expert > skill > knowledge base), same positional rule as the base
+      // parse below. The $ tokens STAY in the text — mention words are message
+      // content (the 2026-10-09 @ ruling applies verbatim). The pinned names
+      // ride THIS send only; the next message without a $mention runs
+      // unpinned. A bare `$office` with no task is a pin with nothing to apply
+      // it to — refused like a bare @-summon.
+      const enabledSkillNames = managers.skills.filter((s) => s.enabled).map((s) => s.definition.name)
+      const skillMentions = parseSkillMentions(content, enabledSkillNames, mentions.spans)
+      const forcedSkills = skillMentions.skills
+      if (forcedSkills.length > 0 && !skillMentions.task.trim()) {
+        message.warning(t('chatView.skill.needTask'))
+        return false
+      }
+
       // ── @知识库 (PLAN-knowledge-groups G5): resolve the base scope ──
       // Runs AFTER the expert parse and skips the @ tokens the expert parse
       // claimed (spans) — the tokens stay in the text now, so the claim order
       // (既有语义优先: a name that is both reads as the expert) is positional.
-      // The scope rides THIS send only — the next message without an @mention
-      // searches everything; a matched base token is the one cut from the text.
+      // The skill parse's spans join the claimed set (a name claimed as a
+      // skill is never a base). The scope rides THIS send only — the next
+      // message without an @mention searches everything; a matched base token
+      // is the one cut from the text.
       let knowledgeBase: { id: string; name: string } | null = null
       try {
         const bases = await window.electronAPI.knowledgeListBases()
-        const parsedBase = parseKnowledgeBaseMention(content, bases, mentions.spans)
+        const parsedBase = parseKnowledgeBaseMention(content, bases, [...mentions.spans, ...skillMentions.spans])
         knowledgeBase = parsedBase.base
         if (knowledgeBase) content = parsedBase.text
       } catch {
@@ -407,9 +495,12 @@ export function useChatController(options: UseChatControllerOptions) {
       if (import.meta.env.DEV) console.log(`[ChatController] handleRequest: model=${options.model} baseURL=${options.baseURL}`)
       pendingTitleGenRef.current = convId
 
-      // First-message title generation
+      // First-message title generation. The /init rewrite above makes
+      // `content` the canned English prompt — a terrible llmFallback title —
+      // so the command branch pins a human phrase instead.
       if (!titleGeneratedRef.current.has(convId)) {
-        generateTitleRef.current(convId, [{ role: 'user', contentBlocks: [{ type: 'text', text: content }] }], { llmFallback: content.trim() })
+        const titleFallback = initCommand?.name === 'init' ? t('chatView.command.initTitle') : content.trim()
+        generateTitleRef.current(convId, [{ role: 'user', contentBlocks: [{ type: 'text', text: content }] }], { llmFallback: titleFallback })
       }
 
       // The @-summoned experts ride the same conversation materialization and
@@ -427,8 +518,8 @@ export function useChatController(options: UseChatControllerOptions) {
       // full thread (the first-message title only ever saw message #1).
       const userMsgCountBefore = engineHandle.messages.filter((m) => m.role === 'user').length
       if (userMsgCountBefore + 1 === 3) titleRefinePendingRef.current.add(convId)
-      if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)
-      else engineHandle.startLoop(content, knowledgeBase)
+      if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase, forcedSkills)
+      else engineHandle.startLoop(content, knowledgeBase, forcedSkills)
       // true = the turn left. Every early `return false` above is a bail the
       // caller (the staged-queue drain, the strip's 立即发送) must restore its
       // message for — a silent drop there loses the message with only a toast
@@ -448,7 +539,11 @@ export function useChatController(options: UseChatControllerOptions) {
       engine.activeEngineIdRef,
       engine.activateEngine,
       engine.agentStatus,
+      persistence.conversations,
+      persistence.createNewConversation,
+      autoCleanup,
       options,
+      managers.skills,
       t,
       message,
     ],

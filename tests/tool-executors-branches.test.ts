@@ -589,7 +589,7 @@ describe('createSubPlan 双门', () => {
 describe('export_document — deck 退役指引可达（review_20261006 中9）', () => {
   it('deck + content：deck 不被静默丢弃，指引入/Error 落地', async () => {
     const h = makeHarness()
-    await h.executor.execWorkspaceTool(t('t1', 'export_document', { format: 'pptx', content: '# 走兜底的旧调用', deck: { slides: [] } }))
+    await h.executor.execWorkspaceTool(t('t1', 'office_export', { format: 'pptx', content: '# 走兜底的旧调用', deck: { slides: [] } }))
     expect(h.results[0].isError).toBe(true)
     expect(h.results[0].content).toContain('deck 参数已退役')
     expect(h.results[0].content).toContain('htmlPath')
@@ -599,7 +599,7 @@ describe('export_document — deck 退役指引可达（review_20261006 中9）'
 
   it('deck 单独出现：拿到退役指引而非通用的「三选一」报错', async () => {
     const h = makeHarness()
-    await h.executor.execWorkspaceTool(t('t2', 'export_document', { format: 'pptx', deck: { slides: [] } }))
+    await h.executor.execWorkspaceTool(t('t2', 'office_export', { format: 'pptx', deck: { slides: [] } }))
     expect(h.results[0].isError).toBe(true)
     expect(h.results[0].content).toContain('deck 参数已退役')
     expect(h.results[0].content).not.toContain('三选一')
@@ -607,7 +607,7 @@ describe('export_document — deck 退役指引可达（review_20261006 中9）'
 
   it('无 deck 的调用不受影响：仍按原校验链走（对照）', async () => {
     const h = makeHarness()
-    await h.executor.execWorkspaceTool(t('t3', 'export_document', { format: 'pptx' }))
+    await h.executor.execWorkspaceTool(t('t3', 'office_export', { format: 'pptx' }))
     expect(h.results[0].content).toContain('content / sourcePath / htmlPath 三选一')
   })
 })

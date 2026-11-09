@@ -51,7 +51,7 @@ export function RoutineRunModal({ routine, open, onClose, onRun }: RoutineRunMod
       cancelText="取消"
       okText="运行"
       okButtonProps={{ disabled: missing.length > 0 }}
-      focusTriggerAfterClose={false}
+      focusable={{ focusTriggerAfterClose: false }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}>
         <div style={{ fontSize: 12, color: '#999' }}>{t('routine.runModalHint')}</div>

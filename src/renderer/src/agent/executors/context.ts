@@ -143,6 +143,12 @@ export interface ToolExecContext {
    *  so old test fakes construct; AgentEngine 构造后晚接线（parentPlanMerge
    *  同款）。 */
   followUpSubAgent?: (subConvId: string, task: string) => import('../agent-utils').SubAgentHandle | null
+  /** 后台命令名台账（PLAN-background-tasks D）：一条命令落进后台通道的同一拍
+   *  （`background:true` spawn、运行中转后台）把构建出的命令串记进本引擎的
+   *  pid→command 台账——exit 时合成通知与转录系统行才说得出任务名。Optional
+   *  so old test fakes construct; AgentEngine 构造后晚接线（followUpSubAgent
+   *  同款）。 */
+  registerBackgroundCommand?: (pid: number, command: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */
   formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
 }

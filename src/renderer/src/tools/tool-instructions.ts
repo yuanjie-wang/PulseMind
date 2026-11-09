@@ -12,7 +12,7 @@
  * schema-duplicating Parameter/Output-Format sections were stripped.)
  */
 export const toolInstructions: Record<string, string> = {
-  export_document: `## export_document
+  office_export: `## office_export
 
 Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
@@ -161,9 +161,10 @@ Execute a shell command on the local machine.
 - Prefer safe, read-only commands unless the user explicitly asks for modifications; explore the filesystem with \`read\`/\`search\`/\`list_dir\`
 - **The shell persists across calls (macOS/Linux):** every exec runs in this session's own shell, so \`cd\`, \`export\`, \`source .venv/bin/activate\`, \`nvm use\` carry over to later commands — no \`cd x && …\` prefix needed, and an explicit \`cwd\` moves the shell there for good. A command's stdin is /dev/null (interactive prompts read EOF — feed input with pipes or heredocs). A timeout, kill or \`exit\` restarts the shell in the same directory, but exported variables are gone. \`background: true\` starts where the shell currently is. On Windows every command still starts fresh
 - The idle timeout (default 60s) kills a command that produces no output; commands are also hard-capped at a 900s wall-clock — for anything longer-running or persistent, use \`background: true\`. Output is capped at 1MB.
-- **Long commands go to the background, the turn does not wait:** when the user asks to 放后台/别等, or a command will clearly take minutes (local builds, full test suites, training runs), set \`background: true\` up front — the result returns immediately with a pid, the user keeps chatting, and the completion reaches you automatically. A running foreground command can also be moved to the background by the user mid-flight (转入后台).
+- **Long commands go to the background, and you keep working:** when the user asks to 放后台/别等, or a command will clearly take minutes (local builds, full test suites, training runs), set \`background: true\` up front — the result returns immediately with a pid, you spend the freed round trips on steps that do not depend on it, and the completion reaches you automatically. A running foreground command can also be moved to the background by the user mid-flight (转入后台). Every backgrounded exec carries a short \`name\` ("前端构建", "跑全量单测") — it is what the user sees on the background-task panel and the completion notice; an unnamed task degrades to its raw command there, which reads like noise.
 - **Remote long operations are watched from the background, never waited on:** after TRIGGERING a remote task (GitHub Actions build, deploy, long-job API), don't block the turn polling it — start ONE local command that blocks until the remote finishes and run IT with \`background: true\` (e.g. \`gh run watch <id> --exit-status\`, or a shell loop that polls until done). Its exit code is the remote result; report it when the background completion arrives.
 - Always explain what the command does and why you are running it
+- **A compound command's exit code is the LAST command's** — \`cat missing; echo done\` reports 0. Never let a trailing echo/cleanup whitewash a real failure: end the command at the statement whose result you care about (or capture \`rc=$?\` first), and expect a stderr note on the exit line when anything wrote to stderr
 `,
 
   exec_logs: `## exec_logs
@@ -171,9 +172,20 @@ Execute a shell command on the local machine.
 Read the output log of a background process you started with \`exec background: true\` — pass the pid that result gave you.
 
 ### Guidelines
-- Poll: call again after a wait to follow progress; each call returns the log TAIL, not the whole history
-- The log's last line is \`[exited code=N]\` once the process has ended. When a background process finishes you are also NOTIFIED automatically (a Background Tasks section in the next turn's context, or a completion report turn) — you don't have to remember to poll.
+- Read it at a JOIN POINT: when you actually need the result to continue the step that depends on it — not on a timer. Each call returns the log TAIL, not the whole history.
+- Do not synthesize a wait — no \`sleep\`, no polling loop, no \`while\` on a pid. Waiting in-turn buys zero information and holds an execution slot the user could be using; the completion notice arrives by itself.
+- The log's last line is \`[exited code=N]\` once the process has ended. When a background process finishes you are also NOTIFIED automatically (a Background Tasks section in the next turn's context, or a completion report turn) — so with nothing else to do, end the turn rather than polling.
 - pids are scoped to this session: a pid you did not start here answers "not found"
+`,
+
+  exec_list: `## exec_list
+
+List the background tasks of this conversation (most recent first): pid, task name, status (running / ended with exit code / killed by a signal), start time and the command.
+
+### Guidelines
+- Call this whenever you cannot recall which pids you started — after a context compaction, a session restart, or before polling a long build. Pids live in a persisted ownership table, NOT in your context; your memory of them is lossy by design.
+- Rows include tasks whose processes already ended (with their exit code) — that is the point: a conversation reopened after a restart can still tell finished from died-mid-run via exec_logs(pid).
+- Most recent 20 rows; a task list in the Background Tasks section of your context already covers the RUNNING ones each turn.
 `,
 
   exec_kill: `## exec_kill

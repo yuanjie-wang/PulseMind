@@ -94,7 +94,7 @@ const REPO = process.cwd()
 const CHAT_VIEW = join(REPO, 'src', 'renderer', 'src', 'components', 'layout', 'ChatView.tsx')
 const CONTROLLER = join(REPO, 'src', 'renderer', 'src', 'hooks', 'useChatController.ts')
 const APP = join(REPO, 'src', 'renderer', 'src', 'App.tsx')
-const EDITOR = join(REPO, 'src', 'renderer', 'src', 'components', 'routine', 'RoutineEditorPage.tsx')
+const EDITOR = join(REPO, 'src', 'renderer', 'src', 'components', 'routine', 'TaskWizardPage.tsx')
 const VIEW_HOST = join(REPO, 'src', 'renderer', 'src', 'components', 'layout', 'ViewHost.tsx')
 const FORM_MODEL = join(REPO, 'src', 'renderer', 'src', 'components', 'routine', 'routine-form-model.ts')
 
@@ -150,7 +150,7 @@ describe('存为日常任务 wiring (button → gating → controller → editor
     expect(editorSrc.indexOf('applyExtractedDraft(result)')).toBeGreaterThan(applyDef)
     // Ignored while editing an existing routine — a draft never overwrites one.
     const effectFrom = editorSrc.indexOf('chatDraftAppliedRef')
-    expect(editorSrc.slice(effectFrom)).toContain('if (routineIdProp || chatDraftAppliedRef.current) return')
+    expect(editorSrc.slice(effectFrom)).toContain('if (kind !== \'routine\' || routineId || chatDraftAppliedRef.current) return')
   })
 
   it('ViewHost hands the navigation param to the editor', () => {

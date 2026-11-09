@@ -122,6 +122,10 @@ export interface AgentEngineOptions {
    *  unscoped = search everything). Written by prepareTurn from the staged
    *  value — never set directly; domain-tools reads it via ex.opts. */
   knowledgeBaseScope?: { id: string; name: string } | null
+  /** $-pinned skills of the CURRENT turn (composer $-mention): skill names the
+   *  state block's Forced Skills section orders the model to pick_skill first.
+   *  Written by prepareTurn from the staged value — never set directly. */
+  forcedSkills?: string[] | null
   experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
   hooks?: HooksConfig
   onSkillStateChange?: () => void
@@ -436,15 +440,34 @@ export class AgentEngine implements EngineCore {
    *  state block 的 `## Background Tasks` 节并清空——一次性指针消息，模型
    *  无须记得轮询 exec_logs。同 pid 只保留最新一条。 */
   /** @internal */
-  backgroundNotices: Array<{ pid: number; code: number | null }> = []
+  backgroundNotices: Array<{ pid: number; code: number | null; command?: string }> = []
+  /** 后台命令名台账（PLAN-background-tasks D）：三条后台化路径（`background:true`
+   *  spawn、运行中转后台的 auto/approve 两路）在 pid 落地的同一拍把构建出的
+   *  命令串记进这里——exit 时 enqueueBackgroundNotice 从中取走，合成通知与
+   *  转录系统行才说得出「哪条任务」。pid 是键、同 pid 覆盖；帽 50 防泄漏
+   *  （从未 exit 的孤儿 pid 只占台账不占通知）。 */
+  /** @internal */
+  backgroundCommands = new Map<number, string>()
   /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来（engineCall
    *  'markExtensionHandoff' 置位）。引擎生命周期内每回合 state block 都带告知
    *  行——page_* 在桌面端结构性不可用；引擎重铸后丢失是诚实缺口（v1 不落库）。 */
   extensionHandoffNotice = false
   /** @internal */
+  registerBackgroundCommand = (pid: number, command: string): void => {
+    if (!command) return
+    this.backgroundCommands.set(pid, command)
+    while (this.backgroundCommands.size > 50) {
+      const oldest = this.backgroundCommands.keys().next().value
+      if (oldest === undefined) break
+      this.backgroundCommands.delete(oldest)
+    }
+  }
+  /** @internal */
   enqueueBackgroundNotice = (pid: number, code: number | null): void => {
+    const command = this.backgroundCommands.get(pid)
+    this.backgroundCommands.delete(pid)
     this.backgroundNotices = this.backgroundNotices.filter((n) => n.pid !== pid)
-    this.backgroundNotices.push({ pid, code })
+    this.backgroundNotices.push(command ? { pid, code, command } : { pid, code })
     while (this.backgroundNotices.length > 10) this.backgroundNotices.shift()
   }
   /** @internal Tool-use id of the spawn_agent call the last startDelegatedLoop
@@ -467,6 +490,14 @@ export class AgentEngine implements EngineCore {
   stagedKnowledgeBaseScope: { id: string; name: string } | null = null
   setKnowledgeBaseScope = (scope: { id: string; name: string } | null): void => {
     this.stagedKnowledgeBaseScope = scope
+  }
+  /** G5 sibling: the $-pinned skills staged by the caller (renderer send or
+   *  hosted ask) BEFORE startLoop; prepareTurn consumes it into
+   *  opts.forcedSkills for exactly one turn — a later send without a
+   *  $mention runs unpinned. */
+  stagedForcedSkills: string[] | null = null
+  setForcedSkills = (names: string[] | null): void => {
+    this.stagedForcedSkills = names
   }
   // Public access to plan (delegated to PlanManager)
   get plan(): Plan | null { return this.planManager.plan }
@@ -830,6 +861,10 @@ export class AgentEngine implements EngineCore {
     // 引擎的 spawn-manager 注册表——晚接线（parentPlanMerge 同款）而非再加一
     // 个位置参数，构造参数序列已经太长。
     this.toolExecutor.followUpSubAgent = (subConvId, task) => this.followUpSubAgent(subConvId, task)
+    // 后台命令名台账的接线（PLAN-background-tasks D）：晚接线而非再加位置
+    // 参数（followUpSubAgent 同款）——executor 在 pid 落地的同一拍把命令记进
+    // 本引擎的台账，exit 时合成通知才带得上任务名。
+    this.toolExecutor.registerBackgroundCommand = (pid, command) => this.registerBackgroundCommand(pid, command)
     // 会话文件变更台账 → 协议事件（2026-10-28）。Wired on THIS engine's own
     // ledger; a spawned sub-engine's ledger is swapped for its parent's right
     // after construction (spawn-manager), orphaning this hook — which is the
@@ -1030,6 +1065,10 @@ export class AgentEngine implements EngineCore {
     // open; an explicit null (no mention this send) unscopes too.
     this.opts.knowledgeBaseScope = this.stagedKnowledgeBaseScope
     this.stagedKnowledgeBaseScope = null
+    // Same one-turn consumption for the $-pinned skills: no $mention this send
+    // → opts.forcedSkills is null and the state block ships no section.
+    this.opts.forcedSkills = this.stagedForcedSkills
+    this.stagedForcedSkills = null
     // Cancel any in-flight request so two don't write to this.messages concurrently
     this.abortController?.abort()
     if (this.currentRequestId) {
@@ -1309,7 +1348,16 @@ export class AgentEngine implements EngineCore {
     // A build failure loses the notice (degrades to exec_logs polling — the
     // pre-feature status quo); the log tail is never the source of truth here.
     const backgroundNotices = this.backgroundNotices.length > 0
-      ? this.backgroundNotices.map((n) => ({ pid: n.pid, code: n.code }))
+      ? this.backgroundNotices.map((n) => (n.command ? { pid: n.pid, code: n.code, command: n.command } : { pid: n.pid, code: n.code }))
+      : undefined
+    // Still-RUNNING background tasks (PLAN-background-tasks E #3): the ledger
+    // name rides the same per-turn volatile channel as the finished notices —
+    // the model's pid memory is lossy by design (compaction/restart), so the
+    // live set re-renders EVERY turn while anything runs.
+    const runningEntries = [...this.backgroundCommands.entries()]
+    const runningBackgroundTasks = runningEntries.length > 0
+      ? (await Promise.all(runningEntries.map(async ([pid, name]) => ({ pid, name, alive: await getHost().execAlive(pid) }))))
+          .filter((t) => t.alive)
       : undefined
     const spResult = await buildSystemPrompt({
       opts,
@@ -1318,9 +1366,11 @@ export class AgentEngine implements EngineCore {
       messages: this.messages,
       plan: this.planManager.plan,
       summon: this.summon,
+      forcedSkills: this.opts.forcedSkills ?? null,
       toolProtocols,
       continuationNudge,
       backgroundNotices,
+      runningBackgroundTasks,
       handoffNotice: this.extensionHandoffNotice || undefined,
       // The gauge must report the POST-PIPELINE size of this request, but the
       // pipeline below needs the state block's byte length first — so pass 1
@@ -1399,7 +1449,16 @@ export class AgentEngine implements EngineCore {
         console.log(`[AgentEngine] emergencyTruncate (provider limit ${this.contextOverflowLimit}): ${before.length} → ${pipelineMessages.length} messages`)
       }
     }
-    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages)
+    // The archive arm's gate (PLAN-nano-light-trigger-merge W1): it archives
+    // only once the copy crosses 60% of the window, then bites down to 50% —
+    // in the same wire-anchored units (and with the same fixed overhead) the
+    // light/hard walks below use, so the layers cannot disagree about how
+    // full the request is.
+    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages, opts.contextLength || 128000, fixedOverhead)
+    // Snapshot the pass's own verdict immediately: the field is rewritten by
+    // every nanoCompact (prewarm's simulation too), so a later read could
+    // describe a different copy.
+    const nanoArchive = this.compactor.lastNanoArchive
     // Stale-thinking strip beside nano (THINKING_STRIP_USED_RATIO): old turns'
     // reasoning_content off the wire. Runs here AND in prewarmBody.
     const thinkingStripped = this.compactor.stripStaleThinking(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
@@ -1414,6 +1473,24 @@ export class AgentEngine implements EngineCore {
     // The tool force armed the drop this copy just materialized — consume it
     // here, after the build, so exactly one request runs slimmed.
     this.pendingToolCompactForce = false
+    // ── One line per request: break frequency × break depth (W3) ──
+    // Without it the only way to see whether the merged gate is working is a
+    // post-hoc DB query on cached_tokens, which cannot distinguish "the gate
+    // opened and paid a break" from "light still owns the floor". `used` and
+    // `target` are the gate's own numbers; `archived` is the pass's verdict
+    // (gate=open with archived=0 = deferred under the min-reclaim floor);
+    // `light`/`hard` are this request's irreversible cuts; `→` is where the
+    // truncated copy lands, including the fixed overhead the estimator never
+    // sees.
+    if (nanoArchive) {
+      const landed = Math.round(this.compactor.estimateTokens(truncatedMessages) + fixedOverhead)
+      console.log(
+        `[AgentEngine] fit-gate used=${Math.round(nanoArchive.used)}/${opts.contextLength || 128000} gate=${nanoArchive.gate} ` +
+        `archived=${nanoArchive.archived}/${nanoArchive.reclaimed} target=${nanoArchive.target} ` +
+        `light=${this.compactor.lastLightDropRounds} hard=${thinkingStripped.length - truncatedMessages.length} ` +
+        `→ ~${landed}`,
+      )
+    }
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
     // The summarizer source is the PRE-PIPELINE copy (before emergency/nano):

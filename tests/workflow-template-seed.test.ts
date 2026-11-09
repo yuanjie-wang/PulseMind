@@ -32,6 +32,11 @@ describe('WORKFLOW_TEMPLATES', () => {
       const v = validateWorkflow(tpl)
       expect(v.errors, tpl.id).toEqual([])
       expect(v.warnings, tpl.id).toEqual([])
+      // 模板必须自己过**写门**（user 2026-11-09「状态定义是必填的」）：用户从
+      // 模板起稿、改一个字就要存盘，模板若缺定义则第一次保存就被拦下——那是
+      // 把用户困在一个从模板来的、无法保存的工作流里。
+      const writeGate = validateWorkflow(tpl, { requireVerdictDefs: true })
+      expect(writeGate.errors, tpl.id).toEqual([])
     }
   })
 

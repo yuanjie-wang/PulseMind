@@ -317,8 +317,8 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     const read = (p: string) => fs.readFileSync(p, 'utf8')
     const core = read('src/renderer/src/agent/system-prompt-builder.ts')
     const manual = read('src/renderer/src/tools/tool-instructions.ts')
-    expect(core.includes('export_document')).toBe(false)
-    expect(manual).toContain('export_document')
+    expect(core.includes('office_export')).toBe(false)
+    expect(manual).toContain('office_export')
   })
 
   it('the full routing chain exists: channel → handler → preload → bridge → host → main-host', () => {
@@ -333,7 +333,7 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     expect(read('src/renderer/src/agent/host/types.ts')).toContain("'exportDocument'")
     expect(read('src/main/agent/main-host.ts')).toContain('exportDocument: async')
     // the text-write tools point at the dedicated tool for generation too
-    expect(read('src/main/services/file-ops.ts')).toContain('export_document')
+    expect(read('src/main/services/file-ops.ts')).toContain('office_export')
   })
 
   it('the design route is wired end to end and the deck route stays retired', () => {

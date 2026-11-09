@@ -25,7 +25,7 @@ const CONVERT_TIMEOUT_MS = 60_000
 const POLL_INTERVAL_MS = 150
 
 /** A failure message that names the converter, not Chromium internals — it
- *  becomes the export_document tool's error verbatim. */
+ *  becomes the office_export tool's error verbatim. */
 export class DocxToPdfError extends Error {}
 
 export interface DocxToPdfOptions {

@@ -12,6 +12,7 @@ import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 import { applySessionEvent, freshSessionState, seedSessionState, type SessionState } from '../../../shared/agent-session/mirror'
 import { useSessionFileChangesStore } from '../stores/sessionFileChangesStore'
+import { useBackgroundTasksStore, backgroundTaskLabel } from '../stores/backgroundTasksStore'
 import { usePopoutWatchStore, isPoppedOut } from '../stores/popoutWatchStore'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
@@ -78,12 +79,13 @@ export interface SessionEngineHandle {
   loadConversation(messages: AgentMessage[]): void
   seedHistorySummary(text?: string, firstKeptId?: string): void
   loadPlan(convId: string): void
-  startLoop(userMessage: string, knowledgeBase?: { id: string; name: string } | null): Promise<void>
+  startLoop(userMessage: string, knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null): Promise<void>
   /** @-summon (召唤专家): the same ask carrying the turn's expert roster. One
    *  name delegates to that expert (whose conclusion comes back verbatim as the
    *  turn's own answer), several enter plan mode. Main decides which — the
-   *  renderer only reports who was mentioned. */
-  startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null): Promise<void>
+   *  renderer only reports who was mentioned. `forcedSkills` is the turn's
+   *  $-pinned skills, riding the same ask. */
+  startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null): Promise<void>
   approveTool(toolUseId: string, alwaysAllow?: boolean): void
   rejectTool(toolUseId: string): void
   killTool(toolUseId: string): void
@@ -237,9 +239,10 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
 
   const makeHandle = useCallback((convId: string, st: SessionState): SessionEngineHandle => {
     // One ask path, two entry points: a normal loop and the @-summon roster
-    // (main picks the engine method off its length).
-    const ask = (content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) =>
-      window.electronAPI.agentSessionAsk(convId, content, summon, knowledgeBase).catch((err: unknown) => {
+    // (main picks the engine method off its length). forcedSkills rides the
+    // same ask — the turn's $-pinned skills, staged main-side like knowledgeBase.
+    const ask = (content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null) =>
+      window.electronAPI.agentSessionAsk(convId, content, summon, knowledgeBase, forcedSkills).catch((err: unknown) => {
         // A failed ask (session creation blew up, profile missing, …) must be
         // visible in the conversation, not swallowed as an unhandled rejection
         // — that silence is how a dead first message used to look like nothing.
@@ -277,11 +280,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     loadPlan(_convId: string) {
       // The main-side hydrate loads the persisted plan alongside history.
     },
-    startLoop(userMessage: string, knowledgeBase?: { id: string; name: string } | null) {
-      return ask(userMessage, undefined, knowledgeBase)
+    startLoop(userMessage: string, knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null) {
+      return ask(userMessage, undefined, knowledgeBase, forcedSkills)
     },
-    startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) {
-      return ask(userMessage, experts, knowledgeBase)
+    startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null) {
+      return ask(userMessage, experts, knowledgeBase, forcedSkills)
     },
     approveTool: (toolUseId, alwaysAllow) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId, alwaysAllow === true]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
@@ -403,6 +406,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       if (data.type === 'background_task' && data.phase === 'exit') {
         const pids = bgPidsRef.current.get(sessionId)
         pids?.delete(data.pid)
+        // 悬浮面板的行同步退场（PLAN-background-tasks D）：与计数同一拍。
+        useBackgroundTasksStore.getState().remove(sessionId, data.pid)
         setBgRunningCounts((prev) => {
           const size = pids?.size ?? 0
           if ((prev[sessionId] ?? 0) === size) return prev
@@ -441,6 +446,19 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
           let pids = bgPidsRef.current.get(sessionId)
           if (!pids) { pids = new Set(); bgPidsRef.current.set(sessionId, pids) }
           if (!pids.has(u.backgroundPid)) { pids.add(u.backgroundPid); added = true }
+          // 悬浮面板登记（PLAN-background-tasks D）：任务名取镜像里这个 tool_use
+          // 块的命令（tool_status 已在同一拍 patch 进镜像，applySessionEvent 先
+          // 于本分支跑）——与工具卡同一个对象，不另设推导。块找不到（重放乱序）
+          // 回落 pid 字面量。
+          const msg = st.messages.find((m) => m.id === u.messageId)
+          const block = msg?.contentBlocks?.find(
+            (b) => b.type === 'tool_use' && (b as { id?: string }).id === u.toolUseId,
+          ) as { name?: string; input?: unknown } | undefined
+          useBackgroundTasksStore.getState().upsert(sessionId, {
+            pid: u.backgroundPid,
+            label: block ? backgroundTaskLabel(block.input, block.name ?? '') : `pid=${u.backgroundPid}`,
+            startedAt: Date.now(),
+          })
         }
         if (added) {
           setBgRunningCounts((prev) => {
@@ -663,6 +681,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     statesRef.current.delete(convId)
     touchTimesRef.current.delete(convId)
     useSessionFileChangesStore.getState().drop(convId)
+    // 悬浮面板的行随镜像一起退场（PLAN-background-tasks D）：引擎已 dispose，
+    // 后台进程的 exit 事件不会再被本窗口的行消费。
+    useBackgroundTasksStore.getState().drop(convId)
   }, [])
 
   const listEvictionCandidates = useCallback((): string[] => {

@@ -25,9 +25,9 @@ import { usePreviewPaneStore } from '../stores/previewPaneStore'
 
 export interface PaneFileEvent {
   toolUseId: string
-  tool: 'write' | 'edit' | 'export_document'
+  tool: 'write' | 'edit' | 'office_export' | 'export_document'
   path: string
-  /** export_document forces the pane open (D9): the moment a deliverable is
+  /** office_export forces the pane open (D9): the moment a deliverable is
    *  born is when the user wants to see it — office kinds would otherwise
    *  fail shouldAutoOpen, which is write's own heuristic, not a law. */
   force?: boolean
@@ -84,7 +84,7 @@ export function ingestAgentEvent(known: Map<string, KnownToolMeta>, data: AgentE
     return []
   }
   if (data.type === 'tool_start') {
-    if (data.name === 'write' || data.name === 'edit' || data.name === 'export_document') {
+    if (data.name === 'write' || data.name === 'edit' || data.name === 'office_export' || data.name === 'export_document') {
       const meta = metaFromInput(data.name, data.input as Record<string, unknown> | null | undefined)
       if (meta) known.set(data.toolUseId, meta)
     }
@@ -96,12 +96,12 @@ export function ingestAgentEvent(known: Map<string, KnownToolMeta>, data: AgentE
       if (u.status !== 'completed') continue
       if (u.exitCode !== undefined && u.exitCode !== 0) continue
       const meta = known.get(u.toolUseId)
-      if (meta && (meta.name === 'write' || meta.name === 'edit' || meta.name === 'export_document')) {
+      if (meta && (meta.name === 'write' || meta.name === 'edit' || meta.name === 'office_export' || meta.name === 'export_document')) {
         fired.push({
           toolUseId: u.toolUseId,
           tool: meta.name,
           path: meta.path,
-          force: meta.name === 'export_document',
+          force: meta.name === 'office_export' || meta.name === 'export_document',
           reveal: meta.reveal,
           extraPaths: meta.extraPaths,
         })
@@ -118,7 +118,7 @@ function ingestMessageItem(known: Map<string, KnownToolMeta>, item: unknown): vo
   for (const raw of blocks) {
     const b = raw as { type?: string; id?: string; name?: string; input?: Record<string, unknown> }
     if (b?.type !== 'tool_use' || !b.id) continue
-    if (b.name !== 'write' && b.name !== 'edit' && b.name !== 'export_document') continue
+    if (b.name !== 'write' && b.name !== 'edit' && b.name !== 'office_export' && b.name !== 'export_document') continue
     const meta = metaFromInput(b.name, b.input)
     if (meta) known.set(b.id, meta)
   }

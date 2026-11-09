@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest'
 import {
   clampSidebarWidth,
   clampTreeWidth,
+  clampWizardAssistWidth,
   PREVIEW_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MIN_WIDTH,
   TREE_MIN_WIDTH,
+  WIZARD_ASSIST_MIN_WIDTH,
+  WIZARD_CONFIG_MIN_WIDTH,
 } from '../src/shared/ui/layout-widths'
 
 // ── Draggable column widths (2026-10-26) ────────────────────────────────────
@@ -47,6 +50,23 @@ describe('clampTreeWidth', () => {
   it('with no row measurement yet, floors only', () => {
     expect(clampTreeWidth(5000, 0)).toBe(5000)
     expect(clampTreeWidth(100, 0)).toBe(TREE_MIN_WIDTH)
+  })
+})
+
+describe('clampWizardAssistWidth', () => {
+  it('keeps the drag inside [300, available − 360]', () => {
+    expect(clampWizardAssistWidth(100, 1200)).toBe(WIZARD_ASSIST_MIN_WIDTH)
+    expect(clampWizardAssistWidth(5000, 1200)).toBe(1200 - WIZARD_CONFIG_MIN_WIDTH)
+    expect(clampWizardAssistWidth(520, 1200)).toBe(520)
+  })
+  it('on a row too narrow for both floors, the assistant floor wins (config squeezes)', () => {
+    // 600 − 360 = 240 < 300 — the assistant never collapses below its own floor
+    // just because the window got narrow; the step card is the flexible one.
+    expect(clampWizardAssistWidth(400, 600)).toBe(WIZARD_ASSIST_MIN_WIDTH)
+  })
+  it('with no row measurement yet, floors only', () => {
+    expect(clampWizardAssistWidth(5000, 0)).toBe(5000)
+    expect(clampWizardAssistWidth(100, 0)).toBe(WIZARD_ASSIST_MIN_WIDTH)
   })
 })
 
@@ -112,5 +132,21 @@ describe('layout width wiring', () => {
     expect(src).toMatch(/e\.buttons === 0/)
     // Only the pointer that started the drag may end it.
     expect(src).toMatch(/e\.pointerId !== d\.pointerId/)
+  })
+
+  it('TaskWizardPage: the wizard divider clamps BOTH drag and render with one ruler', () => {
+    const src = read('src/renderer/src/components/routine/TaskWizardPage.tsx')
+    // The assistant is right-docked (handle on its left edge), so leftward
+    // travel widens — the mirrored direction of the two left-aligned columns.
+    expect(src).toMatch(/direction: -1,/)
+    expect(src).toContain('clampWizardAssistWidth')
+    // The row width arrives from a ResizeObserver, and the drag-time clamp reads
+    // the LIVE rect so the drag never starts from a stale measurement.
+    expect(src).toContain('ResizeObserver')
+    expect(src).toMatch(/rowRef\.current\?\.getBoundingClientRect\(\)\.width \?\? rowWidth/)
+    // The available width deducts the gap, because the handle rides in it.
+    expect(src).toMatch(/- WIZARD_ROW_GAP/)
+    // Render side: the same clamp produces what the shell paints.
+    expect(src).toMatch(/const effAssistWidth = clampWizardAssistWidth\(assistWidth, rowWidth - WIZARD_ROW_GAP\)/)
   })
 })

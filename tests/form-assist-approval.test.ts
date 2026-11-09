@@ -182,7 +182,11 @@ describe('main-side support', () => {
     // DEFAULT_APPROVAL_MODE, so a UI default move cannot widen a watched run.
     // (The finish shape is the batch-shared primitive's: 'success' | 'failed',
     // with releaseRunPins inside, ahead of the transcript announce.)
-    expect(RUNNER).toContain("approvalMode: routine.approvalMode ?? 'outside-ask'")
+    // P1 任务共享内核：非空授权档（'outside-ask' 字面量缺省）进了共享
+    // resolver（src/main/task/run-context.ts），runner 把解析值原样传给
+    // createSession。
+    expect(RUNNER).toContain("from '../task/run-context'")
+    expect(RUNNER).toMatch(/'outside-ask',/)
     const finish = RUNNER.indexOf("const finish = (status: 'success' | 'failed', error?: string): void =>")
     expect(finish).toBeGreaterThan(-1)
     const release = RUNNER.indexOf('agentSessionManager.releaseRunPins(convId)', finish)

@@ -59,7 +59,7 @@ const CODE_FONT = 'Courier New'
 const BODY_FONT = { ascii: 'Calibri', hAnsi: 'Calibri', eastAsia: '微软雅黑', cs: 'Calibri' }
 const HEADING_INK = '1F2329' // 墨色标题（GitHub ink；不再是 docx 库默认蓝）
 const HEADING_HALF_BASE = [44, 32, 28, 24, 22, 22] // Heading1–6 半磅 @ 基准正文：22/16/14/12/11/11pt
-// ── fontSize（export_document, 磅）── BODY_BASE_PT 是标题/代码比例的基准：
+// ── fontSize（office_export, 磅）── BODY_BASE_PT 是标题/代码比例的基准：
 // 调用方传 fontSize 时全部按 fontSize / BODY_BASE_PT 缩放，四号（14pt）正文
 // 不会大于自己的 Heading2。
 const BODY_BASE_PT = 11

@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DATA_DIR } from './index'
+import { normalizeBatchConfig, normalizeTriggers } from './task-config-normalize'
 import { validateWorkflow, type WorkflowValidation } from '../../shared/workflow/validate'
 import type { WorkflowDefinition } from '../../shared/workflow/types'
 
@@ -58,13 +59,25 @@ export const workflowStore = {
   },
 
   /** 新建/整体保存。id 由调用方给（模板复制起稿或既有 id）；创建时 id 冲突
-   *  即拒（编辑走 save 覆盖自己的 id）。 */
+   *  即拒（编辑走 save 覆盖自己的 id）。
+   *
+   *  写门归一与对话式任务同源（task-config-normalize）：triggers 走同一套
+   *  不变量（webhook token 只能在这里铸、debounce 夹 1–60s、路径 trim），
+   *  batch 存同一份 RoutineBatchConfig 形态。归一在写盘前做，任何保存路径
+   *  （向导 / 助手应用 / 模板复制）都拿到同样的门。 */
   save(def: WorkflowDefinition): WorkflowDefinition {
-    const v = assertWorkflowValid(def)
+    const normalized: WorkflowDefinition = {
+      ...def,
+      batch: normalizeBatchConfig(def.batch),
+      triggers: normalizeTriggers(def.triggers),
+    }
+    if (normalized.batch === undefined) delete normalized.batch
+    if (normalized.triggers === undefined) delete normalized.triggers
+    const v = assertWorkflowValid(normalized)
     if (!v.ok) throw new Error(v.errors.join('；'))
     mkdirSync(WORKFLOWS_DIR, { recursive: true })
-    writeFileSync(workflowPath(def.id), JSON.stringify(def, null, 2), 'utf-8')
-    return def
+    writeFileSync(workflowPath(normalized.id), JSON.stringify(normalized, null, 2), 'utf-8')
+    return normalized
   },
 
   remove(id: string): void {
@@ -92,6 +105,14 @@ export const WORKFLOW_TEMPLATES: WorkflowDefinition[] = [
         id: 'code',
         title: '编码',
         verdicts: ['pass', 'fail', 'blocked'],
+        // 状态定义是必填的（user 2026-11-09）：模板本身必须过保存门，否则
+        // 用户打开模板、改一个字就再也存不下去。文案与下面 prompt 里的
+        // 「- pass = … ; fail = … ; blocked = …」逐条同义。
+        verdictDefs: {
+          pass: '计划条目已实现且自检通过',
+          fail: '实现受阻于具体错误（编译/运行/逻辑）',
+          blocked: '缺外部条件（凭据/环境），需写明缺什么',
+        },
         prompt: `你是编码阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -113,6 +134,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}
         id: 'test',
         title: '测试',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '测试/验证命令全部通过',
+          fail: '存在失败项，失败清单已写入交付物',
+        },
         prompt: `你是测试阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -136,6 +161,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<命令与结果>","artifacts":["p
         id: 'review',
         title: '评审',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '评审未发现问题',
+          fail: '评审发现问题，清单已写入交付物',
+        },
         prompt: `你是评审阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -154,6 +183,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<评审结论>","artifacts":["pipe
         id: 'fix',
         title: '修复',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '清单上的问题全部修复并自验通过',
+          fail: '仍有问题未修复或自验未通过',
+        },
         prompt: `你是修复阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -192,6 +225,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<修了什么>","artifacts":[]}`,
         id: 'translate',
         title: '翻译',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '源文档已完整翻译并写入译文文件',
+          fail: '翻译未完成，或存在漏段/术语错误',
+        },
         prompt: `你是翻译阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -209,6 +246,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<翻译了什么>","artifacts":["<
         id: 'proofread',
         title: '校对',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '未发现漏段、术语或保真问题',
+          fail: '发现问题并已写入校对记录',
+        },
         prompt: `你是校对阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
@@ -224,6 +265,10 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<校对结论>","artifacts":["pipe
         id: 'finalize',
         title: '终审',
         verdicts: ['pass', 'fail'],
+        verdictDefs: {
+          pass: '终稿已按校对意见修订并覆盖写回译文文件',
+          fail: '终稿未能完成修订',
+        },
         prompt: `你是终审阶段的执行者。全局目标：{{objective}}
 
 工作区：{{workspace}}（第 {{visit}} 次进入本阶段）

@@ -27,8 +27,10 @@ const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
   'recall', 'memory_save', 'tool_result_search',
   'pick_skill', 'pick_tool', 'experience_read', 'experience_save',
+  'exec_logs', 'exec_list', 'exec_kill',
   'spawn_agent', 'create_plan', 'advance_plan', 'todo_write', 'office_edit', 'office_read', 'office_search',
-  'export_document',
+  'office_export',
+  'export_document', // retired name (→ office_export, 2026-11-08) — stays for hydrated transcripts' old cards
   // Retired office tool names (merged into office_edit, 2026-10-04) — they
   // stay so hydrated transcripts' old cards keep their human labels.
   'docx_edit', 'xlsx_edit', 'pptx_edit',
@@ -81,6 +83,7 @@ export function toolObjectSummary(block: ToolUseBlock): string {
       return (input.file_path as string) || ''
     case 'write':
       return `${input.file_path || ''} (${((input.content as string) || '').length > 0 ? `${((input.content as string).length / 1024).toFixed(1)} KB` : '0 KB'})`
+    case 'office_export':
     case 'export_document': {
       const target = (input.file_path as string) || ''
       const fmt = `${input.format || ''}`

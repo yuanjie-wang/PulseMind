@@ -96,7 +96,7 @@ describe('TurnDeliverablesCard', () => {
         { path: '/ws/child-only.md', ops: [{ tool: 'write', at: AT, ok: true }], lastAt: AT, fromConvIds: ['sub_9'] },
         // export-only: the row exists (the file WAS delivered) but carries no
         // count badge — 导出不计数 (user ruling 2026-09-26)
-        { path: '/ws/报告.pdf', ops: [{ tool: 'export_document', at: AT, ok: true }], lastAt: AT, fromConvIds: [] }
+        { path: '/ws/报告.pdf', ops: [{ tool: 'office_export', at: AT, ok: true }], lastAt: AT, fromConvIds: [] }
       ],
       sources: [...base.sources, { convId: 'sub_9', title: '调研专家' }]
     }

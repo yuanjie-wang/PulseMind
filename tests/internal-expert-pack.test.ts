@@ -152,7 +152,7 @@ describe('the main-side pinning path exists (D16 — source scans)', () => {
   const engine = src('src', 'renderer', 'src', 'agent', 'AgentEngine.ts')
   const hostedHook = src('src', 'renderer', 'src', 'hooks', 'useHostedAgentSession.ts')
   const assistHook = src('src', 'renderer', 'src', 'components', 'form-assist', 'useFormAssistSession.ts')
-  const routinePage = src('src', 'renderer', 'src', 'components', 'routine', 'RoutineEditorPage.tsx')
+  const routinePage = src('src', 'renderer', 'src', 'components', 'routine', 'TaskWizardPage.tsx')
   const expertEditor = src('src', 'renderer', 'src', 'components', 'settings', 'expert', 'ExpertEditor.tsx')
   const studioSession = src('src', 'renderer', 'src', 'tool-studio', 'useStudioSession.ts')
 

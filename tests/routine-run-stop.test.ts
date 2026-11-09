@@ -94,10 +94,11 @@ describe('the renderer routes each shape to its own transport', () => {
     expect(stopRun).toContain('export function stopRunConfirm')
   })
 
-  it('both stop surfaces call it (workspace rows/header, landing sidebar)', () => {
+  it('both stop surfaces call it (workspace rows/header, unified sidebar)', () => {
     for (const file of [
       'src/renderer/src/components/routine/RoutineWorkspace.tsx',
-      'src/renderer/src/components/routine/RoutineCenter.tsx',
+      // P3 任务中心：落地页停止面收进 UnifiedRunsSidebar（两类 run 共用）。
+      'src/renderer/src/components/routine/UnifiedRunsSidebar.tsx',
     ]) {
       const src = source(file)
       expect(src).toContain("from './stop-run'")
@@ -109,8 +110,8 @@ describe('the renderer routes each shape to its own transport', () => {
   it('a stop button is only offered while the run is actually running', () => {
     const workspace = source('src/renderer/src/components/routine/RoutineWorkspace.tsx')
     expect(workspace.match(/run\.status === 'running' &&/g)?.length).toBeGreaterThanOrEqual(1)
-    const center = source('src/renderer/src/components/routine/RoutineCenter.tsx')
-    expect(center).toContain('isRunning &&')
+    const sidebar = source('src/renderer/src/components/routine/UnifiedRunsSidebar.tsx')
+    expect(sidebar).toContain('row.running &&')
   })
 })
 

@@ -96,7 +96,10 @@ const relativeStamps = () => {
   const midnight = new Date()
   midnight.setHours(0, 0, 0, 0)
   return {
-    today: new Date(Date.now() - 60_000).toISOString(),
+    // `now - 1min` crosses midnight when the suite runs in the first minute of
+    // the day (实锤：00:00:04 那一跑 today 桶空、整条断言崩) — clamp to just
+    // after local midnight so the 今天 bucket always has a member.
+    today: new Date(Math.max(midnight.getTime() + 1000, Date.now() - 60_000)).toISOString(),
     yesterday: new Date(midnight.getTime() - 3_600_000).toISOString(),
     earlier: new Date(midnight.getTime() - 3 * 86_400_000).toISOString(),
   }

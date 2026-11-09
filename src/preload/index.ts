@@ -59,11 +59,12 @@ const electronAPI = {
   setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROFILE, id, profileId, source),
   // ── PLAN-workflow-engine：工作流 + 流水线 ──
-  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete', arg?: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_WORKFLOWS, op, arg),
-  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUN, params),
+  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete' | 'toggle', arg?: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_WORKFLOWS, op, arg),
+  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string; vars?: Record<string, string>; approvalMode?: string; profileId?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUN, params),
   pipelineStop: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_STOP, runId),
   pipelineRuns: (runId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUNS, runId, limit),
-  pipelineAssist: (params: { userNeed: string; currentJson: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_ASSIST, params),
+  pipelineBatchRun: (params: { workflowId: string; csvPath?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_BATCH_RUN, params),
+  pipelineBatchStop: (batchId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_BATCH_STOP, batchId),
   // ── PLAN-share-import-export：分享 ──
   shareExport: (items: Array<{ kind: 'routine' | 'workflow'; id: string }>) => ipcRenderer.invoke(IPC_CHANNELS.SHARE_EXPORT, items),
   shareImportPreview: () => ipcRenderer.invoke(IPC_CHANNELS.SHARE_IMPORT_PREVIEW),
@@ -563,8 +564,8 @@ const electronAPI = {
   // ── Agent sessions (engines hosted in main) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
-  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase),
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase, forcedSkills),
   agentSessionCancel: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
   agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),

@@ -20,7 +20,7 @@ import { resolvePreviewPath } from '../../../../shared/preview/file-kind'
 /** Tools whose success writes/edits a file at an input path we can name.
  *  Deliberately NOT `exec` — shell redirections and scripts leave no
  *  recoverable target path, and a summary that guesses lies. When
- *  PLAN-office-export's export_document lands, it joins here (one line).
+ *  PLAN-office-export's office_export lands, it joins here (one line).
  *  docx_edit/xlsx_edit/pptx_edit are the RETIRED office tool names — they
  *  stay because persisted transcripts carry them forever and hydration must
  *  keep counting; office_edit is their merged successor (2026-10-04). */
@@ -31,7 +31,8 @@ export const FILE_WRITER_TOOLS: ReadonlySet<string> = new Set([
   'xlsx_edit',
   'pptx_edit',
   'office_edit',
-  'export_document',
+  'office_export',
+  'export_document', // retired name — hydrated transcripts
 ])
 
 /** One completed operation on a file. `ok` is true by construction — failed
@@ -66,7 +67,7 @@ export interface Deliverable {
 
 /** The count badge's verb buckets (user ruling 2026-09-26: the card counts
  *  新增/编辑, never 导出次数). Every FILE_WRITER_TOOLS member names its verb
- *  here EXCEPT export_document, whose ops still ride the row (they establish
+ *  here EXCEPT office_export (and its retired name), whose ops still ride the row (they establish
  *  an export-only file's existence and its lastAt) but are deliberately
  *  uncounted — a new writer tool joining FILE_WRITER_TOOLS must pick a bucket
  *  or its ops silently vanish from the badge (pinned by verbCounts tests). */
@@ -153,7 +154,7 @@ export function collectDeliverables(
       // export_document: the result names where the bytes actually are —
       // the default name when file_path was omitted, and the suffixed name
       // after a D6 collision (M18).
-      if (use.name === 'export_document') {
+      if (use.name === 'office_export' || use.name === 'export_document') {
         path = extractExportedPath(paired.result) ?? path
       }
       if (!path) continue

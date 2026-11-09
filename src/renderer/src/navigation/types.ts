@@ -24,6 +24,15 @@ export interface AppView {
   /** `routines` detail: open the run-history workspace for this routine
    *  (deep links, e.g. the welcome page's routine card). */
   runHistoryOf?: string
+  /** `routines` landing: 已废弃（P3 任务中心混排，tabs 撤除）。保留键位仅供
+   *  旧 deep-link 容错——页面不再读取。 */
+  routineCenterTab?: 'routines' | 'workflows'
+  /** `routines` wizard: true = open the workflow branch of the task wizard
+   *  (P3 任务中心：编辑器统一为分步向导，workflow 分支)。 */
+  workflowEditing?: boolean
+  /** `routines` wizard: which workflow is loaded. Absent (with
+   *  `workflowEditing`) = the create-new flow. */
+  workflowId?: string
   /** `routines` editor page: true = open the three-column create/edit page
    *  (list · form · assistant) instead of the card grid. */
   routineEditing?: boolean

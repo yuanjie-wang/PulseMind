@@ -493,6 +493,11 @@ export interface TodoReconcileResult {
    *  create/update voice from this — the text differs and so does the
    *  model's next move. */
   minted: boolean
+  /** true = the mint above was a PHASE RESET (2026-11-08): a fully settled
+   *  list continued by an id-less list. The snapshot teaches why the
+   *  numbering restarted — without it the model's next call still speaks the
+   *  old numbering and the guessed-id error loop comes back. */
+  phaseReset?: boolean
   /** Entries TOUCHED this pass (status move, append, retire, in-place
    *  reword, note, current-marker) — the delta snapshot renders ONLY these;
    *  the model's own tool input already carries the full list it sent, so
@@ -536,7 +541,22 @@ export function reconcileTodo(
   // POSITION and ignores the ids it was handed, so a model carrying stale
   // numbering got a silent renumber instead of an error. `fresh` is the explicit
   // way to discard the old list; a delegated plan still mints (mode differs).
-  const live = !fix?.fresh && plan && (plan.mode ?? 'delegated') === 'direct' ? plan : null
+  // PHASE RESET (2026-11-08, real-transcript diagnosis): a settled list
+  // continued by a list that carries NO id at all is a new phase, not a
+  // continuation — the model re-sends a fresh checklist per stage and never
+  // passes `fresh` (1 use in 169 recorded calls), so without this arm every
+  // stage appends onto the old rows and the numbering climbs unboundedly
+  // (observed n1→n28 across six different objectives in one conversation).
+  // Id-bearing calls still take the continue/revive path below, so the
+  // lost-id silent-renumber trap the 2026-11-06 ruling closed cannot come
+  // back: positional mint numbering only ever happens when no id was handed.
+  let live = !fix?.fresh && plan && (plan.mode ?? 'delegated') === 'direct' ? plan : null
+  const phaseReset = !!live
+    && items.length > 0
+    && live.nodes.length > 0
+    && live.nodes.every(n => isTerminal(n.status))
+    && items.every(it => it.id === undefined)
+  if (phaseReset) live = null
 
   if (!live) {
     if (items.length === 0) throw new Error('items are required — a todo list starts with at least one entry')
@@ -563,6 +583,7 @@ export function reconcileTodo(
       plan: minted,
       stats: { added: items.length, retired: 0, completed: countTodoCompleted(items), keptWording: 0 },
       minted: true,
+      ...(phaseReset ? { phaseReset: true } : {}),
       changed: next.nodes.map(n => n.id),
     }
   }
@@ -591,7 +612,22 @@ export function reconcileTodo(
       throw new Error(`item ${i + 1}: id "${item.id}" is not an entry number — use an id exactly as the last list showed it (highest is n${highest}), brackets omitted`)
     }
     const hit = working.find(w => w.id === nid)
-    if (!hit) throw new Error(`item ${i + 1}: id "${nid}" does not exist — the list carries ids up to n${highest}; nothing answers to "${nid}"`)
+    if (!hit) {
+      // The next number after the highest existing one is the APPEND guess
+      // (2026-11-08): a model adding a step names "the next id" from its own
+      // numbering habit — erroring sent every such call through a guaranteed
+      // error→retry round trip (observed repeatedly in real transcripts).
+      // Accept it as a new entry, exactly as if the id had been omitted.
+      // Anything BEYOND the next number is still an error: that is stale
+      // numbering, and the lesson below is what corrects it.
+      const nextNum = working.reduce((max, w) => Math.max(max, Number(w.id.slice(1))), 0) + 1
+      if (Number(nid.slice(1)) === nextNum) {
+        working.push({ id: nid, status: 'pending', taken: true })
+        paired[i] = { item, nodeId: nid, isNew: true, viaId: false }
+        continue
+      }
+      throw new Error(`item ${i + 1}: id "${nid}" does not exist — the list carries ids up to n${working.reduce((max, w) => Math.max(max, Number(w.id.slice(1))), 0)}; nothing answers to "${nid}"`)
+    }
     if (paired.some(p => p.nodeId === nid)) throw new Error(`item ${i + 1}: id "${nid}" is claimed twice — one list entry per id`)
     hit.taken = true
     paired[i] = { item, nodeId: nid, isNew: false, viaId: true }
@@ -877,6 +913,9 @@ export interface PlanSnapshotInfo {
    *  full list it sent (the state block re-injects the full list next turn).
    *  Absent → render everything (defensive / non-executor callers). */
   changed?: string[]
+  /** ReconcileResult.phaseReset passed through (todo create arm) — adds the
+   *  why-did-numbering-restart lesson to the create snapshot. */
+  phaseReset?: boolean
   /** reconcile stats for the update header, the reword caution and the
    *  blocked-drop-off callouts. */
   stats?: TodoReconcileStats
@@ -896,6 +935,9 @@ export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): s
     parts.push((active.mode ?? 'delegated') === 'delegated'
       ? `Plan created with ${active.nodes.length} node(s), numbered n1..n${active.nodes.length} — the numbering is fixed. Mode: delegated. All nodes start pending. The scheduler dispatches READY nodes and settles each one on delivery — you are consulted only when a node fails.`
       : `Todo list created with ${active.nodes.length} entr${active.nodes.length === 1 ? 'y' : 'ies'} — work through them yourself and call todo_write with the updated list as you go (the entry you are on in_progress, settled ones completed).`)
+    if (info.phaseReset) {
+      parts.push('The PREVIOUS list was fully settled and this call carried no ids, so it was treated as a NEW PHASE: a fresh list was started and the numbering restarts at n1 (the old rows are retired — do not reference their numbers). To continue an old entry instead, re-send it with its id.')
+    }
   }
   else if (info.action === 'update') {
     const s = info.stats

@@ -28,6 +28,8 @@ export const HOST_METHOD_KEYS = [
   // main-host-only in practice, see main-host.ts
   'executeBackground',
   'execLogs',
+  'execList',
+  'execAlive',
   'execKill',
   'promoteToBackground',
   'getExecAllowlist',

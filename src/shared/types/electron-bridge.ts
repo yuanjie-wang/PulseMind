@@ -302,8 +302,15 @@ export interface ElectronAPI {
   // allowlist (P0-2 #5). The agent graph reaches these only through the
   // main-process host; the bridge implementations satisfy the PulseHost shape.
   // A cwd-less background command inherits the engine shell's current cwd.
-  executeBackground: (command: string, cwd?: string, shellKey?: string) => Promise<{ pid: number }>
+  executeBackground: (command: string, cwd?: string, shellKey?: string, name?: string) => Promise<{ pid: number }>
   execLogs: (pid: number, tailBytes?: number) => Promise<string | null>
+  /** Enumerate this conversation's background tasks (exec_list,
+   *  PLAN-background-tasks E #3) — the ownership table's answer to
+   *  「刚才跑了几个、pid 是多少」 after compaction or restart. */
+  execList: () => Promise<{ pid: number; name: string; command: string; startedAt: number; alive: boolean; exitCode: number | null | undefined }[]>
+  /** Liveness of one background pid (the state block's running-tasks section
+   *  reads it per turn). */
+  execAlive: (pid: number) => Promise<boolean>
   execKill: (pid: number) => Promise<boolean>
   /** Foreground → background promotion (PLAN-background-tasks A): move a
    *  running foreground command (per-command spawn or persistent-shell
@@ -377,11 +384,12 @@ export interface ElectronAPI {
    *  Same `source` contract as setConversationApprovalMode. */
   setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') => Promise<void>
   // ── PLAN-workflow-engine：工作流 + 流水线 ──
-  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete', arg?: unknown) => Promise<WorkflowDefinition[] | WorkflowDefinition | boolean>
-  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string }) => Promise<{ runIds: string[] }>
+  pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete' | 'toggle', arg?: unknown) => Promise<WorkflowDefinition[] | WorkflowDefinition | boolean>
+  pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string; vars?: Record<string, string>; approvalMode?: string; profileId?: string }) => Promise<{ runIds: string[] }>
   pipelineStop: (runId: string) => Promise<boolean>
   pipelineRuns: (runId?: string, limit?: number) => Promise<{ runs?: PipelineRun[]; stages?: PipelineStageRun[]; run?: PipelineRun }>
-  pipelineAssist: (params: { userNeed: string; currentJson: string }) => Promise<{ ok: boolean; workflow?: WorkflowDefinition; errors?: string[]; warnings?: string[] }>
+  pipelineBatchRun: (params: { workflowId: string; csvPath?: string }) => Promise<{ batchId: string; csvName: string; totalRows: number; enqueued: number; failedRows: number }>
+  pipelineBatchStop: (batchId: string) => Promise<number>
   // ── PLAN-share-import-export：分享（消毒 payload 只在主进程，提交只回 token）──
   shareExport: (items: Array<{ kind: 'routine' | 'workflow'; id: string }>) => Promise<{ canceled: boolean; path?: string; count: number }>
   shareImportPreview: () => Promise<{ canceled: boolean; error?: string; importToken?: string; items?: Array<{ index: number; kind: 'routine' | 'workflow'; name: string; summary: string; warnings: string[]; blocked: boolean; nameConflict: boolean; conflictId?: string }> }>
@@ -651,8 +659,10 @@ export interface ElectronAPI {
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
   /** `summon` is the turn's @-mention roster: one name delegates (the expert's
    *  conclusion is delivered verbatim), several enter plan mode. Absent or empty
-   *  is a normal turn. */
-  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) => Promise<void>
+   *  is a normal turn. `forcedSkills` is the turn's $-pinned skill names
+   *  ($-mention in the composer) — the state block's Forced Skills section
+   *  orders the model to pick_skill them first. Absent/empty = unpinned. */
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>

@@ -216,7 +216,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
       // Both create paths land in the new-task state and hand focus to the
       // welcome composer; antd's default would yank it back to the trigger
       // after the close animation.
-      focusTriggerAfterClose={false}
+      focusable={{ focusTriggerAfterClose: false }}
     >
       {/* 创建时工作区排最前：填目录即可从路径尾段自动带出项目名，流程从这里开始。 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 4 }}>

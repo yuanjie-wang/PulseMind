@@ -365,7 +365,8 @@ export const IPC_CHANNELS = {
   PIPELINE_RUN: 'pipeline:run',
   PIPELINE_STOP: 'pipeline:stop',
   PIPELINE_RUNS: 'pipeline:runs',
-  PIPELINE_ASSIST: 'pipeline:assist',
+  PIPELINE_BATCH_RUN: 'pipeline:batch-run',
+  PIPELINE_BATCH_STOP: 'pipeline:batch-stop',
 
   // ── PLAN-share-import-export：日常任务/工作流的导入导出 ──
   SHARE_EXPORT: 'share:export',

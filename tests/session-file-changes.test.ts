@@ -268,9 +268,9 @@ describe('ToolExecutor records into the session ledger', () => {
   it('office_edit records modified; export_document created-or-modified by prior existence', async () => {
     touch(`${WS}/doc.docx`)
     await run('office_edit', { file_path: 'doc.docx', ops: [{ op: 'replace_text', find: 'a', replace: 'b' }] })
-    await run('export_document', { format: 'docx', content: '# hi', file_path: 'out.docx' })
+    await run('office_export', { format: 'docx', content: '# hi', file_path: 'out.docx' })
     touch(`${WS}/again.docx`)
-    await run('export_document', { format: 'docx', content: '# hi', file_path: 'again.docx' })
+    await run('office_export', { format: 'docx', content: '# hi', file_path: 'again.docx' })
     expect(kinds()).toEqual({ [`${WS}/doc.docx`]: 'modified', [`${WS}/out.docx`]: 'created', [`${WS}/again.docx`]: 'modified' })
   })
 

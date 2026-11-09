@@ -88,8 +88,6 @@ export interface MessageNavControlsProps {
   visible: boolean
   /** 有序用户消息锚点（listUserPrompts 的产物）。 */
   prompts: UserPromptAnchor[]
-  /** 回到底部按钮是否需要为计划条让位（计划条与回到底部都水平居中）。 */
-  stripAbove: boolean
   onJumpToBottom: () => void
   /** 步进命中一条用户消息时上抛；到头（置灰方向）不会调用。 */
   onJumpPrompt: (msgId: string) => void
@@ -98,7 +96,6 @@ export interface MessageNavControlsProps {
 export const MessageNavControls = React.memo(function MessageNavControls({
   visible,
   prompts,
-  stripAbove,
   onJumpToBottom,
   onJumpPrompt,
 }: MessageNavControlsProps): React.ReactElement | null {
@@ -167,7 +164,7 @@ export const MessageNavControls = React.memo(function MessageNavControls({
             position: 'absolute',
             left: '50%',
             transform: 'translateX(-50%)',
-            bottom: stripAbove ? 30 : 0,
+            bottom: 0,
             width: 36,
             height: 36,
             borderRadius: '50%',

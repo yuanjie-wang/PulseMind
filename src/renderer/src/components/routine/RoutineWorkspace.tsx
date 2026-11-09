@@ -497,18 +497,21 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
     return () => { alive = false }
   }, [convId])
 
+  const effectiveProfileId = convProfileId ?? settings.activeProfileId
+  const contextLength = settings.profiles.find((p) => p.id === effectiveProfileId)?.contextLength
+    ?? settings.profiles[0]?.contextLength ?? 128_000
   // The composer's context ring (chat parity): usage projected past the last
   // compaction pass, against the effective model's window — the conversation's
   // own profile choice (the runner seeds it at session creation), falling back
   // to the global default / any profile / 128K, the same chain App.tsx uses
-  // for the main chat.
+  // for the main chat. The window is declared first because the projection now
+  // needs it: the merged fit gate only archives above 60% of the window
+  // (PLAN-nano-light-trigger-merge W1), and a gate-blind ring would price
+  // archived results whole.
   const contextUsed = useMemo(
-    () => projectContextUsed(session.messages, session.lastCompaction),
-    [session.messages, session.lastCompaction],
+    () => projectContextUsed(session.messages, session.lastCompaction, contextLength),
+    [session.messages, session.lastCompaction, contextLength],
   )
-  const effectiveProfileId = convProfileId ?? settings.activeProfileId
-  const contextLength = settings.profiles.find((p) => p.id === effectiveProfileId)?.contextLength
-    ?? settings.profiles[0]?.contextLength ?? 128_000
 
   const emptyHint = session.restoring
     ? ''
@@ -785,7 +788,7 @@ function BatchRunView({ run, routine, onResumed }: { run: RoutineRun; routine: R
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0 }}>{durationText(item)}</span>
                   {item.status === 'failed' && (
-                    <Tooltip title="用该行参数重新运行（单次运行）">
+                    <Tooltip title="用该行变量重新运行（单次运行）">
                       <Button
                         className="pane-row-action"
                         type="text"

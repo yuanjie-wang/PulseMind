@@ -591,6 +591,7 @@ function AppLayout({
     </div>
   ) : null
 
+
   // Sits at the left of the header's action cluster, where it keeps its place whether the
   // sidebar is open or shut. It must never be a *sibling* of a drag region: there the
   // no-drag opt-out is ignored and the click is swallowed as a window drag.
@@ -1183,8 +1184,9 @@ function AppLayout({
           background: var(--pm-ink) !important;
         }
 
-        /* Centers switcher: plain text buttons, the active one black with white
-           text. Scoped here so the sidebar's gray .active-mode-btn stays as is. */
+        /* Centers switcher + routines landing's peer tabs (same look, one class):
+           plain text buttons, the active one black with white text. Scoped here
+           so the sidebar's gray .active-mode-btn stays as is. */
         .centers-switch-btn {
           background: transparent !important;
           border: none !important;

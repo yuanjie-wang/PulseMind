@@ -441,19 +441,16 @@ export const MessageGroup = React.memo(function MessageGroup({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          margin: '10px 0',
-          padding: '5px 12px',
-          borderRadius: 999,
-          background: 'var(--pm-well)',
-          border: '1px solid var(--pm-border-soft)',
-          color: 'var(--pm-text-muted)',
+          justifyContent: 'center',
+          gap: 6,
+          margin: '12px 0',
+          padding: '0 24px',
+          color: 'var(--pm-text-faint)',
           fontSize: 12,
           lineHeight: 1.5,
-          maxWidth: 'fit-content',
         }}
       >
-        <BellOutlined style={{ fontSize: 12, color: 'var(--pm-link)', flexShrink: 0 }} />
+        <BellOutlined style={{ fontSize: 12, color: 'var(--pm-text-faint)', flexShrink: 0 }} />
         <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
           {backgroundNoticeBody(((firstUserText as { text?: string }).text) || '')}
         </span>

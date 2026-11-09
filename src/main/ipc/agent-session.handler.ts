@@ -28,8 +28,8 @@ export function registerAgentSessionHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, (_event, sessionId: string, opts: AgentSessionCreateOptions = {}) =>
     agentSessionManager.createSession(sessionId, opts))
 
-  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) => {
-    await agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase)
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null) => {
+    await agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase, forcedSkills)
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CANCEL, (_event, sessionId: string) => {

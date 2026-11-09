@@ -1,18 +1,18 @@
 /**
- * 用户裁定 2026-11-06 — 「我们的工作计划为什么只增不减」。
+ * 用户裁定 2026-11-06 — 「我们的工作计划为什么只增不减」；2026-11-08 翻转其
+ * 渲染侧（B）——「todo list 里的任务不要自动折叠」。
  *
- * 两个独立根因，两处独立修复：
- *   B  面板——清单全绿后仍逐行画出 28 条历史。prompt 侧其实早已只注入一行摘要，
- *      所以问题全在渲染层：面板的职责是「现在进展到哪」，没有任何 open 条目时
- *      那 28 行是纯噪声。折叠后明细留在一击之外，且清单若离开 completed（续写
- *      一条）会自己弹开。
+ *   B  面板——2026-11-06 曾把全绿清单自动折叠成一行（completed && !expanded +
+ *      跃迁复位 effect）。2026-11-08 裁定拆除自动臂：清单默认恒展开，进入
+ *      completed 不收起；「已完成 · 收起」按钮保留为纯手动出口，且手动折叠态
+ *      在清单离开 completed 时弹开，收起永不跨轮继承。结构性根因（清单跨阶段
+ *      只增不减）由 reconcileTodo 的阶段重置臂解决（见 todo-plan.test.ts）。
  *   C  instructions——`fresh` 的判据原来写作「UNRELATED to the closed list」，
  *      于是「同一个大目标下的下一个阶段」都被判成「相关」，清单跨七个工作累积。
  *      判据改为 PHASE：阶段交付完就开新清单。
  *
  * 测试环境是 `node`（无 jsdom），所以折叠只能做源码级 wiring 断言；真正被钉住的
- * 是那条容易回退的状态机——折叠条件是 completed && !expanded，且 expanded 在
- * false→true 跃迁时必须复位。
+ * 是那条容易回退的状态机——默认展开、自动复位 effect 只弹开不收起。
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -24,30 +24,29 @@ const read = (p: string): string => readFileSync(join(ROOT, p), 'utf8')
 const VIEW = 'src/renderer/src/components/workbench/PlanGraphView.tsx'
 const INSTR = 'src/renderer/src/tools/tool-instructions.ts'
 
-describe('todo panel — 全绿折叠（B）', () => {
+describe('todo panel — 恒展开，收起只留手动出口（B，2026-11-08 翻转）', () => {
   const src = read(VIEW)
   const todoView = src.slice(src.indexOf('function TodoListView'))
 
-  it('折叠只发生在 completed 且用户尚未展开时', () => {
-    expect(todoView).toContain('plan.completed && !doneExpanded')
-    expect(todoView).toContain('data-todo-collapsed')
-    expect(todoView).toContain('data-todo-collapse-toggle')
+  it('默认展开——自动折叠臂已拆（useState(true)，无「进入 completed 即收起」的跃迁）', () => {
+    expect(todoView).toContain('useState(true)')
+    // 2026-11-06 的自动臂原文：completed 的 false→true 跃迁把清单收起来。
+    expect(todoView).not.toMatch(/if \(plan\.completed && !wasCompleted\.current\) setDoneExpanded\(false\)/)
   })
 
-  it('折叠态在 false→true 跃迁时复位，续写一条新条目会自己弹开', () => {
-    // 只在「刚变成 completed」那一刻复位。若每轮都复位，用户手动展开后会立刻
-    // 被收起；若从不复位，一份新交付的清单会继承上一次的展开态。
+  it('复位 effect 只弹开不收起——离开 completed 时清掉残留的手动折叠态', () => {
     expect(todoView).toContain('const wasCompleted = useRef(plan.completed)')
-    expect(todoView).toMatch(/if \(plan\.completed && !wasCompleted\.current\) setDoneExpanded\(false\)/)
+    expect(todoView).toMatch(/if \(!plan\.completed && wasCompleted\.current\) setDoneExpanded\(true\)/)
     expect(todoView).toContain('wasCompleted.current = plan.completed')
   })
 
-  it('折叠行报的是真实条数与 objective，不是写死的文案', () => {
+  it('手动收起按钮仍在，折叠行报真实条数与 objective，不是写死的文案', () => {
+    expect(todoView).toContain('data-todo-collapse-toggle')
     expect(todoView).toContain('`${plan.nodes.length} 条已完成`')
     expect(todoView).toContain('{plan.objective}')
   })
 
-  it('图表视图（delegated DAG）不受影响，只有 todo 清单折叠', () => {
+  it('图表视图（delegated DAG）不受影响，只有 todo 清单有折叠出口', () => {
     const graphView = src.slice(0, src.indexOf('function TodoListView'))
     expect(graphView).not.toContain('data-todo-collapsed')
     expect(graphView).not.toContain('doneExpanded')

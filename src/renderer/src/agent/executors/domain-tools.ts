@@ -10,6 +10,7 @@ import { MAX_LIVE_OUTPUT_CHARS } from '../engine/engine-constants'
 import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
 import { MEMORY_PAGE_INLINE_MAX } from '../../../../shared/memory-pages'
 import { interleaveRecallHits, RECALL_DEFAULT_LIMIT, type RecallHit } from '../../../../shared/recall'
+import { backgroundStartNote } from '../../../../shared/background-notice'
 import { registerForegroundExec, unregisterForegroundExec } from './foreground-exec'
 
 /** memory_search: tool block .output preview. */
@@ -343,6 +344,31 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
     // Background-process channels (PLAN-coding-contract P0-3 #14/#15). Both
     // key off the session's pid registry main-side; an unknown pid answers
     // "not found" rather than opening the log reader / killer to the world.
+    // exec_list (PLAN-background-tasks E #3): pids live in the persisted
+    // ownership table, not the model's context — after a compaction or a
+    // restart this is the only 「刚才跑了几个」 channel.
+    if (t.name === 'exec_list') {
+      const rows = await getHost().execList()
+      if (rows.length === 0) {
+        t.exitCode = 0
+        t.status = 'completed'
+        t.output = 'No background tasks for this conversation (none were ever started, or none have a surviving log).'
+        ex.addToolResult(t.id, t.output, false)
+        ex.notify()
+        return true
+      }
+      const lines = rows.map((r) => {
+        const status = r.alive ? 'running' : r.exitCode === undefined ? 'ended (exit unknown)' : r.exitCode === null ? 'killed by a signal' : `ended, exit code ${r.exitCode}`
+        const when = new Date(r.startedAt).toLocaleString()
+        return `- pid=${r.pid}「${r.name}」${status}, started ${when}\n  command: ${r.command.split('\n', 1)[0].slice(0, 120)}`
+      })
+      t.exitCode = 0
+      t.status = 'completed'
+      t.output = ['Background tasks for this conversation (most recent first):', ...lines].join('\n')
+      ex.addToolResult(t.id, t.output, false)
+      ex.notify()
+      return true
+    }
     if (t.name === 'exec_logs') {
       const pid = Number(t.input?.pid)
       const tail = Number.isFinite(pid) && pid > 0 ? await getHost().execLogs(pid, typeof t.input?.tail === 'number' ? t.input.tail : undefined) : null
@@ -379,11 +405,14 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
     // so the engine's foreground-process scalar never sees this process.
     if (t.input?.background === true) {
       try {
-        const { pid } = await getHost().executeBackground(command, cwd || undefined, ex.opts.conversationId)
+        const { pid } = await getHost().executeBackground(command, cwd || undefined, ex.opts.conversationId, typeof t.input?.name === 'string' ? t.input.name : undefined)
+        // 任务名入台账（PLAN-background-tasks D）：模型给的短名优先（exec 手册
+        // 要求 background:true 必带），缺省回落命令本身。
+        ex.registerBackgroundCommand?.(pid, String(t.input?.name || command))
         t.exitCode = 0
         t.status = 'completed'
         t.backgroundPid = pid
-        const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${pid}).`
+        const note = backgroundStartNote(pid, 'started')
         t.output = note
         ex.addToolResult(t.id, note, false)
       } catch (err) {
@@ -461,10 +490,13 @@ export async function execSkillCommand(ex: ToolExecContext, t: ToolUseBlock): Pr
     if (outcome === 'promoted') {
       const promoted = claimedPid ? await getHost().promoteToBackground(claimedPid).catch(() => null) : null
       if (promoted && promoted.pid > 0) {
+        // 任务名入台账（PLAN-background-tasks D）：同 background:true 分支，
+        // 模型给的短名优先。
+        ex.registerBackgroundCommand?.(promoted.pid, String(t.input?.name || command))
         t.exitCode = 0
         t.status = 'completed'
         t.backgroundPid = promoted.pid
-        const note = `Moved to background by the user: pid=${promoted.pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${promoted.pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${promoted.pid}).`
+        const note = backgroundStartNote(promoted.pid, 'promoted')
         t.output = note
         ex.addToolResult(t.id, note, false)
       } else {

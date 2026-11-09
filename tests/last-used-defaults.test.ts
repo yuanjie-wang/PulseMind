@@ -237,7 +237,7 @@ describe('last-used wiring', () => {
     const ctrl = read('../src/renderer/src/hooks/useChatController.ts')
     const approvalSeed = ctrl.indexOf('const approvalSeed = takePendingApprovalMode() ?? options.lastUsedApprovalMode')
     const profileSeed = ctrl.indexOf('const profileSeed = takePendingProfileId() ?? options.lastUsedProfileId')
-    const loop = ctrl.indexOf('startLoop(content, knowledgeBase)')
+    const loop = ctrl.indexOf('startLoop(content, knowledgeBase, forcedSkills)')
     expect(approvalSeed).toBeGreaterThan(-1)
     expect(profileSeed).toBeGreaterThan(approvalSeed)
     expect(loop).toBeGreaterThan(-1)

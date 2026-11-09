@@ -88,19 +88,32 @@ export function decodeCsvBytes(buf: Buffer): string {
   throw new Error('无法识别批量数据文件的编码，请将 CSV 另存为 UTF-8 编码后重试')
 }
 
-export async function loadBatchSource(routine: Routine): Promise<BatchSource> {
-  const csvPath = routine.batch?.csvPath?.trim()
-  if (!csvPath) throw new Error('未配置批量数据文件')
-  const { path, table } = await openTable(csvPath)
-  const analysis = analyzeCsvBatch(table.headers, table.rows, routine.params)
+/** 声明键的最小形状（RoutineParam / WorkflowInputDef 的公共子集）——
+ *  analyzeCsvBatch / rowParamsAt 只读 key + required。 */
+export interface DeclaredKey {
+  key: string
+  required?: boolean
+}
+
+/** 通用表读取 + 分析（P2 任务共享内核：routine 与 workflow 的批量共用一个
+ *  读面——50MB 上限、.xls 拒、xlsx 懒加载、GBK 降级、200 行帽全部继承）。 */
+export async function loadTableSource(filePath: string, declared: ReadonlyArray<DeclaredKey> | undefined): Promise<BatchSource> {
+  const { path, table } = await openTable(filePath)
+  const analysis = analyzeCsvBatch(table.headers, table.rows, declared)
   if (analysis.missingRequiredHeaders.length > 0) {
-    throw new Error(`批量数据缺少必填参数的列：${analysis.missingRequiredHeaders.join('、')}`)
+    throw new Error(`批量数据缺少必填变量的列：${analysis.missingRequiredHeaders.join('、')}`)
   }
   if (table.rows.length === 0) throw new Error('批量数据文件没有数据行')
   if (table.rows.length > MAX_BATCH_ROWS) {
     throw new Error(`批量数据共 ${table.rows.length} 行，超过单批 ${MAX_BATCH_ROWS} 行的上限，请拆分文件后重试`)
   }
   return { headers: table.headers, rows: table.rows, analysis, csvName: basename(path) }
+}
+
+export async function loadBatchSource(routine: Routine): Promise<BatchSource> {
+  const csvPath = routine.batch?.csvPath?.trim()
+  if (!csvPath) throw new Error('未配置批量数据文件')
+  return loadTableSource(csvPath, routine.params)
 }
 
 // ── xlsx cell flattening ──

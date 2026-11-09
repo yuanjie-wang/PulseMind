@@ -24,10 +24,13 @@ import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENC
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import { useTranslation } from '../../i18n/useTranslation'
 import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
+import { InsertVariableSelect, insertTokenAtCaret } from './insert-variable'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantPatch } from './routine-assist'
 import type { RoutineTrigger, RoutineWebhookTrigger } from '../../../../shared/types/routine'
+import { taskWebhookUrl } from '../../../../shared/task/triggers'
+import type { TaskKind } from '../../../../shared/task/triggers'
 import { ROUTINE_WEBHOOK_UI } from '../../feature-flags'
 
 /** Schedule kinds in Segmented order; short labels — the block control splits
@@ -73,7 +76,7 @@ const BUILTIN_VAR_OPTIONS = [
 
 /** Approval ladder — same three levels and order as the composer's 授权
  *  button (chatView.approval.*); undefined = the unattended default. */
-const APPROVAL_OPTIONS = [
+export const APPROVAL_OPTIONS = [
   { value: 'always-ask', label: '始终询问' },
   { value: 'outside-ask', label: '按需确认' },
   { value: 'auto', label: '全部允许' },
@@ -224,7 +227,7 @@ function CustomScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig,
  *  the missed-fire policy. The enabled body sits in SCHED_PANEL so the whole
  *  block reads as one control; split from RoutineForm to keep each component
  *  small. */
-function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+export function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
   const cronCheck = draft.sched.kind === 'custom' ? checkCron(draft.sched.cron) : null
   const cronInvalid = !!cronCheck && !cronCheck.valid
   const hint = (): React.ReactNode => {
@@ -328,7 +331,14 @@ function RoutineAppliedBar({ applied, onUndo }: { applied: RoutineAssistantPatch
  *  the mount preview runs unarmed. Re-picking the SAME file bumps `readTick`
  *  (the path effect alone wouldn't re-fire), so the re-read re-syncs — that is
  *  the recovery path for an over-deleted param list. */
-function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+export function BatchSection({ draft, onChange, concurrency }: {
+  draft: RoutineDraftState
+  onChange: (draft: RoutineDraftState) => void
+  /** 并发行的锁（P3 两模式对齐，2026-11-08）：工作流的实例是串行 FIFO，
+   *  并发恒 1。行照常渲染但禁用——退场会让「工作流没有并发设定」这个事实
+   *  不可见，禁用 + 原因才是如实展示（同 no-API-key 浏览器 URL 面板的裁定）。 */
+  concurrency?: { locked: boolean; reason?: string }
+}): React.ReactElement {
   /** The read result tagged with the path it came from — a mismatch (file
    *  switched, read still in flight) renders as "nothing yet" instead of the
    *  previous file's verdict, which is what lets the effect stay async-only. */
@@ -423,7 +433,7 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
       {!draft.batch ? (
         <>
           <Button type="dashed" block icon={<FileTextOutlined />} onClick={() => void pick()}>选择数据文件</Button>
-          <div style={CAPTION}>选配后可批量执行：选择文件后表头自动识别为变量（可在上方参数中调整），每一行数据都会用独立会话跑一次任务。</div>
+          <div style={CAPTION}>选配后可批量执行：选择文件后表头自动识别为变量（可在上方变量中调整），每一行数据都会用独立会话跑一次任务。</div>
         </>
       ) : (
         <>
@@ -462,10 +472,10 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
               </div>
               <div style={CAPTION}>共 {preview.totalRows} 行数据，预览前 {preview.previewRows.length} 行。</div>
               {liveAnalysis && liveAnalysis.missingRequiredHeaders.length > 0 && (
-                <div style={{ ...CAPTION, color: 'var(--pm-error)' }}>缺少必填参数的列：{liveAnalysis.missingRequiredHeaders.join('、')} —— 运行会被拒绝</div>
+                <div style={{ ...CAPTION, color: 'var(--pm-error)' }}>缺少必填变量的列：{liveAnalysis.missingRequiredHeaders.join('、')} —— 运行会被拒绝</div>
               )}
               {liveAnalysis && liveAnalysis.unmatchedHeaders.length > 0 && (
-                <div style={CAPTION}>未匹配参数的列（将忽略）：{liveAnalysis.unmatchedHeaders.join('、')}</div>
+                <div style={CAPTION}>未匹配变量的列（将忽略）：{liveAnalysis.unmatchedHeaders.join('、')}</div>
               )}
               {preview.overRowLimit && (
                 <div style={{ ...CAPTION, color: 'var(--pm-error)' }}>共 {preview.totalRows} 行，超过单批 {MAX_BATCH_ROWS} 行上限，运行会被拒绝，请拆分文件</div>
@@ -476,11 +486,16 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
             <FieldLabel text="并发执行" />
             <Select
               style={{ width: 200 }}
-              value={draft.batch.concurrency ?? DEFAULT_BATCH_CONCURRENCY}
+              disabled={concurrency?.locked}
+              value={concurrency?.locked ? 1 : (draft.batch.concurrency ?? DEFAULT_BATCH_CONCURRENCY)}
               onChange={(concurrency) => onChange({ ...draft, batch: { ...draft.batch!, concurrency } })}
               options={Array.from({ length: MAX_BATCH_CONCURRENCY }, (_, i) => ({ value: i + 1, label: `同时执行 ${i + 1} 行` }))}
             />
-            <div style={CAPTION}>每一行都是独立会话；并发越大完成越快，也越占模型额度。</div>
+            <div style={CAPTION}>
+              {concurrency?.locked
+                ? (concurrency.reason ?? '该类型的任务一次只跑一行。')
+                : '每一行都是独立会话；并发越大完成越快，也越占模型额度。'}
+            </div>
           </div>
           <div style={{ marginTop: 12 }}>
             <FieldLabel text="单次超时" />
@@ -502,7 +517,7 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
               />
               <span style={ROW_LABEL}>定时触发时也执行批量</span>
             </div>
-            <div style={CAPTION}>关闭时定时触发仍按默认参数单次执行，批量只能手动启动。</div>
+            <div style={CAPTION}>关闭时定时触发仍按变量默认值单次执行，批量只能手动启动。</div>
           </div>
         </>
       )}
@@ -510,26 +525,32 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
   )
 }
 
-/** The 运行环境 block: where the run executes, how freely, and on which model.
- *  Every field is optional — absent = the conversation-default behavior (a
- *  minted session folder under the global workspace / the unattended approval
- *  level / the active profile at run time), stated in the captions so an
- *  untouched form is never a mystery. */
-function RunContextSection({ draft, onChange, models, activeModelId }: {
-  draft: RoutineDraftState
-  onChange: (draft: RoutineDraftState) => void
+export interface TaskRunContextValue {
+  workspaceDir?: string
+  approvalMode?: SandboxApprovalMode
+  profileId?: string
+}
+
+/** The 运行环境 fields, kind-agnostic (P3 任务中心)：routine 的 draft 与
+ *  workflow 的 def 各自包一层绑定。Every field is optional — absent = the
+ *  conversation-default behavior (a minted session folder / the unattended
+ *  approval level / the active profile at run time), stated in the captions
+ *  so an untouched form is never a mystery. */
+export function TaskRunContextFields({ value, onChange, models, activeModelId }: {
+  value: TaskRunContextValue
+  onChange: (patch: Partial<TaskRunContextValue>) => void
   models: Array<{ id: string; name: string; providerName?: string }>
   activeModelId?: string
 }): React.ReactElement {
   const pickWorkspaceDir = async (): Promise<void> => {
     try {
       const res = await window.electronAPI.showOpenDialog({ properties: ['openDirectory'] })
-      if (!res.canceled && res.filePaths[0]) onChange({ ...draft, workspaceDir: res.filePaths[0] })
+      if (!res.canceled && res.filePaths[0]) onChange({ workspaceDir: res.filePaths[0] })
     } catch { /* dialog is best-effort; the input stays hand-editable */ }
   }
   // A stored routine can point at a since-deleted profile — keep the raw value
   // visible (and clearable) instead of antd printing the bare id.
-  const modelValue = draft.profileId
+  const modelValue = value.profileId
   const toOption = (p: { id: string; name: string }) => ({
     value: p.id,
     label: p.id === activeModelId ? `${p.name}（当前）` : p.name,
@@ -558,9 +579,9 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
         <div style={{ display: 'flex', gap: 8 }} data-routine-field="workspace">
           <Input
             style={{ flex: 1 }}
-            value={draft.workspaceDir ?? ''}
+            value={value.workspaceDir ?? ''}
             placeholder="默认：全局工作区下的会话专用目录"
-            onChange={(e) => onChange({ ...draft, workspaceDir: e.target.value })}
+            onChange={(e) => onChange({ workspaceDir: e.target.value })}
             allowClear
           />
           <Button onClick={() => void pickWorkspaceDir()}>选择…</Button>
@@ -571,10 +592,10 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
         <FieldLabel text="授权方式" />
         <Select
           style={{ width: 220 }}
-          value={draft.approvalMode}
+          value={value.approvalMode}
           placeholder="按需确认（默认）"
           allowClear
-          onChange={(approvalMode) => onChange({ ...draft, approvalMode: approvalMode as SandboxApprovalMode | undefined })}
+          onChange={(approvalMode) => onChange({ approvalMode: approvalMode as SandboxApprovalMode | undefined })}
           options={APPROVAL_OPTIONS}
         />
         <div style={CAPTION}>无人值守运行时，该等级不允许的操作会被自动跳过，不会卡住等待。</div>
@@ -588,12 +609,30 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
             ? `使用当前模型（${models.find((p) => p.id === activeModelId)?.name}）`
             : '使用当前模型'}
           allowClear
-          onChange={(profileId) => onChange({ ...draft, profileId: profileId ?? undefined })}
+          onChange={(profileId) => onChange({ profileId: profileId ?? undefined })}
           options={modelOptions}
         />
         <div style={CAPTION}>不选则使用运行时的当前模型；所选模型被删除后同样回落到当前模型。</div>
       </div>
     </div>
+  )
+}
+
+/** The 运行环境 block (routine 绑定壳，P3 起内部渲染 kind-agnostic 的
+ *  TaskRunContextFields)。 */
+export function RunContextSection({ draft, onChange, models, activeModelId }: {
+  draft: RoutineDraftState
+  onChange: (draft: RoutineDraftState) => void
+  models: Array<{ id: string; name: string; providerName?: string }>
+  activeModelId?: string
+}): React.ReactElement {
+  return (
+    <TaskRunContextFields
+      value={draft}
+      onChange={(patch) => onChange({ ...draft, ...patch })}
+      models={models}
+      activeModelId={activeModelId}
+    />
   )
 }
 
@@ -605,7 +644,14 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
  *  save, the UI never invents secrets. The webhook arm is gated off behind
  *  ROUTINE_WEBHOOK_UI (feature-flags) — stored webhook triggers keep firing,
  *  the switch and the fire URL just stop rendering. */
-function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+export function TriggersSection({ draft, onChange, webhook }: {
+  draft: RoutineDraftState
+  onChange: (draft: RoutineDraftState) => void
+  /** 触发地址的归属（2026-11-08 两模式同一套）：缺省 = 对话式任务，id 取
+   *  draft.id；工作流传 `{ kind: 'workflow', id: def.id }`。路由与主进程监听
+   *  同源（shared/task/triggers 的 TASK_TRIGGER_PATH），不在这里手拼前缀。 */
+  webhook?: { kind: TaskKind; id?: string }
+}): React.ReactElement {
   const fileTrigger = draft.triggers?.find((t): t is Extract<RoutineTrigger, { type: 'file' }> => t.type === 'file')
   const webhookTrigger = draft.triggers?.find((t): t is RoutineWebhookTrigger => t.type === 'webhook')
   const setTriggers = (next: RoutineTrigger[]): void => onChange({ ...draft, triggers: next.length > 0 ? next : undefined })
@@ -624,9 +670,9 @@ function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChan
     return () => { cancelled = true }
   }, [])
 
-  const fireUrl = draft.id && webhookTrigger?.token && port > 0
-    ? `http://127.0.0.1:${port}/routine/${draft.id}/fire?token=${webhookTrigger.token}`
-    : null
+  const triggerKind: TaskKind = webhook?.kind ?? 'routine'
+  const triggerId = webhook?.id ?? draft.id
+  const fireUrl = webhookTrigger?.token ? taskWebhookUrl(triggerKind, triggerId ?? '', port, webhookTrigger.token) : null
 
   const browsePath = async (): Promise<void> => {
     try {
@@ -732,7 +778,7 @@ function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChan
                   </>
                 ) : (
                   <span style={CAPTION}>
-                    {draft.id ? (port > 0 ? '令牌尚未生成，保存任务后即可复制完整地址。' : '本会话的触发端点未启动。') : '保存任务后此处显示完整的触发地址。'}
+                    {triggerId ? (port > 0 ? '令牌尚未生成，保存任务后即可复制完整地址。' : '本会话的触发端点未启动。') : '保存任务后此处显示完整的触发地址。'}
                   </span>
                 )}
                 <Button
@@ -766,34 +812,109 @@ export interface RoutineFormProps {
   activeModelId?: string
 }
 
-export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch, models, activeModelId }: RoutineFormProps): React.ReactElement {
-  // The native <textarea> under antd's TextArea — insertion at the caret needs
-  // the real element's selectionStart/selectionEnd.
-  // The antd TextAreaRef itself, not a hand-shaped subset — a narrower local
-  // shape is not assignable to the component's ref (TS2322) and antd may grow
-  // the real one.
+export interface PromptContentSectionProps {
+  draft: RoutineDraftState
+  onChange: (draft: RoutineDraftState) => void
+}
+
+/** 任务内容步（routine 侧，P3 任务中心）：提示词 + 插入变量。
+ *  data-routine-field 标记原样保留（探针/wiring 依赖）。 */
+export function PromptContentSection({ draft, onChange }: PromptContentSectionProps): React.ReactElement {
+  // caret 插入的机制（原生 textarea 的 selection 读写 + setSelectionRange 先于
+  // focus）在 insert-variable.tsx——工作流属性面板用的是同一份。
   const promptAreaRef = React.useRef<React.ComponentRef<typeof Input.TextArea> | null>(null)
   const declaredVars = draft.params
     .filter((p) => p.key.trim())
     .map((p) => ({ value: p.key, label: `${p.label || p.key} {{${p.key}}}` }))
-  const insertVar = (key: string): void => {
-    const token = `{{${key}}}`
-    const area = promptAreaRef.current?.resizableTextArea?.textArea
-    const start = area?.selectionStart ?? draft.prompt.length
-    const end = area?.selectionEnd ?? start
-    onChange({ ...draft, prompt: draft.prompt.slice(0, start) + token + draft.prompt.slice(end) })
-    const caret = start + token.length
-    requestAnimationFrame(() => {
-      if (!area) return
-      // Selection BEFORE focus: React's controlled write has already parked
-      // the caret at the end of the new value, and focus() scrolls to the
-      // caret — focusing first drags a long prompt's viewport to the tail,
-      // and the later setSelectionRange moves the caret back without
-      // bringing the view with it (probe-routine-var-insert).
-      area.setSelectionRange(caret, caret)
-      area.focus()
-    })
-  }
+  const insertVar = (key: string): void => insertTokenAtCaret(promptAreaRef, draft.prompt, key, (next) => onChange({ ...draft, prompt: next }))
+  return (
+    <>
+      <div data-routine-field="prompt">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} data-routine-field="prompt-head">
+          <FieldLabel text="提示词" />
+          <InsertVariableSelect
+            placeholder="插入变量"
+            onInsert={insertVar}
+            groups={[
+              { label: '内置变量', options: BUILTIN_VAR_OPTIONS },
+              ...(declaredVars.length > 0 ? [{ label: '任务变量', options: declaredVars }] : []),
+            ]}
+          />
+        </div>
+        <Input.TextArea
+          ref={promptAreaRef}
+          value={draft.prompt}
+          onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
+          rows={8}
+          placeholder="独立可执行的指令，例如：检查 {{repo}} 仓库的依赖是否有已知安全漏洞，输出报告。用 {{变量名}} 引用任务变量。"
+        />
+      </div>
+    </>
+  )
+}
+
+/** 变量声明的一行：routine 的 RoutineParam 与 workflow 的 WorkflowInputDef
+ *  结构同形（后者多一个 multiline），所以两种模式共用同一个编辑器。 */
+export interface VariableRow {
+  key: string
+  label: string
+  required?: boolean
+  default?: string
+  /** 只有 workflow 有这一维（启动表单渲染成多行文本域）。 */
+  multiline?: boolean
+}
+
+export interface VariableSectionProps {
+  rows: VariableRow[]
+  onChange: (rows: VariableRow[]) => void
+  /** 多行开关只在实体真的有这个字段时出现——routine 的变量声明没有，
+   *  画出来就是个存不住的控件。 */
+  showMultiline?: boolean
+}
+
+/** 变量声明编辑（user 2026-11-08）：两种任务模式共用同一份行布局与
+ *  文案——对话式任务侧的行是标准（变量名 / 显示名 / 默认值 / 必填 /
+ *  删除 + 虚线添加钮），workflow 不再自带一套加 {{ }} 前缀的内联行。
+ *  锚点 data-variable-row 供探针/测试读取两模式同源。 */
+export function VariableSection({ rows, onChange, showMultiline }: VariableSectionProps): React.ReactElement {
+  const patch = (i: number, p: Partial<VariableRow>): void => onChange(rows.map((r, j) => (j === i ? { ...r, ...p } : r)))
+  return (
+    <div data-variable-section>
+      <FieldLabel text="变量" />
+      {rows.map((r, i) => (
+        <Space key={i} style={{ display: 'flex', marginBottom: 6 }} data-variable-row>
+          <Input style={{ width: 110 }} value={r.key} placeholder="变量名" onChange={(e) => patch(i, { key: e.target.value })} />
+          <Input style={{ width: 120 }} value={r.label} placeholder="显示名" onChange={(e) => patch(i, { label: e.target.value })} />
+          <Input style={{ width: 140 }} value={r.default ?? ''} placeholder="默认值" onChange={(e) => patch(i, { default: e.target.value })} />
+          {/* 必填 completes the variable loop on the authoring side: a required
+              variable without a value refuses to run (RoutineRunModal enforces
+              it on 立即运行, the runner gates every trigger; workflow's start
+              form gates the same way). */}
+          <Checkbox checked={!!r.required} onChange={(e) => patch(i, { required: e.target.checked })}>
+            必填
+          </Checkbox>
+          {showMultiline && (
+            <Checkbox checked={!!r.multiline} onChange={(e) => patch(i, { multiline: e.target.checked })}>
+              多行
+            </Checkbox>
+          )}
+          <Button type="text" danger icon={<DeleteOutlined />} onClick={() => onChange(rows.filter((_, j) => j !== i))} />
+        </Space>
+      ))}
+      <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => onChange([...rows, { key: '', label: '' }])}>
+        添加变量
+      </Button>
+    </div>
+  )
+}
+
+/** 对话式任务的变量声明（VariableSection 的 routine 薄适配：读写
+ *  draft.params）。向导「基本信息」步用它，workflow 侧直接用 VariableSection。 */
+export function ParamsSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+  return <VariableSection rows={draft.params} onChange={(params) => onChange({ ...draft, params })} />
+}
+
+export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch, models, activeModelId }: RoutineFormProps): React.ReactElement {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {appliedAssistantPatch && <RoutineAppliedBar applied={appliedAssistantPatch} onUndo={onUndoAssistantPatch} />}
@@ -805,63 +926,8 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
         <FieldLabel text="描述" />
         <Input value={draft.description} onChange={(e) => onChange({ ...draft, description: e.target.value })} placeholder="可选，一句话说明这个任务做什么" />
       </div>
-      <div data-routine-field="prompt">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} data-routine-field="prompt-head">
-          <FieldLabel text="提示词" />
-          {/* An action, not a state: the value stays unset so the control
-              reads 插入变量 again after every pick. */}
-          <Select
-            size="small"
-            style={{ minWidth: 110 }}
-            value={null}
-            placeholder="插入变量"
-            onChange={insertVar}
-            options={[
-              { label: '内置变量', options: BUILTIN_VAR_OPTIONS },
-              ...(declaredVars.length > 0 ? [{ label: '任务参数', options: declaredVars }] : []),
-            ]}
-          />
-        </div>
-        <Input.TextArea
-          ref={promptAreaRef}
-          value={draft.prompt}
-          onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
-          rows={8}
-          placeholder="独立可执行的指令，例如：检查 {{repo}} 仓库的依赖是否有已知安全漏洞，输出报告。用 {{参数名}} 引用下面的参数。"
-        />
-      </div>
-      <div>
-        <FieldLabel text="参数" />
-        {draft.params.map((p, i) => (
-          <Space key={i} style={{ display: 'flex', marginBottom: 6 }}>
-            <Input style={{ width: 110 }} value={p.key} placeholder="参数名" onChange={(e) => {
-              const params = [...draft.params]; params[i] = { ...p, key: e.target.value }; onChange({ ...draft, params })
-            }} />
-            <Input style={{ width: 120 }} value={p.label} placeholder="显示名" onChange={(e) => {
-              const params = [...draft.params]; params[i] = { ...p, label: e.target.value }; onChange({ ...draft, params })
-            }} />
-            <Input style={{ width: 140 }} value={p.default} placeholder="默认值" onChange={(e) => {
-              const params = [...draft.params]; params[i] = { ...p, default: e.target.value }; onChange({ ...draft, params })
-            }} />
-            {/* 必填 completes the params loop on the authoring side: a required
-                param without a value refuses to run (RoutineRunModal enforces
-                it on 立即运行, the runner gates every trigger). */}
-            <Checkbox
-              checked={!!p.required}
-              onChange={(e) => {
-                const params = [...draft.params]; params[i] = { ...p, required: e.target.checked }; onChange({ ...draft, params })
-              }}
-            >
-              必填
-            </Checkbox>
-            <Button type="text" danger icon={<DeleteOutlined />} onClick={() => onChange({ ...draft, params: draft.params.filter((_, j) => j !== i) })} />
-          </Space>
-        ))}
-        <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => onChange({ ...draft, params: [...draft.params, { key: '', label: '' }] })}>
-          添加参数
-        </Button>
-      </div>
-      <BatchSection draft={draft} onChange={onChange} />
+      <PromptContentSection draft={draft} onChange={onChange} />
+            <BatchSection draft={draft} onChange={onChange} />
       <RunContextSection draft={draft} onChange={onChange} models={models} activeModelId={activeModelId} />
       <ScheduleSection draft={draft} onChange={onChange} />
       <TriggersSection draft={draft} onChange={onChange} />

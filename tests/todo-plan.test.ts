@@ -181,7 +181,9 @@ describe('reconcileTodo — full-list replace over a live todo', () => {
   it('rows past the history cap drop the OLDEST settled ones — surviving numbers never renumber', () => {
     let plan = reconcileTodo(null, 'o', Array.from({ length: MAX_PLAN_NODES }, (_, i) => ({ description: `s${i + 1}`, status: 'completed' as const }))).plan
     for (let i = 0; i < MAX_TODO_HISTORY; i++) {
-      plan = reconcileTodo(plan, 'o', list({ description: `x${i + 1}`, status: 'completed' })).plan
+      // Appends carry ids: an id-less list on a settled plan is a phase reset
+      // now, and this test is about the trim, not the reset.
+      plan = reconcileTodo(plan, 'o', list(...plan.nodes.map(n => ref(Number(n.id.slice(1)), n.description)), { description: `x${i + 1}`, status: 'completed' })).plan
     }
     expect(plan.nodes).toHaveLength(MAX_TODO_HISTORY)
     expect(plan.nodes.some(n => n.id === 'n1')).toBe(false)
@@ -225,6 +227,100 @@ describe('reconcileTodo — full-list replace over a live todo', () => {
     expect(fresh.nodes.map(n => n.description)).toEqual(['x'])
     expect(fresh.nodes[0].id).toBe('n1')
     expect(fresh.nodes[0].status).toBe('pending')
+  })
+})
+
+// ── Phase reset + next-number append（2026-11-08，真实转录诊断）─────────────
+// The unbounded-append bug: one conversation's todo list climbed n1→n28 across
+// six different objectives because the model re-sends a fresh id-less checklist
+// per stage and passed fresh:true exactly once in 169 recorded calls — while the
+// 2026-11-06 continue-on-settled ruling kept every stage appending onto the old
+// rows. The structural arm: settled list + fully id-less list = a new phase.
+describe('reconcileTodo — phase reset on a settled list', () => {
+  const settledList = (): Plan =>
+    reconcileTodo(reconcileTodo(null, 'o', list('a', 'b')).plan, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }))).plan
+
+  it('a settled list continued by a fully id-less list mints a NEW list — numbering restarts at n1', () => {
+    const { plan, minted, phaseReset } = reconcileTodo(settledList(), 'stage 2', list('x', 'y'))
+    expect(minted).toBe(true)
+    expect(phaseReset).toBe(true)
+    expect(plan.mode).toBe('direct')
+    expect(plan.nodes.map(n => n.id)).toEqual(['n1', 'n2'])
+    expect(plan.nodes.map(n => n.description)).toEqual(['x', 'y'])
+    expect(plan.objective).toBe('stage 2')
+    expect(plan.completed).toBe(false)
+  })
+
+  it('one id on any item keeps the 2026-11-06 contract — continue, not mint', () => {
+    const { plan, minted, phaseReset } = reconcileTodo(settledList(), 'o', list(ref(1, 'a', { status: 'completed' }), 'x'))
+    expect(minted).toBe(false)
+    expect(phaseReset).toBeUndefined()
+    expect(plan.nodes.map(n => n.description)).toEqual(['a', 'b', 'x'])
+    expect(plan.nodes[2].id).toBe('n3')
+  })
+
+  it('an OPEN list keeps the append arm — the reset fires only when everything is settled', () => {
+    const open = reconcileTodo(null, 'o', list({ description: 'a', status: 'in_progress' }, 'b')).plan
+    const { plan, minted } = reconcileTodo(open, 'o', list('c', 'd'))
+    expect(minted).toBe(false)
+    expect(plan.nodes.map(n => `${n.description}:${n.status}`)).toEqual(['a:skipped', 'b:skipped', 'c:pending', 'd:pending'])
+  })
+
+  it('an empty list on a settled list stays a no-op update — no mint, no throw', () => {
+    const { plan, minted, phaseReset } = reconcileTodo(settledList(), 'o', [])
+    expect(minted).toBe(false)
+    expect(phaseReset).toBeUndefined()
+    expect(plan.completed).toBe(true)
+    expect(plan.nodes).toHaveLength(2)
+  })
+})
+
+describe('reconcileTodo — the next-number id is the append guess', () => {
+  it('an id equal to highest+1 appends instead of erroring (the model names "the next id")', () => {
+    const live = reconcileTodo(null, 'o', list('a', 'b')).plan
+    const { plan, minted } = reconcileTodo(live, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }), { id: 'n3', description: 'c' }))
+    expect(minted).toBe(false)
+    expect(plan.nodes.map(n => n.id)).toEqual(['n1', 'n2', 'n3'])
+    expect(plan.nodes[2].status).toBe('pending')
+  })
+
+  it('an id BEYOND next is still an error — stale numbering gets the lesson, not a silent slot', () => {
+    const live = reconcileTodo(null, 'o', list('a', 'b')).plan
+    expect(() => reconcileTodo(live, 'o', list({ id: 'n4', description: 'x' }))).toThrow(/does not exist/)
+  })
+
+  it('two items claiming the same next number — the duplicate still throws', () => {
+    const live = reconcileTodo(null, 'o', list('a')).plan
+    expect(() => reconcileTodo(live, 'o', list(ref(1, 'a', { status: 'completed' }), { id: 'n2', description: 'x' }, { id: 'n2', description: 'y' }))).toThrow(/claimed twice/)
+  })
+})
+
+describe('phase-reset teaching', () => {
+  const settledList = (): Plan =>
+    reconcileTodo(reconcileTodo(null, 'o', list('a', 'b')).plan, 'o', list(ref(1, 'a', { status: 'completed' }), ref(2, 'b', { status: 'completed' }))).plan
+
+  it('the create snapshot explains the numbering restart when phaseReset rides through', () => {
+    const { plan } = reconcileTodo(settledList(), 'stage 2', list('x'))
+    const text = formatPlanSnapshot(plan, { action: 'create', phaseReset: true })
+    expect(text).toContain('Todo list created with 1 entry')
+    expect(text).toContain('NEW PHASE')
+    expect(text).toContain('numbering restarts at n1')
+  })
+
+  it('a plain create carries no phase-reset lesson', () => {
+    const { plan } = reconcileTodo(null, 'ship', list('a'))
+    expect(formatPlanSnapshot(plan, { action: 'create' })).not.toContain('NEW PHASE')
+  })
+
+  it('executor wiring: the phase reset reaches the tool result', async () => {
+    const { mgr, results } = makeManager()
+    await mgr.execTodoWrite(todoCall({ objective: 'stage 1', items: list('a') }))
+    await mgr.execTodoWrite(todoCall({ items: list(ref(1, 'a', { status: 'completed' })) }))
+    expect(mgr.plan?.completed).toBe(true)
+    await mgr.execTodoWrite(todoCall({ objective: 'stage 2', items: list('b') }))
+    expect(mgr.plan?.nodes.map(n => n.id)).toEqual(['n1'])
+    expect(mgr.plan?.nodes[0].description).toBe('b')
+    expect(results[2].content).toContain('NEW PHASE')
   })
 })
 
@@ -679,7 +775,7 @@ describe('todo_write wiring', () => {
   it('is a registered system built-in with its manual, and allowed to sub-agents (2026-10-26)', () => {
     const def = BUILT_IN_TOOLS.find(t => t.name === 'todo_write')
     expect(def).toBeDefined()
-    expect(def?.category).toBe('system')
+    expect(def?.category).toBe('plan') // 2026-11-08 分类裁定：计划编排族
     expect(def?.builtIn).toBe(true)
     expect(def?.instructions).toBe(toolInstructions.todo_write)
     expect(def?.input_schema.required).toEqual(['items'])

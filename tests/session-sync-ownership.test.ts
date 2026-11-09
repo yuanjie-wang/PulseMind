@@ -104,7 +104,7 @@ describe('activation makes the conversation the engine-active session', () => {
   it('handleRequest activates a conversation that is not the active engine', () => {
     const body = functionBody(controller, 'const handleRequest = useCallback')
     const guard = body.indexOf('if (engine.activeEngineIdRef.current !== convId) engine.activateEngine(convId)')
-    const send = body.indexOf('engineHandle.startLoop(content, knowledgeBase)')
+    const send = body.indexOf('engineHandle.startLoop(content, knowledgeBase, forcedSkills)')
     expect(guard).toBeGreaterThan(-1)
     expect(send).toBeGreaterThan(-1)
     expect(guard).toBeLessThan(send)

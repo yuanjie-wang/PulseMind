@@ -25,8 +25,8 @@ import { shortUuid } from '../utils/id'
 import { agentSessionManager } from '../agent/session-manager'
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
-import { saveConversation, setConversationApprovalMode, setConversationProfile } from '../storage/conversation.db'
-import { resolveConversationWorkspace } from '../storage/conversation-workspace'
+import { saveConversation } from '../storage/conversation.db'
+import { resolveTaskRunContext } from '../task/run-context'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
 import { DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveTimeoutMinutes } from '../../shared/routine/batch'
@@ -255,48 +255,39 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
 
   void (async () => {
     try {
-      // Run context (user-configured per routine): an explicit workspace runs
-      // as-is; otherwise the run mints its own session folder under the global
-      // workspace — the SAME resolution a normal conversation gets. It must be
-      // resolved HERE: clientId 'routine' fails doCreateSession's
+      // Run context (user-configured per routine) — resolved by the shared
+      // task kernel (src/main/task/run-context.ts), the SAME resolver the
+      // workflow engine uses. Three-level workspace fallback (explicit run
+      // dir > routine config > minted session folder — the SAME resolution a
+      // normal conversation gets) and conversation-column seeding happen
+      // inside it; it must run HERE: clientId 'routine' fails doCreateSession's
       // isLocalUiSession gate, so the session manager would never resolve a
       // project/global workspace for this session on its own. In batch mode a
       // routine without a pinned dir therefore mints one folder PER ROW (the
       // runner resolves them serially — see batch-runner).
-      const workspaceDir = opts.workspaceDir?.trim()
-        || routine.workspaceDir?.trim()
-        || await resolveConversationWorkspace(convId)
-      // Seed the conversation's OWN columns with the run context (user
-      // 2026-09-27: continuing a run's conversation must carry the 授权/模型
-      // the run ran with). The opts below pin the values only for the run's
-      // window — releaseRunPins drops them at settlement and a restart drops
-      // them with the process — while the run transcript's composer and every
-      // post-run resolution read these columns. The approval level is always
-      // recorded (the effective one); the model only when the routine pinned
-      // one (absent = the active profile at run time, a run-time resolution,
-      // not this conversation's choice). The setters stub-insert the row (the
-      // transcript itself is persisted only at settlement) and later saves
-      // never touch binding columns. Straight to the DB layer, NOT
-      // setApprovalMode/setSessionProfile — a scheduled run must not rewrite
-      // the global last-used values.
-      setConversationApprovalMode(convId, routine.approvalMode ?? 'outside-ask')
-      const pinnedProfileId = routine.profileId?.trim() || undefined
-      if (pinnedProfileId) setConversationProfile(convId, pinnedProfileId)
+      const { workspaceDir, approvalMode, profileId: pinnedProfileId } = await resolveTaskRunContext(
+        convId,
+        { workspaceDir: routine.workspaceDir, approvalMode: routine.approvalMode, profileId: routine.profileId },
+        'outside-ask',
+        opts.workspaceDir,
+      )
+      // The opts below pin the values only for the run's window —
+      // releaseRunPins drops them at settlement and a restart drops them with
+      // the process — while the run transcript's composer and every post-run
+      // resolution read these columns. Whatever the level, the gates above
+      // answer them without a user: 'outside-ask' rejects exec-tier calls,
+      // 'always-ask' rejects writes+exec (a read-only run), 'auto' gates
+      // nothing. The default is a literal ('outside-ask'), not
+      // DEFAULT_APPROVAL_MODE, which happens to equal it today — a run nobody
+      // is watching must not start widening because a UI default moved.
+      // Model pin: the session pins the routine's profile, so a global 模型
+      // switch mid-run cannot move it; a deleted profile falls back to the
+      // active one inside resolveProfile.
       await agentSessionManager.createSession(convId, {
         title: opts.transcriptLabel ?? `[日常] ${routine.name}`,
         clientId: 'routine',
         workspaceDir,
-        // Approval level (user 2026-09-21: the run context is selectable, the
-        // default stays the unattended one). Whatever the level, the gates
-        // above answer them without a user: 'outside-ask' rejects exec-tier
-        // calls, 'always-ask' rejects writes+exec (a read-only run), 'auto'
-        // gates nothing. Written as a literal and not DEFAULT_APPROVAL_MODE,
-        // which happens to equal it today — a run nobody is watching must not
-        // start widening because a UI default moved.
-        approvalMode: routine.approvalMode ?? 'outside-ask',
-        // Model pin: the session pins the routine's profile, so a global 模型
-        // switch mid-run cannot move it; a deleted profile falls back to the
-        // active one inside resolveProfile.
+        approvalMode,
         profileId: pinnedProfileId,
       })
       // A stop requested while createSession was still in flight never reached

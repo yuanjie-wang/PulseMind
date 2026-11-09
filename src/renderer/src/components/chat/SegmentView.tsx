@@ -222,8 +222,20 @@ export function segmentAnchorId(seg: Segment): string | undefined {
   return undefined
 }
 
-/** A segment in the standard transcript column, optionally highlighted. */
-export function SegmentBlock({
+/**
+ * A segment in the standard transcript column, optionally highlighted.
+ *
+ * memo（user 2026-11-09「对话区上下滚动有卡顿」）：转录区不做虚拟化，跳过重渲染靠的
+ * 是一对前提——「段对象身份不变」（message-segments 的结构共享缓存把未变段落的对象
+ * 留住，注释原话「cached segment objects keep their identity so React.memo can skip
+ * them」）加「props 身份稳定」。本层挂上同一个契约，省掉的是内层 memo 够不到的那一段：
+ * SegmentView 的分支判断、StreamingText 的节流记账、StreamingMarkdown 包装层，以及这
+ * 层 div 自己的 props diff。实测（scripts/probe-transcript-perf.mjs，22 条消息 + 每帧
+ * 一个流式 chunk；对照 = 已修 handler 身份、但不挂本 memo）：一次 chunk 的同步渲染
+ * 1.64ms vs 2.13ms。**真正的病根是 handler 身份**（见 TranscriptView 的 handlersRef，
+ * 那一处不改则单次 chunk 12.45ms）；这里是让段落层也纳入同一份契约，不是主修。
+ */
+export const SegmentBlock = React.memo(function SegmentBlock({
   seg,
   nextSeg,
   isLastSegment,
@@ -271,4 +283,4 @@ export function SegmentBlock({
       />
     </div>
   )
-}
+})

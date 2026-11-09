@@ -30,7 +30,7 @@ export const READ_TIER_TOOLS = new Set([
   'ocr',
 ])
 /** Built-in tools that change the workspace on disk. */
-export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'office_edit', 'export_document'])
+export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'office_edit', 'office_export', 'export_document']) // export_document: retired name (→ office_export) kept for hydrated transcripts' card display
 
 /** Tier of a page tool, or null when the name is not one. `page_execute_js`
  *  runs arbitrary code in the page, so it sits on the exec rung (held from
@@ -50,14 +50,14 @@ export function pageToolTier(name: string): SandboxToolTier | null {
  *  isSystemTool and the requiresApproval note in shared/sandbox/policy.ts).
  *  Net effect: network egress runs unattended at every approval level. Use
  *  this for page tools, which have no such exemption, and for display.
- *  `exec_logs` answers 'read' for the same reason it is NOT in READ_TIER_TOOLS:
+ *  `exec_logs`/`exec_list` answer 'read' for the same reason they are NOT in READ_TIER_TOOLS:
  *  that set selects the *executor* (the native file reader), while its dispatch
  *  goes through execOtherTool — the tier here is the approval/display answer
  *  only (PLAN-coding-contract P0-3 #14). */
 export function tierOfTool(name: string): SandboxToolTier {
   const page = pageToolTier(name)
   if (page) return page
-  if (name === 'exec_logs') return 'read'
+  if (name === 'exec_logs' || name === 'exec_list') return 'read'
   if (READ_TIER_TOOLS.has(name)) return 'read'
   if (WRITE_TIER_TOOLS.has(name)) return 'write'
   return 'exec'

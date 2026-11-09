@@ -174,6 +174,62 @@ export function parseExpertMentions(
   return { experts: found, text, task: rest.replace(/[ \t]{2,}/g, ' ').trim(), spans }
 }
 
+/** A `$<name>` skill mention, resolved. `skills` is the de-duplicated list in
+ *  mention order; `task` is the text with the tokens cut (seams collapsed —
+ *  same shape as parseExpertMentions'); `spans` marks each consumed token in
+ *  the ORIGINAL text. */
+export interface SkillMentionParse {
+  skills: string[]
+  text: string
+  task: string
+  spans: MentionSpan[]
+}
+
+/** Resolve the $-mentions in a message to skill names — the `$`-trigger's
+ *  send-path counterpart of parseExpertMentions. Same matching rules, same
+ *  shape, same philosophy: a mention is a literal `$<name>` (CJK-robust), the
+ *  LONGEST name wins at each `$`, every occurrence is consumed (several
+ *  skills can be pinned at once) with duplicates dropped, and the tokens STAY
+ *  in `text` — what the user typed is message content too. `claimed` carries
+ *  the expert parse's spans: an `$` inside one is expert material, never a
+ *  skill candidate (既有语义优先: expert > skill > knowledge base). A `$` that
+ *  matches nothing ($100, shell snippets) is untouched prose. */
+export function parseSkillMentions(
+  text: string,
+  skillNames: ReadonlyArray<string>,
+  claimed: ReadonlyArray<MentionSpan> = []
+): SkillMentionParse {
+  const candidates = Array.from(new Set(skillNames.filter((n) => n && n.trim()))).sort(
+    (a, b) => b.length - a.length,
+  )
+  const isClaimed = (pos: number): boolean => claimed.some((s) => pos >= s.start && pos < s.end)
+  const found: string[] = []
+  const spans: MentionSpan[] = []
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '$' && !isClaimed(i)) {
+      const hit = candidates.find((n) => text.startsWith(`$${n}`, i))
+      if (hit) {
+        if (!found.includes(hit)) found.push(hit)
+        const end = i + 1 + hit.length
+        spans.push({ start: i, end })
+        i = end
+        continue
+      }
+    }
+    i += 1
+  }
+  if (found.length === 0) return { skills: [], text, task: text, spans: [] }
+  let rest = ''
+  let cursor = 0
+  for (const span of spans) {
+    rest += text.slice(cursor, span.start)
+    cursor = span.end
+  }
+  rest += text.slice(cursor)
+  return { skills: found, text, task: rest.replace(/[ \t]{2,}/g, ' ').trim(), spans }
+}
+
 /** A knowledge base the user @-mentioned. Same wire shape as SummonedExpert
  *  so the ask channel carries them alike. */
 export type MentionedKnowledgeBase = { id: string; name: string }
@@ -289,6 +345,23 @@ export function formatSummonForPrompt(summon: SummonState | null): string | null
     )
   }
   return lines.join('\n')
+}
+
+/** The `## Forced Skills` state-block section for `$`-pinned skills. Null when
+ *  none is pinned. Rides the per-turn state block (never the invariant core)
+ *  for the same reason every other volatile line does: the core is a cache
+ *  prefix. The instruction is deliberate about APPLYING the skill — a bare
+ *  "read these" invites a pick_skill call followed by ignored contents. */
+export function formatForcedSkillsForPrompt(names: ReadonlyArray<string> | null | undefined): string | null {
+  const list = (names ?? []).map((n) => n.trim()).filter(Boolean)
+  if (list.length === 0) return null
+  const rendered = list.map((n) => `\`${n}\``).join(', ')
+  return [
+    '## Forced Skills (user-pinned for this turn)',
+    '',
+    `The user explicitly pinned these skills with $-mentions for THIS turn: ${rendered}.`,
+    'Call `pick_skill` for EACH of them now, and actually apply the returned instructions to this turn\'s task — the mention is a directive, not a suggestion. Do not substitute other skills, and if a pinned skill cannot be picked (unknown name), say so instead of improvising.',
+  ].join('\n')
 }
 
 // ── Sub-agent hosting defaults ──

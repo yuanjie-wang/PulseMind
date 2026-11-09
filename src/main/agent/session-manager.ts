@@ -32,7 +32,7 @@ import { judgeSopCandidate, sortBySopPriority, SOP_SWEEP_BATCH } from '../../sha
 import { isLivePage } from '../../shared/memory-pages'
 import { listMemoryPages } from '../storage/memory-pages-store'
 import { migrateExperiencesToPages, listFlatMemoriesForMigration, fallbackFlatMemoryOps, applyFlatMemoryMigration } from '../services/memory-migration'
-import { resolveConversationWorkspace } from '../storage/conversation-workspace'
+import { resolveConversationWorkspace, ensureHostedConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
 import { serverManager } from '../mcp/MCPServerManager'
@@ -40,7 +40,7 @@ import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalog
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
-import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells, svcExecLogs } from '../services/terminal'
+import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells, svcExecLogs, svcIsBackgroundPidAlive } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
 import { browserService } from '../browser/BrowserService'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
@@ -183,6 +183,21 @@ export class AgentSessionManagerImpl {
   private messageContentRegistry = new Map<string, Map<string, string>>()
 
   constructor() {
+    // 投递守门计时器（PLAN-background-tasks E #2）：渲染端三触发点（正在看/
+    // busy→completed 边沿/切回会话）是「尽力而为」——用户一直不切回、窗口失
+    // 焦、或边沿恰好错过，通知就一直躺在引擎队列里。主进程每 30s 扫一遍：有
+    // 未投递通知 && 引擎空闲 && 全局槽位有空 && 不在投递中 → 自动开一回合汇
+    // 报。deliverBackgroundNotice 自带幂等闸门，与渲染端触发竞态安全。
+    this.deliverSweepTimer = setInterval(() => {
+      for (const [sessionId, entry] of this.sessions) {
+        if (entry.engine.backgroundNotices.length === 0) continue
+        if (isActiveStatus(entry.engine.agentStatus)) continue
+        if (this.deliveringBackground.has(sessionId)) continue
+        if (this.runningLoops >= MAX_CONCURRENT_LOOPS) continue
+        void this.deliverBackgroundNotice(sessionId).catch(() => { /* sweep retries in 30s */ })
+      }
+    }, 30_000)
+    this.deliverSweepTimer.unref()
     // 后台任务唤醒（2026-10-28）：terminal.ts 在后台子进程 exit 的同一拍把
     // (sessionId, pid, code) 推到这里，转发给属主会话的引擎排队——引擎在下一次
     // 请求构建时把未投递的通知渲染进 state block（一次性）。引擎不存在（会话
@@ -324,7 +339,17 @@ export class AgentSessionManagerImpl {
         const key = `${msg.id}:${tu.id ?? ''}`
         const output = typeof tu.output === 'string' ? tu.output : undefined
         const cappedOutput = output && output.length > 200_000 ? output.slice(0, 200_000) : output
-        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}|${tu.subConvId ?? ''}|${tu.planNodeId ?? ''}|${tu.backgroundPid ?? ''}`
+        // DEAD pids stay off the wire (PLAN-background-tasks D): the turn-terminal
+        // reconciliation sweep below re-ships every settled block, and a
+        // re-shipped backgroundPid would resurrect the renderer's strip row /
+        // sidebar running-count for a process whose exit event already fired
+        // (and will never fire again). Alive = in backgroundByPid right now —
+        // the exit handler deletes membership in the same beat it pushes the
+        // session wake. The block KEEPS its field (hydration and the kill
+        // button read the mirror/DB copy); only the diff omits it.
+        const bgAlive = typeof tu.backgroundPid === 'number' && tu.backgroundPid > 0 && svcIsBackgroundPidAlive(tu.backgroundPid)
+        const shippedPid = bgAlive ? tu.backgroundPid : undefined
+        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}|${tu.subConvId ?? ''}|${tu.planNodeId ?? ''}|${shippedPid ?? ''}`
         if (registry.get(key) === signature) continue
         registry.set(key, signature)
         updates.push({
@@ -335,7 +360,7 @@ export class AgentSessionManagerImpl {
           output: cappedOutput,
           subConvId: tu.subConvId,
           planNodeId: tu.planNodeId,
-          backgroundPid: tu.backgroundPid,
+          ...(bgAlive ? { backgroundPid: tu.backgroundPid } : {}),
         })
       }
     }
@@ -779,6 +804,20 @@ export class AgentSessionManagerImpl {
    *  composer's own model pick could not take effect (effectiveProfileId gave
    *  the pin precedence), and unlike the approval pin nothing else ever
    *  released it. */
+  /** PLAN-extension-handoff（user 2026-11-08 实机反馈「工作区不对」）：hosted
+   *  会话的 sandbox 兜底是全局 workspace 根（doCreateSession 的
+   *  `workspaceDir || settings.workspaceDir || WORKSPACE_DIR`——isLocalUiSession
+   *  门把扩展会话关在铸造路径外），且全局根会被持久化进 row，此后 row 有值即
+   *  返回，全局根永远冒充会话独立工作区。移交时调它：把全局根形态当「未分配」
+   *  重铸会话自己的目录，并**就地修补活引擎的 sandbox ctx**（下一回合的 exec
+   *  兜底就从新目录算）。 */
+  async ensureConversationWorkspace(sessionId: string): Promise<string> {
+    const ctx = this.sandboxContexts.get(sessionId)
+    const dir = await ensureHostedConversationWorkspace(sessionId)
+    if (ctx && ctx.workspaceDir !== dir) ctx.workspaceDir = dir
+    return dir
+  }
+
   releaseRunPins(sessionId: string): void {
     const entry = this.sessions.get(sessionId)
     if (!entry) return
@@ -1057,19 +1096,22 @@ export class AgentSessionManagerImpl {
    *  verbatim, several enter plan mode. Absent/empty is a normal turn.
    *  `knowledgeBase` (PLAN-knowledge-groups G5) is this turn's @知识库 scope:
    *  staged onto the engine so prepareTurn makes it the turn's retrieval
-   *  scope; null (no mention) unscopes. */
+   *  scope; null (no mention) unscopes. `forcedSkills` is this turn's
+   *  $-pinned skill names — staged the same way, consumed for one turn. */
   async ask(
     sessionId: string,
     content: string,
     pageContext?: PageContext,
     summon?: SummonedExpert[],
     knowledgeBase?: { id: string; name: string } | null,
+    forcedSkills?: string[] | null,
   ): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     this.refreshConversationApproval(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
     entry.engine.opts.pageContext = pageContext
     entry.engine.setKnowledgeBaseScope(knowledgeBase ?? null)
+    entry.engine.setForcedSkills(forcedSkills ?? null)
     // Whether page_* tools are on this session's toolset at all: a browser
     // client is connected for it (tool-collection.ts reads this flag). Checked
     // per ask because the binding can come and go with the connection.
@@ -1209,6 +1251,7 @@ export class AgentSessionManagerImpl {
       // mirror from events alone and never snapshots, so a tree mounted after
       // the writes happened (tab switch, window reload) reads the ledger here.
       case 'getFileChanges': return entry.engine.getFileChanges()
+      case 'ensureConversationWorkspace': return this.ensureConversationWorkspace(sessionId)
       case 'markExtensionHandoff':
         // PLAN-extension-handoff M3：会话自扩展移交而来，state block 带告知行。
         entry.engine.extensionHandoffNotice = true
@@ -1266,6 +1309,10 @@ export class AgentSessionManagerImpl {
   // 它。闸门同步判定（主进程单线程下原子）：有未投递通知、引擎非活跃状态、
   // 全局槽位未满（满了不进 waitingLoops FIFO——投递不该排队）、未在投递中。
   private deliveringBackground = new Set<string>()
+  /** Idle auto-delivery sweep (#2): retries pending notices every 30s — the
+   *  renderer's three triggers are best-effort; this one guarantees the report
+   *  lands the moment the engine goes idle, regardless of what the UI does. */
+  private deliverSweepTimer: NodeJS.Timeout
 
   /** Deliver every pending background-exit notice as ONE synthetic user turn
    *  (marker-prefixed, so the transcript renders it as a system line, never a
@@ -1283,6 +1330,18 @@ export class AgentSessionManagerImpl {
     try {
       const notices = [...entry.engine.backgroundNotices]
       const sandboxCtx = this.sandboxContexts.get(sessionId)
+      // 任务名（PLAN-background-tasks D）：引擎台账带来的命令首行，超长截到
+      // 60 列——首行汇总是给人看的，明细段（模型段）保留完整命令。
+      const nameOf = (n: { pid: number; command?: string }): string => {
+        const raw = typeof n.command === 'string' ? n.command.trim().split('\n', 1)[0] : ''
+        return raw ? (raw.length > 60 ? `${raw.slice(0, 57)}...` : raw) : `pid=${n.pid}`
+      }
+      const resultOf = (n: { code: number | null }): string =>
+        n.code === 0 ? '成功' : n.code === null ? '已结束' : `失败，退出码 ${n.code}`
+      // 首行 = marker 行的唯一可见面：转录系统行只渲染 marker 后的第一行
+      // （shared/background-notice.backgroundNoticeBody 取首行），所以「任务名
+      // + 执行结果」必须全在这一行里；marker 之下的段是给模型的，不上屏。
+      const summary = notices.map((n) => `${nameOf(n)}（${resultOf(n)}）`).join('、')
       const lines: string[] = []
       for (const n of notices) {
         // 内联输出尾 2KB：省一次 exec_logs 工具往返。读走会话沙盒（exec_logs
@@ -1291,10 +1350,10 @@ export class AgentSessionManagerImpl {
         try {
           tail = sandboxCtx ? (sessionSandbox.run(sandboxCtx, () => svcExecLogs(n.pid, 2048)) ?? '') : ''
         } catch { tail = '' }
-        lines.push(`- pid=${n.pid}，退出码 ${n.code ?? 'null'}${tail ? `\n\n输出尾部：\n${tail}` : ''}`)
+        lines.push(`- pid=${n.pid}「${nameOf(n)}」退出码 ${n.code ?? 'null'}${tail ? `\n\n输出尾部：\n${tail}` : ''}`)
       }
       const content = [
-        `${BACKGROUND_NOTICE_MARKER} 后台任务已完成`,
+        `${BACKGROUND_NOTICE_MARKER} 后台任务已完成：${summary}`,
         '',
         '先前转入后台运行的命令已结束：',
         '',

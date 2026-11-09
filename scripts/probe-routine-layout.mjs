@@ -8,7 +8,9 @@
  * ruling 2026-09-23: 「仅当未创建任何任务的时候，新建按钮以卡片形式呈现，如果有
  * 任务，则变为普通按钮，放到【我的任务】同一行的最右侧」): a plain button pinned
  * at the far right of the 我的任务 head once tasks exist, the dashed card
- * closing the task grid when none do.
+ * closing the task grid when none do. 导入分享 sits immediately to its LEFT in
+ * that same head row (user 2026-11-09) and is the ONE action the empty head
+ * keeps — importing is how a bare install gets its first task.
  *
  * Every one of those is a layout or interaction fact that no other layer can
  * see: vitest here is node-env (no layout engine, no mounting), and the source
@@ -41,6 +43,16 @@
  *   - 新建任务 from either affordance lands on the plain create-new form (no
  *     stale templateId) and creates nothing either, and the empty state keeps
  *     the card and the starters on screen
+ *   - the mixed grid's card contract (user ruling 2026-11-09: 「对话式任务和工作流
+ *     任务的卡片样式要统一…标签就保留两个…当设定了定时执行计划时，才展示开关」):
+ *     both kinds land in ONE grid wearing the same shell, each card carries
+ *     exactly one 执行计划 pill (下次运行：… when a valid cron is enabled,
+ *     手动执行 otherwise) plus a 批量数据 pill only with a CSV, and the enable
+ *     switch appears only on cards with a scheduled plan — clicking a workflow's
+ *     switch goes through PIPELINE_WORKFLOWS' toggle op and the card really
+ *     flips after the reload. Fine grain (all four plan-text combinations, long
+ *     content not stretching the card, routine-side clicks) lives in
+ *     probe-task-card-pills.mjs.
  *
  * What it mounts is the production `RoutineCenter` behind a stubbed
  * `window.electronAPI` and the real i18n — never a copy of the component.
@@ -63,7 +75,7 @@ import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import RoutineCenter from './src/renderer/src/components/routine/RoutineCenter'
-import RoutineEditorPage from './src/renderer/src/components/routine/RoutineEditorPage'
+import TaskWizardPage from './src/renderer/src/components/routine/TaskWizardPage'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 // The routine center is migrated onto the theme sheet (PLAN-dark-mode M3/T2),
 // so the page needs the variable table injected before the components render —
@@ -109,12 +121,17 @@ const RUN_GROUPS = [
   { daysAgo: 3, count: 8, step: 20 * 60 * 1000 },
   { daysAgo: 10, count: 8, step: 20 * 60 * 1000 },
 ]
+// 今天组也必须钉在今天：NOW 减 6 小时在午夜后整组翻进昨天，剩下的桶凑不到三个
+// （实锤：00:0x 那一跑 expected = yesterday, earlier）。锚到本地零点之后，
+// 桶归属与跑探针的时刻无关——同 conversation-time-groups 的夹具修法。
+const START_OF_TODAY = new Date(NOW)
+START_OF_TODAY.setHours(0, 0, 0, 0)
 const RUNS = []
 const BUCKET_SEEN = new Set()
 for (const group of RUN_GROUPS) {
   for (let i = 0; i < group.count; i++) {
     const startedAt = group.daysAgo == null
-      ? NOW - (i + 1) * group.step
+      ? Math.max(START_OF_TODAY.getTime() + 1000, NOW - (i + 1) * group.step)
       : noonDaysAgo(group.daysAgo) - i * group.step
     BUCKET_SEEN.add(bucketRunByDate(startedAt, NOW))
     RUNS.push({
@@ -170,9 +187,33 @@ window.electronAPI = new Proxy({}, {
     // Subscribe-style APIs must answer with a cleanup function, not a Promise.
     if (typeof key === 'string' && /^on[A-Z]/.test(key)) return () => {}
     window.__calls.push({ method: String(key), args })
-    if (key === 'routineList') return Promise.resolve(window.__routines ?? ROUTINES)
+    // 每次调用都是新引用（真 IPC 过结构化克隆）——见下方 pipelineWorkflows 的
+    // 同一句注释：回同一个数组会让 reload 的 setState 被 React 跳过。
+    if (key === 'routineList') return Promise.resolve((window.__routines ?? ROUTINES).map((r) => ({ ...r })))
     if (key === 'routineGet') return Promise.resolve((window.__routines ?? ROUTINES).find((r) => r.id === args[0]) ?? null)
     if (key === 'routineRuns') return Promise.resolve(window.__runs ?? RUNS)
+    // 工作流卡片（2026-11-09 混排两类任务的卡片契约）：默认空列表 = 只有对话式
+    // 任务的旧形态，前面各节的数量断言逐字不变；契约节用 window.__workflows 换
+    // 真定义。toggle 写回夹具本身，让 reload 之后卡片真的换态。
+    // list 必须每次返回**新数组**（.map 拷贝）：真 IPC 过一遍结构化克隆，返回的
+    // 永远是新引用；直接回 window.__workflows 会让 reload 的 setState 撞上同一个
+    // 引用、React 按 Object.is 跳过重渲染——卡片看着没换态，探针就会误报产品的
+    // 错（2026-11-09 实锤踩过）。
+    if (key === 'pipelineWorkflows') {
+      if (args[0] === 'list') return Promise.resolve((window.__workflows ?? []).map((w) => ({ ...w })))
+      if (args[0] === 'toggle') {
+        const { id, enabled } = args[1] ?? {}
+        const wf = (window.__workflows ?? []).find((w) => w.id === id)
+        if (wf) wf.enabled = enabled
+        return Promise.resolve(wf ? { ...wf } : null)
+      }
+      return Promise.resolve(undefined)
+    }
+    if (key === 'routineToggle') {
+      const r = (window.__routines ?? ROUTINES).find((x) => x.id === args[0])
+      if (r) r.enabled = !!args[1]
+      return Promise.resolve(r ?? null)
+    }
     // A save must round-trip: the editor reads created.id to promote the
     // assist thread, so answer with the stored shape instead of undefined.
     if (key === 'routineCreate' || key === 'routineUpdate') {
@@ -180,6 +221,11 @@ window.electronAPI = new Proxy({}, {
       return Promise.resolve({ id: 'r_stub', ...input, createdAt: '', updatedAt: '' })
     }
     if (EMPTY_LISTS.includes(String(key))) return Promise.resolve([])
+    // 分享导入两段（2026-11-09 任务中心头部新增入口）：默认按「用户取消了文件
+    // 对话框」应答；导入用例用 window.__importPreview 换真 payload，验预览模态
+    // 真的挂上来。
+    if (key === 'shareImportPreview') return Promise.resolve(window.__importPreview ?? { canceled: true })
+    if (key === 'shareImportCommit') return Promise.resolve({ imported: 0, overwritten: 0, skipped: 0, failed: 0, errors: [] })
     // The editor mounts the real SettingsProvider, which loads settings.json.
     // window.__profiles/__activeProfileId let a section pin the model list the
     // 模型 select reads.
@@ -193,9 +239,10 @@ window.electronAPI = new Proxy({}, {
 
 window.__opened = null
 let root = null
-window.__mount = ({ locale = 'zh', routines = null, runs = null } = {}) => {
+window.__mount = ({ locale = 'zh', routines = null, runs = null, workflows = null } = {}) => {
   window.__routines = routines
   window.__runs = runs
+  window.__workflows = workflows
   window.__locale = locale
   useNavigationStore.getState().navigate({ kind: 'routines' })
   if (root) root.unmount()
@@ -203,11 +250,13 @@ window.__mount = ({ locale = 'zh', routines = null, runs = null } = {}) => {
   root.render(
     <ConfigProvider>
       <AntdApp>
-        <TranslationProvider initialLocale={locale}>
-          <div id="view" style={{ height: '100vh' }}>
-            <RoutineCenter />
-          </div>
-        </TranslationProvider>
+        <SettingsProvider>
+          <TranslationProvider initialLocale={locale}>
+            <div id="view" style={{ height: '100vh' }}>
+              <RoutineCenter />
+            </div>
+          </TranslationProvider>
+        </SettingsProvider>
       </AntdApp>
     </ConfigProvider>
   )
@@ -227,7 +276,7 @@ window.__mountEditor = ({ templateId, routineId, locale = 'zh' } = {}) => {
         <SettingsProvider>
           <TranslationProvider initialLocale={locale}>
             <div id="view" style={{ height: '100vh' }}>
-              <RoutineEditorPage templateId={templateId} routineId={routineId} />
+              <TaskWizardPage kind="routine" templateId={templateId} routineId={routineId} />
             </div>
           </TranslationProvider>
         </SettingsProvider>
@@ -404,7 +453,10 @@ window.__newCard = () => {
  *  that row rather than sitting near it. */
 window.__createBtn = () => {
   const head = document.querySelector('[data-section="tasks"]')?.firstElementChild
-  const b = head ? head.querySelector('button') : null
+  // 动作簇自 2026-11-09 起有两颗钮（导入分享在左、新建任务在右），所以按
+  // 「head 里唯一的 primary」取，不按文案也不取「第一颗」——文案随 locale 变
+  // （EN 下是 New Task），primary 才是这颗钮的稳定身份。
+  const b = head ? [...head.querySelectorAll('button')].find((el) => el.classList.contains('ant-btn-primary')) : null
   if (!b) return null
   const r = b.getBoundingClientRect()
   const hr = head.getBoundingClientRect()
@@ -419,8 +471,46 @@ window.__createBtn = () => {
   }
 }
 
+/** The head's whole action cluster (2026-11-09: 导入分享 → 新建任务). Buttons in
+ *  DOM order, with boxes; gap is the painted space between neighbours. */
+window.__headActions = () => {
+  const head = document.querySelector('[data-section="tasks"]')?.firstElementChild
+  if (!head) return null
+  const hr = head.getBoundingClientRect()
+  const btns = [...head.querySelectorAll('button')].map((b) => {
+    const r = b.getBoundingClientRect()
+    return {
+      text: b.textContent.trim(),
+      primary: b.className.includes('ant-btn-primary'),
+      inHeadRow: r.top >= hr.top - 0.5 && r.bottom <= hr.bottom + 0.5,
+      left: r.left,
+      right: r.right,
+      top: r.top,
+      bottom: r.bottom,
+      width: r.width,
+    }
+  })
+  return {
+    count: btns.length,
+    btns,
+    headRight: hr.right,
+    gap: btns.length === 2 ? btns[1].left - btns[0].right : null,
+  }
+}
+
 window.__ready = true
 `
+
+/** 0.5.1 的展示门（WORKFLOW_TASKS_UI=false）把工作流卡片收起来了，但卡片的契约
+ *  （同一 TaskCard、两颗胶囊、定时开关）必须原样完好——探针在 bundle 期把该常量
+ *  钉成 true，测「翻转开关后一切照旧」。隐藏面本身由 tests/workflow-hidden.test.ts 钉。 */
+const forceWorkflowUi = {
+  name: 'force-workflow-ui',
+  setup(b) {
+    b.onResolve({ filter: /(^|\/)shared\/feature-flags$/ }, () => ({ path: 'pm-flags', namespace: 'pm-flags' }))
+    b.onLoad({ filter: /.*/, namespace: 'pm-flags' }, () => ({ contents: 'export const WORKFLOW_TASKS_UI = true', loader: 'ts' }))
+  },
+}
 
 await build({
   stdin: { contents: HARNESS, resolveDir: process.cwd(), loader: 'tsx', sourcefile: 'harness.tsx' },
@@ -433,6 +523,7 @@ await build({
   jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"production"' },
   loader: { '.css': 'text', '.ttf': 'text', '.woff': 'text', '.woff2': 'text' },
+  plugins: [forceWorkflowUi],
 })
 
 const results = []
@@ -445,6 +536,7 @@ mkdirSync(SHOTS, { recursive: true })
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
 page.on('pageerror', (err) => console.log('  [page error]', err.message))
+page.on('console', (msg) => { if (msg.type() === 'error') console.log('  [console.error]', msg.text().slice(0, 300)) })
 const PAGE_HTML = '<!doctype html><html><body style="margin:0"><div id="root"></div></body></html>'
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE_HTML }))
 await page.goto('http://pm-probe.local/')
@@ -481,6 +573,26 @@ check(
   '…pinned at the far right of that row, inside the head box',
   !!btn && Math.abs(btn.rightGap) <= 0.5 && btn.inHeadRow,
   btn ? `right gap ${btn.rightGap.toFixed(1)}px, inRow=${btn.inHeadRow}` : 'no head button'
+)
+
+// 1b · 导入分享 sits to the LEFT of 新建任务 (user 2026-11-09). Two buttons in one
+// row: the newcomer is secondary (never primary — 新建任务 keeps the filled slot),
+// 8px apart, and ONLY the import one is there when the list is empty.
+const headActions = await page.evaluate(() => window.__headActions())
+check(
+  '…and 导入分享 is the button immediately to its LEFT (same head row, one cluster)',
+  !!headActions && headActions.count === 2 &&
+    headActions.btns[0].text.includes('导入分享') && headActions.btns[1].text.includes('新建任务') &&
+    headActions.btns.every((b) => b.inHeadRow) &&
+    headActions.btns[0].right <= headActions.btns[1].left + 0.5,
+  headActions ? `${headActions.count} button(s): ${headActions.btns.map((b) => `"${b.text}"@${b.left.toFixed(0)}..${b.right.toFixed(0)}`).join(' ')}` : 'no head actions'
+)
+check(
+  '…secondary (not primary), 8px away, and 新建任务 still closes the row',
+  !!headActions && !headActions.btns[0].primary && headActions.btns[1].primary &&
+    Math.abs(headActions.gap - 8) <= 1 &&
+    Math.abs(headActions.headRight - headActions.btns[1].right) <= 0.5,
+  headActions ? `primary=${headActions.btns.map((b) => b.primary).join('/')} gap ${headActions.gap == null ? 'n/a' : headActions.gap.toFixed(1)}px, right gap ${(headActions.headRight - headActions.btns[1].right).toFixed(1)}px` : 'no head actions'
 )
 
 // ── 2 · two columns, split by a rule ──
@@ -632,6 +744,48 @@ check(
 )
 check('…and creates nothing (the editor’s 保存 is what writes)', !callsAfterCreate.includes('routineCreate'), callsAfterCreate.join(', '))
 
+// ── 7b · 导入分享 (user 2026-11-09: the button left of 新建任务) ──
+// The head's left button runs the two-phase import: preview (main opens the file
+// dialog, sanitizes, hands back rows + a token) then a modal; closing it re-reads
+// the lists so an imported row appears without a reload.
+await page.evaluate(() => { window.__calls = [] })
+await page.evaluate(() => window.__mount({}))
+await page.waitForSelector('.routine-card')
+await page.evaluate(() => {
+  window.__importPreview = {
+    importToken: 'tok_probe',
+    items: [{ index: 0, kind: 'routine', name: '分享来的任务', summary: '每天 18:00', warnings: [], blocked: false, nameConflict: false }],
+  }
+})
+await page.locator('[data-action="share-import"]').click()
+// antd 6 renders the panel as `.ant-modal` > `.ant-modal-container`（v5 的
+// `.ant-modal-content` 已不存在，按旧选择器等会白等）。
+await page.waitForSelector('[role="dialog"]', { timeout: 3000 }).catch(() => {})
+const importModal = await page.evaluate(() => {
+  const m = document.querySelector('[role="dialog"]')
+  return { open: !!m, text: m ? m.innerText : '' }
+})
+const callsAfterImport = await page.evaluate(() => window.__calls.map((c) => c.method))
+check('导入分享 asks main for a preview (shareImportPreview)', callsAfterImport.includes('shareImportPreview'), callsAfterImport.join(', '))
+check(
+  '…and opens the preview modal with the parsed row (kind tag + name)',
+  importModal.open && importModal.text.includes('导入预览') && importModal.text.includes('日常任务') && importModal.text.includes('分享来的任务'),
+  importModal.open ? importModal.text.split('\n').slice(0, 5).join(' / ') : 'no modal'
+)
+check('…without touching the editor route (a dialog, not a navigation)', (await viewOf()).routineEditing === undefined, JSON.stringify(await viewOf()))
+const listBeforeCancel = await page.evaluate(() => window.__calls.filter((c) => c.method === 'routineList').length)
+const cancelBtn = page.locator('[role="dialog"] button.ant-btn-default')
+if (await cancelBtn.count()) await cancelBtn.click()
+await page.waitForTimeout(300)
+const listAfterCancel = await page.evaluate(() => window.__calls.filter((c) => c.method === 'routineList').length)
+const modalGone = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].filter((d) => getComputedStyle(d).display !== 'none' && d.getBoundingClientRect().width > 0).length === 0)
+check(
+  '…closing it re-reads the task lists (an imported row must show up at once)',
+  listAfterCancel > listBeforeCancel && modalGone,
+  `routineList calls ${listBeforeCancel} → ${listAfterCancel}, modal ${modalGone ? 'closed' : 'still open'}`
+)
+await page.evaluate(() => { window.__importPreview = undefined })
+
 // ── 8 · with nothing created yet, the card and the starters are still there ──
 // The first run of the app is exactly this state: no routines at all. The
 // actionable card must be on screen (the user's report was that the empty half
@@ -654,14 +808,21 @@ check(
   !!emptyCard && emptyCard.siblingCount === 1,
   emptyCard ? `${emptyCard.siblingCount} child(ren)` : 'no card'
 )
-// …and this state wears the facts §1 gave up: the head carries NO action (the
-// card is the affordance), the card closes the grid, and the dashed recipe +
-// type scale + CSS :hover are read HERE — the empty page is the only state that
-// renders it (user ruling 2026-09-23).
+// …and this state wears the facts §1 gave up: the head carries no CREATE button
+// (the card is the affordance) — only the import one, which is the whole point
+// of an empty list; the card closes the grid, and the dashed recipe + type scale
+// + CSS :hover are read HERE (user ruling 2026-09-23, amended 2026-11-09).
 check(
-  'empty state: the 我的任务 head carries no button (the card is the affordance)',
+  'empty state: the 我的任务 head carries no 新建任务 button (the card is the affordance)',
   (await page.evaluate(() => window.__createBtn())) === null,
-  'head action absent'
+  'no create button in the head'
+)
+const emptyHeadActions = await page.evaluate(() => window.__headActions())
+check(
+  'empty state: …only 导入分享 is up there (importing is how a bare install starts)',
+  !!emptyHeadActions && emptyHeadActions.count === 1 && emptyHeadActions.btns[0].text.includes('导入分享') &&
+    !emptyHeadActions.btns[0].primary && emptyHeadActions.btns[0].inHeadRow,
+  emptyHeadActions ? `${emptyHeadActions.count} button(s): ${emptyHeadActions.btns.map((b) => `"${b.text}"`).join(', ')}` : 'no head actions'
 )
 check(
   'empty state: …the card closes the task grid (a real button, in the grid, last)',
@@ -836,39 +997,56 @@ const descValue = (form) => form.inputs.find((i) => i.placeholder.includes('一�
 
 await page.evaluate(() => window.__mountEditor({ templateId: 'daily-report' }))
 await page.waitForSelector('textarea')
+// P3 任务中心：向导分步挂载——第一步（基本信息）读名称/描述，再切「任务内容」
+// 读提示词/变量，切「触发与批量」读调度。各步条件渲染，不能一屏全读。
+const basicsForm = await formOf()
+check('editor: the name is prefilled', nameValue(basicsForm) === '每日工作日报', String(nameValue(basicsForm)))
+check('editor: the description is prefilled', (descValue(basicsForm) ?? '').includes('下班前'), String(descValue(basicsForm)))
+// P3 任务中心：提示词在「任务内容」步（基本信息是第一步）——切过去再读。
+await page.getByText('任务内容', { exact: true }).click()
 await page.waitForTimeout(250)
 const daily = await formOf()
-check('editor: the form mounted (so the checks below are not vacuous)', daily.inputs.length > 0 && daily.textareas.length > 0, `${daily.inputs.length} inputs, ${daily.textareas.length} textareas`)
-check('editor: the name is prefilled', nameValue(daily) === '每日工作日报', String(nameValue(daily)))
-check('editor: the description is prefilled', (descValue(daily) ?? '').includes('下班前'), String(descValue(daily)))
 check('editor: the prompt is prefilled', daily.textareas.some((t) => t.includes('生成今天的工作日报')), daily.textareas.map((t) => t.slice(0, 24)).join(' | '))
 // The time field is antd's TimePicker since 2026-09-23 (the native input's
 // accent-blue segment highlight was unstyleable), so the pin is the VALUE,
 // not the input type — the picker's inner input is a text one.
-check('editor: the schedule came with the template', daily.switchOn && daily.inputs.some((i) => i.value === '18:00'), JSON.stringify(daily.inputs.filter((i) => i.value === '18:00')))
+await page.getByText('触发与批量', { exact: true }).click()
+await page.waitForTimeout(250)
+const dailyTrigger = await formOf()
+check('editor: the schedule came with the template', dailyTrigger.switchOn && dailyTrigger.inputs.some((i) => i.value === '18:00'), JSON.stringify(dailyTrigger.inputs.filter((i) => i.value === '18:00')))
 check('editor: it is the create-new flow, not an edit', daily.text.includes('新建任务') && !daily.text.includes('编辑任务'), daily.text.split('\n').slice(0, 3).join(' / '))
 await page.screenshot({ path: join(SHOTS, 'editor-daily.png') })
 
 await page.evaluate(() => window.__mountEditor({ templateId: 'meeting-notes' }))
 await page.waitForSelector('textarea')
+// P3（2026-11-08 迁步）：变量编辑在「基本信息」步、prompt 在「任务内容」步
+// ——先读基本信息，再切过去读提示词。
+const meetingBasics = await formOf()
+check('editor: its variable is carried into the form', meetingBasics.inputs.some((i) => i.placeholder === '变量名' && i.value === 'notes'), JSON.stringify(meetingBasics.inputs.filter((i) => i.placeholder === '变量名').map((i) => i.value)))
+check('editor: the label is localized, not the raw key', meetingBasics.inputs.some((i) => i.placeholder === '显示名' && i.value.includes('会议记录')), JSON.stringify(meetingBasics.inputs.filter((i) => i.placeholder === '显示名').map((i) => i.value)))
+await page.getByText('任务内容', { exact: true }).click()
 await page.waitForTimeout(250)
 const meeting = await formOf()
-check('editor: a manual template arrives with no schedule', meeting.switchOn === false)
-check('editor: its param is carried into the form', meeting.inputs.some((i) => i.placeholder === '参数名' && i.value === 'notes'), JSON.stringify(meeting.inputs.filter((i) => i.placeholder === '参数名').map((i) => i.value)))
-check('editor: the label is localized, not the raw key', meeting.inputs.some((i) => i.placeholder === '显示名' && i.value.includes('会议记录')), JSON.stringify(meeting.inputs.filter((i) => i.placeholder === '显示名').map((i) => i.value)))
 check('editor: the prompt keeps its {{notes}} placeholder', meeting.textareas.some((t) => t.includes('{{notes}}')))
 
 await page.evaluate(() => window.__mountEditor({ templateId: 'not-a-template' }))
 await page.waitForSelector('textarea')
-await page.waitForTimeout(250)
 const unknown = await formOf()
-check('editor: an unknown template id falls back to the plain empty form', nameValue(unknown) === '' && unknown.switchOn === false, `name "${nameValue(unknown)}"`)
+check('editor: an unknown template id falls back to the plain empty form', nameValue(unknown) === '', `name "${nameValue(unknown)}"`)
+await page.getByText('触发与批量', { exact: true }).click()
+await page.waitForTimeout(250)
+const unknownTrigger = await formOf()
+check('editor: …and no schedule rows', unknownTrigger.switchOn === false)
 
 await page.evaluate(() => window.__mountEditor({ templateId: 'weekly-report', locale: 'en' }))
 await page.waitForSelector('textarea')
+// P3（en locale）：名称在基本信息步，prompt 在「Task content」步。
+const enBasics = await formOf()
+check('editor EN: the template arrives translated', nameValue(enBasics) === 'Weekly report', String(nameValue(enBasics)))
+await page.getByText('Task content', { exact: true }).click()
 await page.waitForTimeout(250)
 const enForm = await formOf()
-check('editor EN: the template arrives translated', nameValue(enForm) === 'Weekly report' && enForm.textareas.some((t) => t.includes('this week’s report')), String(nameValue(enForm)))
+check('editor EN: the prompt arrives translated', enForm.textareas.some((t) => t.includes('this week’s report')), enForm.textareas.map((t) => t.slice(0, 24)).join(' | '))
 
 // ── 12 · the run context: workspace / approval / model + prompt variables ──
 // The three optional pickers state the conversation-default behavior in their
@@ -915,6 +1093,7 @@ await page.evaluate(() => {
   window.__runs = []
 })
 await page.evaluate(() => window.__mountEditor({}))
+await page.getByText('运行设置', { exact: true }).click()
 await page.waitForSelector('[data-routine-field="model"] .ant-select')
 await page.waitForTimeout(300)
 const fresh = await runContextForm()
@@ -925,20 +1104,23 @@ check(
 )
 await page.screenshot({ path: join(SHOTS, 'editor-run-context.png') })
 
-// 插入变量: a real click on the small select and then on the 日期 option.
+// P3 向导分步：插入变量在「任务内容」步——切过去点 prompt-head 的插入变量。
+await page.getByText('任务内容', { exact: true }).click()
+await page.waitForSelector('[data-routine-field="prompt-head"]')
 const varSelector = await openListSelector('prompt-head')
 check('run context: the variable menu offers exactly the five built-ins', (await page.locator(varSelector).count()) === 5, String(await page.locator(varSelector).count()))
 await page.locator(varSelector, { hasText: '日期 {{date}}' }).click()
 const promptAfterInsert = await page.evaluate(() => document.querySelectorAll('textarea')[0]?.value ?? '')
 check('run context: picking a variable inserts its token into the prompt', promptAfterInsert.includes('{{date}}'), promptAfterInsert)
 
-// 授权方式: exactly the three levels, and a pick lands in the trigger.
+// 授权/模型/工作区在「运行设置」步——切回来继续。
+await page.getByText('运行设置', { exact: true }).click()
+await page.waitForSelector('[data-routine-field="model"] .ant-select')
 const approvalSelector = await openListSelector('approval')
 const approvalLabels = await page.locator(approvalSelector).allTextContents()
 check('run context: 授权方式 offers exactly the three levels', approvalLabels.length === 3 && approvalLabels.some((l) => l.includes('全部允许')), approvalLabels.join(' | '))
 await page.locator(approvalSelector, { hasText: '全部允许' }).click()
 
-// 模型: the profile list, the active one marked.
 const modelSelector = await openListSelector('model')
 const modelLabels = await page.locator(modelSelector).allTextContents()
 check('run context: 模型 offers the profile list with the active marker', modelLabels.length === 2 && modelLabels[0].includes('（当前）'), modelLabels.join(' | '))
@@ -946,6 +1128,9 @@ await page.locator(modelSelector, { hasText: 'DeepSeek' }).click()
 
 // End to end: a save must carry the whole run context through routineCreate.
 await page.locator('[data-routine-field="workspace"] input').fill('/tmp/pulse-runs')
+// 名称在「基本信息」步——切回去填，再保存。
+await page.getByText('基本信息', { exact: true }).click()
+await page.waitForTimeout(200)
 await page.locator('input[placeholder^="例如"]').fill('上下文任务')
 await page.getByRole('button', { name: '保存' }).click()
 await page.waitForTimeout(400)
@@ -967,6 +1152,7 @@ await page.evaluate(() => {
   }]
 })
 await page.evaluate(() => window.__mountEditor({ routineId: 'r_ctx' }))
+await page.getByText('运行设置', { exact: true }).click()
 await page.waitForSelector('[data-routine-field="model"] .ant-select')
 await page.waitForTimeout(300)
 const stored = await runContextForm()
@@ -1007,6 +1193,8 @@ await page.evaluate(() => {
 })
 await page.evaluate(() => window.__mountWorkspace({ routineId: 'r_ws_week' }))
 await page.waitForSelector('.pane-row')
+// 鼠标挪离行区：hover 依赖的 opacity 断言不能继承上一步点击的悬停位置。
+await page.mouse.move(5, 5)
 await page.waitForTimeout(200)
 
 /** The left task column read from the live DOM: the header row, and each task
@@ -1087,6 +1275,73 @@ check(
   editView?.routineId === 'r_ws_manual' && editView?.routineEditing === true,
   JSON.stringify(editView),
 )
+
+// ── 混排卡片的契约：两类任务同一壳、同两颗标签封顶、开关只在有定时计划时出现 ──
+// 用户裁定（2026-11-09）：「对话式任务和工作流任务的卡片样式要统一，标签就保留
+// 两个：执行计划（手动执行 / 下次执行时间）和批量数据；设定了定时执行计划时才
+// 展示开关。」细粒度（plan 文案四种组合、长内容不撑宽、真点击换态）由
+// probe-task-card-pills.mjs 钉住；这里钉的是「两类卡片落在同一个网格里、标签
+// 与开关走同一套判定」——分头实现两次必然漂移的那一面。
+const WORKFLOWS = [
+  { id: 'w_sched', name: '每周行业动态', description: '每周一汇总', entry: 'n1',
+    nodes: [{ id: 'n1', title: '检索', prompt: '检索', verdicts: ['pass'] }],
+    edges: [{ from: 'n1', when: 'pass', to: 'DONE' }], schedule: { cron: '30 7 * * 1' } },
+  { id: 'w_off', name: '已停用的流水线', description: '关掉了', entry: 'n1',
+    nodes: [{ id: 'n1', title: '检索', prompt: '检索', verdicts: ['pass'] }],
+    edges: [{ from: 'n1', when: 'pass', to: 'DONE' }], schedule: { cron: '0 6 * * *' }, enabled: false },
+  { id: 'w_manual', name: '按表发信流水线', description: '无定时但有批量', entry: 'n1',
+    nodes: [{ id: 'n1', title: '检索', prompt: '检索', verdicts: ['pass'] }],
+    edges: [{ from: 'n1', when: 'pass', to: 'DONE' }], batch: { csvPath: '/tmp/rows.csv' } },
+]
+await page.evaluate((wfs) => window.__mount({ workflows: wfs }), WORKFLOWS)
+await page.waitForSelector('.routine-card')
+await page.waitForTimeout(250)
+const cardFacts = () => page.evaluate(() => [...document.querySelectorAll('.routine-card')].map((card) => {
+  const sw = card.querySelector('.ant-switch')
+  return {
+    name: (card.querySelector('span')?.textContent ?? '').trim(),
+    pills: [...card.querySelectorAll('[data-pill]')].map((p) => ({ kind: p.dataset.pill, cls: p.className, text: p.textContent.trim() })),
+    hasSwitch: !!sw,
+    checked: !!sw && sw.classList.contains('ant-switch-checked'),
+  }
+}))
+const facts = await cardFacts()
+const factOf = (name) => facts.find((f) => f.name === name)
+const planText = (name) => factOf(name)?.pills.find((p) => p.kind === 'plan')?.text ?? ''
+
+check('两类任务落在同一个网格里（3 对话式 + 3 工作流）', facts.length === 6, `${facts.length} cards`)
+check('每张卡都有且只有一颗「执行计划」标签（两类同形）',
+  facts.every((f) => f.pills.filter((p) => p.kind === 'plan').length === 1 && f.pills[0].cls.includes('routine-pill')),
+  JSON.stringify(facts.map((f) => f.pills.map((p) => p.kind))))
+check('「批量数据」只出现在配了 CSV 的工作流卡上',
+  facts.every((f) => f.pills.some((p) => p.kind === 'batch') === (f.name === '按表发信流水线')),
+  JSON.stringify(facts.filter((f) => f.pills.length > 1).map((f) => f.name)))
+check('工作流的定时计划与对话式同样翻成「下次运行：…」',
+  planText('每周行业动态').startsWith('下次运行：') && planText('每日工作日报').startsWith('下次运行：'),
+  `${planText('每周行业动态')} / ${planText('每日工作日报')}`)
+check('没有定时计划的工作流与对话式同样说「手动执行」',
+  planText('按表发信流水线') === '手动执行' && planText('会议纪要整理') === '手动执行',
+  `${planText('按表发信流水线')} / ${planText('会议纪要整理')}`)
+check('开关只属于有定时计划的卡：每周/已停用/日报/周报 + 无定时的会议纪要、发信流水线',
+  facts.filter((f) => f.hasSwitch).map((f) => f.name).sort().join(',') ===
+    ['已停用的流水线', '每周工作周报', '每周行业动态', '每日工作日报'].sort().join(','),
+  facts.filter((f) => f.hasSwitch).map((f) => f.name).join(', '))
+check('开关的态 = 启用位（工作流 enabled 缺席视为启用）',
+  factOf('每周行业动态')?.checked === true && factOf('已停用的流水线')?.checked === false,
+  `${factOf('每周行业动态')?.checked} / ${factOf('已停用的流水线')?.checked}`)
+
+// 真点击：工作流开关走 PIPELINE_WORKFLOWS 的 toggle op，且列表重拉后卡片真的换态。
+await page.evaluate(() => { window.__calls.length = 0 })
+await page.locator('.routine-card', { hasText: '每周行业动态' }).locator('.ant-switch').click()
+await page.waitForTimeout(400)
+const wfToggleCalls = await page.evaluate(() => window.__calls.filter((c) => c.method === 'pipelineWorkflows' && c.args[0] === 'toggle').map((c) => c.args[1]))
+const afterToggle = (await cardFacts()).find((f) => f.name === '每周行业动态')
+check('工作流开关 → pipelineWorkflows(toggle, {id, enabled:false})',
+  wfToggleCalls.length === 1 && wfToggleCalls[0].id === 'w_sched' && wfToggleCalls[0].enabled === false,
+  JSON.stringify(wfToggleCalls))
+check('…关掉后卡片翻成「手动执行」且开关为关（重拉生效，不是本地态）',
+  afterToggle?.checked === false && afterToggle?.pills.find((p) => p.kind === 'plan')?.text === '手动执行',
+  JSON.stringify(afterToggle))
 
 await browser.close()
 

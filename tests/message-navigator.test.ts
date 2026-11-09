@@ -140,9 +140,12 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
     expect(controls).toMatch(/position: 'absolute',\s*\n\s*right: 0,/)
   })
 
-  it('planStrip 在 navTopSlot 内保持居中收缩（块级包裹会拉伸成通栏条）', () => {
-    expect(chatView).toMatch(/\{planStrip && </)
-    expect(chatView).toContain("justifyContent: 'center'")
+  it('planStrip 左对齐到输入卡左缘（COMPOSER_MAX_WIDTH 卡框收缩，2026-11-08 裁定）', () => {
+    // prettier 按列宽把这段 JSX 折单行/展开多行（7a4c28e 同款教训）：钉
+    // 「planStrip 包在限宽 div 里」的结构，空白与括号形状不进断言。
+    expect(chatView).toMatch(/\{planStrip &&\s*\(?\s*<div style=\{\{ maxWidth: 952/)
+    expect(chatView).toContain("maxWidth: 952, margin: '0 auto', display: 'flex', justifyContent: 'flex-start'")
+    expect(chatView).not.toMatch(/stripAbove=/)
   })
 
   it('回到底部按钮的底色不被 ICON_BTN 的透明背景覆盖', () => {

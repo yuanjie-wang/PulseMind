@@ -253,13 +253,16 @@ describe('auto-apply wiring (source scans)', () => {
   })
 
   it('the routine host captures the PRE-patch frame BEFORE writing the patch', () => {
-    const page = readSrc('components', 'routine', 'RoutineEditorPage.tsx')
+    const page = readSrc('components', 'routine', 'TaskWizardPage.tsx')
     const push = page.indexOf('setUndoStack')
     const apply = page.indexOf('applyAssistantPatch(patch, draft)')
     expect(push).toBeGreaterThan(-1)
     expect(apply).toBeGreaterThan(push)
     // The frame carries the dirty flag too — 撤销 restores the 未保存 marker's honesty.
-    expect(page).toContain('{ draft, dirty }')
+    // 帧带 kind 标签（2026-11-08）：撤销栈由 routine/workflow 两臂共用，标签是
+    // 复原时选对 setter 的唯一依据。
+    expect(page).toContain("{ kind: 'routine', draft, dirty }")
+    expect(page).toContain("{ kind: 'workflow', def, dirty }")
   })
 
   it('the expert host captures all six fields (empties included) BEFORE writing the patch', () => {

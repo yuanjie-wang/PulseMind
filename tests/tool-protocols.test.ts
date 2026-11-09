@@ -107,7 +107,7 @@ describe('export_document manual reaches the model without entering the shared t
   })
 })
 
-const allEnabled = new Set(['export_document', 'office_edit'])
+const allEnabled = new Set(['office_export', 'office_edit'])
 
 // 2026-10-26 (user ruling, 系统提示词瘦身): the browser tool's 5.4K manual —
 // the single largest non-office protocol — left the trunk for the `browser`

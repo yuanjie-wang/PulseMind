@@ -632,6 +632,10 @@ function AppContent(): React.ReactElement {
   // 同一条 pane 等待管线——pane 快照报到该会话名下即 navigate。cookie 已由
   // 主进程写进 persist:pane，登录态随页面直达。
   useEffect(() => {
+    // 可选链守卫（PLAN-extension-handoff）：preload 早于渲染端改动编译时
+    // （dev 只在启动时跑一次 esbuild——主/preload 不热重载），方法缺席不得
+    // 炸掉整个 AppContent 挂载。
+    if (typeof window.electronAPI.onConversationHandoff !== 'function') return
     const unsub = window.electronAPI.onConversationHandoff(({ sessionId, title, url }) => {
       const target = url || title
       if (!sessionId || !target) return

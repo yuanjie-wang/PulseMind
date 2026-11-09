@@ -1,7 +1,7 @@
 // ── Chart spec (PLAN-deck-layouts → PLAN-pptx-html-route) ── the structured
 //  chart dialect shared by `data-chart` annotations in the html design route's
 //  deck.html. Pure types + a hand-rolled validator. (The deck GENERATION route
-//  — export_document's structured `deck` parameter — was removed 2026-10-05 by
+//  — office_export's structured `deck` parameter — was removed 2026-10-05 by
 //  user ruling: every from-scratch PPT goes through the design route; what
 //  survives here is the chart vocabulary that route annotates with, plus the
 //  workspace image extension whitelist the office generators share.)

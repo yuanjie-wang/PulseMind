@@ -380,6 +380,13 @@ function createTables(): void {
   // missing from it used to come up disabled on every fresh install. The new
   // authoritative column is the explicit opt-OUT list; absent/NULL = all on.
   try { database.exec("ALTER TABLE skill_preferences ADD COLUMN disabled_skills TEXT NOT NULL DEFAULT '[]'") } catch {}
+  // 2026-11-08（workflow canvas 二期）：用户自定义输入变量的实际取值（launch
+  // 时逐实例落一份 JSON；plan 去预设化后运行记录要能回答「这次用了什么输入」）。
+  try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN inputs_json TEXT') } catch {}
+  // 2026-11-08（P1 任务共享内核）：触发来源 manual/schedule（定时触发面）。
+  try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN trigger TEXT') } catch {}
+  // P2 批量归属：同一次 CSV 批量铸的实例行共享 batch_id（运行记录归组/停止面）。
+  try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN batch_id TEXT') } catch {}
 
   // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
   // Projects are named fixed workspaces picked on the welcome page (the
@@ -421,10 +428,13 @@ function createTables(): void {
       baseline_commit TEXT,
       workspace_dir   TEXT,
       status          TEXT NOT NULL,
+      trigger         TEXT,
+      batch_id        TEXT,
       current_node    TEXT,
       started_at      TEXT NOT NULL,
       finished_at     TEXT,
-      error           TEXT
+      error           TEXT,
+      inputs_json     TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);

@@ -7,7 +7,7 @@
  * Every claim here is checked against the implementation, because a rule set
  * that promises more than the engine does is worse than no rule set:
  *   - markdown → docx mapping: office-export/md-to-docx.ts (fonts are never
- *     chosen — the document-level controls are the export_document `fontSize`
+ *     chosen — the document-level controls are the office_export `fontSize`
  *     and the markdown frontmatter (cover/header/footer/toc/indent/accent),
  *     parsed by parseDocxFrontmatter; unknown keys land in a closing note)
  *   - markdown → xlsx: office-export/md-tables.ts + cell-type.ts (a bare grid —
@@ -27,7 +27,7 @@
 export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
   'references/docx.md': `# Word 交付规范（docx）
 
-生成走 \`export_document\`（format docx，输入 markdown）；改已有文件走 \`office_edit\`。
+生成走 \`office_export\`（format docx，输入 markdown）；改已有文件走 \`office_edit\`。
 
 ## 一、版式 = markdown 正文 + frontmatter 文档设计
 
@@ -67,7 +67,7 @@ accent: "#0F766E"        # 可选主题色：引用块/表头底纹/标题底线
 
 frontmatter 的键必须照上表拼写——未识别的键、解析不了的值会在文末注里点名（不会静默忽略）。目录在预览/PDF 里显示的是静态条目（无页码），页码以 Word/WPS 打开后更新域为准——用户在 Word 里打开时按提示更新即可，如实转述这一点。
 
-整份文档的字号用 \`export_document\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
+整份文档的字号用 \`office_export\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
 
 ## 二、表达不了的（别硬凑，如实说）
 
@@ -119,14 +119,14 @@ footer: page
 - **先 \`office_inspect\`**：拿段落索引 + 样式 + 文本长度与文本预算，索引是后续 op 的定位依据；\`replace_text\` 的 find 要精确原文时用 \`office_read\` 分页读（它的文本才是匹配空间，\`read\` 的 markdown 是重排过的，抄进来会错位）。
 - **索引随批次变化**：同一批里前面的 \`insert_paragraph\` / \`delete_paragraph\` 会改变后面段落的编号。按你对最终形态的意图排列顺序，或拆成多次调用、中间重读；拿不准当前位置就用 \`delete_paragraph\` 的 \`find\` 文本锚（按段落文本命中、\`expected_count\` 守卫，对索引漂移免疫）。
 - **\`replace_text\` 默认要求恰好命中 1 处**，命中数不符整批拒绝。多处的用 \`expected_count\` 或 \`paragraph\` 收窄——不要靠"反正会改第一处"。
-- **表格能改文字，也能加行删行**：\`insert_table_row\`（\`after_row\` 后插，可带每格文字，克隆锚点行的边框列宽）/ \`delete_table_row\`。护栏会拒绝竖向合并（vMerge）、嵌套表和删最后一行——撞上就如实说明并给替代。**加列 / 删列做不到**：Word 表没有任何单格写算子，\`insert_table_row\` 也不接受超出既有列数的 cells——加列唯一出路是重出一张表（改 markdown 重新 \`export_document\`）。
+- **表格能改文字，也能加行删行**：\`insert_table_row\`（\`after_row\` 后插，可带每格文字，克隆锚点行的边框列宽）/ \`delete_table_row\`。护栏会拒绝竖向合并（vMerge）、嵌套表和删最后一行——撞上就如实说明并给替代。**加列 / 删列做不到**：Word 表没有任何单格写算子，\`insert_table_row\` 也不接受超出既有列数的 cells——加列唯一出路是重出一张表（改 markdown 重新 \`office_export\`）。
 - **页眉页脚、页码、目录、域不在范围内**——工具手册已列明，遇到就如实拒绝。**图片可以插**：\`insert_image\` 给工作区路径（png/jpg/jpeg/gif，宽上限 600px 等比缩），http(s) / data: 地址嵌不了。
 - **修订模式**（\`track_changes: true\`）是给"改用户已有的正式文件"用的，让改动可审阅；你自己刚生成的一份新稿子没必要留痕。
 `,
 
   'references/xlsx.md': `# Excel 交付规范（xlsx）
 
-生成走 \`export_document\`（format xlsx，输入 markdown 表格）；改已有文件走 \`office_edit\`。
+生成走 \`office_export\`（format xlsx，输入 markdown 表格）；改已有文件走 \`office_edit\`。
 
 ## 一、四条公式原则
 
@@ -164,7 +164,7 @@ footer: page
 ## 五、编辑要点（office_edit·xlsx）
 
 - **先 \`inspect\`** 拿 sheet 名与 used range，再按列批量给算子。
-- **含图表、透视表、VBA 的工作簿会被直接拒绝**（引擎无法保真它们）。这时不要硬试：如实说明，给两个替代——另建一张只含数据的表（\`export_document\`），或请用户在原文件里手动改这几格。
+- **含图表、透视表、VBA 的工作簿会被直接拒绝**（引擎无法保真它们）。这时不要硬试：如实说明，给两个替代——另建一张只含数据的表（\`office_export\`），或请用户在原文件里手动改这几格。
 - **不支持增删列。** 插列会让既有公式的引用整体错位，所以设计上拒绝；要加列就加在末尾，或重出一张表。
 - **样式算子（\`set_style\`/\`set_column_width\`/\`freeze_panes\`）**：颜色一律 6 位 RRGGBB 不带 #；单次 \`set_style\` 展开上限 5 万格；含图表/绘图/主题的工作簿会拒绝这三个算子。生成端已带表头加粗与列宽，通常只需补差异。
 - **\`find_replace\` 只改值**：\`include_formulas: true\` 也只替换公式单元格里缓存的**结果文本**，公式表达式本身绝不被改写。富文本 / 超链接单元格命中会被拒（整格替换会毁掉格式）。
@@ -174,11 +174,11 @@ footer: page
 
   'references/pptx.md': `# PPT 交付规范（pptx）
 
-生成一律走**设计路线**（§七）：风格对齐 → tokens.css → deck.html → \`export_document\`（format pptx + \`htmlPath\`）；markdown \`content\` 只是纯文字大纲的兜底（§三）。改已有文件或套模板走 \`office_edit\`（§四）。
+生成一律走**设计路线**（§七）：风格对齐 → tokens.css → deck.html → \`office_export\`（format pptx + \`htmlPath\`）；markdown \`content\` 只是纯文字大纲的兜底（§三）。改已有文件或套模板走 \`office_edit\`（§四）。
 
 ## 一、从零生成只走设计路线
 
-从零做 PPT **只有一条生成路线**：设计路线（§七）——风格对齐 → \`write\` tokens.css → \`write\` deck.html → \`export_document\`（format pptx + \`htmlPath\`）。你给的是「这一页长什么样」的 CSS，引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图）。
+从零做 PPT **只有一条生成路线**：设计路线（§七）——风格对齐 → \`write\` tokens.css → \`write\` deck.html → \`office_export\`（format pptx + \`htmlPath\`）。你给的是「这一页长什么样」的 CSS，引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图）。
 
 流程总览与 profile 全文见 §七；本文件 §二（每页信息量）、§五（配色与字号）两条路线通用。
 
@@ -223,7 +223,7 @@ footer: page
 
 ## 七、设计路线（htmlPath：HTML → pptx）
 
-这是从零做 PPT 的**唯一生成路线**。四步：**风格对齐**（与用户确认，不要跳过）→ \`write\` tokens.css（主题落定）→ \`write\` deck.html（版式与内容）→ \`export_document\`（format pptx + \`htmlPath\`）。引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图），产物预览与 HTML 一致。写 deck.html 按内容与确认的气质自由设计——§3 的示例是写法参照，不是模板；**先出样张**（封面 + 一页正文）导出确认气质，再补全篇。
+这是从零做 PPT 的**唯一生成路线**。四步：**风格对齐**（与用户确认，不要跳过）→ \`write\` tokens.css（主题落定）→ \`write\` deck.html（版式与内容）→ \`office_export\`（format pptx + \`htmlPath\`）。引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图），产物预览与 HTML 一致。写 deck.html 按内容与确认的气质自由设计——§3 的示例是写法参照，不是模板；**先出样张**（封面 + 一页正文）导出确认气质，再补全篇。
 
 ### 0. 风格对齐：先定调，再动手
 
@@ -311,7 +311,7 @@ deck.html 的版式**自己设计**——从内容和 §0 确认的气质出发�
 
 **满版页**（反色、大图、大字这类页面）豁免「accent 单页 ≤10%」纪律（那条管正文页），全篇至少 2–3 页满版造节奏。反白文字在深底上一律 var(--pm-bg)，不要写死 #FFFFFF。
 
-**样张先行**：先把「封面 + 一页正文」两张样张 \`export_document\` 导出、在预览面板确认气质，对了再补全篇重导——改 HTML 便宜，写完 14 页才发现方向不对才是贵的。
+**样张先行**：先把「封面 + 一页正文」两张样张 \`office_export\` 导出、在预览面板确认气质，对了再补全篇重导——改 HTML 便宜，写完 14 页才发现方向不对才是贵的。
 
 #### 满版页示例：封面 / 章节扉页 / 金句 / 结束
 
@@ -456,7 +456,7 @@ deck.html 的版式**自己设计**——从内容和 §0 确认的气质出发�
 
 ### 4. 转换与交付
 
-- \`export_document\`（format pptx、htmlPath 指向 deck.html、file_path 给成品名）。**先 write 完 tokens 与 html 再调用**；profile 校验拒绝残缺 HTML 时按报错修完重试。
+- \`office_export\`（format pptx、htmlPath 指向 deck.html、file_path 给成品名）。**先 write 完 tokens 与 html 再调用**；profile 校验拒绝残缺 HTML 时按报错修完重试。
 - 成功结果带**保真报告**（每页块数 + 降级清单）——交付时如实转述给用户。
 - **双源契约**：HTML 是创作源——改版式/换主题 = 改 tokens.css 或 deck.html 重新导出；**交付后的小改走 office_edit**，不要改了 HTML 就重转（会丢掉已在 pptx 上做过的 office_edit 修改）。
 

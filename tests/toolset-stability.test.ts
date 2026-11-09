@@ -191,21 +191,20 @@ describe('recall 读 + memory_save 写是 ALWAYS base 工具（PLAN-recall-unifi
 })
 
 describe('context_compact is an ALWAYS base tool (PLAN-context-compact-tool, user ruling 2026-10-01)', () => {
-  it('defined always + context — 压缩是上下文治理不是记忆（user 2026-10-10）', () => {
+  it('defined always + session — 压缩是会话元操作（2026-11-08 分类裁定；「不是记忆」的旧裁定保持：user 2026-10-10）', () => {
     const def = BUILT_IN_TOOLS.find((t) => t.name === 'context_compact')
     expect(def).toBeDefined()
     expect(def?.availability).toBe('always')
-    expect(def?.category).toBe('context')
+    expect(def?.category).toBe('session')
     // An always tool needs no triggers — the keyword door is inert for it.
     expect(def?.triggers).toBeUndefined()
   })
 
-  it('context 类目成员：上下文治理的驱逐与取回两半都在，memory 类目无 gated 残留', () => {
+  it('类目成员（2026-11-08 重划）：session 收编压缩，tool_result_search 并入 memory；memory 类目无 gated 残留', () => {
     const cat = (n: string): string | undefined => BUILT_IN_TOOLS.find((t) => t.name === n)?.category
-    expect(cat('context_compact')).toBe('context')
-    expect(cat('tool_result_search')).toBe('context')
-    // memory 类目剩 search/save/conversation_search 三兄弟，全 always——
-    // 关键词门对该类目自然失效，没有半激活的中间态
+    expect(cat('context_compact')).toBe('session')
+    expect(cat('tool_result_search')).toBe('memory')
+    // memory 类目全 always——关键词门对该类目自然失效，没有半激活的中间态
     const memoryGated = BUILT_IN_TOOLS.filter((t) => t.category === 'memory' && t.availability === 'gated')
     expect(memoryGated).toHaveLength(0)
   })

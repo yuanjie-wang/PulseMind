@@ -50,10 +50,12 @@ describe('routine batch IPC wiring', () => {
   })
 
   it('normalizeInput carries the batch config through the save door', () => {
+    // 归一器在 storage/task-config-normalize（2026-11-08 两模式共用：workflow
+    // 的批量走同一道门），handler 只负责接线——两半都是承重的，接线漏了则
+    // 保存下来的批量被静默丢弃。
+    const shared = source('src/main/storage/task-config-normalize.ts')
+    expect(shared).toContain('export function normalizeBatchConfig')
     const src = source('src/main/ipc/routine.handler.ts')
-    // Both halves are load-bearing: the normalizer (which validates the shape)
-    // and its wiring into the payload (without it a saved batch is dropped).
-    expect(src).toContain('function normalizeBatchConfig')
     expect(src).toContain('batch: normalizeBatchConfig(input.batch)')
   })
 
@@ -197,14 +199,7 @@ describe('batch B2: concurrency override, resume, xlsx source', () => {
     expect(startIdx).toBeGreaterThan(-1)
     expect(bodyEnd).toBeGreaterThan(bodyStart)
     const body = src.slice(bodyStart, bodyEnd)
-    const needles = [
-      '未找到该批量运行记录',
-      '该批量运行仍在进行中',
-      '已有批量运行在进行',
-      '原任务已被删除',
-      '每一行都已成功',
-      '批量数据行数已变化',
-    ]
+    const needles = ['未找到该批量运行记录', '该批量运行仍在进行中', '已有批量运行在进行', '原任务已被删除', '每一行都已成功', '批量数据行数已变化']
     const positions = needles.map((n) => {
       const idx = body.indexOf(n)
       expect(idx, `resume must refuse with: ${n}`).toBeGreaterThan(-1)
@@ -306,7 +301,8 @@ describe('batch per-row timeout (单次超时)', () => {
   })
 
   it('the save door normalizes the config shape (normalizeBatchConfig)', () => {
-    const src = source('src/main/ipc/routine.handler.ts')
+    // 门的实现住在共享归一器里（保存门本身由上面的接线断言钉住）。
+    const src = source('src/main/storage/task-config-normalize.ts')
     expect(src).toContain('timeoutMinutes: normalizeBatchTimeoutMinutes(input?.timeoutMinutes)')
   })
 

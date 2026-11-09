@@ -13,10 +13,13 @@ interface PipelineRunRow {
   baseline_commit: string | null
   workspace_dir: string | null
   status: string
+  trigger: string | null
+  batch_id: string | null
   current_node: string | null
   started_at: string
   finished_at: string | null
   error: string | null
+  inputs_json: string | null
 }
 
 interface PipelineStageRow {
@@ -33,6 +36,19 @@ interface PipelineStageRow {
 }
 
 function rowToRun(r: PipelineRunRow): PipelineRun {
+  let inputs: Record<string, string> | undefined
+  try {
+    const parsed = r.inputs_json ? (JSON.parse(r.inputs_json) as unknown) : undefined
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out: Record<string, string> = {}
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v
+      }
+      if (Object.keys(out).length > 0) inputs = out
+    }
+  } catch {
+    /* keep undefined */
+  }
   return {
     id: r.id,
     workflowId: r.workflow_id,
@@ -41,7 +57,10 @@ function rowToRun(r: PipelineRunRow): PipelineRun {
     ...(r.baseline_commit ? { baselineCommit: r.baseline_commit } : {}),
     workspaceDir: r.workspace_dir ?? '',
     status: r.status as PipelineRunStatus,
+    ...(r.trigger === 'manual' || r.trigger === 'schedule' ? { trigger: r.trigger } : {}),
+    ...(r.batch_id ? { batchId: r.batch_id } : {}),
     ...(r.current_node ? { currentNode: r.current_node } : {}),
+    ...(inputs ? { inputs } : {}),
     startedAt: r.started_at,
     ...(r.finished_at ? { finishedAt: r.finished_at } : {}),
     ...(r.error ? { error: r.error } : {}),
@@ -74,8 +93,8 @@ export const pipelineRunStore = {
   createRun(run: Omit<PipelineRun, 'id'> & { id: string }): PipelineRun {
     getDb()
       .prepare(
-        `INSERT INTO pipeline_runs (id, workflow_id, workflow_name, objective, baseline_commit, workspace_dir, status, current_node, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipeline_runs (id, workflow_id, workflow_name, objective, baseline_commit, workspace_dir, status, trigger, batch_id, current_node, started_at, inputs_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -85,13 +104,16 @@ export const pipelineRunStore = {
         run.baselineCommit ?? null,
         run.workspaceDir ?? null,
         run.status,
+        run.trigger ?? null,
+        run.batchId ?? null,
         run.currentNode ?? null,
         run.startedAt,
+        run.inputs && Object.keys(run.inputs).length > 0 ? JSON.stringify(run.inputs) : null,
       )
     return run
   },
 
-  updateRun(id: string, patch: Partial<Pick<PipelineRun, 'status' | 'currentNode' | 'finishedAt' | 'error' | 'baselineCommit'>>): void {
+  updateRun(id: string, patch: Partial<Pick<PipelineRun, 'status' | 'currentNode' | 'finishedAt' | 'error' | 'baselineCommit' | 'workspaceDir'>>): void {
     getDb()
       .prepare(
         `UPDATE pipeline_runs SET
@@ -99,10 +121,11 @@ export const pipelineRunStore = {
            current_node = COALESCE(?, current_node),
            finished_at = COALESCE(?, finished_at),
            error = COALESCE(?, error),
-           baseline_commit = COALESCE(?, baseline_commit)
+           baseline_commit = COALESCE(?, baseline_commit),
+           workspace_dir = COALESCE(?, workspace_dir)
          WHERE id = ?`,
       )
-      .run(patch.status ?? null, patch.currentNode ?? null, patch.finishedAt ?? null, patch.error ?? null, patch.baselineCommit ?? null, id)
+      .run(patch.status ?? null, patch.currentNode ?? null, patch.finishedAt ?? null, patch.error ?? null, patch.baselineCommit ?? null, patch.workspaceDir ?? null, id)
   },
 
   getRun(id: string): PipelineRun | null {
@@ -114,6 +137,15 @@ export const pipelineRunStore = {
   listRuns(limit = 50): PipelineRun[] {
     const rows = getDb().prepare('SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT ?').all(limit) as PipelineRunRow[]
     return rows.map(rowToRun)
+  },
+
+  /** 定时触发的 overlap 门：该工作流是否还有 running 实例（decideScheduleFire
+   *  的 hasRunningRun 输入，routine-scheduler 同款语义）。 */
+  hasRunningForWorkflow(workflowId: string): boolean {
+    const row = getDb()
+      .prepare("SELECT 1 FROM pipeline_runs WHERE workflow_id = ? AND status = 'running' LIMIT 1")
+      .get(workflowId)
+    return row != null
   },
 
   startStage(stage: Omit<PipelineStageRun, 'id'> & { id: string }): void {

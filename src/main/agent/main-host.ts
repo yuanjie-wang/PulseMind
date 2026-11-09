@@ -38,7 +38,7 @@ import { invokeGitAction } from '../git/git.service'
 import { serverManager } from '../mcp/MCPServerManager'
 import { persistCustomServers, validateMcpConfig } from '../ipc/mcp.handler'
 import { performLlmStream, performSimpleFetch, abortLlmStream } from '../ipc/api-proxy.handler'
-import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecuteBackground, svcExecLogs, svcExecKill, svcPromoteToBackground } from '../services/terminal'
+import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecuteBackground, svcExecLogs, svcListBackground, svcIsBackgroundPidAlive, svcExecKill, svcPromoteToBackground } from '../services/terminal'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import * as fileOps from '../services/file-ops'
 import * as kq from '../services/knowledge-queries'
@@ -147,8 +147,10 @@ export const mainHost: PulseHost = {
   // the ALS session context wrapped around engine entry points, so they only
   // answer inside one — outside a session the allowlist reads empty and pid
   // channels refuse (no session → nothing is ours).
-  executeBackground: async (command, cwd, shellKey) => svcExecuteBackground(command, cwd, shellKey),
+  executeBackground: async (command, cwd, shellKey, name) => svcExecuteBackground(command, cwd, shellKey, name),
   execLogs: async (pid, tailBytes) => svcExecLogs(pid, tailBytes),
+  execList: async () => svcListBackground(),
+  execAlive: async (pid) => svcIsBackgroundPidAlive(pid),
   execKill: async (pid) => svcExecKill(pid),
   // Foreground promotion (PLAN-background-tasks A): the engineCall path wraps
   // the dispatch in the session's ALS scope, so the promoted pid lands in the

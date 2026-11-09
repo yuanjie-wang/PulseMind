@@ -46,7 +46,9 @@ describe('the context ring reads the shared estimator', () => {
     // against an 88K wire request, conv_20260927170026, 2026-09-28).
     const ring = src('src/renderer/src/components/chat/ContextRing.tsx')
     expect(ring).toContain('messages[i].inputTokens')
-    expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1))')
+    // The window and the anchor ride along: the merged fit gate judges the
+    // whole copy, so a tail slice must be priced against `t` (W1).
+    expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1), contextLength, t)')
     expect(ring).not.toContain('contextTokensOf(')
     expect(ring).not.toContain('text.length / 2')
     expect(ring).not.toContain('inputTokens != null')

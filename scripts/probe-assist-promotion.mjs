@@ -261,13 +261,13 @@ async function launcher() {
   const src = (p) => readFileSync(join(REPO_ROOT, ...p), 'utf-8')
   const lifecycleSrc = src(['src', 'renderer', 'src', 'components', 'form-assist', 'session-lifecycle.ts'])
   const expertSrc = src(['src', 'renderer', 'src', 'components', 'settings', 'expert', 'ExpertEditor.tsx'])
-  const routineSrc = src(['src', 'renderer', 'src', 'components', 'routine', 'RoutineEditorPage.tsx'])
+  const routineSrc = src(['src', 'renderer', 'src', 'components', 'routine', 'TaskWizardPage.tsx'])
   const handlerSrc = src(['src', 'main', 'ipc', 'conversation.handler.ts'])
   const wired = [
     ['session-lifecycle derives the target with formAssistConversationId', /const convId = formAssistConversationId\(conversationPrefix, entityId\)/.test(lifecycleSrc) && lifecycleSrc.length > 500, `${lifecycleSrc.length} chars`],
     ['session-lifecycle re-keys the messages it saves', /rekeyed/.test(lifecycleSrc) && /crypto\.randomUUID\(\)/.test(lifecycleSrc)],
     ['ExpertEditor promotes with EXPERT_ASSIST_SPEC.conversationPrefix', /promoteAssistDraftToEntity\(\s*assist\.messages,\s*EXPERT_ASSIST_SPEC\.conversationPrefix,/.test(expertSrc)],
-    ['RoutineEditorPage promotes with ROUTINE_ASSIST_SPEC.conversationPrefix', /promoteAssistDraftToEntity\(\s*assist\.messages,\s*ROUTINE_ASSIST_SPEC\.conversationPrefix,/.test(routineSrc)],
+    ['TaskWizardPage promotes with ROUTINE_ASSIST_SPEC.conversationPrefix', /promoteAssistDraftToEntity\(\s*assist\.messages,\s*ROUTINE_ASSIST_SPEC\.conversationPrefix,/.test(routineSrc)],
     // The handler grew the autoCleanup deleteWorkspace arm (workspace first, row
     // second), so the voidHandler shape no longer describes it; the intent —
     // the sidebar's delete goes through this channel and ends in

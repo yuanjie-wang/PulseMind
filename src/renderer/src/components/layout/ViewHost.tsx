@@ -15,6 +15,7 @@
 
 import React, { Suspense, lazy } from 'react'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { WORKFLOW_TASKS_UI } from '../../feature-flags'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
@@ -22,7 +23,7 @@ import type { ToolState } from '../../tools/types'
 
 const LazyCentersPage = lazy(() => import('../centers/CentersPage'))
 const LazyRoutineCenter = lazy(() => import('../routine/RoutineCenter'))
-const LazyRoutineEditorPage = lazy(() => import('../routine/RoutineEditorPage'))
+const LazyTaskWizardPage = lazy(() => import('../routine/TaskWizardPage'))
 const LazySearchView = lazy(() => import('../search/SearchView'))
 const LazySettingsPage = lazy(() => import('../settings/SettingsPage'))
 const LazyStatisticsPage = lazy(() => import('./StatisticsPage'))
@@ -66,9 +67,16 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
     case 'routines':
       // routineEditing routes to the dedicated create/edit page (list · form ·
       // assistant); without it the kind renders the card grid / run workspace.
+      // P3 任务中心：编辑统一为分步向导（TaskWizardPage）——routineEditing =
+      // routine 分支（既有参数：routineId/templateId/routineDraft 全保留），
+      // workflowEditing = workflow 分支；页面分支渲染混排卡片网格。
+      // WORKFLOW_TASKS_UI=false 时 workflow 分支不接客：陈旧导航态（页面内
+      // state，跨重启不存活）落到列表，而不是把一个隐藏功能的编辑器打开。
       content = view.routineEditing
-        ? <LazyRoutineEditorPage routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
-        : <LazyRoutineCenter runHistoryOf={view.runHistoryOf} />
+        ? <LazyTaskWizardPage kind="routine" routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
+        : view.workflowEditing && WORKFLOW_TASKS_UI
+          ? <LazyTaskWizardPage kind="workflow" workflowId={view.workflowId} />
+          : <LazyRoutineCenter runHistoryOf={view.runHistoryOf} />
       break
     case 'capability':
     case 'knowledge':

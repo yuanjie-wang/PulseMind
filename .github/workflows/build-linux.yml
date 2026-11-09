@@ -155,6 +155,23 @@ jobs:
           npm -v
           npm ci
 
+      # 与 mac/windows 的「Assert native modules target …」同层，只覆盖 OCR 这一条：
+      # 这一层必须查依赖树、不能只查包内。onnxruntime-web 在 devDependencies，
+      # 若 onnxruntime-node 哪天也落回 devDependencies，它根本不会进 asar.unpacked，
+      # 只查打包产物是查不出来的。
+      - name: Assert ORT deps are WASM-only
+        run: |
+          wasm=node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
+          if [ ! -f "$wasm" ]; then
+            echo "::error::onnxruntime-web 的 wasm 引擎缺失 —— OCR 不可用"
+            exit 1
+          fi
+
+          if [ -d node_modules/onnxruntime-node ]; then
+            echo "::error::onnxruntime-node 仍在依赖树 —— 依赖已换成 onnxruntime-web，它只会白胖并带入原生 EP"
+            exit 1
+          fi
+
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
@@ -205,6 +222,23 @@ jobs:
           du -sh dist/linux-unpacked/resources/ort-web
           find dist/linux-unpacked/resources/ort-web \
             -type f -printf '%10s  %P\n' | sort -rn
+
+      # Report 那步只打印、不判红，这里才是门禁，与 mac/windows 的
+      # 「Assert packaged tree is usable」对齐：「包内有 onnxruntime-node」是错，
+      # 「ort-web 三件套随包」才是对。
+      - name: Assert packed ORT is WASM-only
+        run: |
+          res=dist/linux-unpacked/resources
+          if [ -d "$res/app.asar.unpacked/node_modules/onnxruntime-node" ]; then
+            echo "::error::onnxruntime-node 仍在包内 —— 依赖切换未完成"
+            exit 1
+          fi
+          for f in ort.node.min.js ort-wasm-simd-threaded.mjs ort-wasm-simd-threaded.wasm; do
+            if [ ! -f "$res/ort-web/$f" ]; then
+              echo "::error::ort-web 运行时未随包：$f"
+              exit 1
+            fi
+          done
 
       # 只报告、不判红：这个二进制由 Google 的 Chrome for Testing 构建，glibc 下限
       # 我们改不了（既不能重编，也没有更老的 Linux 版本可换）。而它决定「浏览器工具

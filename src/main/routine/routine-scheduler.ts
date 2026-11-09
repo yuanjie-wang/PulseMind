@@ -8,12 +8,16 @@
 //     scarce resource — the session manager's FIFO queue still guards).
 
 import { routineStore } from '../storage/routine-store'
+import { workflowStore } from '../storage/workflow-store'
+import { pipelineRunStore } from '../storage/pipeline-run-store'
 import { decideScheduleFire } from '../../shared/schedule/schedule-decision'
 import { routineRunner, notify } from './routine-runner'
 import { routineBatchRunner } from './batch-runner'
-import { routineTriggerManager } from './routine-triggers'
+import { taskTriggerManager } from '../task/task-triggers'
 import { routineRunHistory } from './routine-run-history'
 import { auditStore } from '../storage/audit-store'
+import { launchWorkflowRun } from '../pipeline/launch'
+import { startWorkflowBatch } from '../pipeline/batch-feeder'
 import { migrateRoutineConversationTypes } from '../storage/conversation.db'
 import type { Routine } from '../../shared/types/routine'
 
@@ -28,6 +32,11 @@ class RoutineScheduler {
   private executingIds = new Set<string>()
   private bootedAt = new Date().toISOString()
   private lastPruneAt = 0
+  /** Workflow 定时的 nextRunAt——内存态，刻意不落盘：workflow JSON 由画布整
+   *  文件写，调度器写盘会与用户保存撞车。代价（可接受）：重启后 catch-up
+   *  降级为重新布防——isDue(undefined)=false 保证不会开机即火，下一个 cron
+   *  拍点照常触发。 */
+  private workflowNextRunAt = new Map<string, string>()
 
   start(): void {
     if (this.timer) return
@@ -35,7 +44,7 @@ class RoutineScheduler {
     this.timer = setInterval(() => this.tick(), TICK_MS)
     // Event triggers live with the scheduler (PLAN-routine-triggers M1): the
     // webhook endpoint binds and file watchers rebuild from the store here.
-    routineTriggerManager.start()
+    taskTriggerManager.start()
     // First tick after a short delay so app startup (DB init, settings) settles.
     // Stale 'running' rows from a previous process must be settled before any
     // fire decision — otherwise the overlap guard blocks the routine forever.
@@ -52,7 +61,7 @@ class RoutineScheduler {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
-    routineTriggerManager.stop()
+    taskTriggerManager.stop()
   }
 
   /** Enforce the saved 运行历史保留策略 (never the in-flight run). Fire and
@@ -96,6 +105,66 @@ class RoutineScheduler {
         routineStore.update(routine.id, { nextRunAt: new Date(decision.advanceTo).toISOString() })
       }
       if (decision.fire) this.fire(routine, decision.advanceTo ?? now)
+    }
+    this.tickWorkflows(now)
+  }
+
+  /** Workflow 的 cron 触发段（P1 任务共享内核）：同一拍复用 decideScheduleFire，
+   *  overlap 门 = pipelineRunStore.hasRunningForWorkflow，到点走 launchWorkflowRun
+   *  的定时路径（单实例、工作区 mint、required 缺失落 failed 行）。 */
+  private tickWorkflows(now: number): void {
+    let workflows: ReturnType<typeof workflowStore.list> = []
+    try {
+      workflows = workflowStore.list()
+    } catch (err) {
+      console.warn('[RoutineScheduler] workflow list failed:', err)
+      return
+    }
+    const liveIds = new Set(workflows.map((w) => w.id))
+    // 已删/已去定时的 workflow 清掉内存布防，防 map 泄漏。
+    for (const id of [...this.workflowNextRunAt.keys()]) {
+      if (!liveIds.has(id)) this.workflowNextRunAt.delete(id)
+    }
+    for (const wf of workflows) {
+      const cron = wf.schedule?.cron?.trim() ?? ''
+      if (!cron) continue
+      const decision = decideScheduleFire(
+        {
+          // 卡片开关（user 2026-11-09）：与对话式任务同一语义——没配 cron 就
+          // 没有可开关的东西，配了才有意义；缺席 = 启用（旧定义零迁移）。
+          enabled: wf.enabled !== false,
+          cron,
+          nextRunAt: this.workflowNextRunAt.get(wf.id),
+          catchUp: wf.schedule?.catchUp,
+        },
+        now,
+        { tickMs: TICK_MS, hasRunningRun: pipelineRunStore.hasRunningForWorkflow(wf.id) },
+      )
+      if (decision.advanceTo != null) {
+        this.workflowNextRunAt.set(wf.id, new Date(decision.advanceTo).toISOString())
+      }
+      if (decision.fire) {
+        const next = decision.advanceTo ?? now
+        this.workflowNextRunAt.set(wf.id, new Date(next).toISOString())
+        auditStore.record({ scope: 'routine', actor: 'scheduler', action: 'workflow.fire', target: wf.id, decision: 'allowed' })
+        try {
+          // 批量集成（批次 P3，与对话式任务同一判据）：勾了「定时也跑批量」且
+          // 配了数据文件 → 一次 fire 跑整份数据；否则单实例。批量的子实例都是
+          // running 行，所以重叠门（hasRunningForWorkflow）天然跳过后续拍点。
+          if (wf.batch?.applyToSchedule && wf.batch.csvPath?.trim()) {
+            void startWorkflowBatch({ workflow: wf, trigger: 'schedule' }).catch((err: unknown) => {
+              notify(`工作流批量定时触发失败：${wf.name}`, err instanceof Error ? err.message : String(err))
+            })
+          } else {
+            launchWorkflowRun({ workflow: wf, trigger: 'schedule' })
+          }
+        } catch (err) {
+          // launch 的同步门（工作流校验等）抛错：落一条 failed run 行让运行
+          // 记录如实显示，而不是静默吞掉。
+          console.warn('[RoutineScheduler] workflow fire failed:', wf.id, err)
+          notify(`工作流定时触发失败：${wf.name}`, err instanceof Error ? err.message : String(err))
+        }
+      }
     }
   }
 

@@ -5,7 +5,7 @@ import type { AgentEngineOptions } from './AgentEngine'
 import { getCachedSkillPrefs } from './mcp-cache'
 import type { GitStatusInfo } from '../../../shared/types/git'
 import { formatPlanForPrompt } from '../../../shared/plan/graph'
-import { formatSummonForPrompt, type SummonState } from '../../../shared/expert-context'
+import { formatForcedSkillsForPrompt, formatSummonForPrompt, type SummonState } from '../../../shared/expert-context'
 import { isLivePage } from '../../../shared/memory-pages'
 import { detectVerifyCommands } from './verify-loop'
 
@@ -48,10 +48,17 @@ export interface BuildSystemPromptParams {
    *  Rendered as a `## Background Tasks` section and drained by the engine at
    *  build time — one-shot, state block only (never persisted, never
    *  rendered), so the cache contract holds. Absent → no section. */
-  backgroundNotices?: Array<{ pid: number; code: number | null }>
+  backgroundNotices?: Array<{ pid: number; code: number | null; command?: string }>
+  /** Still-running background tasks (PLAN-background-tasks E #3) — pid+name,
+   *  liveness-checked against backgroundByPid at build time. Per-turn volatile
+   *  like the notices: the model's pid memory is lossy (compaction/restart). */
+  runningBackgroundTasks?: Array<{ pid: number; name: string }>
   /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来——state block 的
    *  `## Handoff` 告知行（提示不是工具下架，G20 禁 availability 门控）。 */
   handoffNotice?: boolean
+  /** `$`-pinned skill names for THIS turn ($-mention in the composer).
+   *  Per-turn volatile — state block only, like summon. Null/empty elsewhere. */
+  forcedSkills?: ReadonlyArray<string> | null
 }
 
 /** Sentinel standing in for the Context Window gauge while the compaction
@@ -92,7 +99,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge, contextUsage, backgroundNotices, handoffNotice } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge, contextUsage, backgroundNotices, runningBackgroundTasks, handoffNotice } = params
 
   if (spawnSystemPrompt) {
     const base = spawnSystemPromptAppendix
@@ -132,6 +139,7 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     // 的 ## Background Tasks 节在 buildSystemPrompt 这条生产路径上自落库即死，
     // 只有直接调 buildStateBlock 的测试见过它。
     backgroundNotices,
+    runningBackgroundTasks,
     handoffNotice,
   })
   return { systemPrompt, stateBlock }
@@ -250,13 +258,20 @@ async function buildStateBlock(params: {
   summon?: SummonState | null
   continuationNudge?: boolean
   contextUsage?: { tokens: number | null; window: number }
-  backgroundNotices?: Array<{ pid: number; code: number | null }>
+  backgroundNotices?: Array<{ pid: number; code: number | null; command?: string }>
+  /** Still-running background tasks (PLAN-background-tasks E #3) — pid+name,
+   *  liveness-checked against backgroundByPid at build time. Per-turn volatile
+   *  like the notices: the model's pid memory is lossy (compaction/restart). */
+  runningBackgroundTasks?: Array<{ pid: number; name: string }>
   /** PLAN-extension-handoff M3：会话自浏览器扩展移交而来。提示不是工具下架
    *  （G20 缓存契约禁 availability 门控）——page_* 的 schema 照常在，模型调了
    *  会得到「没有连接的浏览器客户端」的裸错误；这行让它先知道。 */
   handoffNotice?: boolean
+  /** `$`-pinned skill names for THIS turn ($-mention in the composer).
+   *  Per-turn volatile — state block only, like summon. Null/empty elsewhere. */
+  forcedSkills?: ReadonlyArray<string> | null
 }): Promise<string> {
-  const { opts, plan, summon, continuationNudge, contextUsage, backgroundNotices, handoffNotice } = params
+  const { opts, plan, summon, continuationNudge, contextUsage, backgroundNotices, runningBackgroundTasks, handoffNotice, forcedSkills } = params
   const sections: string[] = []
 
   // Git status — OFF unless the user turned the injection on in settings, and
@@ -329,6 +344,12 @@ async function buildStateBlock(params: {
   const summonSection = formatSummonForPrompt(summon ?? null)
   if (summonSection) sections.push(summonSection)
 
+  // $-pinned skills ($-mention, 2026-11-08): same per-turn family as the
+  // summon section — right after it, before the page/hints. Turn-scoped, so
+  // it vanishes with the turn.
+  const forcedSkillsSection = formatForcedSkillsForPrompt(forcedSkills ?? null)
+  if (forcedSkillsSection) sections.push(forcedSkillsSection)
+
   const pageSection = buildPageSection(resolvePageContext(opts))
   if (pageSection) sections.push(pageSection)
 
@@ -358,6 +379,10 @@ async function buildStateBlock(params: {
   // numbers; the clock keeps its last position either way.
   if (backgroundNotices && backgroundNotices.length > 0) {
     sections.push(buildBackgroundTasksSection(backgroundNotices))
+  }
+
+  if (runningBackgroundTasks && runningBackgroundTasks.length > 0) {
+    sections.push(buildRunningBackgroundTasksSection(runningBackgroundTasks))
   }
 
   // 会话移交告知（PLAN-extension-handoff M3）：持久 flag（引擎生命周期内每回合
@@ -761,11 +786,26 @@ function buildClockSection(): string {
  *  param, so a notice renders EXACTLY ONCE — the state block is never
  *  persisted, and exec_logs remains the full-output channel if the model
  *  misses the pointer. */
-export function buildBackgroundTasksSection(notices: Array<{ pid: number; code: number | null }>): string {
-  const lines = notices.slice(0, 10).map((n) =>
-    `- Background task pid=${n.pid} finished (${n.code === null ? 'killed by a signal' : `exit code ${n.code}`}). Read its final output with exec_logs(pid=${n.pid})${n.code === 0 ? '' : ' and check what went wrong before continuing'}.`,
-  )
+export function buildBackgroundTasksSection(notices: Array<{ pid: number; code: number | null; command?: string }>): string {
+  const lines = notices.slice(0, 10).map((n) => {
+    // 任务名（PLAN-background-tasks D）：台账带来的命令首行——模型不用再从
+    // 会话里回忆 pid 对应哪条命令。截断到 80 列防超长命令撑爆 state block。
+    const name = typeof n.command === 'string' && n.command.trim()
+      ? ` \`${n.command.trim().split('\n', 1)[0].slice(0, 80)}\``
+      : ''
+    return `- Background task${name} pid=${n.pid} finished (${n.code === null ? 'killed by a signal' : `exit code ${n.code}`}). Read its final output with exec_logs(pid=${n.pid})${n.code === 0 ? '' : ' and check what went wrong before continuing'}.`
+  })
   return ['## Background Tasks', 'These background processes finished since your last turn — you did not need to poll for them:', ...lines].join('\n')
+}
+
+/** The still-running half (PLAN-background-tasks E #3): the model's pid memory
+ *  is lossy by design (compaction, restart), so the live set re-renders EVERY
+ *  turn while anything runs. Exported pure for the format pins. */
+export function buildRunningBackgroundTasksSection(tasks: Array<{ pid: number; name: string }>): string {
+  const lines = tasks.slice(0, 10).map((t) =>
+    `- pid=${t.pid} \`${t.name.slice(0, 80)}\` — still running; read progress with exec_logs(pid=${t.pid}), stop with exec_kill(pid=${t.pid}). The full list (incl. ended ones) is one exec_list call away.`,
+  )
+  return ['## Background Tasks (running)', 'These background processes are STILL RUNNING — the user may be waiting on them; do not assume their outcome:', ...lines].join('\n')
 }
 
 /** The gauge line. The number is the POST-PIPELINE size of THIS request (see

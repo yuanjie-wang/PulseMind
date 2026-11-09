@@ -233,12 +233,12 @@ describe('wiring', () => {
     const host = src('src/main/agent/main-host.ts')
     expect(host).toMatch(/executeCommand: async \(command, cwd, timeoutMs, shellKey\) =>/)
     expect(host).toMatch(/\}, shellKey\),/)
-    expect(host).toContain('executeBackground: async (command, cwd, shellKey) => svcExecuteBackground(command, cwd, shellKey)')
+    expect(host).toContain('executeBackground: async (command, cwd, shellKey, name) => svcExecuteBackground(command, cwd, shellKey, name)')
   })
 
   it('BOTH dispatch sites pass the engine\'s conversationId — auto path and approval release — plus the background path', () => {
     const domain = src('src/renderer/src/agent/executors/domain-tools.ts')
-    expect(domain).toContain('getHost().executeBackground(command, cwd || undefined, ex.opts.conversationId)')
+    expect(domain).toContain("getHost().executeBackground(command, cwd || undefined, ex.opts.conversationId, typeof t.input?.name === 'string' ? t.input.name : undefined)")
     expect(domain).toMatch(/getHost\(\)\.executeCommand\(command, cwd \|\| undefined, [^\n]*, ex\.opts\.conversationId\)/)
     const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
     expect(flow).toContain('getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs, this.engine.opts.conversationId)')
@@ -262,7 +262,7 @@ describe('wiring', () => {
   it('bridge type carries shellKey on executeCommand and executeBackground', () => {
     const bridge = src('src/shared/types/electron-bridge.ts')
     expect(bridge).toContain('executeCommand: (command: string, cwd?: string, timeoutMs?: number, shellKey?: string) => Promise<string>')
-    expect(bridge).toContain('executeBackground: (command: string, cwd?: string, shellKey?: string) => Promise<{ pid: number }>')
+    expect(bridge).toContain('executeBackground: (command: string, cwd?: string, shellKey?: string, name?: string) => Promise<{ pid: number }>')
   })
 
   it('exec manual teaches persistence, the /dev/null stdin, the restart cost and the Windows exception', () => {
@@ -348,7 +348,8 @@ describe('foreground promotion — the persistent-shell path (PLAN-background-ta
     expect(domain).toContain('getHost().promoteToBackground(claimedPid)')
     const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
     expect(flow).toContain('registerForegroundExec(toolUseId, {')
-    expect(flow).toContain('promoteReleasedTool = (toolUseId: string): boolean')
+    // 签名带 command?（转后台时把命令行带进后台信封）——超集兼容，钉住形态不回退成无参
+    expect(flow).toContain('promoteReleasedTool = (toolUseId: string, command?: string): boolean')
   })
 })
 

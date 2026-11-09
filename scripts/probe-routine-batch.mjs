@@ -83,7 +83,12 @@ async function main() {
     sessions.push({ id, opts, prompt: null })
   }
   agentSessionManager.history = async () => ({ messages: [] })
-  agentSessionManager.releaseApprovalPin = () => {}
+  // Named releaseRunPins (was releaseApprovalPin): the runner calls it inside
+  // finish() ahead of the transcript announce, so a stale stub name throws
+  // there — the row is already success in the DB but onSettled never fires,
+  // and the pool never releases the slot (batch hangs at the concurrency
+  // ceiling: 实锤 2026-11-08, 2 of 5 rows ran then 5s/60s timeouts).
+  agentSessionManager.releaseRunPins = () => {}
   // Production semantics: stopExecution parks the engine at 'idle', and that
   // status is what settles a stopped row (the primitive's listener).
   agentSessionManager.engineCall = async (id, method) => {
@@ -247,7 +252,7 @@ async function main() {
     [{ id: childWithConv.conversationId + '_m1', role: 'user', createdAt: '2026-09-21T00:00:00Z', contentBlocks: [{ type: 'text', text: 'row transcript' }] }],
     childWithConv.conversationId, 'probe',
   ))
-  const removed = routineRunHistory.remove(parent.id)
+  const removed = await routineRunHistory.remove(parent.id)
   check('remove(parent) cascades: parent + 5 children rows, and the transcript', () => {
     assert.equal(removed, 6)
     assert.equal(childrenOf(parent.id).length, 0)
@@ -292,7 +297,7 @@ async function main() {
     [{ id: childD0.conversationId + '_m1', role: 'user', createdAt: '2026-09-21T00:00:00Z', contentBlocks: [{ type: 'text', text: 'row 1 transcript' }] }],
     childD0.conversationId, 'probe',
   ))
-  const removedMid = routineRunHistory.clearRoutine(routineD.id)
+  const removedMid = await routineRunHistory.clearRoutine(routineD.id)
   check('mid-batch 清空 removes nothing of the live batch: settled child, running child, transcript', () => {
     assert.equal(removedMid, 0)
     const kept = childrenOf(parentD.id)
@@ -308,16 +313,19 @@ async function main() {
     assert.equal(parent.status, 'success')
     assert.equal(parent.batchProgress.success, 3)
   })
+  // clearRoutine is async (it drops each run's conversation + minted dir), so
+  // the count is awaited ahead of check(), whose callback contract is sync.
+  const removedSettled = await routineRunHistory.clearRoutine(routineD.id)
   check('once the parent has settled, the same 清空 removes the whole batch and the transcript', () => {
-    const removed = routineRunHistory.clearRoutine(routineD.id)
-    assert.equal(removed, 4) // parent + 3 children
+    assert.equal(removedSettled, 4) // parent + 3 children
     assert.equal(childrenOf(parentD.id).length, 0)
     assert.equal(getConversation(childD0.conversationId), null)
   })
   const soloRun = routineStore.startRun(routineD.id, 'manual', 'routine_solo_conv')
   routineStore.finishRun(soloRun.id, { status: 'success' })
+  const removedSolo = await routineRunHistory.clearRoutine(routineD.id)
   check('a settled standalone run still clears — single-run semantics unchanged', () => {
-    assert.equal(routineRunHistory.clearRoutine(routineD.id), 1)
+    assert.equal(removedSolo, 1)
   })
 
   // ── 9. 停止 inside the createSession window never dispatches (review0922 M2) ──
@@ -682,7 +690,7 @@ try {
                   ask: async () => {},
                   history: async () => ({ messages: [] }),
                   engineCall: async () => {},
-                  releaseApprovalPin: () => {},
+                  releaseRunPins: () => {},
                 }
               `,
               loader: 'js',

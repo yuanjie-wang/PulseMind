@@ -34,8 +34,10 @@ function makeCompactor(messages: AgentMessage[], summary = '摘要内容') {
 /**
  * 差距分析 P0-1（2026-09-23）：压缩里贵的不是丢弃，是摘要那次 LLM 调用——它在
  * 请求路径上同步阻塞下一回合。prewarm 把这次调用挪到回合末的空闲窗口，这里钉住
- * 它的四个契约：摘要落进缓存（下次请求零 LLM）、事件数字真实、nano 压缩标记
- * 还原（预热的副本是丢弃的）、小会话直接 no-op。
+ * 它的契约：摘要落进缓存（下次请求零 LLM）、事件数字真实、小会话直接 no-op。
+ * （曾有的第四条「nano 压缩标记还原」随 marks 一起退场——W2 of
+ * PLAN-nano-light-trigger-merge 之后归档计划是副本的纯函数，模拟 pass 不留
+ * 任何需要隔离的状态。）
  */
 describe('compactor.prewarm: the summary moves off the request path', () => {
   it('seeds the cache so the next injectHistorySummary is a zero-LLM cache hit', async () => {
@@ -86,18 +88,6 @@ describe('compactor.prewarm: the summary moves off the request path', () => {
     expect(runHistorySummary).toHaveBeenCalledWith(expect.any(String), '重点保留所有决策与理由', 'region')
   })
 
-  it('restores nanoCompact marks: the prewarmed copy is discarded', async () => {
-    const messages = makeConversation()
-    const { compactor } = makeCompactor(messages)
-    const marks = (compactor as unknown as { _compressedToolUseIds: Set<string> })._compressedToolUseIds
-    marks.add('sentinel-id')
-    await compactor.prewarm({ contextLength: 500, source: 'post-turn' })
-    // If prewarm's virtual nano pass leaked its marks, the real request's nano
-    // would skip exactly those blocks and the copy would silently re-inflate.
-    expect((compactor as unknown as { _compressedToolUseIds: Set<string> })._compressedToolUseIds.has('sentinel-id')).toBe(true)
-    expect((compactor as unknown as { _compressedToolUseIds: Set<string> })._compressedToolUseIds.size).toBe(1)
-  })
-
   it('no-ops on a small conversation and serializes concurrent prewarms', async () => {
     const small = turn('只有一轮').flat() as AgentMessage[]
     const { compactor } = makeCompactor(small)
@@ -142,25 +132,10 @@ describe('compactor.prewarm: the summary moves off the request path', () => {
     expect(final.some((m) => (m.contentBlocks[0] as { text?: string }).text?.includes('【历史对话摘要】'))).toBe(true)
   })
 
-  // review0924 M2, second half: the finally restores the pre-warm marks but
-  // MERGES in what a request wrote while the prewarm was suspended — a whole
-  // restore erased the interleaved request's nano marks (benign only through
-  // placeholder re-derivation + the double tool_result_id).
-  it('keeps marks a request wrote while the prewarm was suspended, still discards the prewarm\'s own', async () => {
-    const messages = makeConversation()
-    let release: (v: string) => void = () => {}
-    const gate = new Promise<string>((r) => { release = r })
-    const slow = vi.fn(async () => { await gate; return '慢摘要' })
-    const compactor = new ContextCompactor({ runHistorySummary: slow, getMessages: () => messages })
-    const marks = (compactor as unknown as { _compressedToolUseIds: Set<string> })._compressedToolUseIds
-
-    const prewarmRun = compactor.prewarm({ contextLength: 500, source: 'post-turn' })
-    marks.add('interleaved-request-mark') // a request interleaving during the await
-    release('慢摘要')
-    await prewarmRun
-    expect(marks.has('interleaved-request-mark')).toBe(true) // survives the merge
-    expect(marks.size).toBe(1) // and nothing of the prewarm's leaked out
-  })
+  // review0924 M2's second half (marks merge across the suspension await) went
+  // with the marks themselves — the archive plan is a pure function of the copy
+  // since W2 of PLAN-nano-light-trigger-merge, so there is no per-compactor
+  // set left for an interleaved request and a prewarm to fight over.
 })
 
 // ── Engine wiring: post-turn trigger + /compact ───────────────────────

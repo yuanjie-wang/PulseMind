@@ -15,6 +15,8 @@ import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
+import { BackgroundTasksStrip } from '../chat/BackgroundTasksStrip'
+import { useBackgroundTasksStore } from '../../stores/backgroundTasksStore'
 import { MessageNavControls } from '../chat/MessageNavigator'
 import { listUserPrompts, isUserPromptMessage } from '../chat/message-navigator'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
@@ -266,7 +268,13 @@ function ChatView({
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
-  const contextUsed = useMemo(() => projectContextUsed(messages, lastCompaction), [messages, lastCompaction])
+  // The window rides along so the ring prices the copy the way the next build
+  // will: the merged fit gate only archives above 60% of it (PLAN-nano-light-
+  // trigger-merge W1), and a gate-blind ring would price archived results whole.
+  const contextUsed = useMemo(
+    () => projectContextUsed(messages, lastCompaction, contextLength),
+    [messages, lastCompaction, contextLength],
+  )
   // The spawn tree's delivered files (hydrated at terminal status — see
   // useDeliverables): the per-child map the per-turn cards attribute with.
   const childDeliverables = useDeliverables(conversationId, messages, agentStatus)
@@ -332,10 +340,7 @@ function ChatView({
   const handleResendUserMessage = useCallback(
     (text: string) => {
       if (!text.trim()) return
-      const busy =
-        isRequesting ||
-        agentStatus.status === 'awaiting_approval' ||
-        agentStatus.status === 'awaiting_user_input'
+      const busy = isRequesting || agentStatus.status === 'awaiting_approval' || agentStatus.status === 'awaiting_user_input'
       if (busy) {
         antdMessage.open({ key: 'resend-busy', type: 'warning', content: t('chatView.resendBusy') })
         return
@@ -510,6 +515,11 @@ function ChatView({
   // the full DAG — this only reminds that a plan is running while folded.
   const planSettled = plan ? plan.nodes.filter((n) => n.status !== 'pending').length : 0
   const planTotal = plan?.nodes.length ?? 0
+  // 后台任务条要不要占位（PLAN-background-tasks D）：布尔选择器只在「有无
+  // 运行中任务」翻面时触发 ChatView 重渲染——行级增删/标签变化不进这里。
+  // 只看**本会话**的行（2026-11-09 用户实锤「后台任务跨会话了」）：别的会话
+  // 在跑不占本对话的槽；空/未物化的 conversationId 查不到键，?.length 兜 false。
+  const hasBgTasks = useBackgroundTasksStore((s) => !!s.byConversation[conversationId ?? '']?.length)
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定。
   // The strip is a POINTER to the workbench's 计划 tab, so it only exists
   // where that pane can show (hideWorkbench would make its click a no-op).
@@ -578,24 +588,31 @@ function ChatView({
     jumpPinCancelRef.current = startBottomPin(() => scrollRef.current, {})
   }, [])
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定：计划条与悬浮导
-  // 航组合一个 slot——回到底部居中、步进对右侧。planStrip 包一层居中 flex
-  // 恢复收缩（直接放进块级 wrapper 会拉伸成通栏条）；按钮组自带与输入卡
-  // 片同宽同心的卡框，right:0 即卡片右缘。
+  // 航组合一个 slot——计划条/后台任务条**左对齐**（2026-11-08 用户裁定：居中
+  // 与【回到底部】圆钮冲突），回到底部居中、步进对右侧，互不占位——
+  // stripAbove 让位机制随之退役。条子包一层 flex-start 恢复收缩（直接放进
+  // 块级 wrapper 会拉伸成通栏条）；按钮组自带与输入卡片同宽同心的卡框，
+  // right:0 即卡片右缘。
   const navTopSlot = useMemo(
     () =>
-      planStrip || awayFromBottom ? (
+      planStrip || awayFromBottom || hasBgTasks ? (
         <div style={{ position: 'relative', width: '100%' }}>
-          {planStrip && <div style={{ display: 'flex', justifyContent: 'center' }}>{planStrip}</div>}
-          <MessageNavControls
-            visible={awayFromBottom}
-            prompts={userPrompts}
-            stripAbove={!!planStrip}
-            onJumpToBottom={jumpToBottom}
-            onJumpPrompt={handleNavJump}
-          />
+          {/* 计划条左缘 = 输入卡左缘（2026-11-08 用户裁定「和消息输入区的
+              左侧对齐」）：navTopSlot 槽横跨 Composer 根（floating 1000px），
+              卡本身帽宽 COMPOSER_MAX_WIDTH=952 再居中——条子盒收到同一帽宽
+              再 margin auto 居中，盒左缘即卡左缘（MessageNavControls 的卡框
+              同一套数学）。 */}
+          {planStrip && <div style={{ maxWidth: 952, margin: '0 auto', display: 'flex', justifyContent: 'flex-start' }}>{planStrip}</div>}
+          {/* 后台任务条（PLAN-background-tasks D）：行级变化自订阅 store、不进
+              本 memo 的依赖——只有「有无任务」的翻面（hasBgTasks）才重建槽
+              （槽必须在有任务时存在，否则条子随 null 一起消失）；「topSlot
+              引用稳定」契约保住。conversationId 穿线取数键（会话作用域，
+              2026-11-09 实锤「跨会话」），进依赖——只在换会话时重建一拍。 */}
+          <BackgroundTasksStrip conversationId={conversationId} />
+          <MessageNavControls visible={awayFromBottom} prompts={userPrompts} onJumpToBottom={jumpToBottom} onJumpPrompt={handleNavJump} />
         </div>
       ) : null,
-    [planStrip, awayFromBottom, userPrompts, jumpToBottom, handleNavJump],
+    [planStrip, awayFromBottom, hasBgTasks, userPrompts, jumpToBottom, handleNavJump, conversationId],
   )
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)

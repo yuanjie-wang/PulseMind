@@ -250,7 +250,7 @@ export async function svcReadFileBinary(filePath: string): Promise<string | null
 /** L11 (PLAN-office-editing): text write tools must not pour text into an
  *  office binary — that corrupts it. office_edit (the three editors merged)
  *  is the only writer for these formats. .pdf joins with pdf 导出:
- *  a PDF is produced by export_document (format pdf), never by text write. */
+ *  a PDF is produced by office_export (format pdf), never by text write. */
 const OFFICE_BINARY_EXTS = ['.docx', '.xlsx', '.pptx', '.doc', '.xls', '.ppt', '.pdf']
 
 function officeBinaryReject(filePath: string): string | null {
@@ -258,9 +258,9 @@ function officeBinaryReject(filePath: string): string | null {
   const ext = OFFICE_BINARY_EXTS.find((e) => lower.endsWith(e))
   if (!ext) return null
   if (ext === '.pdf') {
-    return `「${ext}」是二进制格式，write/edit 会损坏它——从内容生成 PDF 用 export_document 工具（format pdf）`
+    return `「${ext}」是二进制格式，write/edit 会损坏它——从内容生成 PDF 用 office_export 工具（format pdf）`
   }
-  return `「${ext}」是 Office 二进制格式，write/edit 会损坏它——编辑用 office_edit 工具，从内容生成新文件用 export_document 工具`
+  return `「${ext}」是 Office 二进制格式，write/edit 会损坏它——编辑用 office_edit 工具，从内容生成新文件用 office_export 工具`
 }
 
 export async function svcEditFile(input: EditFileInput): Promise<EditFileResult> {

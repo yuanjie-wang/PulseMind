@@ -43,18 +43,16 @@ export async function restartService(): Promise<{ port: number } | null> {
 }
 
 /** session.handoff 的桌面广播（PLAN-extension-handoff）：全窗口 webContents
- *  发送 + mac 关窗不退出的窗口保障——一扇窗都没有时先把主窗唤起来（index.ts
- *  动态导入避免模块环），再广播；popout/项目沉浸窗口收到后自行忽略。 */
+ *  发送 + **无条件前置**的主窗拉起（user 2026-11-08 实机反馈「转出后桌面端没
+ *  有到前台」——原实现只在零窗口时建窗，已有窗但不在前台/最小化时静默后置）；
+ *  popout/项目沉浸窗口收到后自行忽略。 */
 async function broadcastConversationHandoff(payload: { sessionId: string; title: string; url: string }): Promise<void> {
   try {
     const { BrowserWindow } = await import('electron')
     const { IPC_CHANNELS } = await import('../shared/ipc-channels')
-    let alive = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
-    if (alive.length === 0) {
-      const boot = await import('./index')
-      await boot.ensureMainWindowForHandoff()
-      alive = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
-    }
+    const boot = await import('./index')
+    await boot.ensureMainWindowForHandoff()
+    const alive = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
     for (const win of alive) {
       try {
         win.webContents.send(IPC_CHANNELS.CONVERSATION_HANDOFF, payload)

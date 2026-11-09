@@ -39,7 +39,9 @@ describe('buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC)', () => {
     const prompt = buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC)
     expect(prompt).toContain('form-patch')
     expect(prompt).toContain('[当前表单]')
-    expect(prompt).toContain('{{参数名}}')
+    // user 2026-11-08 术语统一：两种模式的声明一律叫「变量」，助手话术同源。
+    expect(prompt).toContain('{{变量名}}')
+    expect(prompt).not.toContain('参数')
   })
 })
 

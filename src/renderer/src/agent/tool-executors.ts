@@ -302,7 +302,7 @@ export class ToolExecutor implements ToolExecContext {
   readFilePaths = new Map<string, { mtime: string; size: number }>()
 
   /** 会话文件变更台账（2026-10-28 工作区树会话改动着色）: every path this
-   *  session's write/edit/patch/office_edit/export_document SUCCEEDED on, with
+   *  session's write/edit/patch/office_edit/office_export SUCCEEDED on, with
    *  created|modified decided at first touch (SessionFileLedger). Unlike
    *  readFilePaths this is per SESSION, not per engine: spawn-manager hands each
    *  sub-engine its parent's instance (shared by reference — nested spawns roll
@@ -335,6 +335,11 @@ export class ToolExecutor implements ToolExecContext {
    *  其 spawn-manager 的 completedSubAgents 注册表（parentPlanMerge 同款）；
    *  absent（旧测试桩）时续聊统一落「not warm」拒绝。 */
   followUpSubAgent?: (subConvId: string, task: string) => SubAgentHandle | null
+
+  /** 后台命令名台账的接线口（PLAN-background-tasks D，见
+   *  ToolExecContext.registerBackgroundCommand）：由 AgentEngine 构造后晚接线
+   *  （followUpSubAgent 同款）；absent（旧测试桩）时后台通道只跑不记名。 */
+  registerBackgroundCommand?: (pid: number, command: string) => void
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -830,7 +835,7 @@ export class ToolExecutor implements ToolExecContext {
         const ext = fp.slice(fp.lastIndexOf('.')).toLowerCase()
         const format = ext === '.docx' ? 'docx' : ext === '.pptx' ? 'pptx' : ext === '.xlsx' ? 'xlsx' : null
         if (!format) {
-          throw new Error(`office_edit 支持 .docx / .xlsx / .pptx，收到「${ext || '无扩展名'}」——读取用 office_read，生成新文件用 export_document`)
+          throw new Error(`office_edit 支持 .docx / .xlsx / .pptx，收到「${ext || '无扩展名'}」——读取用 office_read，生成新文件用 office_export`)
         }
         const ops = Array.isArray(t.input.ops) ? t.input.ops : []
         if (ops.length === 0) throw new Error('ops is required (至少一个写入算子；读取 / 定位用 office_read)')
@@ -990,7 +995,7 @@ export class ToolExecutor implements ToolExecContext {
           this.addToolResult(t.id, msg, true)
           t.exitCode = 1
         }
-      } else if (t.name === 'export_document') {
+      } else if (t.name === 'office_export') {
         // deck 参数已退役（设计路线，PLAN-pptx-html-route）：executor 是
         // export_document 的唯一生产调用方，不转发 deck——旧会话的模型必须
         // 在这里就得到指引，而不是 deck 被静默丢弃后按 content 走 markdown

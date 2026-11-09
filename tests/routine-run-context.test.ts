@@ -126,33 +126,39 @@ describe('wiring: the IPC whitelist carries the run context', () => {
 describe('wiring: the runner applies the run context', () => {
   const RUNNER = read('src', 'main', 'routine', 'routine-runner.ts')
 
-  it('resolves the workspace itself (clientId routine never reaches the session manager resolution)', () => {
-    expect(RUNNER).toContain("from '../storage/conversation-workspace'")
-    expect(RUNNER).toContain('resolveConversationWorkspace(convId)')
+  it('resolves the run context through the shared task kernel (P1: same resolver as the workflow engine)', () => {
+    // user 2026-11-08 (任务抽象一层): the workspace fallback / column seeding
+    // moved into src/main/task/run-context.ts — the routine keeps the
+    // 'outside-ask' default literal and the batch workspace override.
+    expect(RUNNER).toContain("from '../task/run-context'")
+    expect(RUNNER).toContain('resolveTaskRunContext(')
+    expect(RUNNER).toMatch(/resolveTaskRunContext\(\n\s+convId,/)
+    expect(RUNNER).toMatch(/opts\.workspaceDir,\n\s+\)/)
   })
 
   it('passes workspace / approval / profile into createSession', () => {
     expect(RUNNER).toContain('workspaceDir,')
-    expect(RUNNER).toContain("approvalMode: routine.approvalMode ?? 'outside-ask'")
+    expect(RUNNER).toContain('approvalMode,')
     // The pinned profile is hoisted so the SAME normalized value seeds the
     // conversation's profile_id column (the inheritance write below).
-    expect(RUNNER).toContain('const pinnedProfileId = routine.profileId?.trim() || undefined')
     expect(RUNNER).toContain('profileId: pinnedProfileId,')
   })
 
   it('seeds the conversation columns with the run context, before the session exists', () => {
     // User 2026-09-27: continuing a run's conversation must carry what the
-    // run ran with. The pins live only for the run's window; the columns are
-    // what the transcript's composer reads and what a restart re-creates from.
-    expect(RUNNER).toContain("setConversationApprovalMode(convId, routine.approvalMode ?? 'outside-ask')")
-    expect(RUNNER).toContain('if (pinnedProfileId) setConversationProfile(convId, pinnedProfileId)')
-    const seed = RUNNER.indexOf('setConversationApprovalMode(convId')
+    // run ran with. Seeding happens INSIDE the shared resolver, which the
+    // runner awaits before createSession — the order contract moves with it
+    // (pinned in tests/task-run-context.test.ts); here we pin that no
+    // createSession can precede the resolver call.
+    const resolve = RUNNER.indexOf('await resolveTaskRunContext(')
     const create = RUNNER.indexOf('await agentSessionManager.createSession(convId')
-    expect(seed).toBeGreaterThan(-1)
-    expect(create).toBeGreaterThan(seed)
-    // Straight to the DB layer, not setApprovalMode/setSessionProfile — a
-    // scheduled run must not rewrite the global last-used values.
+    expect(resolve).toBeGreaterThan(-1)
+    expect(create).toBeGreaterThan(resolve)
+    // Straight to the DB layer inside the resolver, not
+    // setApprovalMode/setSessionProfile — a scheduled run must not rewrite
+    // the global last-used values.
     expect(RUNNER).not.toContain('rememberLastUsed')
+    expect(read('src', 'main', 'task', 'run-context.ts')).not.toContain('rememberLastUsed')
   })
 
   it('hands the resolved workspace to the prompt renderer for {{workspace}}', () => {

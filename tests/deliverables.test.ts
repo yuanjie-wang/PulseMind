@@ -41,7 +41,7 @@ describe('FILE_WRITER_TOOLS', () => {
     // names the path it wrote, just like write/edit do); office_edit joined
     // as the three retired edit tools merged (2026-10-04) — the old names
     // STAY, persisted transcripts carry them forever and hydration counts on.
-    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'office_edit', 'pptx_edit', 'write', 'xlsx_edit'])
+    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'office_edit', 'office_export', 'pptx_edit', 'write', 'xlsx_edit'])
     expect(FILE_WRITER_TOOLS.has('exec')).toBe(false)
     expect(FILE_WRITER_TOOLS.has('read')).toBe(false)
     expect(FILE_WRITER_TOOLS.has('office_read')).toBe(false) // a read is not a deliverable
@@ -53,7 +53,7 @@ describe('verbCounts', () => {
   // the row but are never counted, and every other writer tool owns a bucket.
   it('counts export_document ops as NOTHING — the conv_20260925211304 badge shape', () => {
     const ops = [
-      ...Array.from({ length: 2 }, (_, i) => ({ tool: 'export_document', at: `t${i}`, ok: true })),
+      ...Array.from({ length: 2 }, (_, i) => ({ tool: 'office_export', at: `t${i}`, ok: true })),
       ...Array.from({ length: 7 }, (_, i) => ({ tool: 'docx_edit', at: `e${i}`, ok: true }))
     ]
     expect(verbCounts(ops)).toEqual([{ verb: 'edit', count: 7 }])
@@ -75,13 +75,13 @@ describe('verbCounts', () => {
       { verb: 'edit', count: 1 }
     ])
     // export-only row: the badge shows nothing at all
-    expect(verbCounts([{ tool: 'export_document', at: 't', ok: true }])).toEqual([])
+    expect(verbCounts([{ tool: 'office_export', at: 't', ok: true }])).toEqual([])
   })
 
   it('covers every FILE_WRITER_TOOLS member — a new writer must pick a bucket', () => {
     for (const tool of FILE_WRITER_TOOLS) {
       const counts = verbCounts([{ tool, at: 't', ok: true }])
-      if (tool === 'export_document') expect(counts).toEqual([])
+      if (tool === 'office_export' || tool === 'export_document') expect(counts).toEqual([])
       else expect(counts).toHaveLength(1)
     }
   })
@@ -250,7 +250,7 @@ describe('collectDeliverables', () => {
       ({ type: 'tool_result', tool_use_id: 'u1', content: `Exported ${path} (12 KB)` })
     const messages = [
       msg('a1', 'assistant', T0, [
-        use('u1', 'export_document', { source: { format: 'docx' }, file_path: '成都旅游攻略-3天2晚.docx' }),
+        use('u1', 'office_export', { source: { format: 'docx' }, file_path: '成都旅游攻略-3天2晚.docx' }),
         use('u2', 'docx_edit', { file_path: '成都旅游攻略-3天2晚.docx', ops: [] })
       ]),
       msg('u1', 'user', T1, [
@@ -263,7 +263,7 @@ describe('collectDeliverables', () => {
     })
     expect(d.rows).toHaveLength(1)
     expect(d.rows[0].path).toBe(DELIVERABLE)
-    expect(d.rows[0].ops.map((o) => o.tool)).toEqual(['export_document', 'docx_edit'])
+    expect(d.rows[0].ops.map((o) => o.tool)).toEqual(['office_export', 'docx_edit'])
   })
 
   it('resolves relative inputs against workspaceDir; without it they pass through raw', () => {

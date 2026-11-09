@@ -15,6 +15,7 @@ import { safeInvoke, safeInvokeObserver, editToolTargetPaths } from '../agent-ut
 import { TOOL_PARAM_LIMITS, MAX_LIVE_OUTPUT_CHARS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
+import { backgroundStartNote } from '../../../../shared/background-notice'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
 import { isProjectInstructionsPath } from '../system-prompt-builder'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
@@ -265,10 +266,12 @@ export class ExecutionFlow {
       span.claim(processId)
       // Promotion handle (PLAN-background-tasks A): the approve-released exec
       // parks no promise — its loop continuation is the onExit tail — so a
-      // 转入后台 click settles INLINE via promoteReleasedTool below.
+      // 转入后台 click settles INLINE via promoteReleasedTool below. The
+      // resolved command rides the closure so the background settle can file
+      // the task name into the engine's ledger (PLAN-background-tasks D).
       registerForegroundExec(toolUseId, {
         processId,
-        promote: () => { this.promoteReleasedTool(toolUseId) },
+        promote: () => { this.promoteReleasedTool(toolUseId, resolvedCommand) },
       })
     } catch (err) {
       span.stop()
@@ -287,7 +290,7 @@ export class ExecutionFlow {
    *  addToolResult's tail continue the loop exactly as an exit would. Returns
    *  false when this tool is not the engine's in-flight released command (the
    *  auto path owns the registry hit in that case). */
-  promoteReleasedTool = (toolUseId: string): boolean => {
+  promoteReleasedTool = (toolUseId: string, command?: string): boolean => {
     const processId = this.engine.executingProcessId
     const ownedToolUseId = this.engine.executingToolUseId
     if (!processId || ownedToolUseId !== toolUseId) return false
@@ -305,9 +308,14 @@ export class ExecutionFlow {
       .catch(() => null)
       .then((promoted) => {
         if (promoted && promoted.pid > 0) {
+          // 任务名入台账（PLAN-background-tasks D）：模型给的短名优先，命令经
+          // promote 闭包从 dispatch 点带过来；都拿不到回落 block 的原始输入
+          // （诚实降级）。
+          const rawInput = block.input as { name?: string; command?: string } | undefined
+          this.engine.registerBackgroundCommand(promoted.pid, String(rawInput?.name || command || rawInput?.command || ''))
           block.exitCode = 0
           block.backgroundPid = promoted.pid
-          const note = `Moved to background by the user: pid=${promoted.pid}\n\nThis result is immediate — the process keeps running beyond the turn. When it exits you will be NOTIFIED in a later turn's context (a Background Tasks section appears automatically — no polling needed); you can also read its output anytime with exec_logs(pid=${promoted.pid}) (the log tail also reports "[exited code=N]" once it ends). Stop it with exec_kill(pid=${promoted.pid}).`
+          const note = backgroundStartNote(promoted.pid, 'promoted')
           block.output = note
           this.engine.addToolResult(toolUseId, note, false)
         } else {
@@ -583,8 +591,8 @@ export class ExecutionFlow {
     const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
-    const procReadTools = tools.filter(t => t.name === 'exec_logs')
-    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
+    const procReadTools = tools.filter(t => t.name === 'exec_logs' || t.name === 'exec_list')
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list')
     const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
     // exec_logs is a read (P0-3 #14) dispatched through execOtherTool — never a
@@ -785,7 +793,7 @@ export class ExecutionFlow {
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list')
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
     // calls at 'outside-ask' and above, file writes as well at 'always-ask',

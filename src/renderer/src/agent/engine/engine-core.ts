@@ -126,6 +126,10 @@ export interface EngineCore {
   selectedBuiltinTools: string[]
   mcpToolOwner: Map<string, string>
   toolExecutor: ToolExecutor
+  /** 后台命令名台账（PLAN-background-tasks D）：pid → 命令串，exit/转后台的
+   *  同一拍写入（execution-flow 的 promote 臂与 executors/domain-tools 的两处
+   *  dispatch 点）。AgentEngine 上是构造期赋值的箭头属性，恒存在。 */
+  registerBackgroundCommand(pid: number, command: string): void
 
   // ── Spawn/sub-agent state ──
   activeSubAgents: Map<string, EngineCore>

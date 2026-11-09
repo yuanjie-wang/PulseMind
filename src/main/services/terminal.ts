@@ -6,7 +6,7 @@
  */
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, createWriteStream, openSync, readSync, statSync, closeSync, type WriteStream } from 'node:fs'
+import { existsSync, mkdirSync, createWriteStream, openSync, readSync, statSync, closeSync, readFileSync, writeFileSync, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
@@ -1002,6 +1002,113 @@ function openProcLog(pid: number): ProcLog {
   }
 }
 
+// ── pid ownership table (PLAN-background-tasks E, 2026-11-08) ───────────────
+// pid authorization was session-scoped ALS membership, which dies with the
+// session — a conversation re-opened after teardown or an app restart could
+// no longer read its own tasks' logs (「not found」, 跑完还是中途死无从判断).
+// The log FILES survive on disk; this JSON sidecar persists WHO owns each pid
+// so exec_logs' authorization can fall back to conversation ownership and
+// exec_list can enumerate a conversation's tasks without the model memorizing
+// pids. Process survival at session teardown stays the plan-#16 ruling (reap);
+// only the LOG reaches across.
+interface PidOwnerEntry {
+  conversationId: string
+  name: string
+  command: string
+  startedAt: number
+}
+
+const PID_OWNERS_FILE = join(PROC_LOG_DIR, 'owners.json')
+let pidOwnersCache: Record<string, PidOwnerEntry> | null = null
+
+function readPidOwners(): Record<string, PidOwnerEntry> {
+  if (pidOwnersCache) return pidOwnersCache
+  try {
+    pidOwnersCache = JSON.parse(readFileSync(PID_OWNERS_FILE, 'utf8')) as Record<string, PidOwnerEntry>
+  } catch {
+    pidOwnersCache = {}
+  }
+  // Prune entries whose log file is gone (the log is the point of the table)
+  // and cap the file at the 200 most recent.
+  const rows = Object.entries(pidOwnersCache).filter(([pid]) => existsSync(join(PROC_LOG_DIR, `${pid}.log`)))
+  rows.sort((a, b) => (b[1].startedAt ?? 0) - (a[1].startedAt ?? 0))
+  pidOwnersCache = Object.fromEntries(rows.slice(0, 200))
+  return pidOwnersCache
+}
+
+function writePidOwners(): void {
+  if (!pidOwnersCache) return
+  try {
+    mkdirSync(PROC_LOG_DIR, { recursive: true })
+    writeFileSync(PID_OWNERS_FILE, JSON.stringify(pidOwnersCache), { mode: 0o600 })
+  } catch { /* best-effort bookkeeping */ }
+}
+
+function registerPidOwner(pid: number, conversationId: string | undefined, name: string, command: string): void {
+  if (!conversationId || pid <= 0) return
+  const table = readPidOwners()
+  table[String(pid)] = { conversationId, name, command, startedAt: Date.now() }
+  writePidOwners()
+}
+
+/** The exit code a process's log reports (`[exited code=N]` tail line), or
+ *  undefined when the process has not ended (or the log is unreadable). */
+function exitCodeFromLog(pid: number): number | null | undefined {
+  let tail = ''
+  try {
+    const logPath = join(PROC_LOG_DIR, `${pid}.log`)
+    const size = statSync(logPath).size
+    const start = Math.max(0, size - 256)
+    const buffer = Buffer.alloc(size - start)
+    const fd = openSync(logPath, 'r')
+    try {
+      tail = buffer.toString('utf8', 0, readSync(fd, buffer, 0, buffer.length, start))
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return undefined
+  }
+  const matches = [...tail.matchAll(/\[exited code=(null|-?\d+)\]/g)]
+  const last = matches[matches.length - 1]
+  if (!last) return undefined
+  return last[1] === 'null' ? null : Number(last[1])
+}
+
+export interface BackgroundTaskInfo {
+  pid: number
+  name: string
+  command: string
+  startedAt: number
+  /** Alive right now (backgroundByPid membership — deleted in the same beat
+   *  the exit push fires). */
+  alive: boolean
+  /** undefined = still running (no exit line yet); null = killed by a signal. */
+  exitCode: number | null | undefined
+}
+
+/** Enumerate a conversation's background tasks (exec_list, PLAN-background-tasks
+ *  E #3): the ownership table answers 「刚才跑了几个、pid 是多少」 even after a
+ *  context compaction or an app restart — no in-context pid memory needed.
+ *  Most recent first, capped at 20. */
+export function svcListBackground(conversationId?: string): BackgroundTaskInfo[] {
+  const owner = conversationId ?? currentSessionSandbox()?.sessionId
+  if (!owner) return []
+  const table = readPidOwners()
+  const rows = Object.entries(table)
+    .filter(([, e]) => e.conversationId === owner)
+    .sort((a, b) => (b[1].startedAt ?? 0) - (a[1].startedAt ?? 0))
+    .slice(0, 20)
+  return rows.map(([pid, e]) => ({
+    pid: Number(pid),
+    name: e.name,
+    command: e.command,
+    startedAt: e.startedAt,
+    alive: backgroundByPid.has(Number(pid)),
+    exitCode: exitCodeFromLog(Number(pid)),
+  }))
+}
+
 /** Spawn a command that outlives the turn. Resolves as soon as the process is
  *  UP — no timers, no idle/wall-clock kills (P0-3 #13): longevity is the point.
  *  The pid registers in the session's backgroundPids (exec_logs/exec_kill only
@@ -1012,7 +1119,7 @@ function openProcLog(pid: number): ProcLog {
  *  (`shellKey` = the engine's conversationId): the model's earlier `cd` moved
  *  the foreground, and a dev server launched right after must not land back in
  *  the workspace root. Falls through to the workspace when no shell has run. */
-export async function svcExecuteBackground(command: string, cwd?: string, shellKey?: string): Promise<{ pid: number; processId: string }> {
+export async function svcExecuteBackground(command: string, cwd?: string, shellKey?: string, name?: string): Promise<{ pid: number; processId: string }> {
   await ensureLaunchHooks()
   const isWin = process.platform === 'win32'
   // Shell selection (PLAN-tool-issues Z1-r, 2026-10-28): this path runs
@@ -1046,14 +1153,24 @@ export async function svcExecuteBackground(command: string, cwd?: string, shellK
   if (pid > 0) {
     backgroundByPid.set(pid, entry)
     sandboxCtx?.backgroundPids.add(pid)
+    // Ownership table (PLAN-background-tasks E #1): survives session teardown
+    // and app restarts — exec_logs' cross-session fallback and exec_list's
+    // enumeration both read it.
+    registerPidOwner(pid, sandboxCtx?.sessionId, name || command, command)
   }
   const log = openProcLog(pid)
   log.write(`$ ${command}\n`)
 
   const outDecoder = createStreamDecoder()
   const errDecoder = createStreamDecoder()
+  // stderr 总字节（#4 洗白提示）：exit code 是「最后一条命令」的，尾部一条
+  // echo/cleanup 能把真实失败洗成 0——stderr 非空时在退出行前钉一行诚实提示。
+  let stderrBytes = 0
   child.stdout?.on('data', (chunk: Buffer) => log.write(outDecoder.push(chunk)))
-  child.stderr?.on('data', (chunk: Buffer) => log.write(errDecoder.push(chunk)))
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrBytes += chunk.length
+    log.write(errDecoder.push(chunk))
+  })
   child.on('error', (err) => {
     log.write(`\n[spawn error: ${err.message}]`)
     log.writeExitLine(null)
@@ -1062,8 +1179,8 @@ export async function svcExecuteBackground(command: string, cwd?: string, shellK
     if (sandboxCtx) notifySessionBackgroundExit(sandboxCtx.sessionId, pid, null)
   })
   child.on('exit', (code) => {
-    log.write(outDecoder.flush())
     log.write(errDecoder.flush())
+    if (stderrBytes > 0) log.write(`\n[stderr ${stderrBytes} bytes were written — the exit code is the LAST command's; a trailing echo/cleanup can whitewash a real failure. Verify against the output above.]`)
     log.writeExitLine(code)
     processes.delete(processId)
     if (pid > 0) backgroundByPid.delete(pid)
@@ -1140,6 +1257,7 @@ export function svcPromoteToBackground(processId: string): { pid: number } | nul
     backgroundByPid.set(shellPid, entry)
     const ctx = currentSessionSandbox()
     ctx?.backgroundPids.add(shellPid)
+    registerPidOwner(shellPid, ctx?.sessionId, f.command, f.command)
     f.release()
     return { pid: shellPid }
   }
@@ -1169,6 +1287,7 @@ export function svcPromoteToBackground(processId: string): { pid: number } | nul
   processes.delete(processId) // background entries are found via backgroundByPid
   backgroundByPid.set(pid, entry)
   entry.sessionCtx?.backgroundPids.add(pid)
+  registerPidOwner(pid, entry.sessionCtx?.sessionId, entry.command, entry.command)
   return { pid }
 }
 
@@ -1187,7 +1306,14 @@ export function svcListDetachedShellRuns(): Array<{ processId: string; command: 
  *  an empty-output success, not a miss. */
 export function svcExecLogs(pid: number, tailBytes?: number): string | null {
   const ctx = currentSessionSandbox()
-  if (!ctx || !ctx.backgroundPids.has(pid)) return null
+  if (!ctx || !ctx.backgroundPids.has(pid)) {
+    // Cross-session fallback (PLAN-background-tasks E #1): ALS membership dies
+    // with the session — a conversation re-opened after teardown or an app
+    // restart used to get "not found" for its OWN tasks, unable to tell
+    // finished from died-mid-run. The persisted ownership table answers for
+    // pids this conversation spawned, whatever session is attached now.
+    if (!ctx || readPidOwners()[String(pid)]?.conversationId !== ctx.sessionId) return null
+  }
   const want = Math.max(1, Math.min(tailBytes ?? PROC_LOG_DEFAULT_TAIL, PROC_LOG_MAX_TAIL))
   const logPath = join(PROC_LOG_DIR, `${pid}.log`)
   let size: number
@@ -1203,6 +1329,39 @@ export function svcExecLogs(pid: number, tailBytes?: number): string | null {
     const fd = openSync(logPath, 'r')
     try {
       const read = readSync(fd, buffer, 0, length, start)
+      return buffer.toString('utf8', 0, read)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return ''
+  }
+}
+
+/** Renderer-facing log tail (PLAN-background-tasks D): the floating strip's
+ *  expanded card polls this over TERMINAL_EXEC_LOGS. svcExecLogs itself cannot
+ *  serve that call — its authorization reads the session AsyncLocalStorage,
+ *  and an IPC handler runs OUTSIDE any session scope, so the strip would poll
+ *  null forever and show (尚无输出) while the process streams. Authorization
+ *  here is the app-wide background registry instead: the renderer only ever
+ *  asks for pids its own sessions spawned (the strip's rows come from those
+ *  sessions' tool_status diffs). Same read discipline as svcExecLogs. */
+export function svcExecLogsForRenderer(pid: number, tailBytes?: number): string | null {
+  if (!Number.isFinite(pid) || pid <= 0) return null
+  const want = Math.max(1, Math.min(tailBytes ?? PROC_LOG_DEFAULT_TAIL, PROC_LOG_MAX_TAIL))
+  const logPath = join(PROC_LOG_DIR, `${Math.floor(pid)}.log`)
+  let size: number
+  try {
+    size = statSync(logPath).size
+  } catch {
+    return '' // ours (or not started yet) — no output written
+  }
+  const start = Math.max(0, size - want)
+  const buffer = Buffer.alloc(size - start)
+  try {
+    const fd = openSync(logPath, 'r')
+    try {
+      const read = readSync(fd, buffer, 0, buffer.length, start)
       return buffer.toString('utf8', 0, read)
     } finally {
       closeSync(fd)
@@ -1235,4 +1394,14 @@ export function svcReapBackgroundPids(pids: Iterable<number>): void {
     setTimeout(() => killProcess(entry, true), 3000)
     backgroundByPid.delete(pid)
   }
+}
+
+/** Liveness of a session-spawned background pid (PLAN-background-tasks D):
+ *  membership in backgroundByPid — the exit handlers delete the entry in the
+ *  same beat they push the session wake. The tool_status diff reads this to
+ *  keep DEAD pids off the wire: the turn-terminal reconciliation sweep re-ships
+ *  every settled block, and a re-shipped backgroundPid would resurrect the
+ *  strip row / sidebar count for a process that will never emit a second exit. */
+export function svcIsBackgroundPidAlive(pid: number): boolean {
+  return backgroundByPid.has(pid)
 }

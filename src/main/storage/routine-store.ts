@@ -5,13 +5,13 @@
 
 import { prefixedId } from '../utils/id'
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { getDb } from './database'
 import { DATA_DIR } from './index'
 import { safeChildPath } from './safe-name'
+import { normalizeTriggers } from './task-config-normalize'
 import { latestAttemptsByIndex, progressFromAttempts } from '../../shared/routine/batch'
-import type { Routine, RoutineBatchProgress, RoutineRun, RoutineFileTrigger, RoutineTrigger, RoutineWebhookTrigger } from '../../shared/types/routine'
+import type { Routine, RoutineBatchProgress, RoutineRun } from '../../shared/types/routine'
 
 export const ROUTINES_DIR = join(DATA_DIR, 'routines')
 
@@ -35,34 +35,8 @@ function writeRoutine(routine: Routine): void {
   writeFileSync(routinePath(routine.id), JSON.stringify(routine, null, 2), 'utf-8')
 }
 
-/** PLAN-routine-triggers M1: triggers normalize on EVERY write, so the store
- *  is the one place the invariants live — a webhook trigger always leaves
- *  with a token (minted HERE; the UI never invents secrets), file paths are
- *  trimmed/non-empty (≤20), and the debounce window is clamped. An all-invalid
- *  list normalizes to undefined (field dropped from the JSON). */
-function normalizeTriggers(triggers: unknown): RoutineTrigger[] | undefined {
-  if (!Array.isArray(triggers)) return undefined
-  const out: RoutineTrigger[] = []
-  for (const raw of triggers.slice(0, 10)) {
-    if (!raw || typeof raw !== 'object') continue
-    const t = raw as Partial<RoutineFileTrigger> & Partial<RoutineWebhookTrigger> & { type?: unknown }
-    if (t.type === 'file') {
-      const paths = (t.paths ?? [])
-        .map((p) => String(p ?? '').trim())
-        .filter((p) => p.length > 0)
-        .slice(0, 20)
-      if (paths.length === 0) continue
-      const debounceMs = Number.isFinite(t.debounceMs)
-        ? Math.min(60_000, Math.max(1_000, Number(t.debounceMs)))
-        : undefined
-      out.push({ type: 'file', paths, ...(debounceMs !== undefined ? { debounceMs } : {}) })
-    } else if (t.type === 'webhook') {
-      const token = typeof t.token === 'string' && t.token.trim() ? t.token.trim() : randomBytes(16).toString('hex')
-      out.push({ type: 'webhook', token })
-    }
-  }
-  return out.length > 0 ? out : undefined
-}
+/** PLAN-routine-triggers M1: triggers normalize on EVERY write (the invariants
+ *  live in task-config-normalize, shared with the workflow store). */
 
 interface RoutineRunRow {
   id: string

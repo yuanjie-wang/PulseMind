@@ -32,14 +32,22 @@ if (bootThemePref) {
 const popout = parsePopoutParam()
 const project = parseProjectParam()
 
+// antd 6 runs CSS-variables mode unconditionally, and App's dev check rejects
+// `component={false}` (it wants a DOM node to carry the cssVar class). This
+// root App is context-only — the real UI <AntdApp> in App.tsx/PopoutApp
+// already renders the .ant-app div with that class — so the classes antd
+// passes in rootProps are intentionally dropped and children render through
+// a Fragment stand-in: same DOM as component={false}, without the warning.
+const PassThrough = ({ children }: { children?: React.ReactNode }) => <>{children}</>
+
 function renderRoot(): void {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       {/* App's body hooks call AntdApp.useApp() (useChatController toasts), but the
           <AntdApp> App renders in its own JSX is a DESCENDANT of those call sites —
           context lookup never sees it. This root provider is the one they resolve;
-          component={false} keeps the DOM byte-identical (Fragment, no wrapper div). */}
-      <AntdApp component={false}>
+          PassThrough keeps the DOM byte-identical (Fragment, no wrapper div). */}
+      <AntdApp component={PassThrough}>
         {project ? (
           <PopoutApp projectId={project.projectId} />
         ) : popout ? <PopoutApp convId={popout.convId} /> : <App />}

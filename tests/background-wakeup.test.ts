@@ -17,12 +17,30 @@ import { readFileSync } from 'node:fs'
 process.env.HOME = mkdtempSync(join(tmpdir(), 'pulsemind-bg-wake-'))
 
 const { buildBackgroundTasksSection } = await import('../src/renderer/src/agent/system-prompt-builder')
+const { backgroundStartNote } = await import('../src/shared/background-notice')
 const { AgentEngine } = await import('../src/renderer/src/agent/AgentEngine')
 const { ToolManager } = await import('../src/renderer/src/tools/ToolManager')
 const { SkillManager } = await import('../src/renderer/src/skills/SkillManager')
 const { setHost } = await import('../src/renderer/src/agent/host')
 
 // ── 节格式（纯函数） ─────────────────────────────────────────────────────────
+
+describe('backgroundStartNote', () => {
+  it('names the pid and distinguishes the two entry kinds', () => {
+    expect(backgroundStartNote(7, 'started')).toContain('Background process started: pid=7')
+    expect(backgroundStartNote(7, 'promoted')).toContain('Moved to background by the user: pid=7')
+  })
+
+  it('teaches what the freed round trips are for, and bans the sleep workaround by name', () => {
+    const note = backgroundStartNote(9, 'started')
+    expect(note).toContain('you will be NOTIFIED')
+    expect(note).toContain('does not depend on it')
+    expect(note).toContain('Do not synthesize a wait')
+    expect(note).toContain('end the turn')
+    expect(note).toContain('exec_logs(pid=9)')
+    expect(note).toContain('exec_kill(pid=9)')
+  })
+})
 
 describe('buildBackgroundTasksSection', () => {
   it('exit 0 reads as good news; nonzero asks for diagnosis; null names the signal', () => {
@@ -98,7 +116,16 @@ describe('background wake-up wiring', () => {
     expect(spb).toContain('buildBackgroundTasksSection(backgroundNotices)')
   })
 
-  it('the background envelope teaches the wake-up (no polling needed)', () => {
-    expect(read('renderer/src/agent/executors/domain-tools.ts')).toContain('you will be NOTIFIED')
+  it('the background envelope teaches the wake-up AND the freed time, from ONE source', () => {
+    const shared = read('shared/background-notice.ts')
+    expect(shared).toContain('you will be NOTIFIED')
+    expect(shared).toContain('Do not synthesize a wait')
+    expect(shared).toContain('end the turn')
+    // Three dispatch sites — each must call the helper, never re-inline the text.
+    const tools = read('renderer/src/agent/executors/domain-tools.ts')
+    expect(tools).toContain("backgroundStartNote(pid, 'started')")
+    expect(tools).toContain("backgroundStartNote(promoted.pid, 'promoted')")
+    expect(read('renderer/src/agent/engine/execution-flow.ts')).toContain("backgroundStartNote(promoted.pid, 'promoted')")
+    expect(tools).not.toContain('This result is immediate')
   })
 })

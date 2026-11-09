@@ -83,7 +83,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
       cancelText="取消"
       okText="开始"
       okButtonProps={{ disabled: !preview || blocked, danger: true }}
-      focusTriggerAfterClose={false}
+      focusable={{ focusTriggerAfterClose: false }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}>
         {csvPath && (
@@ -141,10 +141,10 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
             </div>
             <div style={{ fontSize: 12, color: '#999' }}>共 {preview.totalRows} 行，预览前 {preview.previewRows.length} 行。</div>
             {analysis.missingRequiredHeaders.length > 0 && (
-              <div style={{ fontSize: 12, color: '#cf1322' }}>缺少必填参数的列：{analysis.missingRequiredHeaders.join('、')}</div>
+              <div style={{ fontSize: 12, color: '#cf1322' }}>缺少必填变量的列：{analysis.missingRequiredHeaders.join('、')}</div>
             )}
             {analysis.unmatchedHeaders.length > 0 && (
-              <div style={{ fontSize: 12, color: '#999' }}>未匹配参数的列（将忽略）：{analysis.unmatchedHeaders.join('、')}</div>
+              <div style={{ fontSize: 12, color: '#999' }}>未匹配变量的列（将忽略）：{analysis.unmatchedHeaders.join('、')}</div>
             )}
             {preview.overRowLimit && (
               <div style={{ fontSize: 12, color: '#cf1322' }}>共 {preview.totalRows} 行，超过单批 {MAX_BATCH_ROWS} 行上限，请拆分文件</div>

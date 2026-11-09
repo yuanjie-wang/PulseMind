@@ -26,6 +26,7 @@ import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
 import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-attach'
 import { notifyFailure } from '../../utils/notify'
+import { CHAT_COMMANDS } from '../../agent/chat-commands'
 
 /** Approval levels, most restrictive first — the order the dropdown lists them
  *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
@@ -44,6 +45,14 @@ const APPROVAL_LEVELS: Array<{ mode: SandboxApprovalMode; icon: React.ReactNode 
  *  neutral choice. The value is the sheet's `--pm-warn`, which the extension
  *  panel mirrors by hand (it cannot import a TS value) — keep both in step. */
 export const UNRESTRICTED_COLOR = 'var(--pm-warn)'
+
+/** The composer's trigger popup: `/` commands, `@` experts, `$` skills — one
+ *  list, sectioned in this fixed order; the typed trigger only decides which
+ *  section the list opens on. */
+type TriggerKind = 'command' | 'expert' | 'skill'
+type TriggerRow = { key: string; title: string; description?: string; select: () => void }
+type TriggerSection = { kind: TriggerKind; rows: TriggerRow[] }
+const TRIGGER_SECTION_ORDER: TriggerKind[] = ['command', 'expert', 'skill']
 
 /** The 授权 button's colour: only the unrestricted level is tinted; the rest keep
  *  the muted grey every other text button in the footer uses (which also beats
@@ -170,6 +179,12 @@ function InputAreaImpl({
     modelPicker?: boolean
     experts?: boolean
     authorization?: boolean
+    /** `$`-skill mention popup. Full chat only — the reuse sites' sends bypass
+     *  useChatController, where the $ tokens are resolved. */
+    skills?: boolean
+    /** `/`-command popup (init/compact). Same rule: commands execute in
+     *  useChatController's send path. */
+    commands?: boolean
   }
   /** Staged-message queue (暂存区). Absent = feature off and the reuse sites
    *  keep today's behavior: Enter mid-run does nothing (Sender's loading
@@ -215,6 +230,10 @@ function InputAreaImpl({
   const showAttachments = features?.attachments ?? features === undefined
   const showModelPicker = features?.modelPicker ?? features === undefined
   const showExperts = features?.experts ?? features === undefined
+  const showSkills = features?.skills ?? features === undefined
+  const showCommands = features?.commands ?? features === undefined
+  // Hoisted: the trigger popup's command rows read their descriptions through t.
+  const { t } = useTranslation()
   const showAuthorization = (features?.authorization ?? features === undefined) && onChangeApprovalMode !== undefined
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
@@ -268,10 +287,38 @@ function InputAreaImpl({
   const summonableExperts = useMemo(() => experts.filter((e) => e.enabled ?? true), [experts])
   const boundExpert = experts.find((e) => e.id === boundExpertId)
 
-  // ── @-mention popup ──
-  // Active while the caret-text ends with an @token (@ at word start). Selecting
-  // an expert rewrites the token; sending the raw text also works — the
-  // controller parses `@<name>` on submit, so the popup is pure assistance.
+  // ── Skill list ($-popup) ──
+  // Loaded once per mount like the experts above: the disk list (built-ins are
+  // seeded there too) minus the authoritative 显式关闭名单 — 2026-11-04 缺省开
+  // 启裁定, so absence from disabledSkills means enabled.
+  const [skills, setSkills] = useState<Array<{ name: string; description: string }>>([])
+  useEffect(() => {
+    if (!showSkills) return
+    Promise.all([window.electronAPI.listImportedSkills(), window.electronAPI.getSkillPreferences()])
+      .then(([defs, prefs]) => {
+        const disabled = new Set(prefs?.disabledSkills ?? [])
+        setSkills(
+          defs
+            .filter((d) => d.name && !disabled.has(d.name))
+            .map((d) => ({ name: d.name, description: d.description ?? '' }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        )
+      })
+      .catch(() => {})
+  }, [showSkills])
+
+  // ── Trigger popup: `/` commands · `@` experts · `$` skills ──
+  // ONE list, three sections (用户 2026-11-08: 三类合并为一个列表分类展示，定位
+  // 于用户输入的那一类). `/` only arms at the very start of the box and only
+  // while the command token is still being typed (no whitespace yet); `@` and
+  // `$` arm at a word start, the query running to the end of the text. When
+  // several are armed the RIGHTMOST trigger wins — it is the one the caret is
+  // in, and it decides which section the list opens on. An empty query lists
+  // every section (so a `/` can still pick an expert — each row writes its OWN
+  // token); once the user types further, only the triggered section remains,
+  // filtered by exact name PREFIX. Selecting writes the token; sending the raw
+  // text works too — useChatController resolves `/init` `/compact` `@name`
+  // `$name` on submit, so the popup is pure assistance.
   const [mentionNavIdx, setMentionNavIdx] = useState(0)
   const mentionPopupRef = useRef<HTMLDivElement | null>(null)
   // The popup is derived from the text, so the token a selection just wrote
@@ -279,27 +326,76 @@ function InputAreaImpl({
   // name. Selection and Escape park the current text here to keep the popup
   // shut; any further edit produces a different string and re-arms normally.
   const [mentionDismissedValue, setMentionDismissedValue] = useState<string | null>(null)
-  const atIdx = inputValue.lastIndexOf('@')
-  const mentionActive = showExperts && atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1])) && inputValue !== mentionDismissedValue
-  const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
-  const mentionMatches = useMemo((): ExpertProfile[] => {
-    if (!mentionActive) return []
-    const q = mentionQuery.trim().toLowerCase()
-    return (q ? summonableExperts.filter((e) => e.name.toLowerCase().includes(q) || (e.description || '').toLowerCase().includes(q)) : summonableExperts).slice(
-      0,
-      8,
-    )
-  }, [mentionActive, mentionQuery, summonableExperts])
+  const notDismissed = inputValue !== mentionDismissedValue
+  const wordStartIdx = (ch: string): number => {
+    const idx = inputValue.lastIndexOf(ch)
+    return idx >= 0 && (idx === 0 || /\s/.test(inputValue[idx - 1])) ? idx : -1
+  }
+  const slashIdx = showCommands && notDismissed && inputValue.startsWith('/') && !/\s/.test(inputValue) ? 0 : -1
+  const atIdx = showExperts && notDismissed ? wordStartIdx('@') : -1
+  const dollarIdx = showSkills && notDismissed ? wordStartIdx('$') : -1
+  const triggerIdx = Math.max(slashIdx, atIdx, dollarIdx)
+  const triggerKind: TriggerKind | null =
+    triggerIdx < 0 ? null : triggerIdx === atIdx ? 'expert' : triggerIdx === dollarIdx ? 'skill' : 'command'
+  const triggerQuery = triggerIdx >= 0 ? inputValue.slice(triggerIdx + 1).trim().toLowerCase() : ''
+
+  /** Insert a mention token in place of the trigger tail and park the result
+   *  (so the popup does not re-arm on its own exact match). */
+  const insertTriggerToken = (token: string): void => {
+    const next = `${inputValue.slice(0, triggerIdx)}${token} `
+    setInputValue(next)
+    setMentionDismissedValue(next)
+  }
+
+  const triggerSections = useMemo((): TriggerSection[] => {
+    if (!triggerKind) return []
+    const q = triggerQuery
+    const byPrefix = (name: string): boolean => name.toLowerCase().startsWith(q)
+    // A command only executes at the very start of a message, so its section
+    // is offered only when nothing precedes the trigger.
+    const atStart = inputValue.slice(0, triggerIdx).trim() === ''
+    const rowsOf = (kind: TriggerKind): TriggerRow[] => {
+      if (kind === 'command') {
+        if (!showCommands || !atStart) return []
+        return CHAT_COMMANDS.filter((c) => byPrefix(c.name)).map((c) => ({
+          key: `command:${c.name}`,
+          title: `/${c.name}`,
+          description: t(c.descKey),
+          select: () => insertTriggerToken(`/${c.name}`),
+        }))
+      }
+      if (kind === 'expert') {
+        if (!showExperts) return []
+        return summonableExperts
+          .filter((e) => byPrefix(e.name))
+          .map((e) => ({ key: `expert:${e.id}`, title: `@${e.name}`, description: e.description || undefined, select: () => insertTriggerToken(`@${e.name}`) }))
+      }
+      if (!showSkills) return []
+      return skills
+        .filter((s) => byPrefix(s.name))
+        .map((s) => ({ key: `skill:${s.name}`, title: `$${s.name}`, description: s.description || undefined, select: () => insertTriggerToken(`$${s.name}`) }))
+    }
+    const kinds: TriggerKind[] = q ? [triggerKind] : TRIGGER_SECTION_ORDER
+    return kinds.map((kind) => ({ kind, rows: rowsOf(kind) })).filter((s) => s.rows.length > 0)
+    // insertTriggerToken closes over inputValue/triggerIdx, both covered by
+    // the explicit inputValue dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKind, triggerQuery, skills, summonableExperts, inputValue, showCommands, showExperts, showSkills, t])
+  const triggerRows = useMemo(() => triggerSections.flatMap((s) => s.rows), [triggerSections])
+  const popupOpen = triggerRows.length > 0
+  // Flat index of the triggered section's first row — where the highlight
+  // lands when the list opens. 0 when that section is empty (nothing of the
+  // typed kind exists): the list still offers the other sections.
+  let triggerFocusIdx = 0
+  for (let i = 0, offset = 0; i < triggerSections.length; offset += triggerSections[i].rows.length, i += 1) {
+    if (triggerSections[i].kind === triggerKind) {
+      triggerFocusIdx = offset
+      break
+    }
+  }
 
   const handleInputChange = (v: string): void => {
     setInputValue(v)
-    setMentionNavIdx(0)
-  }
-
-  const selectMention = (expert: ExpertProfile): void => {
-    const next = `${inputValue.slice(0, atIdx)}@${expert.name} `
-    setInputValue(next)
-    setMentionDismissedValue(next)
   }
 
   // Arrow keys move the highlight, and the popup is a maxHeight+overflow box,
@@ -308,19 +404,43 @@ function InputAreaImpl({
   // also drag the chat pane's scroller sitting behind it.
   useEffect(() => {
     const popup = mentionPopupRef.current
-    if (!popup || !mentionActive) return
+    if (!popup || !popupOpen) return
     const item = popup.querySelector<HTMLElement>(`[data-mention-idx="${mentionNavIdx}"]`)
     if (!item) return
     const top = item.offsetTop
     const bottom = top + item.offsetHeight
     if (top < popup.scrollTop) popup.scrollTop = top
     else if (bottom > popup.scrollTop + popup.clientHeight) popup.scrollTop = bottom - popup.clientHeight
-  }, [mentionNavIdx, mentionActive, mentionMatches])
+  }, [mentionNavIdx, popupOpen, triggerRows])
+
+  // 定位：whenever the trigger, its query or the section layout changes, put
+  // the highlight on the triggered section's first row (state adjusted during
+  // render — React's pattern for "reset state when an input changes", no
+  // effect round trip) and scroll that section's header to the top of the
+  // list. The scroll effect is declared AFTER the reveal effect on purpose —
+  // effects run in order, so this header placement is the one that sticks for
+  // the commit (the reveal of the new highlight is a no-op: the row sits
+  // right under its header). popupOpen is part of the key so a list that
+  // closes and reopens in the same shape still re-lands.
+  const triggerFocusKey = `${popupOpen}|${triggerKind}|${triggerIdx}|${triggerQuery}|${triggerFocusIdx}`
+  const [lastTriggerFocusKey, setLastTriggerFocusKey] = useState(triggerFocusKey)
+  if (triggerFocusKey !== lastTriggerFocusKey) {
+    setLastTriggerFocusKey(triggerFocusKey)
+    if (popupOpen) setMentionNavIdx(triggerFocusIdx)
+  }
+  useEffect(() => {
+    if (!popupOpen) return
+    const popup = mentionPopupRef.current
+    if (!popup) return
+    const header = popup.querySelector<HTMLElement>(`[data-trigger-section="${triggerKind}"]`)
+    popup.scrollTop = header ? header.offsetTop : 0
+    // Keyed on the whole focus key: the trigger, query and section layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerFocusKey])
 
   // 一次性草稿通道已退役（2026-11-04 用户裁定）：welcome 的试试 chips 现在
   // 点一下即发送，不再把文字塞进输入框等第二次确认——composerDraftStore 因此
   // 没有生产者，整条通道连同订阅一起删除（留着就是邀请下一个人照旧路回去）。
-  const { t } = useTranslation()
 
   const history = useInputHistory()
 
@@ -661,34 +781,45 @@ function InputAreaImpl({
   }
 
   const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): false | void => {
-    // @-popup owns the navigation keys while it's open — including Enter, which
-    // picks the highlighted expert instead of sending — and the input-history
-    // hook must not eat ArrowUp/Down then. IME composition keys (candidate
-    // navigation, the Enter that confirms pinyin) belong to the IME, not the
-    // popup. Returning false is Sender's own veto contract for "don't submit":
-    // preventDefault alone never reaches its internal handler.
-    if (mentionActive && mentionMatches.length > 0 && !e.nativeEvent.isComposing) {
-      const picked = mentionMatches[mentionNavIdx]
+    // The trigger popup owns the navigation keys while it's open — including
+    // Enter, which picks the highlighted row instead of sending — and the
+    // input-history hook must not eat ArrowUp/Down then. IME composition keys
+    // (candidate navigation, the Enter that confirms pinyin) belong to the
+    // IME, not the popup. Returning false is Sender's own veto contract for
+    // "don't submit": preventDefault alone never reaches its internal handler.
+    if (popupOpen && !e.nativeEvent.isComposing) {
+      const picked = triggerRows[mentionNavIdx]
       switch (e.key) {
         case 'ArrowUp':
           e.preventDefault()
-          setMentionNavIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
+          setMentionNavIdx((i) => (i - 1 + triggerRows.length) % triggerRows.length)
           return false
         case 'ArrowDown':
           e.preventDefault()
-          setMentionNavIdx((i) => (i + 1) % mentionMatches.length)
+          setMentionNavIdx((i) => (i + 1) % triggerRows.length)
           return false
+        case 'Tab':
         case 'Enter':
           // Shift/modified Enter is a newline or an editor shortcut, not a pick.
-          if (picked && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // A command typed out in full (`/compact` + Enter) is the user
+          // sending it, not asking for completion: fall through to submit
+          // rather than spending the Enter on inserting what is already there.
+          if (
+            picked &&
+            !e.shiftKey &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            !e.altKey &&
+            !(e.key === 'Enter' && triggerKind === 'command' && inputValue.trim() === picked.title)
+          ) {
             e.preventDefault()
-            selectMention(picked)
+            picked.select()
             return false
           }
           break
         case 'Escape':
           e.preventDefault()
-          // Dismiss rather than select — the hatch for an @name typed by hand:
+          // Dismiss rather than select — the hatch for a token typed by hand:
           // the next Enter sends the text instead.
           setMentionDismissedValue(inputValue)
           return false
@@ -856,7 +987,7 @@ function InputAreaImpl({
           // wrapper because it is what the transcript reserves space for
           // (onAboveCardReserve) — the transient overlays must stay outside it
           // or the reserve would pump on every `@` keystroke / drag.
-          (topSlot || hasStagedStrip || (mentionActive && mentionMatches.length > 0) || dragActive) && (
+          (topSlot || hasStagedStrip || popupOpen || dragActive) && (
             <>
               {hasPersistentAboveCard && (
                 <div ref={aboveCardReserveRef} data-above-card-reserve style={{ display: 'flex', flexDirection: 'column', gap: ABOVE_CARD_GAP }}>
@@ -947,10 +1078,11 @@ function InputAreaImpl({
                   )}
                 </div>
               )}
-              {mentionActive && mentionMatches.length > 0 && (
+              {popupOpen && (
                 <div
                   ref={mentionPopupRef}
                   data-mention-popup
+                  data-trigger-kind={triggerKind ?? undefined}
                   style={{
                     // Mirror the visible .ant-sender box (COMPOSER_MAX_WIDTH,
                     // centered): the column is wider, so plain width would let
@@ -960,7 +1092,9 @@ function InputAreaImpl({
                     position: 'relative',
                     maxWidth: COMPOSER_MAX_WIDTH,
                     margin: '0 auto',
-                    maxHeight: 264,
+                    // Three sections share the box now — a little more room
+                    // before it scrolls, still well short of the transcript.
+                    maxHeight: 320,
                     overflow: 'auto',
                     background: 'var(--pm-elevated)',
                     border: '1px solid var(--pm-border-veil)',
@@ -969,44 +1103,79 @@ function InputAreaImpl({
                     padding: 4,
                   }}
                 >
-                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
-                  {/* What a summon will DO, because the two shapes differ: one
-                      expert answers in their own words, several become a plan.
-                      Without it a second name reads as a second answer rather
-                      than a different mode. ABOVE the list on purpose: this box
-                      is the scroll container (maxHeight + overflow), so a
-                      footnote below eight rows is only reachable by scrolling —
-                      the legend has to be there the moment `@` opens it. */}
-                  <div style={{ padding: '2px 8px 4px', fontSize: 11, color: 'var(--pm-text-muted)', lineHeight: 1.6 }}>
-                    <div>{t('chatView.expert.summonHintOne')}</div>
-                    <div>{t('chatView.expert.summonHintMany')}</div>
-                  </div>
-                  {mentionMatches.map((expert, i) => (
-                    <div
-                      key={expert.id}
-                      data-mention-idx={i}
-                      onClick={() => selectMention(expert)}
-                      onMouseEnter={() => setMentionNavIdx(i)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        padding: '6px 8px',
-                        borderRadius: 6,
-                        cursor: 'pointer',
-                        background: i === mentionNavIdx ? 'var(--pm-hover-weak)' : 'transparent',
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
-                        {expert.description && (
-                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {expert.description}
+                  {(() => {
+                    // Flat row index across sections: keyboard nav, the
+                    // reveal effect and data-mention-idx all address rows by
+                    // this one number.
+                    let flatIdx = 0
+                    return triggerSections.map((section, sectionIdx) => (
+                      <React.Fragment key={section.kind}>
+                        {/* Section header: title + what a pick of this kind
+                            DOES, ABOVE its rows — the 定位 effect scrolls this
+                            header to the top, so the legend is in view the
+                            moment the trigger opens the list. Experts: one
+                            answers in their own words, several become a plan.
+                            Skills: pinned for this message only. */}
+                        <div
+                          data-trigger-section={section.kind}
+                          style={{
+                            padding: '6px 8px 4px',
+                            marginTop: sectionIdx === 0 ? 0 : 4,
+                            borderTop: sectionIdx === 0 ? undefined : '1px solid var(--pm-separator-faint)',
+                          }}
+                        >
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--pm-text-secondary)' }}>
+                            {t(
+                              section.kind === 'command'
+                                ? 'chatView.command.title'
+                                : section.kind === 'skill'
+                                  ? 'chatView.skill.title'
+                                  : 'chatView.expert.summonTitle',
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', lineHeight: 1.6 }}>
+                            {section.kind === 'expert' ? (
+                              <>
+                                <div>{t('chatView.expert.summonHintOne')}</div>
+                                <div>{t('chatView.expert.summonHintMany')}</div>
+                              </>
+                            ) : (
+                              <div>{t(section.kind === 'command' ? 'chatView.command.hint' : 'chatView.skill.hint')}</div>
+                            )}
+                          </div>
+                        </div>
+                        {section.rows.map((row) => {
+                          const i = flatIdx++
+                          return (
+                            <div
+                              key={row.key}
+                              data-mention-idx={i}
+                              onClick={row.select}
+                              onMouseEnter={() => setMentionNavIdx(i)}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                padding: '6px 8px',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                background: i === mentionNavIdx ? 'var(--pm-hover-weak)' : 'transparent',
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.title}</div>
+                                {row.description && (
+                                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {row.description}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </React.Fragment>
+                    ))
+                  })()}
                 </div>
               )}
               {/* Quick-attach: the LAST child, so it stacks closest to the

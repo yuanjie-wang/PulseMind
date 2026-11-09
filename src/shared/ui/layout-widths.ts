@@ -65,6 +65,28 @@ export function clampExplorerWidth(desired: number, totalWidth: number): number 
   return Math.min(width, max)
 }
 
+// ── 任务向导（步骤卡 ↔ 助手栏）分隔条 ──
+// 两栏都是编辑器卡：左边是任务配置（步骤内容），右边是任务助手。宽度归
+// 助手栏（它当初是 shell 的 basis），可拖动的上限由配置栏自己的最小宽度
+// 让出来——窗口一变窄，先压助手栏，而不是把配置表单压成一条缝。
+
+/** 助手栏默认宽度（与旧的 shell basis 460 一致：外观在可拖之前不变）。 */
+export const WIZARD_ASSIST_DEFAULT_WIDTH = 460
+/** 助手栏下限：再窄转录与内嵌输入区都摆不下。 */
+export const WIZARD_ASSIST_MIN_WIDTH = 300
+/** 配置栏下限：画布/表单至少需要的横向空间。 */
+export const WIZARD_CONFIG_MIN_WIDTH = 360
+
+/** 行宽口径与调用方一致：传入值已扣掉两栏之间的 gap（行内容宽 − gap）。 */
+export function clampWizardAssistWidth(desired: number, availableWidth: number): number {
+  const width = Math.max(WIZARD_ASSIST_MIN_WIDTH, Math.round(desired))
+  // 未测到行宽（首帧，ResizeObserver 还没回来）：只落 floor，渲染侧的同一
+  // 个 clamp 会在测量到达的那一帧修正。
+  if (availableWidth <= 0) return width
+  const max = Math.max(WIZARD_ASSIST_MIN_WIDTH, availableWidth - WIZARD_CONFIG_MIN_WIDTH)
+  return Math.min(width, max)
+}
+
 /** 沉浸窗口卡片化（2026-10-31 用户裁定）：三列各自圆角矩形包裹，列与窗口
  *  边缘、列与列之间一律留 5px。ProjectExplorer 的四周 padding 与 explorer↔chat
  *  gap、WorkspacePane（immersive）的树↔预览 gap，以及两处宽度 clamp 对可用

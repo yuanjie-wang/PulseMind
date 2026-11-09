@@ -141,7 +141,7 @@ describe('xlsx → table', () => {
 
   it('refuses a required column the workbook does not have', async () => {
     await expect(loadBatchSource(routine(workbookPath, [{ key: 'owner', label: '负责人', required: true }])))
-      .rejects.toThrow(/批量数据缺少必填参数的列：owner/)
+      .rejects.toThrow(/批量数据缺少必填变量的列：owner/)
   })
 
   it('a header-only workbook refuses as having no data rows', async () => {

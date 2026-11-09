@@ -23,14 +23,19 @@ describe('pipeline wiring', () => {
   })
 
   it('五个 PIPELINE 通道：channels / preload / bridge / handler 四面同在', () => {
-    for (const name of ['PIPELINE_WORKFLOWS', 'PIPELINE_RUN', 'PIPELINE_STOP', 'PIPELINE_RUNS', 'PIPELINE_ASSIST']) {
+    for (const name of ['PIPELINE_WORKFLOWS', 'PIPELINE_RUN', 'PIPELINE_STOP', 'PIPELINE_RUNS', 'PIPELINE_BATCH_RUN']) {
       expect(ipcChannels).toContain(`${name}:`)
     }
-    for (const fn of ['pipelineWorkflows', 'pipelineRun', 'pipelineStop', 'pipelineRuns', 'pipelineAssist']) {
+    for (const fn of ['pipelineWorkflows', 'pipelineRun', 'pipelineStop', 'pipelineRuns', 'pipelineBatchRun']) {
       expect(preload).toContain(fn)
       expect(bridge).toContain(fn)
     }
     expect(handler).toContain('PIPELINE_WORKFLOWS')
+    // 助手不再是独立通道（2026-11-08）：向导助手栏与 routine 共用
+    // FormAssistColumn 的会话形态，提案走 ```form-patch，没有第二个入口。
+    expect(ipcChannels).not.toContain('PIPELINE_ASSIST')
+    expect(preload).not.toContain('pipelineAssist')
+    expect(bridge).not.toContain('pipelineAssist')
   })
 
   it('bootstrap：registerPipelineHandlers 挂进 ipc/index 且 handler 里播种模板', () => {
@@ -44,19 +49,29 @@ describe('pipeline wiring', () => {
     expect(engine).toContain('params?.gitCheckpoint ?? true')
   })
 
-  it('RoutineCenter 挂工作流区 + 三处同一校验门（save/启动/助手）', () => {
+  it('任务中心混排两类卡片 + 三处同一校验门（save/启动/助手应用）', () => {
     const center = read('src/renderer/src/components/routine/RoutineCenter.tsx')
-    expect(center).toContain('WorkflowSection')
+    // P3：混排卡片挂两类数据源与双编辑路由（routineEditing/workflowEditing）。
+    expect(center).toContain('pipelineWorkflows')
+    expect(center).toContain('workflowEditing: true')
+    expect(center).toContain('routineEditing: true')
     expect(read('src/main/storage/workflow-store.ts')).toMatch(/validateWorkflow\(def\)/)
-    expect(read('src/main/pipeline/workflow-assistant.ts')).toMatch(/validateWorkflow\(parsed\)/)
+    // 助手提案落地前过同一道门（2026-11-08：一次性管道助手退场，改由向导在
+    // 应用补丁时校验——不合法标记错误、退回内容步、不推 undo 帧）。
+    expect(read('src/renderer/src/components/routine/TaskWizardPage.tsx')).toMatch(/validateWorkflow\(normalized\)/)
     expect(handler).toMatch(/validateWorkflow\(def\)/)
   })
 
-  it('运行记录 3s 轮询 + 停止按钮 wiring（WorkflowSection）', () => {
-    const section = read('src/renderer/src/components/routine/WorkflowSection.tsx')
-    expect(section).toContain('RUNS_POLL_MS = 3_000')
-    expect(section).toContain('pipelineStop')
-    expect(section).toContain('CodeMirrorEditor')
-    expect(section).toContain('pipelineAssist')
+  it('运行记录 3s 轮询 + 停止按钮 wiring（UnifiedRunsSidebar / WorkflowRunModal）', () => {
+    const sidebar = read('src/renderer/src/components/routine/UnifiedRunsSidebar.tsx')
+    expect(sidebar).toContain('RUNS_POLL_MS = 3_000')
+    expect(sidebar).toContain('pipelineStop')
+    expect(sidebar).toContain('stopRoutineRun')
+    // JSON UI 已退出（user 2026-11-08）：CodeMirror/助手不回任何列表面。
+    expect(sidebar).not.toContain('CodeMirrorEditor')
+    // 助手入口随向导走，且是共享的会话栏（不是 workflow 专属的一发式面板）。
+    const wizard = read('src/renderer/src/components/routine/TaskWizardPage.tsx')
+    expect(wizard).toContain('FormAssistColumn')
+    expect(wizard).not.toContain('pipelineAssist')
   })
 })

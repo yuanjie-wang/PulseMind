@@ -245,7 +245,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'ask_user',
     description: 'Present fixed options for user selection. Must be used for 2+ choices.',
-    category: 'interaction',
+    category: 'session',
     triggers: ['choose', 'select', 'pick', 'option', 'selection'],
     input_schema: {
       type: 'object',
@@ -277,7 +277,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'exec',
     description: 'Execute a shell command on the local machine.',
-    category: 'system',
+    category: 'shell',
     triggers: ['exec', 'run', 'command', 'shell', 'terminal', 'bash', 'powershell', 'execute'],
     input_schema: {
       type: 'object',
@@ -298,6 +298,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           type: 'boolean',
           description: 'Run in the background: the result returns IMMEDIATELY with an OS pid; output goes to a log you read with exec_logs(pid), and you stop the process with exec_kill(pid). Use for dev servers, watchers and anything long-lived. Prefer this when the user asks to 放后台/别等 or the command will clearly take minutes (local builds, test suites, training); for REMOTE long operations (GitHub Actions, deploys, long-job APIs) trigger them first, then watch from the background with a LOCAL blocking command (e.g. `gh run watch <id> --exit-status` or a shell poll loop) — its exit code is the remote result.',
         },
+        name: {
+          type: 'string',
+          description: 'A short human task name (≤20 chars, e.g. "前端构建" / "跑单测") shown on the background-task panel and the completion notice. REQUIRED together with background:true — a nameless task shows as its raw command, which the user cannot read.',
+        },
         sudo: {
           type: 'boolean',
           description: 'Run with admin/root privileges (sudo/UAC).',
@@ -313,7 +317,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'exec_logs',
     description: 'Read the output log of a background process you started (exec with background:true). Pass the pid the exec result gave you; call again later to follow progress. The log ends with "[exited code=N]" once the process has ended.',
-    category: 'system',
+    category: 'shell',
     input_schema: {
       type: 'object',
       properties: {
@@ -335,7 +339,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'exec_kill',
     description: 'Stop a background process you started (exec with background:true) by its pid.',
-    category: 'system',
+    category: 'shell',
     input_schema: {
       type: 'object',
       properties: {
@@ -351,10 +355,24 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   },
 
   {
+    name: 'exec_list',
+    description: 'List the background tasks of this conversation (most recent first): pid, task name, status (running / ended with exit code / killed), start time and the command. Use when you cannot recall which pids you started — after a context compaction, a session restart, or before polling a long build.',
+    category: 'shell',
+    triggers: ['exec_list', 'background tasks', '后台任务列表'],
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    instructions: toolInstructions.exec_list,
+    builtIn: true,
+  },
+
+  {
     name: 'install',
     description:
       'Install a skill or register an MCP server. Skills: the ~/.pulsemind/skills/ directory is writable with the write/edit tools — revise an existing SKILL.md directly (the next pick_skill serves the new text; no re-registration needed). THIS tool registers: "skill" with "content" (the complete SKILL.md) writes, registers and enables in one step — never overwriting an existing skill; "skill" with only "name" registers and enables an already-written ~/.pulsemind/skills/<name>/SKILL.md. "mcp" with "config" (the server config object) registers and starts the server in one call — mcp-servers.json itself stays protected. Activate the create_skill or create_mcp skill first for the authoring formats.',
-    category: 'system',
+    category: 'skills',
     input_schema: {
       type: 'object',
       properties: {
@@ -390,7 +408,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'webfetch',
     description: 'Fetch a URL and return its content as text. Supports GET and POST requests. Set raw:true for JSON/API payloads you will parse — the body comes back as-is, without the metadata header.',
-    category: 'system',
+    category: 'web',
     input_schema: {
       type: 'object',
       properties: {
@@ -491,7 +509,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'tool_result_search',
     description: 'Look up the original content of compressed tool results by tool_result_id.',
-    category: 'context',
+    category: 'memory',
     triggers: ['tool result', 'lookup tool result', 'find tool result', 'search tool result'],
     input_schema: {
       type: 'object',
@@ -523,7 +541,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     // 知识）与上下文面（会话内窗口治理）。功能面无感：审批豁免按名字枚举
     // （execution-flow isMemoryTool）、关键词门只看 gated、schema 不携带
     // category——消费方只有设置面板的分组显示。
-    category: 'context',
+    category: 'session',
     input_schema: {
       type: 'object',
       properties: {
@@ -560,7 +578,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'pick_skill',
     description: 'Select and activate the most relevant skill — an installed skill or an experience learned from past conversations — by intent or name.',
-    category: 'system',
+    category: 'skills',
     triggers: ['skill', 'pick skill', 'select skill', 'activate skill'],
     input_schema: {
       type: 'object',
@@ -585,7 +603,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'pick_tool',
     description: 'Select and activate hidden tools — MCP servers or gated built-in categories — by server, intent, or exact names. Call with NO arguments to list everything pick-able and which of it is already active.',
-    category: 'system',
+    category: 'skills',
     input_schema: {
       type: 'object',
       properties: {
@@ -619,7 +637,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'office_edit',
     description: "Edit a .docx/.xlsx/.pptx file in place through structured operations — the file's extension picks the editor. Byte-faithful: untouched parts are preserved exactly. Write-only: read content and get coordinates (paragraph indexes, cell addresses, shape ids) with office_read first, then send edits. Batches are atomic — any failed op writes nothing.",
-    category: 'file',
+    category: 'office',
     triggers: ['edit docx', 'edit word', '修改 word', '编辑文档', 'edit xlsx', 'edit excel', '修改 excel', '编辑表格', 'edit ppt', '修改 ppt', '编辑幻灯片'],
     input_schema: {
       type: 'object',
@@ -683,7 +701,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'office_inspect',
     description: 'Edit-time triage for an Office file (.docx/.xlsx/.pptx): structural inventory (paragraph/sheet/slide list with text previews, text budget, formulas, charts, images) — NOT a full-content reader. To read or summarize the file, use `read` (auto-converts to markdown). Read-only — no modification.',
-    category: 'file',
+    category: 'office',
     triggers: ['inspect office', '检查文档', '盘点文档', 'office 清单'],
     input_schema: {
       type: 'object',
@@ -700,7 +718,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'office_read',
     description: "Read .docx/.xlsx/.pptx content in the file's own address space: docx paragraphs with FULL text + style + index (and table cell text), xlsx cell values by sheet/range (formulas shown as =expression → result), pptx shapes with shape ids and full text. The read to use before editing — `read` gives reflowed markdown for humans; office_read gives the exact indices/coordinates that office_edit consumes. Paged; the result states the next offset. Large files: start with outline: true (docx heading paragraphs / pptx slide titles), then page into the section you actually need.",
-    category: 'file',
+    category: 'office',
     triggers: ['read docx', 'read xlsx', 'read pptx', '读取文档', '读表格', '读取 office'],
     input_schema: {
       type: 'object',
@@ -725,7 +743,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'office_search',
     description: "Content search inside a .docx/.xlsx/.pptx WITHOUT reading it whole: docx hits are paragraph indexes + snippets (the same index space office_read pages and office_edit edits), xlsx hits are cell addresses + the hit row's leading cells, pptx hits are slide + shape id. How you find key rows/columns in a big sheet or locate a section in a long document — read only the hits afterwards with office_read.",
-    category: 'file',
+    category: 'office',
     triggers: ['search office', '搜索文档', '查找表格', 'office 搜索', '定位段落', '找单元格'],
     input_schema: {
       type: 'object',
@@ -745,9 +763,9 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   },
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
-    name: 'export_document',
+    name: 'office_export',
     description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, .pptx (PowerPoint slides — ALWAYS via the HTML design route `htmlPath`: align style with the user first, then tokens.css + deck.html + convert; a markdown outline via `content` is only a plain-text fallback), or .pdf (converted from docx — inline markdown, or sourcePath pointing at an existing .docx). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline `content`, a workspace `htmlPath` (pptx design route), or a workspace `sourcePath` — exactly one. The file lands in the conversation workspace and opens in the preview pane.',
-    category: 'file',
+    category: 'office',
     triggers: ['export', '导出', '生成 excel', '生成 word', '生成 ppt', '生成 pdf', '转成表格', '转成文档', '转成 pdf'],
     input_schema: {
       type: 'object',
@@ -761,7 +779,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       },
       required: ['format'],
     },
-    instructions: toolInstructions.export_document,
+    instructions: toolInstructions.office_export,
     builtIn: true,
     availability: 'gated',
   },
@@ -771,7 +789,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'spawn_agent',
     description: 'Delegate a task to a sub-agent. Runs independently with isolated context and the same tools as this session. When a plan is active, ALWAYS pass planNode so the delegation links to the plan node it implements.',
-    category: 'system',
+    category: 'plan',
     triggers: ['delegate', 'subtask', 'sub-agent', 'spawn', 'background task'],
     input_schema: {
       type: 'object',
@@ -814,7 +832,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'create_plan',
     description:
       'Create an execution DAG for complex multi-step tasks that will be DELEGATED (to experts or parallel sub-agents via spawn_agent): independent nodes run in PARALLEL, nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. Once created, the scheduler runs the plan: READY nodes dispatch automatically, each delivery settles automatically. You are consulted at exactly two points — a node FAILED (decide: re-dispatch to retry, or advance_plan action="fail"/"skip"), and the plan completing (write the final answer for the user). For tracking work you execute YOURSELF (no delegation, no parallel sub-agents), use todo_write instead.',
-    category: 'system',
+    category: 'plan',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
       type: 'object',
@@ -862,7 +880,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'advance_plan',
     description:
       'The plan\'s decision tool — the scheduler settles successful deliveries and dispatches READY nodes on its own, so do NOT report those. Use it when a node FAILED (action="fail" or "skip"; re-dispatching it yourself retries it), to correct a status by hand, or action="finish" to close the plan early. The final answer after completion is written as your message, not via this tool.',
-    category: 'system',
+    category: 'plan',
     triggers: ['next step', 'step complete', 'done', '进度', '下一步'],
     input_schema: {
       type: 'object',
@@ -898,7 +916,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'todo_write',
     description:
       'Maintain a progress checklist for multi-step work you execute YOURSELF (no experts, no sub-agents — delegate via create_plan instead). Send the FULL list every time; keep exactly ONE step in_progress; mark steps waiting on something outside your control as blocked; update immediately after each step settles. Optional for trivial tasks (1-2 steps).',
-    category: 'system',
+    category: 'plan',
     triggers: ['todo', '清单', '待办', 'progress', 'checklist', '步骤', '任务列表'],
     input_schema: {
       type: 'object',
@@ -1287,7 +1305,7 @@ export const SUB_PLAN_BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'create_sub_plan',
     description:
       'Split YOUR node\'s remaining work back into the parent plan when it clearly exceeds one sub-agent — many independent sub-parts, far too long-running, or more output than one session can produce. Call it the moment you know: before starting, or mid-way when the remainder has outgrown you — never after finishing your scope. The parent\'s scheduler dispatches the new nodes once your node settles; they are NOT yours to execute.',
-    category: 'system',
+    category: 'plan',
     triggers: ['split', 'too big', '拆分', '任务太重'],
     input_schema: {
       type: 'object',

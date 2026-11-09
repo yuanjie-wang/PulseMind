@@ -1,4 +1,4 @@
-// ── export_document service (PLAN-office-export M2) ──
+// ── office_export service (PLAN-office-export M2) ──
 // The SAME security sequence svcEditDocx uses, minus the backup step: sandbox
 // guard → writable path → per-path FIFO lock → in-memory build → read-back
 // gate → D6 conflict suffix → atomic tmp+rename. No backup because the backup

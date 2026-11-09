@@ -6,8 +6,8 @@
 // 就要加载 DirectML.dll，Win10 1809 上 1114 且无法用 executionProviders 规避）。
 'use strict'
 
-const { existsSync, readdirSync, readFileSync } = require('node:fs')
-const { join, resolve } = require('node:path')
+const { existsSync, readdirSync, readFileSync, realpathSync } = require('node:fs')
+const { isAbsolute, join, relative, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 function parseArgs (argv) {
@@ -57,6 +57,37 @@ for (const f of required) {
 }
 for (const f of ['det.onnx', 'rec.onnx', 'cls.onnx', 'keys.txt']) {
   if (!existsSync(join(modelsDir, f))) fail(`missing ${f} in ${modelsDir}`)
+}
+
+// 2.5) 裸依赖必须自洽在包内。ort.node.min.js 会 require('onnxruntime-common')，而本
+// 脚本是在仓库里跑的：Node 沿目录向上就能找到仓库自己的 node_modules，替漏包兜底——
+// 于是「仓库里绿、装机后 Cannot find module」这类漏包永远抓不到（0.5.0 的 ort-web 只
+// 带了三个文件、漏掉 onnxruntime-common，就是这么发出去的）。这里把 ort.node.min.js
+// 的每个裸 require 都解析一遍，并要求结果落在 appOut 之内。
+const bareReqs = [
+  ...new Set(
+    [...readFileSync(join(ortDir, 'ort.node.min.js'), 'utf8').matchAll(/require\("([^".][^"]*)"\)/g)]
+      .map((m) => m[1])
+      .filter((s) => !s.startsWith('node:'))
+  )
+]
+if (!bareReqs.length) fail('ort.node.min.js 里没扫到裸 require —— 匹配规则失效，这道门禁已无意义')
+// appOut 与 require.resolve 的结果必须按**真实路径**比：require.resolve 会解掉符号
+// 链接，而 mac 的 /tmp 正是指向 /private/tmp 的链接，直接前缀比对会把包内的合法路径
+// 误判成包外。
+const appOutReal = realpathSync(appOut)
+for (const spec of bareReqs) {
+  let resolved
+  try {
+    resolved = require.resolve(spec, { paths: [ortDir] })
+  } catch {
+    fail(`${spec} 无法解析 —— ort.node.min.js 会在 require 阶段崩（extraResources 漏带？）`)
+  }
+  const rel = relative(appOutReal, resolved)
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    fail(`${spec} 解析到包外：${resolved} —— 仓库 node_modules 替它兜底，装机环境必然 Cannot find module`)
+  }
+  console.log(`  dep ${spec} -> ${rel}`)
 }
 
 console.log(`[smoke-packed-ocr] ${platform}/${arch}  res=${resDir}`)

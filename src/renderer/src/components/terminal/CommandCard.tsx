@@ -39,7 +39,7 @@ if (typeof document !== 'undefined' && !pathSheetInjected) {
 }
 
 /** Tools whose object line is (or begins with) the verbatim `file_path` —
- *  that prefix becomes the jump. export_document is excluded: its object line
+ *  that prefix becomes the jump. office_export is excluded: its object line
  *  leads with the format, and the deliverable force-opens itself on completion. */
 const OBJECT_PATH_TOOLS = new Set([
   'read', 'write', 'edit',

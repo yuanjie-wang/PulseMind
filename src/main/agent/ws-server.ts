@@ -58,6 +58,7 @@ import { deleteConversationWithWorkspace } from '../storage/conversation-workspa
 import { installHostedPersistence, type HostedPersistenceDeps } from './hosted-persistence'
 import { PANE_SESSION_PARTITION } from '../../shared/browser/pane'
 import { handoffCookieDetails, sanitizeHandoffCookies } from './handoff-cookies'
+import { ensureHostedConversationWorkspace } from '../storage/conversation-workspace'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
 import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -693,6 +694,14 @@ export async function startAgentService(
               //   命中），hosted-persistence 的 isHostedClientId 门自动停写——写
               //   所有权干净移交桌面渲染端自己的 10s 保存管线，无双写窗口。
               store.stampOrigin?.(sessionId, 'local')
+              // ③' 工作区修复（user 2026-11-08 实机反馈「工作区不对」）：hosted
+              //    会话的 workspace 兜底是全局根且被持久化——重铸会话独立目录；
+              //    活引擎经 engineCall 就地修补 sandbox ctx，引擎已死则行级修复
+              //    （桌面下次 createSession 的 isLocalUiSession 路径读到新值）。
+              try {
+                if (sessions.hasSession(sessionId)) await sessions.engineCall(sessionId, 'ensureConversationWorkspace', [])
+                else await ensureHostedConversationWorkspace(sessionId)
+              } catch { /* 工作区修复失败不挡移交——诚实缺口，桌面端首回合仍可自愈 */ }
               // ④ 双向解绑：事件停止推给扩展 + registry 释放反向通道。
               conn.sessions.delete(sessionId)
               agentClientRegistry.unbindSession(sessionId)

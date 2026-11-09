@@ -51,7 +51,9 @@ function columnOfKey(headers: string[], key: string): number {
   return headers.indexOf(key)
 }
 
-export function analyzeCsvBatch(headers: string[], rows: string[][], params: RoutineParam[] | undefined): CsvBatchAnalysis {
+// 参数形状取最小子集（key + required）——P2 任务共享内核让 workflow 的
+// WorkflowInputDef 直接复用本文件的分析/映射（RoutineParam 天然满足）。
+export function analyzeCsvBatch(headers: string[], rows: string[][], params: ReadonlyArray<{ key: string; required?: boolean }> | undefined): CsvBatchAnalysis {
   const declared = params ?? []
   const matchedParams: string[] = []
   const missingRequiredHeaders: string[] = []
@@ -91,7 +93,7 @@ export function mergeHeaderParams(params: RoutineParam[] | undefined, headers: s
  *  cells for everything else are none of resolveParamValues' business, so
  *  blank optional cells keep falling back to the stored default. Cells are
  *  trimmed (spreadsheet whitespace is accidental, never intentional data). */
-export function rowParamsAt(headers: string[], rows: string[][], params: RoutineParam[] | undefined, rowIndex: number): Record<string, string> {
+export function rowParamsAt(headers: string[], rows: string[][], params: ReadonlyArray<{ key: string }> | undefined, rowIndex: number): Record<string, string> {
   const row = rows[rowIndex] ?? []
   const out: Record<string, string> = {}
   for (const p of params ?? []) {

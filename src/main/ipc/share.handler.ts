@@ -14,6 +14,7 @@ import { dialog, ipcMain, BrowserWindow } from 'electron'
 import { writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import { WORKFLOW_TASKS_UI } from '../../shared/feature-flags'
 import {
   buildEnvelope,
   parseShareFile,
@@ -70,11 +71,17 @@ async function buildPreviews(items: Array<{ kind: ShareItem['kind']; payload: Re
       previews.push({ index, kind: 'routine', name, summary: routineSummary(item.payload), warnings, blocked: typeof item.payload.prompt !== 'string' || !item.payload.prompt.trim(), nameConflict: !!conflictId, ...(conflictId ? { conflictId } : {}) })
     } else {
       const v = workflowPreview(item.payload, validateWorkflow)
-      const blocked = v?.blocked ?? true
+      // WORKFLOW_TASKS_UI=false：workflow 条目照常出现在预览里（用户得知道自己
+      // 选的文件里有什么），但恒 blocked + 点名原因——导入一条永远看不见的
+      // 记录比拒绝更糟。
+      const hidden = !WORKFLOW_TASKS_UI
+      const blocked = hidden || (v?.blocked ?? true)
       if (blocked) conflicts.push({ index })
       const conflictId = workflowNames.get(name)
       if (conflictId && !blocked) conflicts.push({ index, conflictId })
-      previews.push({ index, kind: 'workflow', name, summary: workflowSummary(item.payload), warnings: [...(v?.warnings ?? ['校验失败']), ...(blocked ? [] : routinePreviewWarnings(item.payload, skills))], blocked, nameConflict: !!conflictId && !blocked, ...(conflictId && !blocked ? { conflictId } : {}) })
+      const warnings = [...(v?.warnings ?? ['校验失败'])]
+      if (hidden) warnings.unshift('当前版本暂未开放工作流任务')
+      previews.push({ index, kind: 'workflow', name, summary: workflowSummary(item.payload), warnings: [...warnings, ...(blocked ? [] : routinePreviewWarnings(item.payload, skills))], blocked, nameConflict: !!conflictId && !blocked, ...(conflictId && !blocked ? { conflictId } : {}) })
     }
   })
   return { previews, conflicts }
@@ -167,6 +174,9 @@ export function registerShareHandlers(): void {
             imported += 1
           }
         } else {
+          // WORKFLOW_TASKS_UI=false 的硬门：预览已恒 blocked，这里再拒一次——
+          // 渲染端不可信，任何路径都不得铸出一条界面上不存在的 workflow 记录。
+          if (!WORKFLOW_TASKS_UI) throw new Error('当前版本暂未开放工作流任务')
           const def = item.payload as unknown as WorkflowDefinition
           if (res.mode === 'overwrite' && res.targetId) {
             const existing = workflowStore.get(res.targetId)

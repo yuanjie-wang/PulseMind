@@ -2,7 +2,7 @@
 // （占位符渲染 + objective 解析序 + 双帽）+ contract.ts（全文扫描契约行）。
 
 import { describe, expect, it } from 'vitest'
-import { validateWorkflow } from '../src/shared/workflow/validate'
+import { validateWorkflow, missingVerdictDefs } from '../src/shared/workflow/validate'
 import { renderNodePrompt, resolveObjective, PLAN_CONTENT_CAP, ARTIFACT_CONTENT_CAP } from '../src/shared/workflow/render'
 import { parsePipelineResult, formatPipelineResult, artifactPathError } from '../src/shared/workflow/contract'
 import type { WorkflowDefinition } from '../src/shared/workflow/types'
@@ -52,6 +52,20 @@ describe('validateWorkflow', () => {
     expect(v.errors.filter((e) => e.includes('重复边'))).toHaveLength(1)
   })
 
+  it('同一起点同出口连多个不同目标 = 合法（多出口，user 2026-11-09）', () => {
+    // 去重键是 (from, when, to) 三元组：只有完全同形的连线才算重复。
+    const v = validateWorkflow({
+      ...baseWorkflow,
+      edges: [
+        { from: 'code', when: 'pass', to: 'test' },
+        { from: 'code', when: 'pass', to: 'DONE' },
+        { from: 'test', when: 'pass', to: 'DONE' },
+      ],
+    })
+    expect(v.ok).toBe(true)
+    expect(v.errors.filter((e) => e.includes('重复边'))).toHaveLength(0)
+  })
+
   it('保留字冲突：节点 id 叫 DONE/FAILED/RETRY 拒绝', () => {
     const v = validateWorkflow({
       ...baseWorkflow,
@@ -75,6 +89,108 @@ describe('validateWorkflow', () => {
     expect(validateWorkflow({ ...baseWorkflow, entry: '' }).ok).toBe(false)
     expect(validateWorkflow({ ...baseWorkflow, nodes: [] }).ok).toBe(false)
     expect(validateWorkflow({ ...baseWorkflow, entry: 'ghost' }).ok).toBe(false)
+  })
+
+  it('结果状态名是调度键：字符集/长度越界的拒绝（user 2026-11-09）', () => {
+    // 它会同时变成 DOM 的 data-handleid（`out:<v>`）、边 id 的中段
+    // （`edge:from|when|to`）和 prompt 契约里的 JSON 字符串值——竖线会让边 id
+    // 解析错位，空白/引号会让运行时的 verdict 匹配静默失败。
+    const withVerdict = (bad: string): WorkflowDefinition => ({
+      ...baseWorkflow,
+      nodes: baseWorkflow.nodes.map((n) => (n.id === 'code' ? { ...n, verdicts: ['pass', bad] } : n)),
+    })
+    for (const bad of ['has space', 'a|b', 'qu"ote', 'back`tick', 'br{ace}', 'co:lon', '', 'x'.repeat(25)]) {
+      const v = validateWorkflow(withVerdict(bad))
+      expect(v.ok, `应拒绝「${bad}」`).toBe(false)
+      expect(v.errors.some((e) => e.includes('结果状态非法'))).toBe(true)
+    }
+    // 中文状态名是主用例（「成功/失败/需修订」），必须放行。
+    expect(validateWorkflow(withVerdict('需修订')).ok).toBe(true)
+    // 重名：画布上会画两根线头、运行时分不清走哪条。
+    const dup = validateWorkflow({
+      ...baseWorkflow,
+      nodes: baseWorkflow.nodes.map((n) => (n.id === 'code' ? { ...n, verdicts: ['pass', 'pass'] } : n)),
+    })
+    expect(dup.ok).toBe(false)
+    expect(dup.errors.some((e) => e.includes('结果状态重复'))).toBe(true)
+  })
+
+  it('状态定义必填只在写门生效（user 2026-11-09「状态定义是必填的」）', () => {
+    // 口径开关：写入（编辑器保存 / 助手落地）带 requireVerdictDefs；读取
+    // （workflow-store.readWorkflow 对不过门的工作流整只丢弃）、启动
+    // （pipeline-engine 的 enqueue）与分享预览刻意不带——挂到读/跑面上等于让
+    // 存量工作流从列表消失或停跑。
+    const noDefs = validateWorkflow(baseWorkflow, { requireVerdictDefs: true })
+    expect(noDefs.ok).toBe(false)
+    // 每个状态各报一条，点名节点 id 与状态名：用户要能直接找到那一行。
+    for (const [node, verdict] of [
+      ['code', 'pass'],
+      ['code', 'fail'],
+      ['test', 'pass'],
+      ['test', 'fail'],
+      ['fix', 'pass'],
+      ['fix', 'fail'],
+    ]) {
+      expect(
+        noDefs.errors.some((e) => e.includes(`节点 ${node}`) && e.includes(`「${verdict}」`) && e.includes('缺少定义')),
+        `${node}/${verdict} 应报缺少定义`,
+      ).toBe(true)
+    }
+    // 同一份定义在裸调用（读/启/分享面）下照旧全绿。
+    expect(validateWorkflow(baseWorkflow).ok).toBe(true)
+
+    const withDefs = (defs: (n: string) => Record<string, string>): WorkflowDefinition => ({
+      ...baseWorkflow,
+      nodes: baseWorkflow.nodes.map((n) => ({ ...n, verdictDefs: defs(n.id) })),
+    })
+    const allPass = (n: string): Record<string, string> => ({ pass: `${n} 通过`, fail: `${n} 未通过` })
+    expect(validateWorkflow(withDefs(allPass), { requireVerdictDefs: true }).ok).toBe(true)
+
+    // 空白定义 = 没填（trim 后为空），不能靠几个空格过门。
+    const blank = withDefs((n) => ({ pass: '   ', fail: `${n} 未通过` }))
+    const blankV = validateWorkflow(blank, { requireVerdictDefs: true })
+    expect(blankV.ok).toBe(false)
+    expect(blankV.errors.filter((e) => e.includes('缺少定义'))).toHaveLength(3)
+
+    // 孤儿键（定义了别的状态）不顶替缺失项。
+    const orphan = withDefs(() => ({ pass: '通过', fail: '未通过', 幽灵: '不该算数' }))
+    expect(validateWorkflow(orphan, { requireVerdictDefs: true }).ok).toBe(true) // 多余键由 simplify 裁，不在这里报错
+    const orphanOnly = withDefs(() => ({ 幽灵: '不该算数' }))
+    expect(validateWorkflow(orphanOnly, { requireVerdictDefs: true }).ok).toBe(false)
+  })
+
+  it('missingVerdictDefs 与写门报错逐项等价（助手快照的清单不能与保存门分叉）', () => {
+    // 快照里的 missingDefinitions 与保存门必须说同一件事：模型照着清单补完就
+    // 一定能过门。两处口径一分叉，用户就会「补了一轮还是存不下」。
+    const gateGaps = (def: WorkflowDefinition): string[] =>
+      validateWorkflow(def, { requireVerdictDefs: true })
+        .errors.filter((e) => e.includes('缺少定义'))
+        .map((e) => {
+          const m = /节点 (\S+) 的结果状态「([^」]+)」/.exec(e)
+          return m ? `${m[1]}/${m[2]}` : e
+        })
+        .sort()
+    const withDefs = (one: Record<string, string>, rest: Record<string, string>): WorkflowDefinition => ({
+      ...baseWorkflow,
+      nodes: baseWorkflow.nodes.map((n, i) => ({ ...n, verdictDefs: i === 0 ? one : rest })),
+    })
+    const cases: WorkflowDefinition[] = [
+      baseWorkflow,
+      withDefs({ pass: '过', fail: '不过' }, { pass: '过', fail: '不过' }),
+      withDefs({ pass: '  ', fail: '不过' }, { pass: '过', fail: '不过' }), // 空白 = 没填
+      withDefs({ 幽灵: '不该算数' }, { pass: '过', fail: '不过' }), // 孤儿键不顶替
+    ]
+    for (const def of cases) {
+      expect(
+        missingVerdictDefs(def)
+          .map((g) => `${g.node}/${g.verdict}`)
+          .sort(),
+      ).toEqual(gateGaps(def))
+    }
+    // 状态名非法的项不进清单：那边已有自己的错误，把它列成「待补的缺口」等于
+    // 让模型去补一个根本无法存在定义的状态。
+    const badName: WorkflowDefinition = { ...baseWorkflow, nodes: baseWorkflow.nodes.map((n) => ({ ...n, verdicts: [...n.verdicts, '有 空格'] })) }
+    expect(missingVerdictDefs(badName).some((g) => g.verdict.includes(' '))).toBe(false)
   })
 
   it('非对象/缺骨架直接拒绝并短路', () => {

@@ -19,10 +19,11 @@ export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {
   memory: 'Long-term memory: search/save memories, search past conversations and tool results',
   knowledge: 'Knowledge base: search and read compiled wiki documents',
   experience: 'Past workflow experiences: read one for its lessons, save or revise one from this conversation',
-  // `file` is the one MIXED category: read/write/edit/list_dir/search/find stay
-  // always in the tool list; this summary describes only the gated office subset
-  // that activating `builtin:file` actually surfaces.
-  file: 'Office documents: read/inspect/edit .docx/.xlsx/.pptx in place, export deliverables (.docx/.xlsx/.csv/.pptx/.pdf)',
+  // The office family split out of `file` (2026-11-08 分类裁定): `file` is now
+  // the always-on fs core (read/write/edit/list_dir/search/find/ocr — no gated
+  // members, hence no entry here) and every office tool is gated under its own
+  // `builtin:office` pseudo-server.
+  office: 'Office documents: read/inspect/edit .docx/.xlsx/.pptx in place, export deliverables (.docx/.xlsx/.csv/.pptx/.pdf)',
 }
 
 export const builtinCategoryServerId = (category: string): string => `builtin:${category}`

@@ -82,7 +82,8 @@ describe('engine-call surface: UI ⊆ dispatch whitelist (D18①)', () => {
     const unsent = [...dispatched].filter((name) => !names.has(name))
     expect(unsent, 'dispatch-only methods（允许存在，但必须是有意的：reset 供测试/内部用；debugSubAgents 是只读诊断——'
       + 'conv_20260930091135 两个计划子代理静默停摆数小时而系统无处可见其状态，它从主会话视角吐出 activeSubAgents 的'
-      + '活体签名 status/pending/currentRequestId，诊断期经 agentSessionEngineCall 手工调用）')
-      .toEqual(['debugSubAgents', 'reset'])
+      + '活体签名 status/pending/currentRequestId，诊断期经 agentSessionEngineCall 手工调用；ensureConversationWorkspace'
+      + ' 是 session.handoff 的服务端内部步骤——ws-server 在移交时驱动，UI 不经手）')
+      .toEqual(['ensureConversationWorkspace', 'debugSubAgents', 'reset'])
   })
 })

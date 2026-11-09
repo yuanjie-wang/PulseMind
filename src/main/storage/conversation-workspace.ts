@@ -115,6 +115,31 @@ export async function resolveConversationWorkspace(convId: string, explicitProje
   return dir
 }
 
+/** PLAN-extension-handoff（user 2026-11-08 实机反馈「工作区不对，不是会话的
+ *  独立工作区」）：hosted 会话的 sandbox 兜底是**全局 workspace 根**
+ *  （session-manager 的 `workspaceDir || settings.workspaceDir || WORKSPACE_DIR`），
+ *  且该值会被一路持久化进 `conversations.workspace_dir`——此后 resolve 的
+ *  「row 有值即返回」会让全局根永远冒充会话独立工作区。这里把它当成
+ *  「未分配」：等于全局根（或空）就清掉重铸一个会话自己的时间戳目录。
+ *  幂等：真正的项目绑定/既有独立目录原样返回。 */
+export async function ensureHostedConversationWorkspace(convId: string): Promise<string> {
+  await backfillConversationWorkspaces()
+  const settings = await settingsStore.get()
+  const globalRoots = new Set([settings.workspaceDir || WORKSPACE_DIR, WORKSPACE_DIR])
+  const row = getDb()
+    .prepare('SELECT workspace_dir FROM conversations WHERE id = ?')
+    .get(convId) as { workspace_dir: string | null } | undefined
+  const current = row?.workspace_dir
+  if (current && !globalRoots.has(current)) return current
+  if (current) {
+    // 清掉被全局根污染的持久化值，再走正常铸造
+    getDb().prepare('UPDATE conversations SET workspace_dir = NULL WHERE id = ?').run(convId)
+  }
+  const dir = await createTimestampedWorkspaceDir(convId)
+  setConversationWorkspaceDir(convId, dir)
+  return dir
+}
+
 /** Whether this row's workspace_dir may be DELETED with its conversation:
  *  only a per-conversation folder minted under the global workspace. The
  *  exclusions are the two shapes that point somewhere else:

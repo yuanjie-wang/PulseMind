@@ -262,6 +262,7 @@ export class PlanManager {
         action: result.minted ? 'create' : 'update',
         changed: result.changed,
         stats: result.stats,
+        phaseReset: result.phaseReset,
       })
       // Soft gate (2026-10-27): the manual's rule 2 (「exactly one
       // in_progress」) echoed in the result when the SUBMITTED list claims
