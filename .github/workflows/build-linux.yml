@@ -266,7 +266,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pulsemind-deb-${{ github.ref_name }}
+          # 不能拼 github.ref_name：分支名里的 `/`（如 fix/xxx）会让 upload-artifact
+          # 直接判非法（"The artifact name is not valid ... Forward slash /"），构建
+          # 明明全绿却在最后一步红掉、产物一个也留不下。与 build-windows.yml 的
+          # PulseMind-win-x64-portable 对齐，用不含 ref 的固定名。
+          name: pulsemind-deb-x64
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 14
@@ -282,7 +286,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: pulsemind-deb-${{ github.ref_name }}
+          # 必须与 deb job 的 upload-artifact name 逐字节一致（固定名，见上）。
+          name: pulsemind-deb-x64
           path: dist
 
       - name: Upload to release
