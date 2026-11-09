@@ -228,7 +228,10 @@ export function ProjectCards({
   const selectedProject = projectId ? projects.find((p) => p.id === projectId) : undefined
   // 陈旧选择自愈：选中的项目在别处被删（项目中心/另一窗口）后 projectId 悬空
   // ——压缩形态没有横条主体可渲染。守卫 loaded：列表在途时 projects 还是空
-  // 数组，不判死。
+  // 数组，不判死。但 loaded 只挡首载——**已载入的旧列表**不在守卫之内：
+  // 选中刚建的项目必须先等 reload 落地再 setProjectId（本组件与 AppLayout 的
+  // ProjectModal.onSaved 都是 `reload().then(select)`），否则这里会把新项目
+  // 当成悬空选择当场清掉（2026-11-09「侧栏新建项目后 welcome 没选中它」）。
   const loaded = useProjectStore((s) => s.loaded)
   useEffect(() => {
     if (loaded && projectId && !projects.some((p) => p.id === projectId)) setProjectId(null)
@@ -509,10 +512,14 @@ export function ProjectCards({
           setEditTarget(null)
         }}
         onSaved={(project) => {
-          void reload()
-          // Created (or directory-adopted) → select it; an edit save reports
-          // no project and must not touch the selection.
-          if (project) setProjectId(project.id)
+          // Select only after the reload lands: the stale-selection guard above
+          // clears a projectId the loaded list does not contain, so selecting
+          // first would have the new project deselected before it arrives.
+          void reload().then(() => {
+            // Created (or directory-adopted) → select it; an edit save reports
+            // no project and must not touch the selection.
+            if (project) setProjectId(project.id)
+          })
         }}
       />
     </div>

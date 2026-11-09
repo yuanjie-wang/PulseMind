@@ -999,12 +999,17 @@ function AppLayout({
           setProjectEditTarget(null)
         }}
         onSaved={(project) => {
-          void reloadProjects()
-          // Created (or directory-adopted, which reports the existing project):
-          // jump straight into that project's new-task state — welcome page,
-          // 项目 half of the capsule lit, the new project preselected. An edit
-          // save reports no project and must not jump.
-          if (project) handleProjectNewTask(project.id)
+          // The reload MUST land before the selection is applied: the welcome
+          // picker's stale-selection guard (ProjectCards 陈旧选择自愈) clears a
+          // projectId absent from the loaded list, so jumping first would have
+          // the just-created project deselected by the time the list arrives.
+          void reloadProjects().then(() => {
+            // Created (or directory-adopted, which reports the existing
+            // project): jump straight into that project's new-task state —
+            // welcome page, 项目 half of the capsule lit, the new project
+            // preselected. An edit save reports no project and must not jump.
+            if (project) handleProjectNewTask(project.id)
+          })
         }}
       />
 
