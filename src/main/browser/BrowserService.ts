@@ -22,6 +22,7 @@ import {
 import {
   clampPaneWidth,
   defaultPaneWidth,
+  historyVisitFor,
   isFreshTabUrl,
   normalizeAddressBarInput,
   type BrowserPaneAction,
@@ -264,16 +265,11 @@ export class BrowserService {
         await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
         // History records MANUAL navigation only (裁定 L1 — the agent's
         // executeCommand('navigate') never reaches here; back/forward/reload
-        // are not new destinations). The FINAL url is what's remembered
-        // (redirects land under where the user actually went); a goto that
-        // never committed — page.url unchanged — is not a visit.
-        const finalUrl = entry.tab.page.url()
-        // about:blank / chrome-error 是导航失败或空页签的落点，不是「去过哪」
-        // ——记进去只会在联想里冒出噪声行（用户库里的 about:blank 行即此洞）。
-        if (finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
-          const title = await entry.tab.page.title().catch(() => '')
-          browserHistoryStore.recordVisit(finalUrl, title || undefined)
-        }
+        // are not new destinations), and it records the address the USER
+        // committed rather than the redirect chain's landing page (user
+        // 2026-11-09：A 自动跳到 B、再点进 C，记录里只该有 A).
+        const visit = historyVisitFor(url, beforeUrl, entry.tab.page.url(), await entry.tab.page.title().catch(() => ''))
+        if (visit) browserHistoryStore.recordVisit(visit.url, visit.title)
         break
       }
       case 'back':
@@ -425,9 +421,10 @@ export class BrowserService {
       if (postRoute) await entry.tab.page.unroute(postRoute).catch(() => {})
     }
     const finalUrl = entry.tab.page.url()
-    if (opener.origin === 'user' && finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
-      const title = await entry.tab.page.title().catch(() => '')
-      browserHistoryStore.recordVisit(finalUrl, title || undefined)
+    if (opener.origin === 'user') {
+      // 与地址栏同一把尺：记 window.open 的发起地址 target，不记它的跳转落点。
+      const visit = historyVisitFor(target, beforeUrl, finalUrl, await entry.tab.page.title().catch(() => ''))
+      if (visit) browserHistoryStore.recordVisit(visit.url, visit.title)
     }
     this.syncPane()
   }

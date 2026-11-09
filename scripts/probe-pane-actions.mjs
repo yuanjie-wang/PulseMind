@@ -57,10 +57,13 @@ function fakeAppView(dockCalls) {
   const views = new Map()
   const currents = new Map()
   const pageRoutes = new Map() // tabId → armed route registrations (match fn → {match, handler})
+  // target → the address the navigation actually LANDS on (302 / client-side jump)
+  const redirects = new Map()
       return {
         created,
         navigations,
         pageRoutes,
+        redirects,
         currentUrl: (tabId) => currents.get(tabId) ?? '',
         descriptor: () => ({ id: 'app-view', type: 'app-view', capabilities: { browser: ['open', 'tabs', 'user'], tab: ['navigate'] } }),
         async start() {},
@@ -112,7 +115,11 @@ function fakeAppView(dockCalls) {
                   ...(subresourceOverride ? { subresourceRewrote: true } : {}),
                   ...(opts?.referrer ? { referrer: opts.referrer } : {}),
                 })
-                currents.set(tabId, target)
+                // Landing somewhere other than the requested address is a 302
+                // or a client-side jump; production must still record the
+                // address the USER typed (user 2026-11-09：A 自动跳到 B，记录里
+                // 只该有 A), so the fake has to report the landing page.
+                currents.set(tabId, redirects.get(target) ?? target)
                 return null
               },
               goBack: async () => {},
@@ -177,7 +184,12 @@ async function phaseRun() {
   // with tab switches — a persistent mount + bounds writes is the whole fix.
   const dockCalls = { add: 0, remove: 0, bounds: [] }
   const { appViewDock } = await import('../src/main/browser/app-view-dock')
-  appViewDock.attach({
+  // resolveWindow is the documented test seam (vitest overrides it the same
+  // way): the electron stub has no BrowserWindow.fromWebContents, so every
+  // sender maps onto this one fake window.
+  const fakeWindow = {
+    id: 1,
+    isDestroyed: () => false,
     contentView: {
       addChildView: () => { dockCalls.add += 1 },
       removeChildView: () => { dockCalls.remove += 1 },
@@ -185,7 +197,9 @@ async function phaseRun() {
     getContentSize: () => [1400, 900],
     on: () => {},
     webContents: { isDestroyed: () => false, send: (_c, u) => updatesSink.push(u) },
-  })
+  }
+  appViewDock.attach(fakeWindow)
+  service.resolveWindow = () => fakeWindow
   const backend = fakeAppView(dockCalls)
   service.backends.set('app-view', backend)
   // backendFor wires this on the real AppViewBackend; the pre-set fake gets
@@ -340,6 +354,17 @@ async function phaseRun() {
   const mailRow = browserHistoryStore.query('mail.163.com', 10).find((r) => r.url === 'https://mail.163.com/')
   check('re-visiting bumps the visit count instead of inserting a second row', mailRow?.visitCount === 2, JSON.stringify(mailRow))
   check('…and the table still holds exactly one row per url', browserHistoryStore.query('163.com', 50).length === 1, '')
+
+  // 用户裁定 2026-11-09：先打开 A、自动跳到 B、再点进 C，历史里只该有 A ——
+  // 记的是用户发起的那条地址，不是跳转链的落点（实测 302 与 JS 跳转在 goto
+  // 返回时 page.url() 分别是 B 和 A，读它等于把落点当发起地址）。
+  backend.redirects.set('https://short.example/a', 'https://landing.example/b')
+  await service.handlePaneAction({ op: 'navigate', tabId: bTabs[0].tabId, url: 'https://short.example/a' }, sender)
+  const startRow = browserHistoryStore.query('short.example', 10)
+  const landingRow = browserHistoryStore.query('landing.example', 10)
+  check('a redirect records the START address the user typed', startRow.length === 1 && startRow[0].url === 'https://short.example/a', JSON.stringify(startRow))
+  check('…and the landing page the user never typed gets NO row', landingRow.length === 0, JSON.stringify(landingRow))
+  check('…the redirected row keeps a null title (the landing title is not borrowed)', startRow[0]?.title === null || startRow[0]?.title === undefined, JSON.stringify(startRow[0]?.title))
 
   // The AGENT's navigate (executeCommand) must never write history (裁定 L1).
   const agentNavBefore = histSoFar.length + 1

@@ -319,6 +319,42 @@ export function normalizeAddressBarInput(raw: string): string {
   return `https://${input}`
 }
 
+/** What one navigation writes into `browser_history`. The recorded URL is the
+ *  address the USER committed (address bar / popup target), never where a
+ *  redirect chain landed — user 2026-11-09：先打开 A，自动跳转到 B、再点进 C，
+ *  记录里只该有 A。A 302 and a client-side jump both resolve under B, so
+ *  reading page.url() after goto invents a row for a destination nobody typed.
+ *
+ *  Returns null when the navigation is not a visit at all: it never committed
+ *  (`finalUrl` still the page we were on) or it landed on about:/chrome-error:
+ *  — 导航失败或空页签的落点，记进去只会在联想里冒出噪声行（用户库里的
+ *  about:blank 行即此洞）。
+ *
+ *  `finalTitle` is borrowed ONLY when the landing IS the start address: after a
+ *  redirect that title belongs to another page, and stamping it on the start
+ *  address would label a short link with the destination's name. `undefined`
+ *  keeps whatever title the row already had (the store's COALESCE). */
+export function historyVisitFor(startUrl: string, beforeUrl: string, finalUrl: string, finalTitle?: string): { url: string; title?: string } | null {
+  if (!startUrl || !finalUrl) return null
+  if (finalUrl === beforeUrl) return null
+  if (/^(about:|chrome-error:)/i.test(finalUrl)) return null
+  const landedOnStart = sameHref(startUrl, finalUrl)
+  return { url: startUrl, title: landedOnStart && finalTitle ? finalTitle : undefined }
+}
+
+/** href-level equality: the two sides come from different normalizers
+ *  (assertAllowedUrl's URL.toString() vs Chromium's page.url()), so a bare
+ *  trailing slash must not read as a redirect. Unparseable input compares
+ *  literally. */
+function sameHref(a: string, b: string): boolean {
+  if (a === b) return true
+  try {
+    return new URL(a).href === new URL(b).href
+  } catch {
+    return false
+  }
+}
+
 /** WebView box for a pane: strict 16:9, vertically centered in the space
  *  below the chrome. The box is inset one px on EACH side (user ruling
  *  2026-09-21, 「左右各缩进去1px，高度同比缩小」): the pane's 1px left border
