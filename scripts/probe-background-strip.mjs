@@ -8,6 +8,10 @@
 //   3. 多任务顺序退场（第一个 exit 只退一行、第二个 exit 条子消失）；
 //   4. 会话隔离（2026-11-09 用户实锤「后台任务跨会话了」）：别会话的任务
 //      不点亮本会话的条子，切会话条子只列自己那一行。
+//   5. 指针纪律（2026-11-10 用户实锤「后台任务悬浮气泡和回到底部按钮冲突」）：
+//      条子外盒是全卡宽对齐框（zIndex 100），不吃指针的话透明带正盖住居中的
+//      【回到底部】圆钮——按真实导航钮几何（居中 36px 圆、z-auto）注入替身，
+//      真鼠标点击/悬停验证穿透与不误弹。
 //
 // 死 pid 不得复活条子的契约修在主进程源头（emitToolStatusDiff 只对
 // backgroundByPid 活值发 backgroundPid——回合结束拍的对账清扫会全量重发已
@@ -212,6 +216,83 @@ check(
 await page.evaluate(() => window.__renderStrip('conv_probe_bg'))
 await new Promise((r) => setTimeout(r, 100))
 check('切回本会话条子仍隐藏（别会话的任务还在跑）', !(await stripVisible()))
+
+/* ── 5. 指针纪律（2026-11-10 用户实锤「后台任务悬浮气泡和回到底部按钮冲突」）──
+ * 条子外盒是全卡宽（952）对齐框且 zIndex 100 压过导航根的 z-auto：不吃指针
+ * 的话，药丸右侧那截透明带正盖住居中的【回到底部】圆钮——悬停中位弹卡、
+ * 点击被吞。修法 = 外框 pointerEvents none、药丸/展开卡各自 auto（同
+ * MessageNavControls 的根框纪律）；悬停开卡依赖 React 合成 enter/leave 沿
+ * 祖先链派发，外框上的防抖逻辑不动。这里的替身按钮按真实导航钮几何注入
+ * （fixed 覆盖条子带、居中 36px 圆、z-auto → 被条子带压住），全部走真鼠标。 */
+await page.evaluate(() =>
+  window.__pushAgentEvent({
+    type: 'tool_status',
+    updates: [{ messageId: 'msg_1', toolUseId: 'tu_1', status: 'completed', backgroundPid: 6001 }],
+  }),
+)
+await page.waitForSelector('[data-pm-background-tasks]')
+const pointerOf = () =>
+  page.evaluate(() => {
+    const wrapper = document.querySelector('[data-pm-background-tasks]')
+    return {
+      wrapper: getComputedStyle(wrapper).pointerEvents,
+      pill: getComputedStyle(wrapper.firstElementChild).pointerEvents,
+    }
+  })
+let pe = await pointerOf()
+check('条子外框透明于指针（computed none）', pe.wrapper === 'none', JSON.stringify(pe))
+check('药丸恢复可点（computed auto）', pe.pill === 'auto', JSON.stringify(pe))
+
+// 替身【回到底部】圆钮：贴条子带下缘、水平居中、z-auto（真实 slot 里它被
+// zIndex 100 的条子外盒压住）——真点击必须穿透外盒落到按钮上。
+await page.evaluate(() => {
+  const r = document.querySelector('[data-pm-background-tasks]').getBoundingClientRect()
+  const nav = document.createElement('div')
+  nav.id = 'fake-nav'
+  nav.style.cssText = `position:fixed;left:${r.left}px;top:${r.bottom - 36}px;width:${r.width}px;height:36px;pointer-events:none;`
+  const btn = document.createElement('button')
+  btn.id = 'fake-bottom-btn'
+  btn.setAttribute('aria-label', '回到底部')
+  btn.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);bottom:0;width:36px;height:36px;border-radius:50%;pointer-events:auto;'
+  btn.onclick = () => {
+    window.__btnClicks = (window.__btnClicks ?? 0) + 1
+  }
+  nav.appendChild(btn)
+  document.body.appendChild(nav)
+})
+const btnAt = await page.evaluate(() => {
+  const r = document.getElementById('fake-bottom-btn').getBoundingClientRect()
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+})
+await page.mouse.click(btnAt.x, btnAt.y)
+check(
+  '回到底部位（药丸右侧透明带之下）真点击落到按钮上',
+  (await page.evaluate(() => window.__btnClicks ?? 0)) === 1,
+  `clicks=${await page.evaluate(() => window.__btnClicks ?? 0)}`,
+)
+
+// 悬停开卡不受外框 none 影响：真实 hover 落在 auto 药丸上，React 合成
+// enter 沿祖先链派发到外框，OPEN_DELAY 120ms 后弹卡。
+const pillAt = await page.evaluate(() => {
+  const r = document.querySelector('[data-pm-background-tasks]').firstElementChild.getBoundingClientRect()
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+})
+await page.mouse.move(pillAt.x, pillAt.y)
+await page.waitForSelector('[data-pm-background-tasks-card]', { timeout: 1500 })
+pe = await page.evaluate(() => getComputedStyle(document.querySelector('[data-pm-background-tasks-card]')).pointerEvents)
+check('悬停药丸 → 展开卡浮出且可点（auto）', pe === 'auto', pe)
+await page.mouse.move(600, 200)
+await page.waitForTimeout(450)
+check('移开指针 → 展开卡按 CLOSE_DELAY 收起', !(await page.evaluate(() => !!document.querySelector('[data-pm-background-tasks-card]'))))
+// 透明带的死区（药丸右侧、替身钮左侧）：指针命中其下的宿主层，外框不进入，
+// 不得误弹卡——这正是「悬停中位弹卡」冲突的另一半。
+const deadAt = await page.evaluate(() => {
+  const r = document.querySelector('[data-pm-background-tasks]').getBoundingClientRect()
+  return { x: r.left + 200, y: r.top + r.height / 2 }
+})
+await page.mouse.move(deadAt.x, deadAt.y)
+await page.waitForTimeout(400)
+check('悬停药丸右侧的透明带死区不弹卡', !(await page.evaluate(() => !!document.querySelector('[data-pm-background-tasks-card]'))))
 
 await browser.close()
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

@@ -130,6 +130,12 @@ export function BackgroundTasksStrip({ conversationId }: { conversationId?: stri
       // COMPOSER_MAX_WIDTH=952 再居中——条子盒收到同一帽宽再 margin auto，
       // 盒左缘即卡左缘（MessageNavControls 的卡框同一套数学）；圆钮留在
       // 中位互不占位。
+      // 透明于指针（2026-11-10 用户实锤「后台任务悬浮气泡和回到底部按钮冲突」）：
+      // 本盒是全卡宽的对齐框、zIndex 100 又压过导航根的 z-auto——不吃指针的
+      // 话，药丸右侧那截透明带正盖住居中的【回到底部】圆钮：悬停中位 120ms
+      // 就弹卡、点击被吞。可见件（药丸/展开卡）各自恢复可点，悬停开卡的
+      // onMouseEnter/Leave 留在本框上不受影响——React 合成 enter/leave 沿
+      // 祖先链派发，真实 hover 落在 auto 子件上外框照样收到。
       style={{
         display: 'flex',
         justifyContent: 'flex-start',
@@ -137,6 +143,7 @@ export function BackgroundTasksStrip({ conversationId }: { conversationId?: stri
         margin: '6px auto 0',
         position: 'relative',
         zIndex: 100,
+        pointerEvents: 'none',
       }}
       onMouseEnter={() => {
         clearTimeout(closeTimer.current)
@@ -162,6 +169,7 @@ export function BackgroundTasksStrip({ conversationId }: { conversationId?: stri
           color: 'var(--pm-text-body)',
           cursor: 'default',
           userSelect: 'none',
+          pointerEvents: 'auto',
         }}
       >
         <LoadingOutlined spin style={{ fontSize: 11, color: 'var(--pm-link)', flexShrink: 0 }} />
@@ -178,6 +186,7 @@ export function BackgroundTasksStrip({ conversationId }: { conversationId?: stri
             maxWidth: 'calc(100vw - 48px)',
             maxHeight: 300,
             overflowY: 'auto',
+            pointerEvents: 'auto',
             background: 'var(--pm-elevated)',
             border: '1px solid var(--pm-pop-border)',
             borderRadius: 10,

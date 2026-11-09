@@ -363,6 +363,22 @@ describe('task names + floating strip (D, 2026-11-08)', () => {
     expect(s).not.toContain("left: '50%'")
   })
 
+  // 2026-11-10 用户实锤「后台任务悬浮气泡和回到底部按钮冲突」：条子外盒是
+  // 全卡宽（952）的对齐框且 zIndex 100 压过导航根的 z-auto——外盒不吃指针
+  // 的话，药丸右侧那截透明带正盖住居中的【回到底部】圆钮，悬停中位 120ms
+  // 弹卡、点击被吞。修法同 MessageNavControls 的根框纪律：根框透明于指针
+  // （pointerEvents none），可见件（药丸 + 展开卡）各自恢复可点；悬停开卡
+  // 依赖 React 合成 enter/leave 沿祖先链派发，外框上的防抖逻辑不动。
+  it('the strip frame is transparent to pointers; pill and hover card take the hits', () => {
+    const s = src('src/renderer/src/components/chat/BackgroundTasksStrip.tsx')
+    const wrapper = s.slice(s.indexOf('data-pm-background-tasks=""'), s.indexOf('data-pm-background-tasks-card=""'))
+    // 根框 = 对齐框，不吃指针
+    expect(wrapper).toContain("pointerEvents: 'none'")
+    // 药丸与展开卡是仅有的两个可点件（各一处 auto；外框 none 之外不得再多）
+    const autos = s.match(/pointerEvents: 'auto'/g) ?? []
+    expect(autos.length).toBe(2)
+  })
+
   it('the strip polls execLogs while expanded and exits with the store', () => {
     const s = src('src/renderer/src/components/chat/BackgroundTasksStrip.tsx')
     expect(s).toContain('window.electronAPI.execLogs(row.pid')
