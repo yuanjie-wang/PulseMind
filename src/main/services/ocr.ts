@@ -18,7 +18,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { cpus } from 'node:os'
-import { join, sep } from 'node:path'
+import { join } from 'node:path'
 import {
   computeSegments,
   cropRgb,
@@ -55,7 +55,8 @@ interface OrtModule {
   }
   Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => unknown
   env: {
-    wasm: { wasmPaths?: string; numThreads?: number; proxy?: boolean }
+    // wasmPaths 只读不写（见 loadOrtWeb）；warmUpOcr 把它报给打包冒烟核对
+    wasm: { wasmPaths?: unknown; numThreads?: number; proxy?: boolean }
   }
 }
 
@@ -124,10 +125,21 @@ function touchIdleTimer (): void {
 }
 
 /**
- * 定位 onnxruntime-web 的 dist 目录（ort.node.min.js + ort-wasm-simd-threaded.wasm
- * 必须同目录）。打包态在 Resources/ort-web（extraResources，不能进 asar：Emscripten
- * 要真实文件）；开发态在 node_modules。__dirname 在 bundle 后是 out/main（主进程）
- * 或 out/main/storage/extractors（extract-worker），所以逐级向上找。
+ * ORT 的运行时三件套，必须同目录：loadOrtWeb 不给 ORT 任何路径，ORT 按
+ * ort.node.min.js 自己的位置相对找另外两件。缺一件不会在这里报错，而是在
+ * 建会话时变成一句看不出原因的 "no available backend found"。
+ */
+export const ORT_WEB_FILES = [
+  'ort.node.min.js',
+  'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.wasm'
+] as const
+
+/**
+ * 定位 onnxruntime-web 的 dist 目录（三件套同目录）。打包态在 Resources/ort-web
+ * （extraResources，不能进 asar：Emscripten 要真实文件）；开发态在 node_modules。
+ * __dirname 在 bundle 后是 out/main（主进程）或 out/main/storage/extractors
+ * （extract-worker），所以逐级向上找。
  */
 function resolveOrtWebDir (): string {
   const candidates: string[] = []
@@ -141,10 +153,10 @@ function resolveOrtWebDir (): string {
     dir = join(dir, '..')
   }
   for (const d of candidates) {
-    if (existsSync(join(d, 'ort.node.min.js'))) return d
+    if (ORT_WEB_FILES.every(f => existsSync(join(d, f)))) return d
   }
   throw new Error(
-    `onnxruntime-web not found — looked for ort.node.min.js in: ${candidates.join(' | ')}`
+    `onnxruntime-web not found — looked for ${ORT_WEB_FILES.join(' + ')} in: ${candidates.join(' | ')}`
   )
 }
 
@@ -155,12 +167,29 @@ let ortModule: OrtModule | null = null
  * ESM 动态 import 不行 —— 与本项目其他主进程依赖一致）。
  * 用 ort.node.min.js（package.json 的 node 入口）而非 ort.min.js：多线程走
  * worker_threads 而不是 Web Worker。numThreads 实测 1→4 提速约 2.6 倍。
+ * 注意 ORT 文档写的是「Node.js 只支持单线程 wasm」：多线程是实测可用、超出官方
+ * 承诺的配置，打包冒烟按同一线程数在三个平台上建会话，就是为了替它兜底。
+ *
+ * 不设 env.wasm.wasmPaths，让 ORT 按自己文件的位置找另外两件。装机 Windows 上
+ * "no available backend found. ERR: [wasm] … ERR_UNSUPPORTED_ESM_URL_SCHEME …
+ * Received protocol 'f:'" 的根因就是给了路径；2026-11-09 实测过四种写法：
+ *  - 绝对路径 `dir + sep`：ORT 拿它拼 import() 的参数，Windows 盘符 `F:` 被 ESM
+ *    loader 当成 URL scheme；POSIX 的 `/…` 侥幸可用，但路径带 # 一样坏。
+ *  - 字面相对路径 './'：.mjs 找得到，.wasm 却按「进程工作目录」去读——装机后工作
+ *    目录不可预期，ENOENT，而且这个异常会逃逸成未捕获错误，能直接带崩进程。
+ *  - file:// URL：可用，但多一层手工转换，没有必要。
+ *  - 不设（本写法）：ORT 在 Node 下执行 import('./ort-wasm-simd-threaded.mjs')，
+ *    Node 按 ort.node.min.js 自己的位置解析；.wasm 与 pthread worker 再由 .mjs 的
+ *    import.meta.url 派生。全程没有手拼路径，三个平台走同一条路——前提是三件套
+ *    同目录（resolveOrtWebDir 保证），且 ort.node.min.js 必须像这样在运行时从该
+ *    目录 require，不能被打进 bundle（那样相对位置就成了 out/main）。
+ * 另外：ORT 初始化失败会被它自己锁死，同一进程里重试只会得到 "previous call to
+ * 'initializeWebAssembly()' failed"，主进程的 ocr 工具要重启应用才能恢复。
  */
 function loadOrtWeb (): OrtModule {
   if (ortModule) return ortModule
   const dir = resolveOrtWebDir()
   const ort = require(join(dir, 'ort.node.min.js')) as OrtModule
-  ort.env.wasm.wasmPaths = dir + sep
   ort.env.wasm.numThreads = Math.max(1, Math.min(4, cpus().length))
   // proxy:true 会把推理塞进 worker 线程并复制张量，主进程反而不阻塞但多一层拷贝。
   // 这里的并发闸已经保证单任务，保持直接调用。
@@ -242,6 +271,44 @@ function enqueue<T> (fn: () => Promise<T>): Promise<T> {
     () => undefined
   )
   return run
+}
+
+export interface OcrWarmUp {
+  /** 实际选中的目录：冒烟据此断言用的是包内资源，而不是某个回落候选 */
+  ortWebDir: string
+  modelsDir: string
+  /** ORT 当前的 wasmPaths（应为 undefined——见 loadOrtWeb）与生效线程数（多线程不可用时 ORT 会把它改回 1） */
+  wasmPaths: unknown
+  numThreads: number
+  outputs: { det: string[]; rec: string[]; cls: string[] }
+  /** 字典条数（keys.txt 去空行） */
+  chars: number
+}
+
+/**
+ * 把三个模型的会话建好（之后的懒加载 / 空闲释放照旧）。打包冒烟
+ * （scripts/smoke-packed-ocr.js）经它驱动与产品完全相同的 ORT 配置——冒烟若
+ * 自己抄一份配置就会「门禁绿、产品崩」：11-09 的 Windows CI 冒烟仍是绿的，装机
+ * 却报盘符错误——冒烟自配了 file:// URL + 单线程，产品走的是另一套。
+ */
+export async function warmUpOcr (): Promise<OcrWarmUp> {
+  return enqueue(async () => {
+    const s = await getSessions()
+    touchIdleTimer()
+    const { wasm } = loadOrtWeb().env
+    return {
+      ortWebDir: resolveOrtWebDir(),
+      modelsDir: resolveModelsDir(),
+      wasmPaths: wasm.wasmPaths,
+      numThreads: wasm.numThreads ?? 1,
+      outputs: {
+        det: [...s.det.outputNames],
+        rec: [...s.rec.outputNames],
+        cls: [...s.cls.outputNames]
+      },
+      chars: s.chars.length
+    }
+  })
 }
 
 function rotate180 (rgb: Uint8Array, w: number, h: number): Uint8Array {

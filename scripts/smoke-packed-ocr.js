@@ -6,9 +6,9 @@
 // 就要加载 DirectML.dll，Win10 1809 上 1114 且无法用 executionProviders 规避）。
 'use strict'
 
-const { existsSync, readdirSync, readFileSync, realpathSync } = require('node:fs')
+const { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } = require('node:fs')
+const { tmpdir } = require('node:os')
 const { isAbsolute, join, relative, resolve } = require('node:path')
-const { pathToFileURL } = require('node:url')
 
 function parseArgs (argv) {
   const out = {}
@@ -93,33 +93,59 @@ for (const spec of bareReqs) {
 console.log(`[smoke-packed-ocr] ${platform}/${arch}  res=${resDir}`)
 console.log(`  ort-web: ${required.join(', ')}`)
 
-// 3) 真建会话：只断言「能加载」，不校验精度（精度由 tests/ocr-core.test.ts 钉）
+// 3) 真建会话，而且由产品代码本身来建：把 src/main/services/ocr.ts 现场打成 bundle，
+// 经 PULSEMIND_ORT_WEB / PULSEMIND_OCR_MODELS 指向包内资源，调它的 warmUpOcr()。
+// 不要在这里另配 ORT —— 9103325 只把本脚本的 wasmPaths 改成 file:// URL，Windows
+// 冒烟转绿，ocr.ts 仍给 ORT 裸盘符前缀（`F:\…\`），装机后 OCR 照样报
+// ERR_UNSUPPORTED_ESM_URL_SCHEME（Received protocol 'f:'），直到 11-09 的 CI 都还是绿的。
+// 线程数也随产品（≤4，pthread 走 worker_threads；Emscripten 会 unref 它们，进程照常
+// 退出）——ORT 文档说 Node 只支持单线程，这条冒烟就是多线程在各平台上的实证。
+// bundle 放系统临时目录：ocr.ts 的回落候选沿 __dirname 向上找 node_modules，放进
+// 仓库就会被仓库自己的 onnxruntime-web 兜底；另外断言它选中的正是包内这两个目录。
+// 只断言「能加载」，不校验精度（精度由 tests/ocr-core.test.ts 钉）
 ;(async () => {
-  const ort = require(join(ortDir, 'ort.node.min.js'))
-  // Windows 的盘符路径（D:\…）会被 Node 的 ESM loader 当成协议 scheme
-  // （ERR_UNSUPPORTED_ESM_URL_SCHEME: Received protocol 'd:'），而 ort 内部
-  // 正是用 import() 去拉 ort-wasm-simd-threaded.mjs 的 —— 裸路径前缀
-  // `ortDir + sep` 因此只在 POSIX 上侥幸可用。改成 ort 1.23 支持的
-  // wasmPaths 对象形态（{ mjs }，取值时自动解 .href），wasm 二进制则读进
-  // 内存经 wasmBinary 直供：两条路都不再碰裸盘符路径，两个平台一致。
-  ort.env.wasm.wasmPaths = { mjs: pathToFileURL(join(ortDir, 'ort-wasm-simd-threaded.mjs')) }
-  ort.env.wasm.wasmBinary = readFileSync(join(ortDir, 'ort-wasm-simd-threaded.wasm'))
-  ort.env.wasm.numThreads = 1 // CI 单线程最稳，避免 SharedArrayBuffer 差异
-  ort.env.wasm.proxy = false
-  for (const m of ['det.onnx', 'rec.onnx', 'cls.onnx']) {
+  const work = mkdtempSync(join(tmpdir(), 'pm-smoke-ocr-'))
+  try {
+    const bundle = join(work, 'ocr.js')
+    require('esbuild').buildSync({
+      entryPoints: [join(__dirname, '..', 'src', 'main', 'services', 'ocr.ts')],
+      outfile: bundle,
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      external: ['sharp'],
+      tsconfig: join(__dirname, '..', 'tsconfig.node.json'),
+      logLevel: 'error'
+    })
+    process.env.PULSEMIND_ORT_WEB = ortDir
+    process.env.PULSEMIND_OCR_MODELS = modelsDir
     const t0 = Date.now()
-    const session = await ort.InferenceSession.create(
-      readFileSync(join(modelsDir, m)),
-      { executionProviders: ['wasm'] }
-    )
-    const outs = session.outputNames
-    if (!outs || !outs.length) fail(`${m} created but exposes no outputs`)
-    console.log(`  ${m.padEnd(9)} ok  ${String(Date.now() - t0).padStart(4)}ms  out[${outs.join(',')}]`)
+    const w = await require(bundle).warmUpOcr()
+    const same = (a, b) => realpathSync(a) === realpathSync(b)
+    if (!same(w.ortWebDir, ortDir)) fail(`ocr.ts picked ort-web at ${w.ortWebDir}, not the packed ${ortDir}`)
+    if (!same(w.modelsDir, modelsDir)) fail(`ocr.ts picked models at ${w.modelsDir}, not the packed ${modelsDir}`)
+    // ocr.ts 刻意不给 ORT 任何路径（ORT 按 ort.node.min.js 的位置相对找另外两件，见
+    // 其 loadOrtWeb 注释）。谁给它塞回路径，这里先红——别等 Windows 装机才发现。
+    if (w.wasmPaths !== undefined) {
+      fail(`ocr.ts set env.wasm.wasmPaths = ${JSON.stringify(w.wasmPaths)} —— must stay unset (see ocr.ts loadOrtWeb)`)
+    }
+    console.log(`  wasm      resolved next to ort.node.min.js (wasmPaths unset)  threads=${w.numThreads}`)
+    for (const m of ['det', 'rec', 'cls']) {
+      const outs = w.outputs[m]
+      if (!outs || !outs.length) fail(`${m}.onnx created but exposes no outputs`)
+      console.log(`  ${(m + '.onnx').padEnd(9)} ok  out[${outs.join(',')}]`)
+    }
+    if (w.chars < 6000) fail(`keys.txt has only ${w.chars} chars — dictionary is truncated`)
+    console.log(`  keys.txt  ${w.chars} chars`)
+    console.log(`  sessions  ${Date.now() - t0}ms`)
+    console.log('PACKED-ORT-OK')
+  } finally {
+    // 清理失败不判红：临时 bundle 不是被测对象
+    try {
+      rmSync(work, { recursive: true, force: true })
+    } catch {}
   }
-  const chars = readFileSync(join(modelsDir, 'keys.txt'), 'utf8').split('\n').filter(Boolean).length
-  if (chars < 6000) fail(`keys.txt has only ${chars} chars — dictionary is truncated`)
-  console.log(`  keys.txt  ${chars} chars`)
-  console.log('PACKED-ORT-OK')
 })().catch((e) => {
   console.error(`[smoke-packed-ocr] FAIL: ${e && e.stack ? e.stack : e}`)
   process.exit(1)
