@@ -44,6 +44,15 @@ describe('fileUriToPath — 本地 file: URI → 文件系统路径', () => {
     expect(fileUriToPath('file:////home/u/a.png')).toBe('/home/u/a.png')
   })
 
+  it('重复的 scheme 前缀也剥净（历史转录的 [file:file:/…] 回灌）', () => {
+    // 2026-11-10 之前 chip 可能把 URI 原样存成路径，标记于是长成
+    // `[file:file:/home/…]`；模型把整段再交回来时只剥一层仍会 join 到 workspace。
+    expect(fileUriToPath('file:file:/home/u/a.png')).toBe('/home/u/a.png')
+    expect(fileUriToPath('local-file:file:///home/u/a.png')).toBe('/home/u/a.png')
+    // 剥到相对名就停手（不得为了「剥干净」把散文吃成路径）
+    expect(fileUriToPath('file:file:notes.txt')).toBeNull()
+  })
+
   it('空白容错：首尾空白忽略', () => {
     expect(fileUriToPath('  file:/home/u/a.png  ')).toBe('/home/u/a.png')
   })
@@ -138,6 +147,13 @@ describe('接线：四个入口都过同一条规则（绕过去就又是两个�
     const chip = read('src/renderer/src/components/chat/FileRefChip.tsx')
     expect(chip).toContain("import { normalizePathInput } from '../../../../shared/path-input'")
     expect(chip).toContain('const path = normalizePathInput(args[2])')
+  })
+
+  it('选择器桥面按契约只回文件系统路径（六个渲染端取号点共用一个闸）', () => {
+    const dlg = read('src/main/ipc/dialog.handler.ts')
+    expect(dlg).toContain("import { normalizePathInput } from '../../shared/path-input'")
+    expect(dlg).toContain('result.filePaths.map((p) => normalizePathInput(p))')
+    expect(dlg).toContain('result.filePath ? normalizePathInput(result.filePath) : null')
   })
 
   it('quick-attach 的 fileUrlToPath 只是 shared 规则的转调（只一份语法）', () => {

@@ -1,5 +1,6 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import { normalizePathInput } from '../../shared/path-input'
 
 export interface ShowDialogOptions {
   type: 'choice' | 'prompt'
@@ -88,7 +89,8 @@ export function registerDialogHandlers(): void {
         filters: options.filters
       })
       return {
-        filePath: result.filePath ?? null,
+        // Same contract as DIALOG_SHOW_OPEN: paths out, never a `file:` URI.
+        filePath: result.filePath ? normalizePathInput(result.filePath) : null,
         canceled: result.canceled
       }
     }
@@ -106,7 +108,13 @@ export function registerDialogHandlers(): void {
         filters: options.filters
       })
       return {
-        filePaths: result.filePaths,
+        // The bridge's contract is "filesystem paths", whatever the platform's
+        // chooser actually returns. A Linux portal/GTK build can hand back the
+        // file manager's `file:/home/…` URI (single-slash shorthand); passing it
+        // through makes every consumer join a URI onto the session workspace
+        // (2026-11-10 UOS). Normalizing once here covers all six renderer
+        // pickers, not just the attachment buttons.
+        filePaths: result.filePaths.map((p) => normalizePathInput(p)),
         canceled: result.canceled
       }
     }

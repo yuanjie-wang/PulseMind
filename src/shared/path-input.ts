@@ -28,7 +28,14 @@ export function fileUriToPath(text: string): string | null {
   if (/[\r\n]/.test(text)) return null
   const trimmed = text.trim()
   if (!FILE_URI_RE.test(trimmed)) return null
-  let rest = trimmed.replace(FILE_URI_RE, '')
+  // Strip the scheme REPEATEDLY: a transcript written before the 2026-11-10 fix
+  // stored a URI inside the marker, i.e. `[file:file:/home/…]`, and the model
+  // (or a copy-paste) can hand that doubled spelling back verbatim. One strip
+  // would leave `file:/home/…`, which is still not absolute — the joined
+  // ENOENT would just move one layer. The loop is finite (each pass consumes
+  // `file:`), and a relative residue is rejected below, so prose stays prose.
+  let rest = trimmed
+  while (FILE_URI_RE.test(rest)) rest = rest.replace(FILE_URI_RE, '')
 
   // Authority form — after the scheme: `//host/path` (browser), `///path`
   // (empty host), `//C:/path` (a Windows drive sitting in the host slot). Any
