@@ -21,7 +21,15 @@
 
 set -eu
 
-die() { echo "错误：$*" >&2; exit 1; }
+# 双击运行时 stderr 没有终端，错误信息会跟文件管理器的窗口一起消失，用户只看到
+# 「一闪而过」。有通知服务就弹一条，没有则保持静默（不引入依赖）。
+die() {
+  echo "错误：$*" >&2
+  if [ ! -t 2 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send "PulseMind 安装未完成" "$*" >/dev/null 2>&1 || true
+  fi
+  exit 1
+}
 say() { echo "$*"; }
 
 usage() {

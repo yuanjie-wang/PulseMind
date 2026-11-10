@@ -347,6 +347,10 @@ describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => 
     expect(uninstallExit).toBeLessThan(launchBlock)
     // 卸载入口只是转调，且经 sh 调用（执行位在 U 盘上可能丢）
     expect(UNINSTALLER).toContain('exec sh "$INSTALLER" --uninstall')
+    // 双击运行时 stderr 不是终端：失败必须弹通知，否则「一闪而过」无从诊断
+    expect(INSTALLER).toContain('notify-send "PulseMind 安装未完成"')
+    expect(INSTALLER).toMatch(/\[ ! -t 2 \]/)
+    expect(INSTALLER).toMatch(/command -v notify-send/)
   })
 
   it('说明文件是给非命令行用户看的：双击、允许执行、数据位置都在', () => {
