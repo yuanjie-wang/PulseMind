@@ -301,17 +301,22 @@ describe('wiring — renderer mask → IPC → repaint', () => {
 
 describe('wiring — a theme save reaches every secondary window', () => {
   const settings = read('src/main/ipc/settings.handler.ts')
+  // 2026-11-10：这串保存后动作搬进共享模块（模板包导入跑同一份）。
+  const effects = read('src/main/services/settings-side-effects.ts')
   const popout = read('src/main/popout-window.ts')
   const index = read('src/main/index.ts')
 
   it('the settings save repaints the sender AND the secondaries with ONE resolved mode', () => {
-    expect(settings).toContain("import { refreshPopoutTitleBarTheme } from '../popout-window'")
+    expect(effects).toContain("import { refreshPopoutTitleBarTheme } from '../popout-window'")
     // One resolution, both consumers — the two halves must never disagree.
-    expect(settings).toMatch(
+    expect(effects).toMatch(
       /const chromeTheme = resolveThemePreference\(settings\.theme, nativeTheme\.shouldUseDarkColors\)/,
     )
-    expect(settings).toMatch(/setTitleBarTheme\(chromeTheme, BrowserWindow\.fromWebContents\(event\.sender\)\)/)
-    expect(settings).toMatch(/refreshPopoutTitleBarTheme\(chromeTheme\)/)
+    expect(effects).toMatch(/setTitleBarTheme\(chromeTheme, opts\.window \?\? null\)/)
+    expect(effects).toMatch(/refreshPopoutTitleBarTheme\(chromeTheme\)/)
+    // The save door must route through the shared block and hand it the sender.
+    expect(settings).toContain('applySettingsSideEffects(')
+    expect(settings).toMatch(/window: BrowserWindow\.fromWebContents\(event\.sender\)/)
   })
 
   it('the secondary refresh takes the mode from its caller, not from nativeTheme', () => {

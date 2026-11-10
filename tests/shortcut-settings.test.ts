@@ -190,8 +190,11 @@ describe('the shortcuts surface is wired end to end', () => {
   })
 
   it('a settings save rebuilds the menu (the path that makes a rebind land)', () => {
-    expect(SETTINGS_HANDLER).toContain("import { rebuildApplicationMenu } from '../menu'")
-    expect(SETTINGS_HANDLER).toContain('rebuildApplicationMenu()')
+    // 2026-11-10：重建搬进共享的保存后生效模块；保存门必须调用它。
+    const effects = read('src', 'main', 'services', 'settings-side-effects.ts')
+    expect(effects).toContain("import { rebuildApplicationMenu } from '../menu'")
+    expect(effects).toContain('rebuildApplicationMenu()')
+    expect(SETTINGS_HANDLER).toContain('applySettingsSideEffects(')
   })
 
   it('AppLayout forks open-search to the preview CM panel when it holds focus (review_20261103 高4)', () => {

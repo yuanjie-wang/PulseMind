@@ -14,6 +14,9 @@ const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
 
 const CHANNELS = read('src', 'shared', 'ipc-channels.ts')
 const HANDLER = read('src', 'main', 'ipc', 'settings.handler.ts')
+// 2026-11-10：广播随整串「保存后生效动作」搬进共享模块——设置页保存与模板包
+// 导入两个入口共用一份，本文件的接线钉在模块上 + 钉保存门确实调用它。
+const EFFECTS = read('src', 'main', 'services', 'settings-side-effects.ts')
 const PRELOAD = read('src', 'preload', 'index.ts')
 const BRIDGE = read('src', 'shared', 'types', 'electron-bridge.ts')
 const APP_SETTINGS = read('src', 'renderer', 'src', 'hooks', 'useAppSettings.ts')
@@ -26,13 +29,15 @@ describe('settings:changed cross-window broadcast', () => {
 
   it('SETTINGS_SET fans the store view out to every window after the save', () => {
     // Non-vacuous: removing the loop, the send, or the store read fails here.
-    expect(HANDLER).toContain('BrowserWindow.getAllWindows()')
-    expect(HANDLER).toContain('win.webContents.send(IPC_CHANNELS.SETTINGS_CHANGED')
+    expect(EFFECTS).toContain('BrowserWindow.getAllWindows()')
+    expect(EFFECTS).toContain('win.webContents.send(IPC_CHANNELS.SETTINGS_CHANGED')
     // Broadcasts the STORE's view (fresh merged profiles), not the caller's payload.
-    expect(HANDLER).toContain('await settingsStore.get()')
-    // The broadcast must happen after the write, or a window could read stale state.
+    expect(EFFECTS).toContain('await settingsStore.get()')
+    // The save door must route through the shared block after the write, or a
+    // window could read stale state (and the import door would skip the fan-out).
+    expect(HANDLER).toContain('applySettingsSideEffects(')
     expect(HANDLER.indexOf('settingsStore.set(settings)')).toBeLessThan(
-      HANDLER.indexOf('IPC_CHANNELS.SETTINGS_CHANGED')
+      HANDLER.indexOf('applySettingsSideEffects(')
     )
   })
 

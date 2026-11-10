@@ -68,8 +68,12 @@ describe('启动与设置的接线', () => {
   })
 
   it('settings.handler 在保存后重建菜单（语言切换立即生效）', () => {
+    // 2026-11-10：重建动作在共享的保存后生效模块里（模板包导入同一份），
+    // 保存门负责调用它。
+    const effects = read('src/main/services/settings-side-effects.ts')
+    expect(effects).toContain('rebuildApplicationMenu')
     const src = read('src/main/ipc/settings.handler.ts')
-    expect(src).toContain('rebuildApplicationMenu')
+    expect(src).toContain('applySettingsSideEffects')
   })
 })
 

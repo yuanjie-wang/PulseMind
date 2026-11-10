@@ -167,8 +167,10 @@ describe('keep-awake wiring', () => {
   })
 
   it('the save door pushes the switch (effective on save, not next run)', () => {
-    const src = source('src/main/ipc/settings.handler.ts')
+    // 2026-11-10：动作在共享的保存后生效模块（模板包导入同一份）。
+    const src = source('src/main/services/settings-side-effects.ts')
     expect(src).toContain('keepAwake.setEnabled(settings.keepAwakeEnabled ?? false)')
+    expect(source('src/main/ipc/settings.handler.ts')).toContain('applySettingsSideEffects(')
   })
 
   it('startup seeds the switch before any session can start', () => {

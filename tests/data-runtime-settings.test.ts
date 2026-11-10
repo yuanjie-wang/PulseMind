@@ -55,10 +55,13 @@ describe('shared retention options', () => {
 
 describe('settings.handler applies launch-at-login', () => {
   it('SETTINGS_SET calls applyLaunchAtLogin after the save', () => {
-    // Non-vacuous: deleting the applyLaunchAtLogin call (or its import) fails this.
-    expect(HANDLER).toContain("import { applyLaunchAtLogin } from '../tray'")
-    expect(HANDLER).toContain('applyLaunchAtLogin(!!settings.launchAtLogin)')
-    expect(HANDLER.indexOf('settingsStore.set(settings)')).toBeLessThan(HANDLER.indexOf('applyLaunchAtLogin(!!settings.launchAtLogin)'))
+    // 2026-11-10：动作本体在共享的保存后生效模块（模板包导入同一份）；保存门
+    // 必须调用它，且顺序在写盘之后。Non-vacuous: 删调用或删 import 即红。
+    const effects = read('src', 'main', 'services', 'settings-side-effects.ts')
+    expect(effects).toContain("import { applyLaunchAtLogin } from '../tray'")
+    expect(effects).toContain('applyLaunchAtLogin(!!settings.launchAtLogin)')
+    expect(HANDLER).toContain('applySettingsSideEffects(')
+    expect(HANDLER.indexOf('settingsStore.set(settings)')).toBeLessThan(HANDLER.indexOf('applySettingsSideEffects('))
   })
 })
 

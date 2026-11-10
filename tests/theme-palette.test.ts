@@ -254,8 +254,10 @@ describe('wiring (source scans — node-env cannot mount the App)', () => {
     expect(index).toContain('resolveThemePreference(')
     expect(index).toContain("nativeTheme.on('updated'")
     expect(index).toContain('WINDOW_BACKGROUND[bootThemeMode]')
-    const handler = read('src/main/ipc/settings.handler.ts')
-    expect(handler).toContain('resolveThemePreference(settings.theme, nativeTheme.shouldUseDarkColors)')
+    // The save-side resolution lives in the shared side-effects module (both
+    // SETTINGS_SET and the template-pack import run it — 2026-11-10).
+    const effects = read('src/main/services/settings-side-effects.ts')
+    expect(effects).toContain('resolveThemePreference(settings.theme, nativeTheme.shouldUseDarkColors)')
   })
 
   it('AppLayout consumes the variables and no longer carries literal shell colours', () => {
