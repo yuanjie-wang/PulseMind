@@ -28,6 +28,7 @@
 //            writing into ~/.pulsemind, so the baseline list excludes it
 
 import { isAbsolute, resolve, sep } from 'node:path'
+import { normalizePathInput } from '../path-input'
 
 export type PathOperation = 'read' | 'write'
 
@@ -128,11 +129,18 @@ export function isSubpath(root: string, target: string): boolean {
 }
 
 /** Resolve `target` the way the agent means it: relative paths hang off the
- *  workspace. Without a workspace, absolute targets stand alone. */
+ *  workspace. Without a workspace, absolute targets stand alone.
+ *
+ *  A `file:` / `local-file:` URI is an ABSOLUTE path, not a relative name —
+ *  without this strip the join below produces `<workspace>/file:/home/…`,
+ *  a spelling that cannot exist (2026-11-10 UOS attachment ENOENT). The
+ *  grammar lives in shared/path-input so the guard and file-ops' own
+ *  resolution agree; `~` is expanded before this point (sandbox/guard). */
 export function resolveTarget(workspaceDir: string | undefined, target: string): string {
-  if (isAbsolute(target)) return resolve(target)
-  if (workspaceDir) return resolve(workspaceDir, target)
-  return resolve(target)
+  const input = normalizePathInput(target)
+  if (isAbsolute(input)) return resolve(input)
+  if (workspaceDir) return resolve(workspaceDir, input)
+  return resolve(input)
 }
 
 function hitsDenyRoots(decision: { denyRoots: string[]; resolved: string; realTarget?: string | null }): boolean {

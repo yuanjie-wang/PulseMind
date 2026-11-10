@@ -25,6 +25,7 @@ import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
 import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-attach'
+import { normalizePathInput } from '../../../../shared/path-input'
 import { notifyFailure } from '../../utils/notify'
 import { CHAT_COMMANDS } from '../../agent/chat-commands'
 
@@ -536,15 +537,21 @@ function InputAreaImpl({
   /** [file:…] 标记把路径原样拼进 prompt、解析侧把 `]` 当结束符 `|` 当分隔符
    *  （full_20261011 M1-P1-2）——名字里带这两个字符的合法文件名曾让 chip 解析
    *  错位、附件丢失、残余文本混进 prompt。这类路径拒绝附件化并明说；四个
-   *  入口（选文件/选文件夹/拖拽/剪贴板）都从这一处过。 */
+   *  入口（选文件/选文件夹/拖拽/剪贴板）都从这一处过。
+   *
+   *  `file:` / `local-file:` URI 也在这里落成普通文件系统路径：选择器与拖拽
+   *  在部分文件管理器（GNOME/UOS）下给出的是 `file:/home/…` 这种 URI，原样进
+   *  chip 就会以 `[file:file:/home/…]` 拼进 prompt，主进程把非绝对拼写当相对
+   *  路径挂到 workspace 上 → `<ws>/file:/home/…` 的 ENOENT（2026-11-10 UOS）。 */
   const mergeAttachmentsNotified = (prev: string[], paths: string[]): string[] => {
-    const unsafe = paths.filter((p) => /\]|\|/.test(p))
+    const normalized = paths.map((p) => normalizePathInput(p))
+    const unsafe = normalized.filter((p) => /\]|\|/.test(p))
     if (unsafe.length > 0) {
       notifyFailure('attach', new Error(unsafe.join(', ')), t('chat.attachNameUnsafe', { names: unsafe.map(getFileName).join(', ') }))
     }
     return mergeAttachments(
       prev,
-      paths.filter((p) => !/\]|\|/.test(p)),
+      normalized.filter((p) => !/\]|\|/.test(p)),
     )
   }
 
@@ -598,13 +605,18 @@ function InputAreaImpl({
 
   /** Stat each path and file it or folder it — a path whose stat fails (it
    *  vanished) is dropped rather than attached blind. De-dup happens inside
-   *  each list, so the same path can never produce two chips. */
+   *  each list, so the same path can never produce two chips.
+   *
+   *  Normalize BEFORE the stat: a `file:` URI must be stat'd at the path it
+   *  names, not at the URI spelling (main's FILE_STAT stats the string
+   *  verbatim), otherwise the file is silently dropped as "vanished". */
   const addAttachments = async (paths: string[]): Promise<void> => {
     if (paths.length === 0) return
-    const stats = await Promise.all(paths.map((p) => window.electronAPI.getFileStat(p)))
+    const targets = paths.map((p) => normalizePathInput(p))
+    const stats = await Promise.all(targets.map((p) => window.electronAPI.getFileStat(p)))
     const files: string[] = []
     const folders: string[] = []
-    paths.forEach((p, i) => {
+    targets.forEach((p, i) => {
       const stat = stats[i]
       if (!stat) return
       if (stat.isDirectory) folders.push(p)

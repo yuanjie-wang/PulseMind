@@ -366,8 +366,8 @@ export class ToolExecutor implements ToolExecContext {
   }
 
   /** Resolve relative file_path against workspaceDir when set. `~` passes
-   *  through untouched: the main process's expandTilde is the authority, and
-   *  joining it here would spell a literal `<workspace>/~/...` directory.
+   *  through untouched: the main process's normalizeUserPath is the authority,
+   *  and joining it here would spell a literal `<workspace>/~/...` directory.
    *  Delegates to the shared pure helper so the protected-path gate (the
    *  approval side) matches paths in exactly this coordinate system. */
   private resolveWorkspacePath(filePath: string): string {

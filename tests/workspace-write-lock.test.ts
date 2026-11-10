@@ -8,14 +8,20 @@ import { describe, expect, it, vi } from 'vitest'
 // Node). The lock tests exercise lock ordering + staleness on real fs, not the
 // jail (covered by path-jail.test.ts), so the guard is replaced wholesale with
 // an allow-all.
-vi.mock('../src/main/sandbox/guard', () => ({
-  // The one real rule file-ops still imports from this module (resolvePath
-  // shares the guard's `~` → home expansion): mirrored verbatim, identity for
-  // the absolute paths these tests use.
-  expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
-  guardFsTarget: async (t: string) => ({ ok: true, resolved: t }),
-  checkFsTarget: async (t: string) => ({ ok: true, resolved: t }),
-}))
+vi.mock('../src/main/sandbox/guard', async () => {
+  const { normalizePathInput } = await import('../src/shared/path-input')
+  return {
+    // The one real rule file-ops still imports from this module: mirror
+    // src/main/sandbox/guard's normalizeUserPath (URI strip + `~` → home).
+    // Identity for the absolute paths these tests use.
+    normalizeUserPath: (t: string) => {
+      const p = normalizePathInput(t)
+      return p.startsWith('~') ? join(homedir(), p.slice(1)) : p
+    },
+    guardFsTarget: async (t: string) => ({ ok: true, resolved: t }),
+    checkFsTarget: async (t: string) => ({ ok: true, resolved: t }),
+  }
+})
 
 // `stat` is mocked so the staleness window (read → write inside one edit) can
 // be crossed deterministically: everything forwards to the real fs.

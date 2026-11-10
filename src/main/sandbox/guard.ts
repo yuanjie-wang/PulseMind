@@ -6,20 +6,34 @@
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { guardPath, buildDenyRoots, buildBaselineDenyRoots, resolveTarget } from '../../shared/sandbox/path-jail'
+import { normalizePathInput } from '../../shared/path-input'
 import { resolveRealTarget } from './real-path'
 import { currentSessionSandbox } from './session-context'
 import { auditStore } from '../storage/audit-store'
 
 export type GuardOperation = 'read' | 'write'
 
-/** `~` → home, applied BEFORE the jail judges (see guardFsTarget). Without it
- *  `~/.ssh/x` resolves as a literal `~` segment — inside the workspace, past
- *  every deny root — while the service layer's own path expansion then lands
- *  the bytes in the real home: judgment and landing spot disagree, and the
- *  disagreeable side wins. `file-ops` re-exports this same rule for its own
- *  resolution so the two layers cannot drift. */
-export function expandTilde(target: string): string {
-  return target.startsWith('~') ? join(homedir(), target.slice(1)) : target
+/** The ONE spelling rule applied before the jail judges a path (see
+ *  guardFsTarget): strip a `file:` / `local-file:` URI, then expand `~` to
+ *  home. `file-ops.resolvePath` re-exports this same function, so judgment and
+ *  landing spot cannot drift.
+ *
+ *  Why the URI half is here and not only in the pure resolver: a `file:` URI
+ *  reaching the gate used to resolve as a literal relative segment — inside
+ *  the workspace, past every deny root — while fs would then look at
+ *  `<workspace>/file:/home/x.png`. Judgment said "fine", the operation said
+ *  ENOENT, and the api path resolver (both renderer and main) produced that
+ *  spelling independently (2026-11-10 UOS attachment failure). Stripping makes
+ *  both halves see the real target — the URI form names an ABSOLUTE path, so
+ *  no jail decision changes except toward the truthful one.
+ *
+ *  Why the `~` half is here: without it `~/.ssh/x` resolves as a literal `~`
+ *  segment — inside the workspace, past every deny root — while the service
+ *  layer's own path expansion then lands the bytes in the real home: judgment
+ *  and landing spot disagree, and the disagreeable side wins. */
+export function normalizeUserPath(target: string): string {
+  const filePath = normalizePathInput(target)
+  return filePath.startsWith('~') ? join(homedir(), filePath.slice(1)) : filePath
 }
 
 export interface GuardResult {
@@ -39,9 +53,9 @@ export interface GuardResult {
 export async function guardFsTarget(target: string, operation: GuardOperation): Promise<GuardResult> {
   const ctx = currentSessionSandbox()
   const denyRoots = ctx ? buildDenyRoots(homedir(), platform()) : buildBaselineDenyRoots(homedir(), platform())
-  // Expand ONCE at the gate: every derivation below (realpath, guardPath's
+  // Normalize ONCE at the gate: every derivation below (realpath, guardPath's
   // own resolveTarget, the audit target) must see the same spelling.
-  target = expandTilde(target)
+  target = normalizeUserPath(target)
   const resolved = resolveTarget(ctx?.workspaceDir, target)
 
   // Resolve to the REAL location; a target that exists but cannot be resolved

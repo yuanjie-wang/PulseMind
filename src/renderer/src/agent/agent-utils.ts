@@ -1,5 +1,6 @@
 import { getHost } from './host'
 import { parseMultiFileDiff } from '../../../shared/diff/patch-utils'
+import { normalizePathInput } from '../../../shared/path-input'
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 export function generateMsgId(): string {
@@ -133,13 +134,22 @@ export function shEscape(s: string): string {
  * does — the ONE spelling the read-before-write ledger is keyed by. Extracted
  * so the approval-side consumers (the protected-path gate) compare paths in
  * the same coordinate system the executor writes with; `~` passes through
- * unexpanded (the main process's expandTilde is the authority).
+ * unexpanded (the main process's normalizeUserPath is the authority).
+ *
+ * A `file:` / `local-file:` URI is stripped FIRST, because it names an ABSOLUTE
+ * path (2026-11-10 UOS attachment: `[file:/home/…/x.png]` was joined onto the
+ * session workspace as `<ws>/file:/home/…`, a spelling that cannot exist). The
+ * same strip runs in the main process's gate and resolvers (shared/path-input),
+ * so the key this returns and the path that lands on disk stay one spelling —
+ * a protected path spelled as a URI cannot slip past the gate while file-ops
+ * writes the real file.
  */
 export function resolveToolFilePath(filePath: string, workspaceDir?: string): string {
-  if (!workspaceDir) return filePath
-  if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath) || filePath.startsWith('~')) return filePath
+  const target = normalizePathInput(filePath)
+  if (!workspaceDir) return target
+  if (/^[/\\]|[A-Za-z]:[/\\]/.test(target) || target.startsWith('~')) return target
   const sep = workspaceDir.includes('\\') ? '\\' : '/'
-  return workspaceDir + sep + filePath
+  return workspaceDir + sep + target
 }
 
 /**

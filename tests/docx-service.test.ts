@@ -4,14 +4,20 @@
 
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 
-vi.mock('../src/main/sandbox/guard', () => ({
-  // The one real rule file-ops still imports from this module (resolvePath
-  // shares the guard's `~` → home expansion): mirrored verbatim, identity for
-  // the absolute paths these tests use.
-  expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
-  guardFsTarget: async (target: string, mode: string) =>
-    target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
-}))
+vi.mock('../src/main/sandbox/guard', async () => {
+  const { normalizePathInput } = await import('../src/shared/path-input')
+  return {
+    // The one real rule file-ops still imports from this module: mirror
+    // src/main/sandbox/guard's normalizeUserPath (URI strip + `~` → home).
+    // Identity for the absolute paths these tests use.
+    normalizeUserPath: (t: string) => {
+      const p = normalizePathInput(t)
+      return p.startsWith('~') ? join(homedir(), p.slice(1)) : p
+    },
+    guardFsTarget: async (target: string, mode: string) =>
+      target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
+  }
+})
 
 const { svcEditDocx } = await import('../src/main/services/docx-ops')
 const { svcEditXlsx } = await import('../src/main/services/xlsx-ops')

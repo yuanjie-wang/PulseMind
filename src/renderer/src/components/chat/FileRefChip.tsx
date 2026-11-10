@@ -5,6 +5,7 @@ import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage, IMAGE_EXTS, getExt } from './LocalImage'
 import { stringToHue } from '../../../../shared/hash-color'
+import { normalizePathInput } from '../../../../shared/path-input'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Match [file:/path/to/file] or [folder:/path/to/folder], optionally with |timestamp
@@ -116,7 +117,13 @@ export function preprocessText(text: string): string {  const unwrapped = unwrap
   // Step 2: existing [file:...] / [folder:...] → <file-chip> HTML
   return withWebLinks.replace(FILE_REF_RE, (...args) => {
     const type = args[1]
-    const path = args[2]
+    // A chip is a handle on a REAL file: its path is what `getFileStat` below
+    // and `openFolder` on click will read. Transcripts written before the UOS
+    // fix (2026-11-10) stored the file manager's `file:/home/…` URI verbatim as
+    // `[file:file:/home/…]`, and a raw `file:` string is not absolute, so both
+    // consumers joined it onto the workspace and got ENOENT. Stripping here is
+    // render-side only — nothing is rewritten on disk.
+    const path = normalizePathInput(args[2])
     const time = args[3]
     const name = getBaseName(path)
     const nameAttr = name.replace(/"/g, '&quot;')

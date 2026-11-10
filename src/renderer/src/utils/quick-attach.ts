@@ -7,6 +7,8 @@
  * pasted or dropped path lands exactly like the file-picker buttons.
  */
 
+import { fileUriToPath } from '../../../shared/path-input'
+
 /**
  * Structural shape for a clipboard/drag file: `type` for MIME sniffing.
  * `path` is NOT a runtime fact on Electron 33 — the ambient d.ts still
@@ -20,32 +22,16 @@ export interface ElectronFile {
   type?: string
 }
 
-/** Single-line `file:///…` text → filesystem path; anything else → null.
- *  Handles percent-encoding, Windows `file:///C:/…`, and tolerates trailing
- *  whitespace (callers trim first anyway). Multi-line text is never a path. */
+/** Single-line `file:` URL text → filesystem path; anything else → null.
+ *  The URI grammar itself (two/three slashes, the single-slash `file:/home/…`
+ *  shorthand GNOME/UOS file managers hand out, the `local-file:` alias,
+ *  percent-encoding, Windows drives, `localhost`) lives in shared/path-input —
+ *  the main process's sandbox gate strips the same forms, and two grammars
+ *  would mean two answers for one string. A bare filesystem path stays null:
+ *  pasted text that already is a path is left as text, since only the user
+ *  knows whether they meant to attach it. */
 export function fileUrlToPath(text: string): string | null {
-  const trimmed = text.trim()
-  if (trimmed.includes('\n')) return null
-  if (!/^file:\/\//i.test(trimmed)) return null
-  let rest = trimmed.replace(/^file:\/\//i, '')
-  // file://host/path — only an empty host, `localhost`, or a bare Windows
-  // drive (`file://C:/…`, where the "host" IS the drive letter) is local; any
-  // other host is a remote share. The drive spelling must keep its letter, so
-  // it is re-attached rather than sliced off with the host.
-  const slash = rest.indexOf('/')
-  if (slash > 0) {
-    const host = rest.slice(0, slash)
-    if (host === 'localhost') rest = rest.slice(slash)
-    else if (/^[A-Za-z]:$/.test(host)) rest = host + rest.slice(slash)
-    else return null
-  }
-  if (/^\/[A-Za-z]:/.test(rest)) rest = rest.slice(1) // file:///C:/… → /C:/… → C:/…
-  try {
-    rest = decodeURIComponent(rest)
-  } catch {
-    return null // malformed percent-encoding is not a path we can trust
-  }
-  return rest || null
+  return fileUriToPath(text)
 }
 
 /** Merge incoming paths into an existing list, de-duplicated (first wins). */

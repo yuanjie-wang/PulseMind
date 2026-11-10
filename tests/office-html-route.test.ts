@@ -8,11 +8,16 @@
 import { describe, expect, it, vi } from 'vitest'
 
 // ── guard mocked exactly like office-export-service.test.ts (it drags the DB in) ──
-vi.mock('../src/main/sandbox/guard', () => ({
-  expandTilde: (t: string) => (t.startsWith('~') ? t : t),
-  guardFsTarget: async (target: string, mode: string) =>
-    target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
-}))
+vi.mock('../src/main/sandbox/guard', async () => {
+  const { normalizePathInput } = await import('../src/shared/path-input')
+  return {
+    // file-ops' resolvePath shares this rule; URI strip + `~` passthrough is
+    // all these absolute-path tests need.
+    normalizeUserPath: (t: string) => normalizePathInput(t),
+    guardFsTarget: async (target: string, mode: string) =>
+      target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
+  }
+})
 
 // Chromium never launches in vitest: the service pipe is pinned with fixed
 // minimal facts at the measureLayout seam (decoupled from EMIT_FACTS on

@@ -13,6 +13,17 @@ describe('resolveTarget', () => {
   it('keeps absolute paths', () => {
     expect(resolveTarget(WORKSPACE, '/etc/hosts')).toBe('/etc/hosts')
   })
+  // 2026-11-10 UOS attachment: a `file:` URI names an ABSOLUTE path. Joined as a
+  // relative name it became `<workspace>/file:/home/…` — the reported ENOENT.
+  it('strips a file: URI before the workspace join (both slash counts)', () => {
+    expect(resolveTarget(WORKSPACE, 'file:/home/u/a.png')).toBe('/home/u/a.png')
+    expect(resolveTarget(WORKSPACE, 'file:///home/u/a.png')).toBe('/home/u/a.png')
+    expect(resolveTarget(WORKSPACE, 'local-file:///home/u/a.png')).toBe('/home/u/a.png')
+  })
+  it('leaves prose and bare relative names workspace-relative', () => {
+    expect(resolveTarget(WORKSPACE, 'file:notes.txt')).toBe(`${WORKSPACE}/file:notes.txt`)
+    expect(resolveTarget(WORKSPACE, 'notes.txt')).toBe(`${WORKSPACE}/notes.txt`)
+  })
 })
 
 describe('guardPath — reads', () => {

@@ -286,7 +286,7 @@ describe('multi-file edit: wiring', () => {
 // pattern). writeFile is wrapped so the rollback test can fail one path
 // deterministically; everything else forwards to the real fs.
 vi.mock('../src/main/sandbox/guard', () => ({
-  expandTilde: (t: string) => t,
+  normalizeUserPath: (t: string) => t,
   guardFsTarget: async (t: string) => ({ ok: true, resolved: t }),
   checkFsTarget: async (t: string) => ({ ok: true, resolved: t }),
 }))

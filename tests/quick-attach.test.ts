@@ -41,6 +41,17 @@ describe('fileUrlToPath', () => {
     expect(fileUrlToPath('  file:///a.pdf\n'.trim())).toBe('/a.pdf')
   })
 
+  it('accepts the single-slash shorthand file managers hand out (GNOME/UOS)', () => {
+    // 报障拼写的原形：文件管理器复制/拖拽给出 `file:/home/u/…`（一个斜杠）。
+    // 旧解析器只认 `file://`，于是这个 URI 一路当纯文本留下、或被别处当成相对
+    // 路径挂到 workspace 上（2026-11-10 UOS）。
+    expect(fileUrlToPath('file:/home/u/Downloads/a.png')).toBe('/home/u/Downloads/a.png')
+  })
+
+  it('accepts the app’s own local-file: preview scheme', () => {
+    expect(fileUrlToPath('local-file:///Users/x/a.pdf')).toBe('/Users/x/a.pdf')
+  })
+
   it('rejects anything that is not a single-line local file URL', () => {
     expect(fileUrlToPath('hello world')).toBeNull()
     expect(fileUrlToPath('/Users/x/a.pdf')).toBeNull() // bare path: ambiguous, stays text

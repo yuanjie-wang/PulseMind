@@ -34,7 +34,7 @@ import {
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { isSubpath, resolveTarget } from '../../shared/sandbox/path-jail'
 import { resolveRealTarget } from '../sandbox/real-path'
-import { expandTilde } from '../sandbox/guard'
+import { normalizeUserPath } from '../sandbox/guard'
 import { DATA_DIR, WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { browserHistoryStore } from '../storage/browser-history-store'
@@ -560,7 +560,7 @@ export class BrowserService {
             const wsDir = getConversationWorkspaceDir(scopeId)
             if (!wsDir) return browserError('PATH_DENIED', '文件上传被拒绝：当前会话没有工作区')
             const arg = String(cmd.arg ?? '')
-            const target = expandTilde(arg)
+            const target = normalizeUserPath(arg)
             const lexical = resolveTarget(wsDir, target)
             const real = await resolveRealTarget(lexical)
             if (real.status === 'unresolvable') return browserError('PATH_DENIED', '文件上传被拒绝：路径无法解析')

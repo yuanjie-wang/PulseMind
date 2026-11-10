@@ -11,7 +11,7 @@ import { patchContent, parseUnifiedDiff } from '../../shared/diff/patch-utils'
 import { editAmbiguousError, editMissError } from '../../shared/diff/edit-similarity'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
-import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'
+import { guardFsTarget, checkFsTarget, normalizeUserPath } from '../sandbox/guard'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { withPathLock } from '../sandbox/write-lock'
 import { getBundledRipgrepPath } from './platform-info'
@@ -133,9 +133,12 @@ export async function svcCopyFileToTmp(sourcePath: string): Promise<{ success: b
 
 /** Resolve user-supplied path to an absolute, normalized path (no `..` traversal). */
 function resolvePath(input: string): string {
-  // Same rule the guard applies (expandTilde in sandbox/guard) — the guard
-  // judges THIS spelling, so the operation must land on it.
-  const normalized = expandTilde(input)
+  // Same rule the guard applies (normalizeUserPath in sandbox/guard): strip a
+  // `file:`/`local-file:` URI, expand `~` — the guard judges THIS spelling, so
+  // the operation must land on it. A URI left un-stripped resolves as a
+  // relative name (`<ws>/file:/home/x.png`, ENOENT) while the guard's
+  // `resolveTarget` strips it — i.e. two answers for one input.
+  const normalized = normalizeUserPath(input)
   // Relative paths hang off the session workspace, in the same coordinate the
   // guard's resolveTarget judges them in (workspace-relative is the documented
   // meaning of a relative path for an agent); without a session they resolve
@@ -589,7 +592,19 @@ export async function svcOcrImage(filePath: string): Promise<{ text: string; lin
   if (!IMAGE_EXTENSIONS.includes(ext)) {
     throw new Error(`ocr 只接受图片（${IMAGE_EXTENSIONS.join(' / ')}），收到 "${ext || path.basename(guard.resolved)}"。文本 PDF 请用 read，扫描件 PDF 请先转成图片。`)
   }
-  const size = (await stat(guard.resolved)).size
+  // 这是全文件唯一一处裸 `stat`：同目录的 read/stat/convert 入口都把 stat 失败
+  // 降级成 null，而这里必须区分「文件不在那儿」与其它失败——但**不能**把
+  // `Error: ENOENT … stat '<path>'` 原样扔给模型/用户：那行既不说是哪个环节，
+  // 也不给出路（2026-11-10 UOS 附件的报错就是它）。点名路径 + 重建引用的动作。
+  let size: number
+  try {
+    size = (await stat(guard.resolved)).size
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      throw new Error(`图片不存在：${guard.resolved}。文件可能已被移动或删除——重新附加该文件后再试。`)
+    }
+    throw new Error(`读取图片失败：${guard.resolved}（${err instanceof Error ? err.message : String(err)}）`)
+  }
   if (size > MAX_OCR_BYTES) {
     throw new Error(`图片 ${(size / 1024 / 1024).toFixed(1)}MB，超过 OCR 上限 ${MAX_OCR_BYTES / 1024 / 1024}MB`)
   }
@@ -759,7 +774,7 @@ export async function svcSearchWorkspace(input: WorkspaceSearchInput): Promise<W
   const query = String(input.query ?? '')
   if (!query.trim()) return { ok: true, lines: [], truncated: false }
   if (query.length > 500) return { ok: false, error: '搜索词过长（上限 500 字符）' }
-  const dir = expandTilde(String(input.dir ?? ''))
+  const dir = normalizeUserPath(String(input.dir ?? ''))
   const st = await stat(dir).catch(() => null)
   if (!st || !st.isDirectory()) return { ok: false, error: `搜索目录不存在或不是目录：${dir}` }
   const maxResults = Math.min(Math.max(Number(input.maxResults) || 200, 1), 1000)
