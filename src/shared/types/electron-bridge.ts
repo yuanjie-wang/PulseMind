@@ -174,11 +174,15 @@ export interface MCPToolCallResult {
 /** 一次性模板包导入结果（2026-11-05）。zip = 整份 settings.json + 可选
  *  skills/；settingsApplied=false 表示包里没有（或没有有效的）settings.json，
  *  settings 原样未动。warnings 含 `enc:v1:` 密钥不可迁移提示等非致命项。
- *  skills.skipped = 重名被跳过的技能（幂等重复导入是预期行为，UI 不提示）。 */
+ *  skills.skipped = 重名被跳过的技能（幂等重复导入是预期行为，UI 不提示）。
+ *  error（2026-11-10）= 该次导入的真实失败原因（解压/解析/校验/写盘），
+ *  与 warnings 分开：旧实现把「没找到内容」也当警告，覆盖了「找到了但坏了」，
+ *  提示与事实相反。可能同时有 error 与部分成功的 skills。 */
 export interface TemplateImportResult {
   settingsApplied: boolean
   warnings: string[]
   skills: { imported: SkillDefinition[]; skipped: string[]; errors: string[]; warnings: string[] }
+  error?: string
 }
 
 export interface ElectronAPI {
