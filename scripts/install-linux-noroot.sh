@@ -4,15 +4,18 @@
 # 背景：UOS 等政企终端的普通用户没有 root，.deb 装不了（dpkg -i 要 root），
 # AppImage 又常缺 libfuse2。本脚本配合 CI 产出的 tar.gz 免安装包工作：
 #
-#   tar -xzf PulseMind-<版本>-linux-x64.tar.gz
-#   cd PulseMind-<版本>-linux-x64      # 解压出的目录（含 PulseMind/、install.sh、icon.png）
-#   ./install.sh                       # 安装到 ~/Applications/PulseMind
+#   tar -xzf PulseMind-<版本>-linux-x64.tar.gz   # 得到 PulseMind-<版本>-linux-x64/ 一个文件夹
+#   ./install.sh                                  # 安装到 ~/Applications/PulseMind
+#
+# 目标用户不一定会用命令行：解压后直接双击 install.sh 即可（文件管理器若只是
+# 打开文本，右键属性里勾「允许作为程序执行」），装完会自动把应用拉起来。同目录
+# 的 uninstall.sh 同理双击卸载。
 #
 # 所有写入都在当前用户家目录内（应用本体 + 桌面入口 + 图标），不调 sudo、
 # 不碰系统目录。用户数据在 ~/.pulsemind，与安装位置无关，重装/卸载都不动它。
 #
 # 用法：
-#   ./install.sh [--dir <安装目录>] [--no-desktop]
+#   ./install.sh [--dir <安装目录>] [--no-desktop] [--no-launch]
 #   ./install.sh --uninstall [--dir <安装目录>]
 #   ./install.sh --help
 
@@ -24,11 +27,15 @@ say() { echo "$*"; }
 usage() {
   cat <<'EOF'
 用法：
-  ./install.sh                     安装到 ~/Applications/PulseMind，并注册桌面图标
+  ./install.sh                     安装到 ~/Applications/PulseMind，注册桌面图标，并立即启动
   ./install.sh --dir <目录>         安装到指定目录（须在当前用户可写位置）
   ./install.sh --no-desktop        只装文件，不写桌面入口/图标
+  ./install.sh --no-launch         装完不自动启动（无人值守/脚本里用）
   ./install.sh --uninstall         卸载（默认从桌面入口反解安装目录；用户数据 ~/.pulsemind 保留）
   ./install.sh --help              显示本帮助
+
+  不用命令行也可以：解压后直接双击本文件。
+  若双击只是打开了文本，右键 → 属性 → 勾选「允许作为程序执行」，再双击。
 
 环境变量：
   PULSEMIND_HOME   默认安装根目录（缺省 ~/Applications，应用落位 <根>/PulseMind）
@@ -49,6 +56,7 @@ INSTALL_ROOT="${PULSEMIND_HOME:-$HOME/Applications}"
 INSTALL_DIR="$INSTALL_ROOT/PulseMind"
 INSTALL_DIR_SET=0
 WRITE_DESKTOP=1
+LAUNCH=1
 MODE=install
 
 while [ $# -gt 0 ]; do
@@ -60,6 +68,7 @@ while [ $# -gt 0 ]; do
       INSTALL_DIR_SET=1
       ;;
     --no-desktop) WRITE_DESKTOP=0 ;;
+    --no-launch) LAUNCH=0 ;;
     --uninstall) MODE=uninstall ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数：$1（--help 查看用法）" ;;
@@ -177,14 +186,25 @@ EOF
 fi
 
 say ""
-say "安装完成。"
-LAUNCH_CMD="\"$INSTALL_DIR/pulsemind\""
+say "安装完成。以后从应用菜单里搜 PulseMind 就能打开。"
+say "卸载：双击本目录下的 uninstall.sh（或运行 ./install.sh --uninstall）。"
 if [ -n "$SANDBOX_FLAG" ]; then
-  LAUNCH_CMD="$LAUNCH_CMD $SANDBOX_FLAG"
-fi
-say "启动：应用菜单里找 PulseMind，或直接运行："
-say "  $LAUNCH_CMD"
-if [ -n "$SANDBOX_FLAG" ]; then
-  say "（本机没有可用的非特权 user namespace，桌面入口已带 --no-sandbox）"
+  say "（本机没有可用的非特权 user namespace，启动参数已自动带 --no-sandbox）"
 fi
 say "用户数据位置：~/.pulsemind（卸载不会删除）"
+
+# 双击安装的人不会自己再去找应用：装完直接把应用拉起来，看到窗口才算成功。
+# 用 setsid/nohup 脱离终端 —— 文件管理器给的终端一关，不该把应用一起带走。
+# 无图形会话（CI、ssh）时只提示，不尝试启动。
+if [ "$LAUNCH" = 1 ]; then
+  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    say "正在启动 PulseMind …"
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$INSTALL_DIR/pulsemind" $SANDBOX_FLAG >/dev/null 2>&1 &
+    else
+      nohup "$INSTALL_DIR/pulsemind" $SANDBOX_FLAG >/dev/null 2>&1 &
+    fi
+  else
+    say "（当前不在图形会话里，未自动启动；请从应用菜单打开）"
+  fi
+fi

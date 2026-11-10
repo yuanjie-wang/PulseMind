@@ -36,10 +36,12 @@
 # 交付两种落地方式，同一份 linux-unpacked、同一套门禁（2026-11-10，UOS 实测普通
 # 用户没有 root，`dpkg -i` 直接不可用）：
 #   · .deb —— 给有 root（或能 sudo）的机器；
-#   · PulseMind-<ver>-linux-x64.tar.gz —— 免安装包：PulseMind/ + install.sh +
-#     icon.png，解压后跑 install.sh，应用与桌面入口全落在当前用户家目录
-#     （~/Applications/PulseMind、~/.local/share/{applications,icons}），
-#     不调 sudo、不碰系统目录。打包后在同一 job 里用临时 HOME 真跑一遍装/卸。
+#   · PulseMind-<ver>-linux-x64.tar.gz —— 免安装包，给没有 root、也不想敲命令的人：
+#     解压得到一个顶层文件夹，双击 install.sh 即装到当前用户家目录
+#     （~/Applications/PulseMind、~/.local/share/{applications,icons}），装完自动
+#     启动；uninstall.sh 双击卸载；安装说明.txt 覆盖「双击只是打开了文本」时该
+#     怎么在属性里允许执行。不调 sudo、不碰系统目录。
+#     打包后在同一 job 里用临时 HOME 真跑一遍装/卸。
 
 name: Build Linux packages
 
@@ -270,34 +272,53 @@ jobs:
           '
 
       # UOS 等机器的普通用户没有 root：deb 装不了（dpkg -i 要 root），AppImage 又
-      # 常缺 libfuse2。同一份 linux-unpacked 再打一个 tar.gz 免安装包——解压后在
-      # 解压目录里跑 install.sh 即可（只写家目录、不调 sudo）。与 deb 同源同门禁，
-      # 只是两种落地方式；glibc 2.28 那一关上面已经过了。
+      # 常缺 libfuse2。同一份 linux-unpacked 再打一个 tar.gz 免安装包——解压后双击
+      # install.sh 即可（只写家目录、不调 sudo）。与 deb 同源同门禁，只是两种落地
+      # 方式；glibc 2.28 那一关上面已经过了。
+      #
+      # 包内是一个顶层文件夹，install.sh / uninstall.sh / 安装说明.txt / icon.png /
+      # PulseMind/ 平级：使用者双击就行，不需要命令行（说明里也覆盖了「双击只是
+      # 打开了文本」时如何在属性里允许执行）。
       - name: Package no-root tarball
         run: |
           set -eu
           version=$(node -p "require('./package.json').version")
-          cp -a dist/linux-unpacked dist/PulseMind
-          cp resources/icons-linux/256x256.png dist/icon.png
-          cp scripts/install-linux-noroot.sh dist/install.sh
-          chmod 755 dist/install.sh
-          tar -czf "dist/PulseMind-${version}-linux-x64.tar.gz" -C dist PulseMind install.sh icon.png
-          rm -rf dist/PulseMind dist/icon.png dist/install.sh
+          stage="dist/PulseMind-${version}-linux-x64"
+          rm -rf "$stage" "${stage}.tar.gz"
+          mkdir -p "$stage"
+          cp -a dist/linux-unpacked "$stage/PulseMind"
+          cp resources/icons-linux/256x256.png "$stage/icon.png"
+          cp scripts/install-linux-noroot.sh "$stage/install.sh"
+          cp scripts/install-linux-uninstall.sh "$stage/uninstall.sh"
+          cp scripts/install-linux-readme.txt "$stage/安装说明.txt"
+          chmod 755 "$stage/install.sh" "$stage/uninstall.sh"
+          # 打成一个顶层文件夹再压：解压得到一整个目录，而不是把四个文件撒进
+          # 「下载」里——非命令行用户最容易踩的一步。
+          tar -czf "${stage}.tar.gz" -C dist "PulseMind-${version}-linux-x64"
+          rm -rf "$stage"
           ls -lh dist/*.tar.gz
 
-      # 安装器必须在 Linux 上真跑一遍：临时 HOME 装、断言落点、再卸干净。
-      # 容器里没有显示服务，不启动 GUI —— 验的是「装到哪、指向哪、卸掉后剩什么」。
+      # 安装器必须在 Linux 上真跑一遍：临时 HOME 装、断言落点、再经双击入口卸干净。
+      # 容器里没有显示服务，不启动 GUI（--no-launch）——验的是「装到哪、指向哪、
+      # 卸掉后剩什么」。
       - name: Smoke no-root installer
         run: |
           set -eu
+          version=$(node -p "require('./package.json').version")
           work=$(mktemp -d)
           tar -xzf dist/PulseMind-*-linux-x64.tar.gz -C "$work"
-          test -x "$work/PulseMind/pulsemind"
-          test -f "$work/install.sh"
-          test -f "$work/icon.png"
+          # 解压必须只得到一个文件夹（双击安装的前提）
+          test "$(find "$work" -maxdepth 1 -mindepth 1 | wc -l)" -eq 1
+          pkg="$work/PulseMind-${version}-linux-x64"
+          test -x "$pkg/PulseMind/pulsemind"
+          test -f "$pkg/PulseMind/resources/app.asar"
+          test -f "$pkg/install.sh"
+          test -f "$pkg/uninstall.sh"
+          test -f "$pkg/安装说明.txt"
+          test -f "$pkg/icon.png"
           export HOME="$work/home"
           mkdir -p "$HOME"
-          ( cd "$work" && sh ./install.sh )
+          sh "$pkg/install.sh" --no-launch
           appdir="$HOME/Applications/PulseMind"
           test -x "$appdir/pulsemind"
           test -f "$appdir/resources/app.asar"
@@ -305,9 +326,11 @@ jobs:
           test -f "$desktop"
           grep -Fq "Exec=\"$appdir/pulsemind\"" "$desktop"
           test -f "$HOME/.local/share/icons/hicolor/256x256/apps/pulsemind.png"
-          ( cd "$work" && sh ./install.sh --uninstall )
+          # 卸载走使用者会点的那条路（uninstall.sh），不是 install.sh 本身
+          sh "$pkg/uninstall.sh"
           test ! -e "$appdir"
           test ! -e "$desktop"
+          test -f "$pkg/install.sh"
           echo "no-root installer smoke OK"
 
       - name: Report artifact
