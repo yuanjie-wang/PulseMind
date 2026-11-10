@@ -8,8 +8,9 @@
 // （ChatBody）——同一张引导卡各写一遍必然漂移。compact = 窄面纵向排布
 // （图标行 + 整宽按钮），横向卡片在 380px 的 dock 里会把说明压成一条竖缝。
 // 2026-11-05 加「导入模板包」次级入口：一次性模板 zip（整份 settings.json +
-// 可选 skills/）导入走主进程 template:import；成功后无需手动刷新——主进程
-// 广播 SETTINGS_CHANGED，useAppSettings 自动更新 hasApiKey，本卡随之退场。
+// 可选 skills/ + 可选 hooks/ + 可选 tools/）导入走主进程 template:import；
+// 成功后无需手动刷新——主进程广播 SETTINGS_CHANGED，useAppSettings 自动更新
+// hasApiKey，本卡随之退场。
 
 import React from 'react'
 import { Button, App as AntdApp } from 'antd'
@@ -31,20 +32,35 @@ export function ApiKeyGuide({ compact }: { compact?: boolean }): React.ReactElem
     try {
       const result = await window.electronAPI.importTemplate()
       if (!result) return
-      const { settingsApplied, warnings, skills, error } = result
-      // 真实失败（解压/解析/校验/写盘）走红色；它与「技能也导进来了」可以并存，
-      // 所以不 return——成功面与问题面各自反馈。
+      const { settingsApplied, warnings, skills, hooks, tools, error } = result
+      const hooksApplied = hooks.imported.length + hooks.replaced.length
+      const toolsApplied = tools.imported.length + tools.replaced.length
+      // 真实失败（解压/解析/校验/写盘）走红色；它与「其它载荷也导进来了」可以
+      // 并存，所以不 return——成功面与问题面各自反馈。
       if (error) antdMessage.error(error, 8)
-      if (settingsApplied || skills.imported.length > 0) {
+      if (settingsApplied || skills.imported.length > 0 || hooksApplied > 0 || toolsApplied > 0) {
         const skillNote = skills.imported.length > 0 ? ' ' + t('welcome.templateImportSkills', { count: skills.imported.length }) : ''
-        antdMessage.success(t('welcome.templateImportSuccess') + skillNote)
-      } else if (!error && skills.skipped.length === 0 && warnings.length === 0) {
-        // 包里没有 settings.json、没有 skills/，且没有任何被跳过的技能或警告
-        // ——才是「选错文件」。全重复的纯技能包静默返回；找到但坏了的情况
-        // 已由 error 表达，不能再报「没有找到」（旧条件正是覆盖了那两种）。
+        const hookNote = hooksApplied > 0 ? ' ' + t('welcome.templateImportHooks', { count: hooksApplied }) : ''
+        const toolNote = toolsApplied > 0 ? ' ' + t('welcome.templateImportTools', { count: toolsApplied }) : ''
+        antdMessage.success(t('welcome.templateImportSuccess') + skillNote + hookNote + toolNote)
+      } else if (
+        !error &&
+        skills.skipped.length === 0 &&
+        hooks.imported.length === 0 &&
+        hooks.replaced.length === 0 &&
+        hooks.unchanged.length === 0 &&
+        tools.imported.length === 0 &&
+        tools.replaced.length === 0 &&
+        tools.unchanged.length === 0 &&
+        warnings.length === 0
+      ) {
+        // 包里没有 settings.json、没有 skills/、没有 hooks/、没有 tools/，且
+        // 没有任何被跳过的技能或警告——才是「选错文件」。全重复的纯技能包 /
+        // 字节相同的纯 hooks、纯 tools 包静默返回；找到但坏了的情况已由 error
+        // 表达，不能再报「没有找到」（旧条件正是覆盖了那两种）。
         antdMessage.warning(t('welcome.templateImportEmpty'))
       }
-      const issues = [...warnings, ...skills.errors]
+      const issues = [...warnings, ...skills.errors, ...hooks.errors, ...tools.errors]
       if (issues.length > 0) {
         antdMessage.warning(issues.join('；'), 6)
       }

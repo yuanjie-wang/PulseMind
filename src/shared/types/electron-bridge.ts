@@ -172,16 +172,22 @@ export interface MCPToolCallResult {
 }
 
 /** 一次性模板包导入结果（2026-11-05）。zip = 整份 settings.json + 可选
- *  skills/；settingsApplied=false 表示包里没有（或没有有效的）settings.json，
- *  settings 原样未动。warnings 含 `enc:v1:` 密钥不可迁移提示等非致命项。
- *  skills.skipped = 重名被跳过的技能（幂等重复导入是预期行为，UI 不提示）。
- *  error（2026-11-10）= 该次导入的真实失败原因（解压/解析/校验/写盘），
- *  与 warnings 分开：旧实现把「没找到内容」也当警告，覆盖了「找到了但坏了」，
- *  提示与事实相反。可能同时有 error 与部分成功的 skills。 */
+ *  skills/ + 可选 hooks/ + 可选 tools/（后两者 2026-11-10 补）；settingsApplied
+ *  =false 表示包里没有（或没有有效的）settings.json，settings 原样未动。
+ *  warnings 含 `enc:v1:` 密钥不可迁移提示等非致命项。skills.skipped = 重名被
+ *  跳过的技能（幂等重复导入是预期行为，UI 不提示）。hooks = 模板 hooks/ 的
+ *  落盘摘要：imported 新写入、replaced 已备份后覆盖、unchanged 字节相同跳过、
+ *  errors 逐文件故障（包外已有文件永不删除）。tools = 模板 tools/ 的落盘摘要，
+ *  条目是工具 id（= 目录名），replaced 前整个工具目录已备份为 `<id>.<yyyyMMdd>.bak`；
+ *  error（2026-11-10）= 该次导入的真实失败原因（解压/解析/校验/写盘），与
+ *  warnings 分开：旧实现把「没找到内容」也当警告，覆盖了「找到了但坏了」，
+ *  提示与事实相反。可能同时有 error 与部分成功的载荷。 */
 export interface TemplateImportResult {
   settingsApplied: boolean
   warnings: string[]
   skills: { imported: SkillDefinition[]; skipped: string[]; errors: string[]; warnings: string[] }
+  hooks: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }
+  tools: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }
   error?: string
 }
 
@@ -257,7 +263,8 @@ export interface ElectronAPI {
   // Skills - Import
   importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null>
   /** 一次性模板包导入（2026-11-05，无密钥 welcome 引导卡入口）：主进程开
-   *  zip 文件对话框；null = 用户取消。settings.json 整份替换 + skills/ 落盘。 */
+   *  zip 文件对话框；null = 用户取消。settings.json 整份替换 + skills/ 与
+   *  hooks/ 落盘。 */
   importTemplate: () => Promise<TemplateImportResult | null>
   listImportedSkills: () => Promise<SkillDefinition[]>
   deleteImportedSkill: (name: string) => Promise<void>

@@ -1,28 +1,35 @@
 // ── 一次性模板包导入（2026-11-05）──
 // 无密钥 welcome 引导卡的「导入模板包」：zip = 整份 settings.json（团队从配置
-// 好的机器拷出）+ 可选 skills/（与技能 zip 导入同一落盘形态）。入口是一次性的
-// ——只挂在无密钥引导卡上，设置页无常驻入口；语义是整份替换（用户裁定），
-// settingsStore.set 走既有管线，主题/locale 等随模板走，不做字段级合并。
+// 好的机器拷出）+ 可选 skills/（与技能 zip 导入同一落盘形态）+ 可选 hooks/
+// （登录/请求钩子，2026-11-10 补）+ 可选 tools/（工具工作室产出的用户工具，
+// 2026-11-10 补）。入口是一次性的——只挂在无密钥引导卡上，设置页无常驻入口；
+// 语义是整份替换（用户裁定），settingsStore.set 走既有管线，主题/locale 等随
+// 模板走，不做字段级合并。
 // 纯逻辑（校验/补 id/密文警告）在 services/template-import.ts，内容定位在
-// services/template-pack.ts，这里只做 dialog + 解压 + 落盘 + 生效 + 广播。
+// services/template-pack.ts，hooks 落盘在 services/template-hooks.ts，tools
+// 落盘在 services/template-tools.ts，这里只做 dialog + 解压 + 落盘 + 生效 + 广播。
 //
-// 2026-11-10 三处修正：
+// 2026-11-10 四处修正：
 // ① 内容定位改由 locateTemplatePack 负责（包装目录里的 settings.json 也算数）；
 // ② 失败一律进 result.error（结构化），不再混进 warnings——旧实现把「解析失败」
 //    与「没找到」都当警告，且「没找到」的条件覆盖了「找到了但坏了」，用户看到的
 //    提示与事实相反；③ 写盘后跑 applySettingsSideEffects（与 SETTINGS_SET 同一
-//    份），导入的配置立刻生效而不是等重启。
+//    份），导入的配置立刻生效而不是等重启；④ hooks/ 新增落盘臂（旧实现只有
+//    settings 与 skills 两条，包里的 app-start.js / llm-request.js 被静默忽略）。
 
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { skillStore } from '../storage/skill-store'
+import { HOOKS_DIR, TOOLS_DIR } from '../storage/index'
 import { registerLiveSkills } from '../agent/live-skill-registry'
 import { logMain, describeError } from '../main-log'
 import { withZipExtraction } from '../utils/zip-extractor'
 import { validateTemplateSettings, sanitizeTemplateSettings } from '../services/template-import'
 import { locateTemplatePack } from '../services/template-pack'
+import { importHookFiles } from '../services/template-hooks'
+import { importToolDirs } from '../services/template-tools'
 import { applySettingsSideEffects } from '../services/settings-side-effects'
 import type { TemplateImportResult } from '../../shared/types/electron-bridge'
 
@@ -31,6 +38,8 @@ function emptyResult(): TemplateImportResult {
     settingsApplied: false,
     warnings: [],
     skills: { imported: [], skipped: [], errors: [], warnings: [] },
+    hooks: { imported: [], replaced: [], unchanged: [], errors: [] },
+    tools: { imported: [], replaced: [], unchanged: [], errors: [] },
   }
 }
 
@@ -132,9 +141,57 @@ export function registerTemplateHandlers(): void {
             logMain('ERROR', 'template', `skills import failed: ${describeError(err)}`)
           }
         }
+
+        // 3) hooks/ — app-start.js / llm-request.js（及它们 require 的辅助文件）
+        //    落进 ~/.pulsemind/hooks/。旧实现完全没有这条臂：包里的钩子被静默
+        //    忽略，用户只看到「导入成功」。落盘语义（缺的补、同字节跳过、不同
+        //    先备份再覆盖、包外文件不删）在 services/template-hooks.ts。
+        if (located.hooksDir) {
+          try {
+            const hooksResult = await importHookFiles(located.hooksDir, HOOKS_DIR)
+            result.hooks = hooksResult
+            for (const error of hooksResult.errors) {
+              logMain('ERROR', 'template', error)
+            }
+            if (hooksResult.imported.length > 0 || hooksResult.replaced.length > 0) {
+              logMain('INFO', 'template', `hooks imported: ${[...hooksResult.imported, ...hooksResult.replaced].join(', ')}`)
+            }
+            // app-start 是启动钩子：本次会话已经在跑，落盘只对下次启动生效。
+            // 不说清楚的话，用户会以为「导了但没生效」。
+            const touched = [...hooksResult.imported, ...hooksResult.replaced]
+            if (touched.includes('app-start.js')) {
+              result.warnings.push('hooks/app-start.js 已导入，将在下次启动应用时生效')
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            result.hooks.errors.push(`hooks/ 导入失败：${message}`)
+            logMain('ERROR', 'template', `hooks import failed: ${describeError(err)}`)
+          }
+        }
+
+        // 4) tools/ — 用户工具（工具工作室产出）落进 ~/.pulsemind/tools/<id>/。
+        //    与 hooks 同一条缺陷：旧实现没有这条臂，团队模板里的工具一个都
+        //    不落盘。落盘语义（逐目录比较、整目录备份后覆盖、预置/运行数据
+        //    跳过）在 services/template-tools.ts。
+        if (located.toolsDir) {
+          try {
+            const toolsResult = await importToolDirs(located.toolsDir, TOOLS_DIR)
+            result.tools = toolsResult
+            for (const error of toolsResult.errors) {
+              logMain('ERROR', 'template', error)
+            }
+            if (toolsResult.imported.length > 0 || toolsResult.replaced.length > 0) {
+              logMain('INFO', 'template', `tools imported: ${[...toolsResult.imported, ...toolsResult.replaced].join(', ')}`)
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            result.tools.errors.push(`tools/ 导入失败：${message}`)
+            logMain('ERROR', 'template', `tools import failed: ${describeError(err)}`)
+          }
+        }
       })
     } catch (err) {
-      // 到这里只可能是解压/清理本身炸了（两个载荷臂各自兜底）：什么都没落地。
+      // 到这里只可能是解压/清理本身炸了（各载荷臂各自兜底）：什么都没落地。
       logMain('ERROR', 'template', `zip extraction failed: ${describeError(err)}`)
       return { ...emptyResult(), error: `压缩包读取失败：${describeError(err)}` }
     }

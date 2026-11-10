@@ -1,12 +1,13 @@
 // ── 一次性模板包导入（2026-11-05）──
 // 无密钥 welcome 引导卡的「导入模板包」：zip = 整份 settings.json（团队从配
-// 置好的机器拷出）+ 可选 skills/。语义是整份替换（用户裁定），不是字段级合
-// 并。这里钉三层：validate/sanitize 纯函数的真行为、内容定位（locateTemplatePack
-// 在真临时目录上跑）、以及全链路接线形状（源码扫描，见 AGENTS「单测纪律」——
-// zip 解压/落盘/broadcast 属 IO，进不了纯 Node 单测，由 handler 的 wiring 断言
-// 钉住）。
+// 置好的机器拷出）+ 可选 skills/ + 可选 hooks/。语义是整份替换（用户裁定），
+// 不是字段级合并。这里钉三层：validate/sanitize 纯函数的真行为、内容定位
+// （locateTemplatePack 在真临时目录上跑）、hooks 落盘（importHookFiles 在真
+// 临时目录上跑），以及全链路接线形状（源码扫描，见 AGENTS「单测纪律」——
+// zip 解压/落盘/broadcast 属 IO，进不了纯 Node 单测，由 handler 的 wiring
+// 断言钉住）。
 //
-// 2026-11-10：四个实测缺陷的回归面
+// 2026-11-10：五个实测缺陷的回归面
 // ① 包装目录（Finder/资源管理器「压缩文件夹」、整份 ~/.pulsemind）里的载荷
 //    原来定位不到 → 报「没有找到」，与事实相反；
 // ② 旧扁平 profiles[] 模板被整份拒收，而天真地补一个 providers: [] 会在写盘
@@ -14,14 +15,21 @@
 // ③ 导入后不跑保存副作用（主题/开机自启/休眠守卫/菜单/保留期清扫）——配置
 //    导进来了但要等重启才像样；
 // ④ 解压/解析/校验/写盘失败与「没找到」混在 warnings 里，损坏 zip 还逃成
-//    裸 IPC rejection（渲染端只剩泛化提示，主日志无痕）。
+//    裸 IPC rejection（渲染端只剩泛化提示，主日志无痕）；
+// ⑤ 包里的 hooks/ 被完全忽略（旧实现只有 settings/skills 两条臂）——团队
+//    模板里的 app-start.js / llm-request.js 一个都不落盘；
+// ⑥ 包里的 tools/ 同样被完全忽略（工具目录是 ~/.pulsemind/tools/<id>/ 的
+//    自包含单元：tool.json + app.html + 资源，模板带上后新机器上工具中心
+//    是空的）。运行数据 storage.json 不跟着模板走。
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { validateTemplateSettings, sanitizeTemplateSettings } from '../src/main/services/template-import'
 import { locateTemplatePack } from '../src/main/services/template-pack'
+import { importHookFiles } from '../src/main/services/template-hooks'
+import { importToolDirs } from '../src/main/services/template-tools'
 import type { AppSettings } from '../src/shared/types/settings'
 
 const REPO = process.cwd()
@@ -299,6 +307,61 @@ describe('locateTemplatePack', () => {
     expect(found.settingsPath).toBeUndefined()
   })
 
+  it('finds hooks/ at the root and inside a wrapper folder', async () => {
+    const root = packDir()
+    mkdirSync(join(root, 'hooks'), { recursive: true })
+    touchFile(root, 'hooks/app-start.js', 'module.exports = async () => ({ env: {} })')
+
+    expect((await locateTemplatePack(root)).hooksDir).toBe(join(root, 'hooks'))
+
+    const wrapped = packDir()
+    mkdirSync(join(wrapped, '团队配置', 'hooks'), { recursive: true })
+    expect((await locateTemplatePack(wrapped)).hooksDir).toBe(join(wrapped, '团队配置', 'hooks'))
+  })
+
+  it('locates hooks/ independently of the other two payloads', async () => {
+    const root = packDir()
+    touchFile(root, 'settings.json')
+    mkdirSync(join(root, 'pack', 'skills'), { recursive: true })
+    mkdirSync(join(root, 'pack', 'hooks'), { recursive: true })
+
+    const found = await locateTemplatePack(root)
+    expect(found.settingsPath).toBe(join(root, 'settings.json'))
+    expect(found.skillsDir).toBe(join(root, 'pack', 'skills'))
+    expect(found.hooksDir).toBe(join(root, 'pack', 'hooks'))
+  })
+
+  it('does not descend into the located hooks dir', async () => {
+    const root = packDir()
+    mkdirSync(join(root, 'hooks', 'lib'), { recursive: true })
+    touchFile(root, 'hooks/settings.json')
+
+    const found = await locateTemplatePack(root)
+    expect(found.hooksDir).toBe(join(root, 'hooks'))
+    expect(found.settingsPath).toBeUndefined()
+  })
+
+  it('finds tools/ at the root and inside a wrapper folder', async () => {
+    const root = packDir()
+    mkdirSync(join(root, 'tools', 'tool_a'), { recursive: true })
+
+    expect((await locateTemplatePack(root)).toolsDir).toBe(join(root, 'tools'))
+
+    const wrapped = packDir()
+    mkdirSync(join(wrapped, '.pulsemind', 'tools', 'tool_a'), { recursive: true })
+    expect((await locateTemplatePack(wrapped)).toolsDir).toBe(join(wrapped, '.pulsemind', 'tools'))
+  })
+
+  it('does not descend into the located tools dir (a tool.json inside is not settings.json)', async () => {
+    const root = packDir()
+    mkdirSync(join(root, 'tools', 'tool_a'), { recursive: true })
+    touchFile(root, 'tools/settings.json')
+
+    const found = await locateTemplatePack(root)
+    expect(found.toolsDir).toBe(join(root, 'tools'))
+    expect(found.settingsPath).toBeUndefined()
+  })
+
   it('does not treat a directory named settings.json as the file', async () => {
     const root = packDir()
     mkdirSync(join(root, 'settings.json'), { recursive: true })
@@ -311,6 +374,245 @@ describe('locateTemplatePack', () => {
     touchFile(root, 'readme.txt', 'nothing here')
 
     expect(await locateTemplatePack(root)).toEqual({})
+  })
+})
+
+describe('importHookFiles', () => {
+  const STAMP = new Date(2026, 10, 10) // 20261110
+
+  it('copies every regular file (nested helpers included) into an empty target', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'app-start.js', 'module.exports = async () => ({ env: { A: "1" } })')
+    touchFile(src, 'llm-request.js', 'module.exports = async (ctx) => ctx')
+    touchFile(src, 'lib/util.js', 'module.exports = 1')
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.imported.sort()).toEqual(['app-start.js', 'lib/util.js', 'llm-request.js'])
+    expect(result.replaced).toEqual([])
+    expect(result.unchanged).toEqual([])
+    expect(result.errors).toEqual([])
+    expect(readFileSync(join(dest, 'app-start.js'), 'utf-8')).toContain('env')
+    expect(readFileSync(join(dest, 'lib/util.js'), 'utf-8')).toBe('module.exports = 1')
+  })
+
+  it('skips byte-identical files silently (idempotent re-import, no backup)', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'app-start.js', 'same bytes')
+    touchFile(dest, 'app-start.js', 'same bytes')
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.unchanged).toEqual(['app-start.js'])
+    expect(result.imported).toEqual([])
+    expect(result.replaced).toEqual([])
+    expect(readdirSync(dest)).toEqual(['app-start.js'])
+  })
+
+  it('backs up a differing file before replacing it, and never deletes target-only files', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'app-start.js', 'new login flow')
+    touchFile(dest, 'app-start.js', 'hand-deployed login flow')
+    touchFile(dest, 'custom.js', 'target only')
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.replaced).toEqual(['app-start.js'])
+    expect(readFileSync(join(dest, 'app-start.js'), 'utf-8')).toBe('new login flow')
+    expect(readFileSync(join(dest, 'app-start.js.20261110.bak'), 'utf-8')).toBe('hand-deployed login flow')
+    expect(readFileSync(join(dest, 'custom.js'), 'utf-8')).toBe('target only')
+  })
+
+  it("keeps the day's first backup when the same file is imported twice", async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'app-start.js', 'v2')
+    touchFile(dest, 'app-start.js', 'v1')
+    // 当日首份备份（更早一次导入留下的可恢复状态）
+    touchFile(dest, 'app-start.js.20261110.bak', 'original')
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.replaced).toEqual(['app-start.js'])
+    expect(readFileSync(join(dest, 'app-start.js.20261110.bak'), 'utf-8')).toBe('original')
+  })
+
+  it('never imports the provenance manifest or existing .bak files', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, '.seed-hashes.json', '{"app-start.js":"deadbeef"}')
+    touchFile(src, 'app-start.js.20260101.bak', 'old backup')
+    touchFile(src, 'app-start.js', 'live')
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.imported).toEqual(['app-start.js'])
+    expect(existsSync(join(dest, '.seed-hashes.json'))).toBe(false)
+    expect(existsSync(join(dest, 'app-start.js.20260101.bak'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('does not follow symlinks out of the pack', async () => {
+    const src = packDir()
+    const dest = packDir()
+    const outside = packDir()
+    touchFile(outside, 'secret.js', 'outside')
+    symlinkSync(join(outside, 'secret.js'), join(src, 'linked.js'))
+
+    const result = await importHookFiles(src, dest, STAMP)
+    expect(result.imported).toEqual([])
+    expect(existsSync(join(dest, 'linked.js'))).toBe(false)
+  })
+})
+
+describe('importToolDirs', () => {
+  const STAMP = new Date(2026, 10, 10) // 20261110
+
+  /** Write a well-formed tool dir (manifest + entry page) plus extra files. */
+  function seedTool(base: string, id: string, extra: Record<string, string> = {}): void {
+    const manifest = {
+      id,
+      name: id,
+      description: '',
+      htmlPath: 'app.html',
+      capabilities: [],
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    touchFile(base, `${id}/tool.json`, JSON.stringify(manifest, null, 2))
+    touchFile(base, `${id}/app.html`, `<html>${id}</html>`)
+    for (const [rel, body] of Object.entries(extra)) touchFile(base, `${id}/${rel}`, body)
+  }
+
+  it('imports a whole tool directory (manifest + entry page + nested assets)', async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a', { 'lib/util.js': 'module.exports = 1' })
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual(['tool_a'])
+    expect(result.replaced).toEqual([])
+    expect(result.unchanged).toEqual([])
+    expect(result.errors).toEqual([])
+    expect(readFileSync(join(dest, 'tool_a', 'app.html'), 'utf-8')).toContain('tool_a')
+    expect(readFileSync(join(dest, 'tool_a', 'lib/util.js'), 'utf-8')).toBe('module.exports = 1')
+    // 清单原样落盘（id 与目录名一致，list() 才认得出这个工具）
+    expect(JSON.parse(readFileSync(join(dest, 'tool_a', 'tool.json'), 'utf-8')).id).toBe('tool_a')
+  })
+
+  it('skips byte-identical tools silently (idempotent re-import, no backup)', async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a')
+    seedTool(dest, 'tool_a')
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.unchanged).toEqual(['tool_a'])
+    expect(result.imported).toEqual([])
+    expect(result.replaced).toEqual([])
+    expect(readdirSync(dest)).toEqual(['tool_a'])
+  })
+
+  it('backs up the whole tool dir before replacing, keeps target-only files and run data', async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a')
+    seedTool(dest, 'tool_a')
+    // 盘上被用户改过 + 只属于本机的文件
+    touchFile(dest, 'tool_a/app.html', '<html>hand edited</html>')
+    touchFile(dest, 'tool_a/notes.txt', 'target only')
+    touchFile(dest, 'tool_a/storage.json', '{"k":"v"}')
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.replaced).toEqual(['tool_a'])
+    // 备份是整目录：旧页面与旧清单都在一起（恢复点）
+    expect(readFileSync(join(dest, 'tool_a.20261110.bak', 'app.html'), 'utf-8')).toBe('<html>hand edited</html>')
+    expect(existsSync(join(dest, 'tool_a.20261110.bak', 'tool.json'))).toBe(true)
+    // 覆盖后：包里的页面生效，包外文件与运行数据都不动
+    expect(readFileSync(join(dest, 'tool_a', 'app.html'), 'utf-8')).toBe('<html>tool_a</html>')
+    expect(readFileSync(join(dest, 'tool_a', 'notes.txt'), 'utf-8')).toBe('target only')
+    expect(readFileSync(join(dest, 'tool_a', 'storage.json'), 'utf-8')).toBe('{"k":"v"}')
+  })
+
+  it("keeps the day's first backup when the same tool is imported twice", async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a')
+    seedTool(dest, 'tool_a')
+    touchFile(dest, 'tool_a/app.html', '<html>v2</html>')
+    touchFile(dest, 'tool_a.20261110.bak/app.html', '<html>original</html>')
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.replaced).toEqual(['tool_a'])
+    expect(readFileSync(join(dest, 'tool_a.20261110.bak', 'app.html'), 'utf-8')).toBe('<html>original</html>')
+  })
+
+  it('never imports run data, presets, the legacy templates dir, hidden entries or .bak dirs', async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a', { 'storage.json': '{"run":"data"}' })
+    seedTool(src, 'preset_demo')
+    seedTool(src, 'presets/calculator')
+    seedTool(src, 'templates/legacy')
+    seedTool(src, '.hidden')
+    seedTool(src, 'tool_b.20260101.bak')
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual(['tool_a'])
+    expect(result.errors).toEqual([])
+    expect(readdirSync(dest).sort()).toEqual(['tool_a'])
+    // 运行数据不跟着模板走（与 duplicate() 同一条规矩）
+    expect(existsSync(join(dest, 'tool_a', 'storage.json'))).toBe(false)
+  })
+
+  it('rejects a manifest whose id does not match its directory (and leaves no partial dir)', async () => {
+    const src = packDir()
+    const dest = packDir()
+    seedTool(src, 'tool_a')
+    touchFile(src, 'tool_a/tool.json', JSON.stringify({ id: 'tool_b', htmlPath: 'app.html' }))
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual([])
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toContain('tool_a')
+    expect(result.errors[0]).toContain('不一致')
+    expect(existsSync(join(dest, 'tool_a'))).toBe(false)
+  })
+
+  it('rejects a missing tool.json and a missing entry page', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'no_manifest/app.html', '<html></html>')
+    touchFile(src, 'no_html/tool.json', JSON.stringify({ id: 'no_html', htmlPath: 'app.html' }))
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual([])
+    expect(result.errors.join('\n')).toContain('no_manifest')
+    expect(result.errors.join('\n')).toContain('no_html')
+    expect(readdirSync(dest)).toEqual([])
+  })
+
+  it('rejects an htmlPath that escapes the tool directory', async () => {
+    const src = packDir()
+    const dest = packDir()
+    touchFile(src, 'tool_a/tool.json', JSON.stringify({ id: 'tool_a', htmlPath: '../outside.html' }))
+    touchFile(src, 'outside.html', '<html></html>')
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual([])
+    expect(result.errors[0]).toContain('越出工具目录')
+    expect(existsSync(join(dest, 'tool_a'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('does not follow symlinks out of the pack', async () => {
+    const src = packDir()
+    const dest = packDir()
+    const outside = packDir()
+    seedTool(src, 'tool_a')
+    touchFile(outside, 'secret.txt', 'outside')
+    symlinkSync(join(outside, 'secret.txt'), join(src, 'tool_a', 'linked.txt'))
+
+    const result = await importToolDirs(src, dest, STAMP)
+    expect(result.imported).toEqual(['tool_a'])
+    expect(existsSync(join(dest, 'tool_a', 'linked.txt'))).toBe(false)
   })
 })
 
@@ -329,6 +631,13 @@ describe('template import wiring', () => {
     expect(src).toContain('locateTemplatePack(extractDir)')
     expect(src).toContain('located.settingsPath')
     expect(src).toContain('located.skillsDir')
+    expect(src).toContain('located.hooksDir')
+    expect(src).toContain('importHookFiles(located.hooksDir, HOOKS_DIR)')
+    // tools 臂：目录级落盘（tools/<id>/ 整份），与 hooks 同一个「定位了才做」形状
+    expect(src).toContain('located.toolsDir')
+    expect(src).toContain('importToolDirs(located.toolsDir, TOOLS_DIR)')
+    expect(src).toContain('result.tools = toolsResult')
+    expect(src).toContain('result.tools.errors.push(')
     expect(src).toContain('validateTemplateSettings')
     expect(src).toContain('sanitizeTemplateSettings')
     expect(src).toContain('settingsStore.set(')
@@ -341,6 +650,10 @@ describe('template import wiring', () => {
     // 技能导入只有「没有 skills/」是静默的：定位结果判定，真实故障进 errors
     expect(src).not.toContain('let hasSkills = false')
     expect(src).toContain('result.skills.errors.push(')
+    // hooks 臂：落盘 + 逐文件故障进 errors + app-start 下次启动生效的提示
+    expect(src).toContain('result.hooks = hooksResult')
+    expect(src).toContain('result.hooks.errors.push(')
+    expect(src).toContain('hooks/app-start.js 已导入，将在下次启动应用时生效')
   })
 
   it('settings save effects are shared with the settings page and run on import', () => {
@@ -380,6 +693,8 @@ describe('template import wiring', () => {
     expect(bridge).toContain('importTemplate:')
     expect(bridge).toContain('interface TemplateImportResult')
     expect(bridge).toContain('skipped: string[]')
+    expect(bridge).toContain('hooks: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }')
+    expect(bridge).toContain('tools: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }')
     expect(bridge).toContain('error?: string')
     expect(read('src/preload/index.ts')).toContain('importTemplate:')
     expect(read('src/preload/index.ts')).toContain('IPC_CHANNELS.TEMPLATE_IMPORT')
@@ -396,16 +711,23 @@ describe('template import wiring', () => {
 
   it('renderer reports the structured error, and only a truly empty pack gets the "empty" toast', () => {
     const src = read('src/renderer/src/components/welcome/ApiKeyGuide.tsx')
-    // 真实失败走红色提示；与「技能也导进来了」并存，所以不 return
-    expect(src).toContain('const { settingsApplied, warnings, skills, error } = result')
+    // 真实失败走红色提示；与「其它载荷也导进来了」并存，所以不 return
+    expect(src).toContain('const { settingsApplied, warnings, skills, hooks, tools, error } = result')
     expect(src).toContain('if (error) antdMessage.error(error, 8)')
     // issues 只收 warnings + errors，不含 skipped
-    expect(src).toContain('[...warnings, ...skills.errors]')
+    expect(src).toContain('[...warnings, ...skills.errors, ...hooks.errors, ...tools.errors]')
     expect(src).not.toContain('skills.skipped.join')
-    // 「包空」只在「无 error、零跳过、零警告」时成立——旧条件把「找到了但
-    // 坏了」也算成没找到，提示与事实相反
-    expect(src).toContain('else if (!error && skills.skipped.length === 0 && warnings.length === 0)')
+    // 「包空」只在「无 error、零跳过、零 hooks 痕迹、零 tools 痕迹、零警告」时成立——旧条件
+    // 把「找到了但坏了」也算成没找到，提示与事实相反
+    expect(src).toContain('skills.skipped.length === 0 &&')
+    expect(src).toContain('hooks.unchanged.length === 0 &&')
+    expect(src).toContain('tools.unchanged.length === 0 &&')
     expect(src).toContain('templateImportEmpty')
+    // hooks/tools 落盘也算成功面（纯 hooks、纯 tools 包不再被当成空包），并给出数量提示
+    expect(src).toContain('hooks.imported.length + hooks.replaced.length')
+    expect(src).toContain('tools.imported.length + tools.replaced.length')
+    expect(src).toContain('welcome.templateImportHooks')
+    expect(src).toContain('welcome.templateImportTools')
   })
 
   it('the renderer skill list refreshes on the skills:changed broadcast', () => {
@@ -435,7 +757,15 @@ describe('template import wiring', () => {
   it('the i18n keys exist in both locales', () => {
     const zh = read('src/renderer/src/i18n/locales/zh.ts')
     const en = read('src/renderer/src/i18n/locales/en.ts')
-    for (const key of ['importTemplate', 'templateImportSuccess', 'templateImportSkills', 'templateImportEmpty', 'templateImportFailed']) {
+    for (const key of [
+      'importTemplate',
+      'templateImportSuccess',
+      'templateImportSkills',
+      'templateImportHooks',
+      'templateImportTools',
+      'templateImportEmpty',
+      'templateImportFailed',
+    ]) {
       expect(zh).toContain(`${key}:`)
       expect(en).toContain(`${key}:`)
     }
