@@ -10,7 +10,17 @@
 // 是那道门，这里钉它，也钉 workflow 真的调它。
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -248,5 +258,152 @@ describe('门禁退出码：空扫描不放行', () => {
     const bad = tmpDir()
     writeFileSync(join(bad, 'bad.node'), 'GLIBC_2.34\0', 'latin1')
     expect(run(bad).status).toBe(1)
+  })
+})
+
+// 2026-11-10：UOS 目标机的普通用户没有 root，`dpkg -i` 直接不可用。交付因此变成
+// 两条腿：deb 给有 root 的机器，tar.gz 免安装包给普通用户。这条链的失败全是静默的
+// （tar 里少一个文件、安装器写到系统目录、卸载留下桌面入口），所以既钉 workflow
+// 契约，也真跑一遍安装器。
+describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => {
+  const INSTALLER_PATH = join(ROOT, 'scripts/install-linux-noroot.sh')
+  const INSTALLER = read('scripts/install-linux-noroot.sh')
+  const executableOf = (text: string) =>
+    text
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n')
+
+  it('workflow 在门禁之后产 tarball：linux-unpacked + install.sh + icon.png', () => {
+    const lines = WORKFLOW.split('\n')
+    const at = (pattern: RegExp) => lines.findIndex((line) => pattern.test(line.trim()))
+    const packAt = at(/^- name: Package no-root tarball$/)
+    const smokeAt = at(/^- name: Smoke no-root installer$/)
+    expect(packAt).toBeGreaterThan(-1)
+    expect(smokeAt).toBeGreaterThan(packAt)
+    // 只打已过 glibc 门禁的那棵树，不另编一份
+    expect(at(/^run: node scripts\/check-linux-glibc\.js/)).toBeLessThan(packAt)
+    expect(WORKFLOW).toContain('cp -a dist/linux-unpacked dist/PulseMind')
+    expect(WORKFLOW).toContain('cp scripts/install-linux-noroot.sh dist/install.sh')
+    expect(WORKFLOW).toContain('cp resources/icons-linux/256x256.png dist/icon.png')
+    // 三件套一个都不能少：PulseMind/ 是安装器约定的应用目录名，另两个与它平级
+    expect(WORKFLOW).toMatch(
+      /tar -czf "dist\/PulseMind-\$\{version\}-linux-x64\.tar\.gz" -C dist PulseMind install\.sh icon\.png/,
+    )
+  })
+
+  it('冒烟用临时 HOME 真装真卸（tar 缺文件 / 装错地方只有这一步能抓）', () => {
+    expect(WORKFLOW).toContain('export HOME="$work/home"')
+    expect(WORKFLOW).toContain('sh ./install.sh --uninstall')
+    // 三件事各一条：装到哪、桌面入口指向哪、卸完剩什么
+    expect(WORKFLOW).toContain('test -x "$appdir/pulsemind"')
+    expect(WORKFLOW).toContain('grep -Fq "Exec=\\"$appdir/pulsemind\\"" "$desktop"')
+    expect(WORKFLOW).toContain('test ! -e "$appdir"')
+  })
+
+  it('artifact 用固定名单独上传，release job 同步带上 tar.gz', () => {
+    expect(WORKFLOW).toContain('name: pulsemind-linux-x64-tarball')
+    expect(WORKFLOW).toContain('path: dist/*.tar.gz')
+    // 只传 deb 会让手动发 Release 这条路径悄悄少一份产物
+    expect(WORKFLOW).toMatch(/gh release upload "\$TAG" dist\/\*\.deb dist\/\*\.tar\.gz/)
+  })
+
+  it('安装器不碰系统目录、不调 sudo（普通用户才跑得动）', () => {
+    const executable = executableOf(INSTALLER)
+    expect(executable).not.toMatch(/\bsudo\b/)
+    expect(executable).not.toMatch(/\/opt\//)
+    expect(executable).not.toMatch(/\bapt(-get)?\b/)
+    // 应用与桌面集成都落在用户可写的两处根下
+    expect(INSTALLER).toContain('${PULSEMIND_HOME:-$HOME/Applications}')
+    expect(INSTALLER).toContain('${XDG_DATA_HOME:-$HOME/.local/share}')
+  })
+
+  it('关掉 userns 的机器回落 --no-sandbox（UOS 加固策略下的唯一启动姿势）', () => {
+    expect(INSTALLER).toContain('kernel.unprivileged_userns_clone')
+    expect(INSTALLER).toContain('kernel.apparmor_restrict_unprivileged_userns')
+    expect(INSTALLER).toMatch(/unshare -U true/)
+    expect(INSTALLER).toContain('--no-sandbox')
+  })
+
+  it('sh 语法合法（UOS 上就是 dash，不是 bash 子集之外的方言）', () => {
+    const out = spawnSync('sh', ['-n', INSTALLER_PATH], { encoding: 'utf-8' })
+    expect(out.status, out.stderr).toBe(0)
+  })
+
+  describe.skipIf(process.platform === 'win32')('真跑一遍安装器', () => {
+    const makePkg = () => {
+      const base = tmpDir()
+      const pkg = join(base, 'pkg')
+      mkdirSync(join(pkg, 'PulseMind', 'resources'), { recursive: true })
+      writeFileSync(join(pkg, 'PulseMind', 'pulsemind'), '#!/bin/sh\nexit 0\n')
+      chmodSync(join(pkg, 'PulseMind', 'pulsemind'), 0o755)
+      writeFileSync(join(pkg, 'icon.png'), 'png')
+      copyFileSync(INSTALLER_PATH, join(pkg, 'install.sh'))
+      const home = join(base, 'home')
+      mkdirSync(home, { recursive: true })
+      return { base, pkg, home }
+    }
+    const runInstall = (pkg: string, home: string, args: string[] = []) =>
+      spawnSync('sh', [join(pkg, 'install.sh'), ...args], {
+        cwd: pkg,
+        env: { ...process.env, HOME: home, XDG_DATA_HOME: '' },
+        encoding: 'utf-8',
+      })
+
+    it('默认装到 ~/Applications/PulseMind，桌面入口与图标进 ~/.local，卸载清干净', () => {
+      const { pkg, home } = makePkg()
+      const app = join(home, 'Applications', 'PulseMind')
+      const desktop = join(home, '.local', 'share', 'applications', 'pulsemind.desktop')
+      const icon = join(home, '.local', 'share', 'icons', 'hicolor', '256x256', 'apps', 'pulsemind.png')
+
+      const install = runInstall(pkg, home)
+      expect(install.status, install.stderr).toBe(0)
+      expect(existsSync(join(app, 'resources'))).toBe(true)
+      expect(statSync(join(app, 'pulsemind')).mode & 0o111).not.toBe(0)
+      const entry = readFileSync(desktop, 'utf-8')
+      expect(entry).toContain(`Exec="${join(app, 'pulsemind')}"`)
+      expect(entry).toContain('StartupWMClass=PulseMind')
+      expect(existsSync(icon)).toBe(true)
+
+      // 卸载不得动用户数据 —— 与安装位置无关的那一份
+      const dataFile = join(home, '.pulsemind', 'settings.json')
+      mkdirSync(join(home, '.pulsemind'), { recursive: true })
+      writeFileSync(dataFile, '{}')
+
+      const uninstall = runInstall(pkg, home, ['--uninstall'])
+      expect(uninstall.status, uninstall.stderr).toBe(0)
+      expect(existsSync(app)).toBe(false)
+      expect(existsSync(desktop)).toBe(false)
+      expect(existsSync(icon)).toBe(false)
+      expect(existsSync(dataFile)).toBe(true)
+    })
+
+    it('--dir 装到指定目录；--no-desktop 不写桌面入口', () => {
+      const { base, pkg, home } = makePkg()
+      const app = join(base, 'custom', 'pm')
+      const out = runInstall(pkg, home, ['--dir', app, '--no-desktop'])
+      expect(out.status, out.stderr).toBe(0)
+      expect(existsSync(join(app, 'pulsemind'))).toBe(true)
+      expect(existsSync(join(home, '.local', 'share', 'applications', 'pulsemind.desktop'))).toBe(false)
+    })
+
+    it('拒绝把 / 或家目录本身当安装/卸载目标，反解到别处的 desktop 也不删', () => {
+      const { base, pkg, home } = makePkg()
+      expect(runInstall(pkg, home, ['--dir', '/']).status).not.toBe(0)
+      expect(runInstall(pkg, home, ['--uninstall', '--dir', '/']).status).not.toBe(0)
+      expect(runInstall(pkg, home, ['--dir', home]).status).not.toBe(0)
+
+      // 手写的 desktop 指向家目录之外：反解出来的路径不得被当作删除目标
+      const outside = join(base, 'outside', 'app')
+      mkdirSync(outside, { recursive: true })
+      writeFileSync(join(outside, 'pulsemind'), 'x')
+      mkdirSync(join(home, '.local', 'share', 'applications'), { recursive: true })
+      writeFileSync(
+        join(home, '.local', 'share', 'applications', 'pulsemind.desktop'),
+        `[Desktop Entry]\nExec="${join(outside, 'pulsemind')}" %U\n`,
+      )
+      expect(runInstall(pkg, home, ['--uninstall']).status).not.toBe(0)
+      expect(existsSync(outside)).toBe(true)
+    })
   })
 })

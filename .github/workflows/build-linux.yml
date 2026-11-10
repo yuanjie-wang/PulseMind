@@ -32,8 +32,16 @@
 # 架构：只有 x64。arm64/loongarch 要另立 job + 先补 resources/bin/linux-arm64/rg
 # （现在 filter `linux-${arch}/**` 匹配空不报错，搜索会静默降级成 grep 兜底），
 # 且 GH 的 arm64 runner 只在 ubuntu-24.04-arm 上（公开仓免费）。
+#
+# 交付两种落地方式，同一份 linux-unpacked、同一套门禁（2026-11-10，UOS 实测普通
+# 用户没有 root，`dpkg -i` 直接不可用）：
+#   · .deb —— 给有 root（或能 sudo）的机器；
+#   · PulseMind-<ver>-linux-x64.tar.gz —— 免安装包：PulseMind/ + install.sh +
+#     icon.png，解压后跑 install.sh，应用与桌面入口全落在当前用户家目录
+#     （~/Applications/PulseMind、~/.local/share/{applications,icons}），
+#     不调 sudo、不碰系统目录。打包后在同一 job 里用临时 HOME 真跑一遍装/卸。
 
-name: Build Linux deb
+name: Build Linux packages
 
 on:
   workflow_dispatch:
@@ -261,8 +269,51 @@ jobs:
             }
           '
 
+      # UOS 等机器的普通用户没有 root：deb 装不了（dpkg -i 要 root），AppImage 又
+      # 常缺 libfuse2。同一份 linux-unpacked 再打一个 tar.gz 免安装包——解压后在
+      # 解压目录里跑 install.sh 即可（只写家目录、不调 sudo）。与 deb 同源同门禁，
+      # 只是两种落地方式；glibc 2.28 那一关上面已经过了。
+      - name: Package no-root tarball
+        run: |
+          set -eu
+          version=$(node -p "require('./package.json').version")
+          cp -a dist/linux-unpacked dist/PulseMind
+          cp resources/icons-linux/256x256.png dist/icon.png
+          cp scripts/install-linux-noroot.sh dist/install.sh
+          chmod 755 dist/install.sh
+          tar -czf "dist/PulseMind-${version}-linux-x64.tar.gz" -C dist PulseMind install.sh icon.png
+          rm -rf dist/PulseMind dist/icon.png dist/install.sh
+          ls -lh dist/*.tar.gz
+
+      # 安装器必须在 Linux 上真跑一遍：临时 HOME 装、断言落点、再卸干净。
+      # 容器里没有显示服务，不启动 GUI —— 验的是「装到哪、指向哪、卸掉后剩什么」。
+      - name: Smoke no-root installer
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          tar -xzf dist/PulseMind-*-linux-x64.tar.gz -C "$work"
+          test -x "$work/PulseMind/pulsemind"
+          test -f "$work/install.sh"
+          test -f "$work/icon.png"
+          export HOME="$work/home"
+          mkdir -p "$HOME"
+          ( cd "$work" && sh ./install.sh )
+          appdir="$HOME/Applications/PulseMind"
+          test -x "$appdir/pulsemind"
+          test -f "$appdir/resources/app.asar"
+          desktop="$HOME/.local/share/applications/pulsemind.desktop"
+          test -f "$desktop"
+          grep -Fq "Exec=\"$appdir/pulsemind\"" "$desktop"
+          test -f "$HOME/.local/share/icons/hicolor/256x256/apps/pulsemind.png"
+          ( cd "$work" && sh ./install.sh --uninstall )
+          test ! -e "$appdir"
+          test ! -e "$desktop"
+          echo "no-root installer smoke OK"
+
       - name: Report artifact
-        run: ls -lh dist/*.deb
+        run: |
+          ls -lh dist/*.deb dist/*.tar.gz
+          sha256sum dist/*.deb dist/*.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
@@ -275,11 +326,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - uses: actions/upload-artifact@v4
+        with:
+          # 与 deb 分成两个 artifact：有 root 的机器下 deb，没有的下 tar.gz，
+          # 列表里一眼能分。固定名，理由同上（分支名带 `/` 会让上传直接红）。
+          name: pulsemind-linux-x64-tarball
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
   # deb job 跑在 node:20-bullseye 容器里，而 gh CLI 只装在宿主 runner 上——
   # 容器里执行会 `gh: not found`（exit 127）。所以上传必须另开一个宿主 job：
-  # 取回 deb 刚上传的 artifact，再传给 Release。
+  # 取回 deb job 刚上传的两个 artifact，再传给 Release。
   upload-release:
-    name: upload deb to release
+    name: upload packages to release
     needs: deb
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release-tag != ''
@@ -288,6 +348,11 @@ jobs:
         with:
           # 必须与 deb job 的 upload-artifact name 逐字节一致（固定名，见上）。
           name: pulsemind-deb-x64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pulsemind-linux-x64-tarball
           path: dist
 
       - name: Upload to release
@@ -299,5 +364,5 @@ jobs:
           gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$REPO" \
                  --title "PulseMind ${TAG#v}" --notes "PulseMind ${TAG#v}"
-          gh release upload "$TAG" dist/*.deb --repo "$REPO" --clobber
+          gh release upload "$TAG" dist/*.deb dist/*.tar.gz --repo "$REPO" --clobber
           echo "release assets: $(gh release view "$TAG" --repo "$REPO" --json assets --jq '[.assets[].name] | join(", ")')"
