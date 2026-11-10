@@ -2,13 +2,14 @@ import { Tray, Menu, app, nativeImage } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { trayIconName } from './app-icon'
+import { applyLinuxAutostart } from './utils/autostart'
 
 export interface TrayDeps {
   /** Read the persisted launch-at-login preference. */
   getLaunchAtLogin(): Promise<boolean>
   /** One-line service status for the menu header (e.g. '服务运行中 :8765'). */
   getServiceStatus(): Promise<string>
-  /** Persist a new launch-at-login preference (caller also applies setLoginItemSettings). */
+  /** Persist a new launch-at-login preference (caller also applies applyLaunchAtLogin). */
   onToggleLaunchAtLogin(enabled: boolean): Promise<void>
   /** Show & focus the main window. */
   onShowWindow(): void
@@ -75,7 +76,27 @@ export function createTray(deps: TrayDeps): Tray {
   return tray
 }
 
-/** Apply the persisted launch-at-login preference to the OS. */
+/**
+ * Apply the persisted launch-at-login preference to the OS.
+ *
+ * macOS/Windows take `setLoginItemSettings`; on Linux that call is a no-op
+ * (@platform darwin,win32), so the equivalent is an XDG autostart entry.
+ * Dev runs are skipped there: process.execPath is the Electron binary inside
+ * node_modules, and an entry pointing at it would be wrong at the next login.
+ */
 export function applyLaunchAtLogin(enabled: boolean): void {
+  if (process.platform === 'linux') {
+    if (!app.isPackaged) return
+    const result = applyLinuxAutostart(enabled, {
+      execPath: process.execPath,
+      appImagePath: process.env.APPIMAGE,
+      // Reproduce the launch that is running right now: on a hardened kernel
+      // (no unprivileged user namespaces) the working desktop entry carries
+      // --no-sandbox, and the autostart entry has to carry it too.
+      noSandbox: process.argv.includes('--no-sandbox'),
+    })
+    if (!result.ok) console.warn(`[Tray] autostart entry not written: ${result.error ?? 'unknown error'}`)
+    return
+  }
   app.setLoginItemSettings({ openAtLogin: enabled })
 }

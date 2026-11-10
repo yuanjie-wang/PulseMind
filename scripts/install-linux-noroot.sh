@@ -59,6 +59,9 @@ DESKTOP_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$DESKTOP_DIR/pulsemind.desktop"
 ICON_DIR="$DATA_HOME/icons/hicolor/256x256/apps"
 ICON_DEST="$ICON_DIR/pulsemind.png"
+# 应用内「开机自启」写在 XDG autostart 目录（src/main/utils/autostart.ts 同路径）。
+# 卸载时必须一并删掉 —— 否则下次登录会尝试启动一个已被删除的可执行文件。
+AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/pulsemind.desktop"
 
 INSTALL_ROOT="${PULSEMIND_HOME:-$HOME/Applications}"
 INSTALL_DIR="$INSTALL_ROOT/PulseMind"
@@ -118,9 +121,9 @@ if [ "$MODE" = uninstall ]; then
   else
     say "应用目录不存在，跳过：$INSTALL_DIR"
   fi
-  rm -f -- "$DESKTOP_FILE" "$ICON_DEST"
+  rm -f -- "$DESKTOP_FILE" "$ICON_DEST" "$AUTOSTART_FILE"
   refresh_desktop_db
-  say "已移除桌面入口与图标。用户数据（~/.pulsemind）未改动。"
+  say "已移除桌面入口、图标与开机自启项。用户数据（~/.pulsemind）未改动。"
   exit 0
 fi
 

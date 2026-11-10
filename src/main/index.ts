@@ -234,6 +234,15 @@ let fadeTimer: ReturnType<typeof setTimeout> | null = null
 
 function fadeInMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  // setOpacity does nothing on Linux (@platform win32,darwin), so the tick
+  // below would only postpone fadeCompleted by FADE_MS without a visual fade.
+  // Show at full opacity and let the splash close in the same turn.
+  if (process.platform === 'linux') {
+    mainWindow.show()
+    fadeCompleted = true
+    maybeNotifyHooksCompleted()
+    return
+  }
   mainWindow.setOpacity(0)
   mainWindow.show()
   // Windows: show() on a show:false window may leave it minimized
@@ -254,6 +263,13 @@ function fadeInMainWindow(): void {
 
 function fadeOutSplash(): void {
   if (!splashWindow || splashWindow.isDestroyed()) return
+  // Same no-op: without this arm the splash would sit on top of the already
+  // shown main window for FADE_MS and then vanish — the hard cut.
+  if (process.platform === 'linux') {
+    splashWindow.close()
+    splashWindow = null
+    return
+  }
   const start = Date.now()
   const tick = () => {
     if (!splashWindow || splashWindow.isDestroyed()) return
@@ -327,7 +343,16 @@ function scheduleSplashFade(): void {
         return
       }
     }
-    // Crossfade: splash fades out while main fades in with overlap
+    // Crossfade: splash fades out while main fades in with overlap.
+    // Linux: setOpacity is a no-op there (@platform win32,darwin), so a staged
+    // crossfade can only become a hard cut 350ms later with the splash still on
+    // top. Swap in one turn instead — show the main window, then close the
+    // splash — which also avoids the empty gap of closing first.
+    if (process.platform === 'linux') {
+      fadeInMainWindow()
+      fadeOutSplash()
+      return
+    }
     fadeOutSplash()
     setTimeout(fadeInMainWindow, Math.max(0, FADE_MS - OVERLAP_MS))
   }, delay)

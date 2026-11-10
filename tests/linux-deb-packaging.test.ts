@@ -393,7 +393,7 @@ describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => 
     const runScript = (pkg: string, home: string, script: string, args: string[] = []) =>
       spawnSync('sh', [join(pkg, script), ...args], {
         cwd: pkg,
-        env: { ...process.env, HOME: home, XDG_DATA_HOME: '', DISPLAY: '', WAYLAND_DISPLAY: '' },
+        env: { ...process.env, HOME: home, XDG_DATA_HOME: '', XDG_CONFIG_HOME: '', DISPLAY: '', WAYLAND_DISPLAY: '' },
         encoding: 'utf-8',
       })
     const runInstall = (pkg: string, home: string, args: string[] = []) =>
@@ -419,12 +419,19 @@ describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => 
       mkdirSync(join(home, '.pulsemind'), { recursive: true })
       writeFileSync(dataFile, '{}')
 
+      // 应用内「开机自启」的落点（src/main/utils/autostart.ts 同路径）。
+      // 卸载不删它的话，下次登录会拉起一个已经被删掉的可执行文件。
+      const autostart = join(home, '.config', 'autostart', 'pulsemind.desktop')
+      mkdirSync(join(home, '.config', 'autostart'), { recursive: true })
+      writeFileSync(autostart, '[Desktop Entry]\nType=Application\n')
+
       // 走使用者会双击的那个入口
       const uninstall = runScript(pkg, home, 'uninstall.sh')
       expect(uninstall.status, uninstall.stderr).toBe(0)
       expect(existsSync(app)).toBe(false)
       expect(existsSync(desktop)).toBe(false)
       expect(existsSync(icon)).toBe(false)
+      expect(existsSync(autostart)).toBe(false)
       expect(existsSync(dataFile)).toBe(true)
       // 卸载不删解压目录本身（用户可能还要重装）
       expect(existsSync(join(pkg, 'install.sh'))).toBe(true)

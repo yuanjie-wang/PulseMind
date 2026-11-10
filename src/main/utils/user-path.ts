@@ -39,14 +39,15 @@ function resolveUserPath(): Promise<string | null> {
       shell,
       // `-l` reads login profiles (.zprofile/.zlogin), `-i` reads interactive
       // ones (.zshrc) where most PATH additions (nvm, brew, cargo) live.
-      ['-lic', 'echo "$PATH"'],
+      // `env` rather than echoing the shell variable: in fish $PATH is a
+      // space-separated list and in csh the quoting rules differ, so the echoed
+      // value cannot be split on ':' — `env` prints PATH in the same
+      // colon-separated form in every shell.
+      ['-lic', 'env'],
       { timeout: 5000, windowsHide: true },
       (err, stdout) => {
         if (err || !stdout) return resolve(null)
-        // Interactive shells can print prompt/banner noise; the real PATH is
-        // the last non-empty stdout line.
-        const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
-        const shellPath = lines[lines.length - 1] || ''
+        const shellPath = extractShellPath(stdout)
         if (!shellPath) return resolve(null)
         resolve(mergePath(shellPath, process.env.PATH))
       },
@@ -54,7 +55,25 @@ function resolveUserPath(): Promise<string | null> {
   })
 }
 
-function mergePath(primary: string, fallback?: string): string {
+/**
+ * Pull the PATH value out of `env` output.
+ *
+ * Interactive shells can print prompt/banner noise around the dump, so scan
+ * from the end for the last `PATH=` line (a later assignment wins in a real
+ * shell too). The first `=` splits key from value: values may contain '='.
+ */
+export function extractShellPath(stdout: string): string | null {
+  const lines = stdout.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].replace(/\r$/, '')
+    if (!line.startsWith('PATH=')) continue
+    const value = line.slice('PATH='.length)
+    if (value) return value
+  }
+  return null
+}
+
+export function mergePath(primary: string, fallback?: string): string {
   const seen = new Set<string>()
   const parts: string[] = []
   for (const dir of [...primary.split(':'), ...(fallback ? fallback.split(':') : [])]) {
