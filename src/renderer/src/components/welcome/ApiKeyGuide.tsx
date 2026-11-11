@@ -25,14 +25,16 @@ export function ApiKeyGuide({ compact }: { compact?: boolean }): React.ReactElem
   const openSettings = () => navigate({ kind: 'settings', settingsTab: 'settings' })
 
   // 模板包导入：一次性入口（团队从配置好的机器拷 settings.json + 技能进
-  // zip）。settings 落盘后的 hasApiKey 翻转由广播链驱动，这里只反馈结果。
+  // zip）。settings 落盘后的 hasApiKey 翻转由广播链驱动，这里只反馈结果；
+  // hooks 有实际变化时主进程会在当前进程里就地重跑 app-start.js（不重启
+  // 应用），结果里带 appStartTriggered，提示一句「已在后台重新执行」即可。
   // 重名技能（skipped）是幂等重复导入的预期行为——保持沉默，只有真实
   // 问题（解析失败、密文密钥等）才弹提示。
   const importTemplate = async () => {
     try {
       const result = await window.electronAPI.importTemplate()
       if (!result) return
-      const { settingsApplied, warnings, skills, hooks, tools, error } = result
+      const { settingsApplied, warnings, skills, hooks, tools, error, appStartTriggered } = result
       const hooksApplied = hooks.imported.length + hooks.replaced.length
       const toolsApplied = tools.imported.length + tools.replaced.length
       // 真实失败（解压/解析/校验/写盘）走红色；它与「其它载荷也导进来了」可以
@@ -42,7 +44,8 @@ export function ApiKeyGuide({ compact }: { compact?: boolean }): React.ReactElem
         const skillNote = skills.imported.length > 0 ? ' ' + t('welcome.templateImportSkills', { count: skills.imported.length }) : ''
         const hookNote = hooksApplied > 0 ? ' ' + t('welcome.templateImportHooks', { count: hooksApplied }) : ''
         const toolNote = toolsApplied > 0 ? ' ' + t('welcome.templateImportTools', { count: toolsApplied }) : ''
-        antdMessage.success(t('welcome.templateImportSuccess') + skillNote + hookNote + toolNote)
+        const appStartNote = appStartTriggered ? ' ' + t('welcome.templateImportAppStart') : ''
+        antdMessage.success(t('welcome.templateImportSuccess') + skillNote + hookNote + toolNote + appStartNote)
       } else if (
         !error &&
         skills.skipped.length === 0 &&

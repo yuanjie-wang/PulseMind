@@ -33,6 +33,7 @@ const en: TranslationDict = {
     templateImportTools: '{{count}} tool(s) installed',
     templateImportEmpty: 'No settings.json, skills/, hooks/ or tools/ directory found in the archive',
     templateImportFailed: 'Template pack import failed',
+    templateImportAppStart: 'Startup hook app-start.js is re-running in the background',
     newConversation: 'New Conversation',
     about: 'About PulseMind',
     aboutTitle: 'About PulseMind',

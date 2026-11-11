@@ -31,6 +31,7 @@ const zh = {
     templateImportTools: '已安装 {{count}} 个工具',
     templateImportEmpty: '压缩包里没有找到 settings.json、skills/、hooks/ 或 tools/',
     templateImportFailed: '模板包导入失败',
+    templateImportAppStart: '启动钩子 app-start.js 已在后台重新执行',
     newConversation: '新建对话',
     about: '关于 PulseMind',
     aboutTitle: '关于 PulseMind',

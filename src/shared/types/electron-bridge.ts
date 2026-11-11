@@ -181,7 +181,11 @@ export interface MCPToolCallResult {
  *  条目是工具 id（= 目录名），replaced 前整个工具目录已备份为 `<id>.<yyyyMMdd>.bak`；
  *  error（2026-11-10）= 该次导入的真实失败原因（解压/解析/校验/写盘），与
  *  warnings 分开：旧实现把「没找到内容」也当警告，覆盖了「找到了但坏了」，
- *  提示与事实相反。可能同时有 error 与部分成功的载荷。 */
+ *  提示与事实相反。可能同时有 error 与部分成功的载荷。
+ *  appStartTriggered（2026-11-11）= hooks/ 这次真有落盘变化（imported /
+ *  replaced 任一，辅助文件也算）且盘上存在 app-start.js，主进程已经在**当前
+ *  进程**里就地重跑该钩子（不重启应用）；硬错误或全部 unchanged 时为 false。
+ *  重跑是异步的（登录钩子可能开窗），结果是「已触发」而非「已完成」。 */
 export interface TemplateImportResult {
   settingsApplied: boolean
   warnings: string[]
@@ -189,6 +193,7 @@ export interface TemplateImportResult {
   hooks: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }
   tools: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }
   error?: string
+  appStartTriggered?: boolean
 }
 
 export interface ElectronAPI {

@@ -650,10 +650,14 @@ describe('template import wiring', () => {
     // 技能导入只有「没有 skills/」是静默的：定位结果判定，真实故障进 errors
     expect(src).not.toContain('let hasSkills = false')
     expect(src).toContain('result.skills.errors.push(')
-    // hooks 臂：落盘 + 逐文件故障进 errors + app-start 下次启动生效的提示
+    // hooks 臂：落盘 + 逐文件故障进 errors + 有实际变化时当前进程就地重跑
+    // app-start（不再提示「下次启动生效」——导入即触发，不重启应用）
     expect(src).toContain('result.hooks = hooksResult')
     expect(src).toContain('result.hooks.errors.push(')
-    expect(src).toContain('hooks/app-start.js 已导入，将在下次启动应用时生效')
+    expect(src).toContain('hooksChanged = true')
+    expect(src).toContain("existsSync(join(HOOKS_DIR, 'app-start.js'))")
+    expect(src).toContain('void rerunAppStartHook()')
+    expect(src).not.toContain('将在下次启动应用时生效')
   })
 
   it('settings save effects are shared with the settings page and run on import', () => {
@@ -696,8 +700,16 @@ describe('template import wiring', () => {
     expect(bridge).toContain('hooks: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }')
     expect(bridge).toContain('tools: { imported: string[]; replaced: string[]; unchanged: string[]; errors: string[] }')
     expect(bridge).toContain('error?: string')
+    // 2026-11-11：hooks 有落盘变化时主进程就地重跑 app-start（不重启应用）
+    expect(bridge).toContain('appStartTriggered?: boolean')
+    expect(bridge).not.toContain('restartRequired')
+    expect(bridge).not.toContain('relaunchApp')
     expect(read('src/preload/index.ts')).toContain('importTemplate:')
     expect(read('src/preload/index.ts')).toContain('IPC_CHANNELS.TEMPLATE_IMPORT')
+    // 重启链路已整条撤除：没有通道、桥面与主进程 handler
+    expect(read('src/preload/index.ts')).not.toContain('APP_RELAUNCH')
+    expect(read('src/shared/ipc-channels.ts')).not.toContain('APP_RELAUNCH')
+    expect(read('src/main/ipc/app.handler.ts')).not.toContain('relaunchApplication')
   })
 
   it('the guide card carries the secondary import button calling the bridge', () => {
@@ -712,7 +724,7 @@ describe('template import wiring', () => {
   it('renderer reports the structured error, and only a truly empty pack gets the "empty" toast', () => {
     const src = read('src/renderer/src/components/welcome/ApiKeyGuide.tsx')
     // 真实失败走红色提示；与「其它载荷也导进来了」并存，所以不 return
-    expect(src).toContain('const { settingsApplied, warnings, skills, hooks, tools, error } = result')
+    expect(src).toContain('const { settingsApplied, warnings, skills, hooks, tools, error, appStartTriggered } = result')
     expect(src).toContain('if (error) antdMessage.error(error, 8)')
     // issues 只收 warnings + errors，不含 skipped
     expect(src).toContain('[...warnings, ...skills.errors, ...hooks.errors, ...tools.errors]')
@@ -728,6 +740,26 @@ describe('template import wiring', () => {
     expect(src).toContain('tools.imported.length + tools.replaced.length')
     expect(src).toContain('welcome.templateImportHooks')
     expect(src).toContain('welcome.templateImportTools')
+    // 2026-11-11：成功面附「启动钩子已在后台重新执行」，不重启、不设定时器
+    expect(src).toContain('welcome.templateImportAppStart')
+    expect(src).toContain('appStartTriggered ?')
+    expect(src).not.toContain('relaunchApp')
+    expect(src).not.toContain('TEMPLATE_IMPORT_RESTART_DELAY_MS')
+  })
+
+  it('appStartTriggered fires only for a real hooks change with app-start.js on disk and no hard error', () => {
+    // 2026-11-11：用户要的是「触发 app-start」，不是重启整个应用。重跑是
+    // 就地、异步的；重复导入（全部 unchanged）与硬错误都不触发。
+    const src = read('src/main/ipc/template.handler.ts')
+    expect(src).toContain('result.appStartTriggered =')
+    expect(src).toContain("!result.error && hooksChanged && existsSync(join(HOOKS_DIR, 'app-start.js'))")
+    expect(src).toContain('hooksChanged = true')
+    expect(src).toContain('void rerunAppStartHook()')
+    // 旧的重启判定与「下次启动生效」警告都已撤除
+    expect(src).not.toContain('restartRequired')
+    expect(src).not.toContain('将在下次启动应用时生效')
+    // emptyResult 给出确定性 false（早退路径 / 对话框取消外的错误面）
+    expect(src).toContain('appStartTriggered: false,')
   })
 
   it('the renderer skill list refreshes on the skills:changed broadcast', () => {
@@ -765,6 +797,7 @@ describe('template import wiring', () => {
       'templateImportTools',
       'templateImportEmpty',
       'templateImportFailed',
+      'templateImportAppStart',
     ]) {
       expect(zh).toContain(`${key}:`)
       expect(en).toContain(`${key}:`)

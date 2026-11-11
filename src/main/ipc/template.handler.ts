@@ -18,11 +18,14 @@
 //    settings 与 skills 两条，包里的 app-start.js / llm-request.js 被静默忽略）。
 
 import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { skillStore } from '../storage/skill-store'
 import { HOOKS_DIR, TOOLS_DIR } from '../storage/index'
+import { rerunAppStartHook } from '../hooks-runner'
 import { registerLiveSkills } from '../agent/live-skill-registry'
 import { logMain, describeError } from '../main-log'
 import { withZipExtraction } from '../utils/zip-extractor'
@@ -40,6 +43,7 @@ function emptyResult(): TemplateImportResult {
     skills: { imported: [], skipped: [], errors: [], warnings: [] },
     hooks: { imported: [], replaced: [], unchanged: [], errors: [] },
     tools: { imported: [], replaced: [], unchanged: [], errors: [] },
+    appStartTriggered: false,
   }
 }
 
@@ -59,6 +63,11 @@ export function registerTemplateHandlers(): void {
     if (picked.canceled || picked.filePaths.length === 0) return null
 
     const result = emptyResult()
+    // hooks/ 这次到底改没改盘？决定导入结束后要不要就地重跑 app-start。
+    // 辅助文件（app-start.js require 的模块）同样算变化：换掉 helper 也是换
+    // 了启动钩子的行为。llm-request.js 变化会顺带触发一次重跑（它可能共用
+    // helper），代价是钩子多跑一次，好过漏掉真正依赖 helper 的 app-start。
+    let hooksChanged = false
 
     // 解压失败（损坏/非 zip/无权限）必须落成结构化错误：旧实现让它逃成 IPC
     // rejection，渲染端只剩一句泛化的「导入失败」，主日志也没有任何痕迹。
@@ -154,13 +163,8 @@ export function registerTemplateHandlers(): void {
               logMain('ERROR', 'template', error)
             }
             if (hooksResult.imported.length > 0 || hooksResult.replaced.length > 0) {
+              hooksChanged = true
               logMain('INFO', 'template', `hooks imported: ${[...hooksResult.imported, ...hooksResult.replaced].join(', ')}`)
-            }
-            // app-start 是启动钩子：本次会话已经在跑，落盘只对下次启动生效。
-            // 不说清楚的话，用户会以为「导了但没生效」。
-            const touched = [...hooksResult.imported, ...hooksResult.replaced]
-            if (touched.includes('app-start.js')) {
-              result.warnings.push('hooks/app-start.js 已导入，将在下次启动应用时生效')
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
@@ -196,6 +200,14 @@ export function registerTemplateHandlers(): void {
       return { ...emptyResult(), error: `压缩包读取失败：${describeError(err)}` }
     }
 
+    // 启动钩子就地重跑，而不是重启整个应用（user 2026-11-11「我其实是想
+    // 能够触发app-start脚本」）。重启只为让启动期脚本生效，却会杀掉进行中
+    // 的会话/任务/终端并丢草稿；settings/skills/tools 本来就有热生效通道，
+    // 唯一缺的 side effect 就是 app-start。硬错误（解压/解析/校验/写盘）
+    // 不触发：半套配置下跑登录钩子只会把状态搅得更乱，错误也要留在屏幕上。
+    // 仅当 hooks 真有落盘变化且盘上存在 app-start.js 时才算「已触发」。
+    result.appStartTriggered = !result.error && hooksChanged && existsSync(join(HOOKS_DIR, 'app-start.js'))
+
     // 生效动作与设置页保存共用一份（主题重绘 / 开机自启 / 休眠守卫 / 记忆开关 /
     // 菜单语言 / 保留期清扫），随后广播存储层视图：渲染端从合并后的 profiles
     // 重新推 hasApiKey，引导卡自己让位——调用方无需手动 reload。
@@ -225,6 +237,27 @@ export function registerTemplateHandlers(): void {
           }
         }
       }
+    }
+
+    // Fire-and-forget：登录钩子可能开窗等待用户扫码，耗时不可预知（看门狗
+    // 兜底 10 分钟）；IPC 回复不能被它拖住，导入结果提示先落地。重跑期间
+    // 发起的请求经 ensureLaunchHooks() 等到它结束，新 env 才会被消费。
+    if (result.appStartTriggered) {
+      void rerunAppStartHook()
+        .then((outcome) => {
+          if (outcome.error) {
+            logMain('ERROR', 'template', `app-start re-run failed: ${outcome.error}`)
+          } else if (outcome.timedOut) {
+            logMain('WARN', 'template', 'app-start re-run timed out; previous env kept')
+          } else if (!outcome.ran) {
+            logMain('WARN', 'template', 'app-start re-run skipped: no exported hook function')
+          } else {
+            logMain('INFO', 'template', `app-start re-run completed (${outcome.envKeys} env var(s))`)
+          }
+        })
+        .catch((err) => {
+          logMain('ERROR', 'template', `app-start re-run crashed: ${describeError(err)}`)
+        })
     }
 
     return result
