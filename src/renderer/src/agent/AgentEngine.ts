@@ -23,6 +23,8 @@ import type { ExpertRuntimeContext } from '../../../shared/types/expert'
 import { normalizeSummonedExperts, type SummonState, type SummonedExpert } from '../../../shared/expert-context'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { PageContext } from '../../../shared/agent-protocol'
+import type { PipelineContract } from '../../../shared/workflow/contract'
+import type { StageFinishConfig } from '../../../shared/workflow/finish-tool'
 import { PlanManager } from './plan-manager'
 import { migrateLinearPlan } from '../../../shared/plan/graph'
 import { ensureCache } from './mcp-cache'
@@ -200,6 +202,10 @@ export interface AgentEngineOptions {
    *  create_sub_plan in the toolset and carries the parent-plan bridge
    *  constants — nodeRef + the parent-minted attemptId the merge CASes on. */
   spawnPlanSplit?: { nodeRef: string; attemptId: string }
+  /** 流水线阶段的完成协议（2026-11-11）：存在即把 `finish_stage` 合并进本会话
+   *  的工具表（普通会话没有这个字段，工具表逐字节不变），并把调用结果记为
+   *  本阶段的结算依据。唯一注入点是 pipeline-engine 的 createSession。 */
+  stageFinish?: StageFinishConfig
 }
 
 // ── AgentEngine Callbacks ───────────────────────────────────────────
@@ -239,6 +245,13 @@ export class AgentEngine implements EngineCore {
   // ── Internal state (was useRef) ─────────────────────────────────
   /** @internal */
   opts: AgentEngineOptions
+  /** 本阶段最后一次合法 finish_stage（2026-11-11 完成协议）。普通会话永远是
+   *  null；stage 会话由 pipeline-engine 在阶段结束后读取（先于文本兜底）。
+   *  只记「合法」调用——参数校验失败走工具错误回到同一回合，不落记录。 */
+  private stageFinishRecord: PipelineContract | null = null
+  /** finish_stage 执行成功后的「本回合该收回合」标记。只在工具批次收尾且
+   *  没有 held/pending 工具时消费——同批的写工具仍要跑完，不能被跳过。 */
+  private stageFinishTurnEnd = false
   private callbacks!: AgentEngineCallbacks
   /** @internal - reachable from collaborators (SpawnManager / ExecutionFlow) */
   getHost() {
@@ -865,6 +878,9 @@ export class AgentEngine implements EngineCore {
     // 参数（followUpSubAgent 同款）——executor 在 pid 落地的同一拍把命令记进
     // 本引擎的台账，exit 时合成通知才带得上任务名。
     this.toolExecutor.registerBackgroundCommand = (pid, command) => this.registerBackgroundCommand(pid, command)
+    // 阶段完成协议（2026-11-11）：executor 校验通过后把契约记到本引擎，
+    // 主进程结算时经 session-manager 的 engineCall 读回。晚接线，同款理由。
+    this.toolExecutor.recordStageFinish = (contract) => this.recordStageFinish(contract)
     // 会话文件变更台账 → 协议事件（2026-10-28）。Wired on THIS engine's own
     // ledger; a spawned sub-engine's ledger is swapped for its parent's right
     // after construction (spawn-manager), orphaning this hook — which is the
@@ -877,6 +893,26 @@ export class AgentEngine implements EngineCore {
    *  `file_changes` event. */
   getFileChanges(): SessionFileChange[] {
     return this.toolExecutor.fileChanges.list()
+  }
+
+  // ── 阶段完成协议（2026-11-11）─────────────────────────────────────
+  /** @internal executors/stage-finish-tool 的落点（构造函数里晚接线）。 */
+  recordStageFinish = (contract: PipelineContract): void => {
+    this.stageFinishRecord = contract
+    this.stageFinishTurnEnd = true
+  }
+
+  /** @internal execution-flow 的工具批收尾：true = 本回合因合法 finish 结束，
+   *  返回后应直接置 completed，而不是再起一轮 LLM。一次性。 */
+  consumeStageFinishTurnEnd(): boolean {
+    if (!this.stageFinishTurnEnd) return false
+    this.stageFinishTurnEnd = false
+    return true
+  }
+
+  /** 最近一次合法 finish_stage（结算优先读它；没有 = 回落文本契约）。 */
+  getStageFinishRecord(): PipelineContract | null {
+    return this.stageFinishRecord
   }
 
   /** Persist plan changes to DB whenever PlanManager mutates the plan. */
@@ -1027,6 +1063,9 @@ export class AgentEngine implements EngineCore {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     this.isCancelled = false
     this.pendingToolIds = new Set()
+    // 新回合从零开始：上一次 finish 的「立即收回合」标记不得跨回合生效
+    // （结算记录 stageFinishRecord 保留——阶段结算发生在回合结束之后）。
+    this.stageFinishTurnEnd = false
     // A new send gets a fresh overflow rescue: if a PREVIOUS turn ended in the
     // overflow error, this one's first oversized request is auto-retried too.
     // The forced cut itself is still armed via contextOverflowLimit (cleared
@@ -2092,10 +2131,13 @@ export class AgentEngine implements EngineCore {
     }
 
     this.pendingToolIds.delete(toolUseId)
-    // Async straggler drain (PLAN-plan-scheduler): the plan scheduler gets
-    // first refusal — a delivered wave settles and the next dispatches here,
-    // with no LLM round in between. false → the ordinary continuation.
-    if (this.pendingToolIds.size === 0 && !this.isAutoExecuting && !this.planScheduler.kick()) this.continueLoop()
+    // 阶段完成协议（2026-11-11）：本批已有合法 finish_stage，且这是最后一个
+    // 落地结果（同批的异步命令/审批释放之后）——回合在此结束，不再起 LLM 轮。
+    // 先于调度器的拒绝：finish 是阶段级终止信号。
+    if (this.pendingToolIds.size === 0 && !this.isAutoExecuting && this.consumeStageFinishTurnEnd()) {
+      this.agentStatus = { status: 'completed' }
+      this.resolveCompletionIfSpawned('completed')
+    } else if (this.pendingToolIds.size === 0 && !this.isAutoExecuting && !this.planScheduler.kick()) this.continueLoop()
     else {
       // Mid-drain chaining (2026-09-30, 「不应该浪费槽」): a spawn result that
       // lands while its batch-mates still run settles immediately and its

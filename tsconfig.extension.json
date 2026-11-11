@@ -27,6 +27,8 @@
     "src/extension/**/*.tsx",
     "src/shared/agent-protocol/**/*.ts",
     "src/shared/agent-session/**/*.ts",
+    "src/shared/workflow/contract.ts",
+    "src/shared/workflow/finish-tool.ts",
     "src/shared/types/agent.ts",
     "src/shared/types/plan.ts",
     "src/shared/types/expert.ts",

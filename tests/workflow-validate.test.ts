@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { validateWorkflow, missingVerdictDefs } from '../src/shared/workflow/validate'
 import { renderNodePrompt, resolveObjective, PLAN_CONTENT_CAP, ARTIFACT_CONTENT_CAP } from '../src/shared/workflow/render'
 import { parsePipelineResult, formatPipelineResult, artifactPathError } from '../src/shared/workflow/contract'
+import { STAGE_FINISH_TOOL, validateStageFinishArgs, buildStageFinishTool } from '../src/shared/workflow/finish-tool'
 import type { WorkflowDefinition } from '../src/shared/workflow/types'
 
 const baseWorkflow: WorkflowDefinition = {
@@ -274,5 +275,66 @@ describe('parsePipelineResult', () => {
   it('没有契约行 → null（早停激发臂的判据）', () => {
     expect(parsePipelineResult('没有任何契约')).toBeNull()
     expect(parsePipelineResult('')).toBeNull()
+  })
+})
+
+describe('finish_stage 阶段完成协议（shared）', () => {
+  const config = { verdicts: ['成功', '需修订'] }
+
+  it('合法调用 → 契约（verdict/summary trim、artifacts 缺省为 []）', () => {
+    expect(validateStageFinishArgs({ verdict: ' 成功 ', summary: ' 做完了 ', artifacts: [' pipeline/a.md '] }, config)).toEqual({
+      ok: true,
+      contract: { verdict: '成功', summary: '做完了', artifacts: ['pipeline/a.md'] },
+    })
+    expect(validateStageFinishArgs({ verdict: '需修订', summary: '还差一点' }, config)).toEqual({
+      ok: true,
+      contract: { verdict: '需修订', summary: '还差一点', artifacts: [] },
+    })
+  })
+
+  it('verdict 越表/为空/非字符串一律拒收（词汇表逐字匹配）', () => {
+    for (const verdict of ['通过', '', '   ', 42, null, undefined]) {
+      const r = validateStageFinishArgs({ verdict, summary: 'x' }, config)
+      expect(r.ok).toBe(false)
+      expect(r.error).toBeTruthy()
+    }
+    const out = validateStageFinishArgs({ verdict: 'pass', summary: 'x' }, config)
+    expect(out.ok).toBe(false)
+    expect(out.error).toContain('成功 / 需修订')
+  })
+
+  it('空词汇表回落 [pass]（与 validateWorkflow 的默认单出口一致）', () => {
+    expect(validateStageFinishArgs({ verdict: 'pass', summary: 'ok' }, { verdicts: [] })).toEqual({
+      ok: true,
+      contract: { verdict: 'pass', summary: 'ok', artifacts: [] },
+    })
+    expect(validateStageFinishArgs({ verdict: 'fail', summary: 'ok' }, { verdicts: [] }).ok).toBe(false)
+  })
+
+  it('summary 必填；artifacts 必须是字符串数组且每项过路径门', () => {
+    expect(validateStageFinishArgs({ verdict: '成功' }, config).error).toContain('summary')
+    expect(validateStageFinishArgs({ verdict: '成功', summary: '  ' }, config).ok).toBe(false)
+    expect(validateStageFinishArgs({ verdict: '成功', summary: 'x', artifacts: 'a.md' }, config).error).toContain('数组')
+    expect(validateStageFinishArgs({ verdict: '成功', summary: 'x', artifacts: [1] }, config).error).toContain('第 1 项')
+    for (const bad of ['/abs/a.md', '../escape.md', 'a\\b.md']) {
+      expect(validateStageFinishArgs({ verdict: '成功', summary: 'x', artifacts: [bad] }, config).ok).toBe(false)
+    }
+    expect(validateStageFinishArgs({ verdict: '成功', summary: 'x', artifacts: [''] }, config).ok).toBe(false)
+  })
+
+  it('工具定义：schema 的 enum/required 与配置同源，instructions 带状态定义', () => {
+    const tool = buildStageFinishTool({ verdicts: ['成功', '需修订'], verdictDefs: { 成功: '可以交付', 需修订: '要改一处' } })
+    expect(tool.name).toBe(STAGE_FINISH_TOOL)
+    expect(tool.category).toBe('workflow')
+    expect(tool.builtIn).toBe(true)
+    expect(tool.input_schema.properties.verdict.enum).toEqual(['成功', '需修订'])
+    expect(tool.input_schema.required).toEqual(['verdict', 'summary'])
+    expect(tool.instructions).toContain('- 成功：可以交付')
+    expect(tool.instructions).toContain('- 需修订：要改一处')
+    expect(tool.description).toContain('成功 / 需修订')
+    // 没有定义时仍逐字列出状态名，不吐空冒号。
+    const plain = buildStageFinishTool({ verdicts: ['pass'] })
+    expect(plain.instructions).toContain('- pass')
+    expect(plain.instructions).not.toContain('- pass：')
   })
 })

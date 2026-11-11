@@ -70,6 +70,10 @@ export class SpawnManager {
       allowedSkills: config.allowedSkills,
       systemPromptOverride: undefined,
       expert: undefined,
+      // 阶段完成协议（2026-11-11）：finish_stage 是阶段会话自己的结算信号，绝不下放
+      // 给子代理——子引擎记下的契约没人读（session-manager 只读阶段引擎），模型却
+      // 会因「子代理说完成了」把整个阶段当成收工，阶段侧只能靠文本兜底重纠正。
+      stageFinish: undefined,
       // Sub-agent tool boundary (PLAN-plan-split v2 R2): the toolset drops
       // SUB_AGENT_DENY_TOOLS (create_plan / advance_plan / spawn_agent).
       // Every spawn gets this — the ruling covers the general sub-agent,

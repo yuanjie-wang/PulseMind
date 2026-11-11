@@ -14,6 +14,7 @@
  */
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { PAGE_READ_TOOL_NAMES, isPageTool } from '../../../../shared/agent-protocol/page-tools'
+import { STAGE_FINISH_TOOL } from '../../../../shared/workflow/finish-tool'
 
 /** Built-in tools that only look — the file-read family. */
 export const READ_TIER_TOOLS = new Set([
@@ -53,11 +54,14 @@ export function pageToolTier(name: string): SandboxToolTier | null {
  *  `exec_logs`/`exec_list` answer 'read' for the same reason they are NOT in READ_TIER_TOOLS:
  *  that set selects the *executor* (the native file reader), while its dispatch
  *  goes through execOtherTool — the tier here is the approval/display answer
- *  only (PLAN-coding-contract P0-3 #14). */
+ *  only (PLAN-coding-contract P0-3 #14). `finish_stage` rides the same arm
+ *  (2026-11-11): it is dispatched by the stage-finish executor, never held
+ *  (an unattended pipeline stage has no user to approve its own completion),
+ *  and it touches no file. */
 export function tierOfTool(name: string): SandboxToolTier {
   const page = pageToolTier(name)
   if (page) return page
-  if (name === 'exec_logs' || name === 'exec_list') return 'read'
+  if (name === 'exec_logs' || name === 'exec_list' || name === STAGE_FINISH_TOOL) return 'read'
   if (READ_TIER_TOOLS.has(name)) return 'read'
   if (WRITE_TIER_TOOLS.has(name)) return 'write'
   return 'exec'

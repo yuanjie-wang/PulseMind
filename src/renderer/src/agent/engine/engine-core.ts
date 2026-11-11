@@ -161,6 +161,10 @@ export interface EngineCore {
   handleToolUseResponse: (toolUses: ToolUseBlock[]) => Promise<void>
   handleMaxTokensResponse: (toolUses: ToolUseBlock[]) => Promise<void>
   handleEndTurnResponse: (stopReason: string | null) => void
+  /** 阶段完成协议（2026-11-11）：本回合已收到合法的 finish_stage，且当前已是
+   *  最后一个落地结果——返回 true 并消费一次性信号；调用方直接收尾，
+   *  不再起 LLM 轮（结算是 pipeline-engine 的事）。 */
+  consumeStageFinishTurnEnd: () => boolean
 
   // ── Background extraction bookkeeping ──
   _memExtractionInProgress: boolean

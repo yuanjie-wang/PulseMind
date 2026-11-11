@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ToolExecutor } from '../src/renderer/src/agent/tool-executors'
+import { execStageFinishTool } from '../src/renderer/src/agent/executors/stage-finish-tool'
 import { setHost } from '../src/renderer/src/agent/host'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import type { ToolUseBlock } from '../src/renderer/src/types/agent'
@@ -706,5 +707,55 @@ describe('execPickSkill — 白名单只拦技能（#9 的经验半边已随池�
     await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'office' }))
     expect(h.results[0].isError).toBe(true)
     expect(h.results[0].content).toContain("not in this session's allowed skills")
+  })
+})
+
+// ── 阶段完成协议（2026-11-11）──
+// finish_stage 是 pipeline 阶段的完成信号：合法调用只写引擎上的结算记录，
+// 参数不合法在当回合内回错误（不消耗 maxStageContinues），没有阶段配置时
+// 绝不抢占同名用户工具。
+describe('execOtherTool — finish_stage 阶段完成协议', () => {
+  const config = { verdicts: ['成功', '需修订'], verdictDefs: { 成功: '可以交付' } }
+
+  it('合法调用：记录归一后的契约并返回非错误结果', async () => {
+    const { executor, results } = makeHarness({ opts: { stageFinish: config } })
+    const record = vi.fn()
+    executor.recordStageFinish = record
+    const block = t('t1', 'finish_stage', { verdict: ' 成功 ', summary: ' 做完了 ', artifacts: ['out/a.md'] })
+    await executor.execOtherTool(block)
+    expect(record).toHaveBeenCalledWith({ verdict: '成功', summary: '做完了', artifacts: ['out/a.md'] })
+    expect(results[0]).toMatchObject({ id: 't1', isError: false })
+    expect(results[0].content).toContain('阶段结果已记录')
+    expect(block.exitCode).toBe(0)
+  })
+
+  it('verdict 越表：当回合回错误、不记录（不结算）', async () => {
+    const { executor, results } = makeHarness({ opts: { stageFinish: config } })
+    const record = vi.fn()
+    executor.recordStageFinish = record
+    const block = t('t1', 'finish_stage', { verdict: '失败', summary: 'x' })
+    await executor.execOtherTool(block)
+    expect(record).not.toHaveBeenCalled()
+    expect(results[0]).toMatchObject({ id: 't1', isError: true })
+    expect(results[0].content).toContain('成功')
+    expect(block.exitCode).toBe(1)
+  })
+
+  it('无阶段配置：不抢占同名调用，交回常规分派', async () => {
+    // 用户工具工作室可以自建同名工具；没有阶段配置时执行器必须放手。
+    const claimed = await execStageFinishTool(
+      { opts: {} } as never,
+      t('t1', 'finish_stage', { verdict: '成功', summary: 'x' }),
+    )
+    expect(claimed).toBe(false)
+  })
+
+  it('配置在但引擎未接记录通道：明确报不可用，不假装成功', async () => {
+    const { executor, results } = makeHarness({ opts: { stageFinish: config } })
+    const block = t('t1', 'finish_stage', { verdict: '成功', summary: 'x' })
+    await executor.execOtherTool(block)
+    expect(results[0]).toMatchObject({ id: 't1', isError: true })
+    expect(results[0].content).toContain('not available')
+    expect(block.exitCode).toBe(1)
   })
 })

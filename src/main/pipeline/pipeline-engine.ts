@@ -128,7 +128,13 @@ async function readArtifacts(workspaceDir: string, artifacts: string[]): Promise
 }
 
 /** 契约结算 + 早停激发臂。resolve 一次 = 阶段终局（激发路径不 finish——
- *  ask 后事件网继续等下一个 completed）。 */
+ *  ask 后事件网继续等下一个 completed）。
+ *
+ *  完成信号的主通道是 `finish_stage` 工具（2026-11-11）：引擎把最近一次合法
+ *  调用记在阶段会话上，这里先读它；只有完全没有记录时才回落扫描末条 assistant
+ *  正文的 PIPELINE_RESULT 契约行（弱模型 / 网关剥掉 tool_use 的兜底）。文本里
+ *  另有一个合法契约而记录也在时，以记录为准——工具调用的参数已经过 schema 与
+ *  词汇表双重校验，是「可机检的完成事件」，正文只是散文。 */
 function settleStage(
   convId: string,
   node: WorkflowNode,
@@ -137,8 +143,11 @@ function settleStage(
   finish: (o: StageOutcome) => void,
 ): void {
   void (async () => {
-    const text = await lastAssistantText(convId)
-    const contract = parsePipelineResult(text)
+    const record = agentSessionManager.getStageFinishRecord(convId)
+    const textContract = parsePipelineResult(await lastAssistantText(convId))
+    // 有效记录优先；记录越表（工作流在运行中被改过词汇表）时仍接受一个合法的
+    // 文本契约——否则那条陈旧记录会把激发臂永远挡在门外，改对也无法收敛。
+    const contract = [record, textContract].find((c) => c && node.verdicts.includes(c.verdict)) ?? record ?? textContract
     if (contract && node.verdicts.includes(contract.verdict)) {
       finish({
         kind: 'settled',
@@ -154,12 +163,12 @@ function settleStage(
     if (continuesRef.count < maxStageContinues(workflow)) {
       continuesRef.count += 1
       const reason = contract
-        ? `契约行 verdict「${contract.verdict}」不在本阶段出口词汇表 [${node.verdicts.join(', ')}] 内`
-        : '结束消息中没有找到 PIPELINE_RESULT 契约行'
+        ? `完成信号 verdict「${contract.verdict}」不在本阶段出口词汇表 [${node.verdicts.join(', ')}] 内`
+        : '结束回合里没有找到完成信号：既没有调用 finish_stage，也没有在正文里输出 PIPELINE_RESULT 契约行'
       try {
         await agentSessionManager.ask(
           convId,
-          `你的阶段没有正确结束：${reason}。请继续完成本阶段工作，并在最后一条消息末尾单独输出一行契约（verdict 只能是 ${node.verdicts.join(' / ')} 之一）：
+          `你的阶段没有正确结束：${reason}。请继续完成本阶段工作；完成后调用 \`finish_stage\` 工具声明结果（verdict 只能是 ${node.verdicts.join(' / ')} 之一，summary 一句话总结，artifacts 是交付物相对路径）。如果工具不可用，才在最后一条消息末尾单独输出一行契约：
 PIPELINE_RESULT: {"verdict":"<…>","summary":"<一句话总结>","artifacts":["<交付物相对路径>"]}`,
         )
       } catch (err) {
@@ -209,7 +218,8 @@ function stageContractNote(node: WorkflowNode): string {
     '',
     '---',
     list,
-    '在最后一条消息末尾单独输出一行契约，verdict 必须逐字取自上面的状态名（大小写照抄）：',
+    '完成本阶段时调用 `finish_stage` 工具声明结果，verdict 必须逐字取自上面的状态名（大小写照抄）；调用成功后本阶段立即结算，不要再用普通文本声明完成。',
+    '如果工具不可用（或网关不转发工具调用），才在最后一条消息末尾单独输出一行契约作为兜底：',
     `${PREFIX} {"verdict":"${example}","summary":"<一句话总结>","artifacts":["<交付物相对路径>"]}`,
   ].join('\n')
 }
@@ -419,6 +429,13 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
         workspaceDir: resolved.workspaceDir,
         approvalMode: resolved.approvalMode,
         ...(resolved.profileId ? { profileId: resolved.profileId } : {}),
+        // 阶段完成协议（2026-11-11）：本会话的工具表合并 finish_stage，参数
+        // schema 的 verdict enum 直接取本节点出口词汇表；引擎记录的最近一次
+        // 合法调用由 settleStage 优先读取（文本 PIPELINE_RESULT 降为兜底）。
+        stageFinish: {
+          verdicts: node.verdicts,
+          ...(node.verdictDefs ? { verdictDefs: node.verdictDefs } : {}),
+        },
       })
       await agentSessionManager.ask(convId, prompt)
     } catch (err) {

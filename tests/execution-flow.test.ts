@@ -132,6 +132,8 @@ function makeCore(over: {
     handleToolUseResponse: () => Promise.resolve(),
     handleMaxTokensResponse: () => Promise.resolve(),
     handleEndTurnResponse: vi.fn(),
+    // 阶段完成协议：普通会话没有 finish_stage 记录，drain 走 kick/continueLoop。
+    consumeStageFinishTurnEnd: vi.fn(() => false),
     _memExtractionInProgress: false, _memSalvageCount: 0,
     compactor: { contextTokens: () => 0 },
     continueLoop: vi.fn(async () => {}),
@@ -534,6 +536,29 @@ describe('ExecutionFlow 审批梯子与白名单', () => {
     expect(raw.agentStatus.status).toBe('awaiting_approval')
   })
 
+  it('outside-ask：finish_stage 是完成协议，永不上审批梯子', async () => {
+    // 2026-11-11 阶段完成协议：finish_stage 只写引擎上的结算记录，没有文件/
+    // 进程副作用。它曾落在 otherTools 里，exec 被持有的模式（outside-ask）下
+    // 会停在 awaiting_approval——无人值守的阶段恰好在最需要完成信号时卡死。
+    const { raw, flow, calls } = makeCore({ opts: { approvalMode: 'outside-ask', stageFinish: { verdicts: ['成功'] } } })
+    const finish = toolUse('t_finish', 'finish_stage', { verdict: '成功', summary: '做完了' })
+    await flow.handleToolUseResponse([finish])
+    expect(calls.executor).toEqual([['execOtherTool', 'finish_stage']])
+    expect(raw.pendingToolIds.has('t_finish')).toBe(false)
+    expect(raw.agentStatus.status).not.toBe('awaiting_approval')
+  })
+
+  it('outside-ask：同批 exec 被持有，finish_stage 仍立即执行', async () => {
+    const { raw, flow, calls } = makeCore({ opts: { approvalMode: 'outside-ask', stageFinish: { verdicts: ['成功'] } } })
+    const shell = toolUse('t_sh', 'exec', { command: 'rm -rf /tmp/x' })
+    const finish = toolUse('t_finish', 'finish_stage', { verdict: '成功', summary: '做完了' })
+    raw.messages.push(msg([shell, finish]))
+    await flow.handleToolUseResponse([shell, finish])
+    expect(calls.executor).toEqual([['execOtherTool', 'finish_stage']])
+    expect(raw.pendingToolIds.has('t_sh')).toBe(true)
+    expect(raw.pendingToolIds.has('t_finish')).toBe(false)
+    expect(raw.agentStatus.status).toBe('awaiting_approval')
+  })
   it('outside-ask：gated MCP 持有、免审批 MCP 与孤儿 owner（缓存缺席）放行', async () => {
     const { raw, flow, calls } = makeCore({ opts: { approvalMode: 'outside-ask' } })
     await refreshMcpServers()

@@ -39,6 +39,8 @@ import { serverManager } from '../mcp/MCPServerManager'
 import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
+import type { PipelineContract } from '../../shared/workflow/contract'
+import type { StageFinishConfig } from '../../shared/workflow/finish-tool'
 import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
 import { svcReapBackgroundPids as reapBackgroundPids, svcReapSessionShells as reapSessionShells, svcExecLogs, svcIsBackgroundPidAlive } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
@@ -92,6 +94,9 @@ interface SessionEntry {
      *  model). Set = refreshOptions re-resolves THIS profile, so a global
      *  model switch cannot move the session off its chosen model. */
     profileId?: string
+    /** 流水线阶段的完成协议（2026-11-11）：pinned 全程不变，refreshOptions
+     *  原样重挂——阶段会话的 finish_stage 不会因设置刷新而消失。 */
+    stageFinish?: StageFinishConfig
   }
   /** Last expert context resolved by refreshExpertContext. refreshOptions
    *  replaces the option bag wholesale, so the expert pack must be re-attached
@@ -818,6 +823,13 @@ export class AgentSessionManagerImpl {
     return dir
   }
 
+  /** 阶段会话最近一次合法 `finish_stage`（2026-11-11 完成协议）。
+   *  pipeline-engine 结算时先读它、再回落 PIPELINE_RESULT 文本行；普通会话
+   *  没有 stageFinish 配置，返回值恒为 null。 */
+  getStageFinishRecord(sessionId: string): PipelineContract | null {
+    return this.sessions.get(sessionId)?.engine.getStageFinishRecord() ?? null
+  }
+
   releaseRunPins(sessionId: string): void {
     const entry = this.sessions.get(sessionId)
     if (!entry) return
@@ -968,6 +980,8 @@ export class AgentSessionManagerImpl {
       pageContextProvider: builtinPageContextProvider(sessionId),
       systemPromptOverride: opts.systemPromptOverride,
       allowedTools: opts.allowedTools,
+      // 阶段完成协议（2026-11-11）：只有 pipeline-engine 传，普通会话缺席。
+      stageFinish: opts.stageFinish,
       // D16: an explicitly pinned internal pack (the assistants) rides on top
       // of the pinned override — identity over mechanics. Composed once here;
       // refreshOptions re-attaches the whole set (the mirror fields included,
@@ -1000,6 +1014,9 @@ export class AgentSessionManagerImpl {
         // (falling back to active when deleted), so a global 模型 switch
         // never moves a pinned session off its chosen model.
         profileId: opts.profileId,
+        // 阶段完成协议（2026-11-11）：只有 pipeline-engine 传，普通会话缺席。
+        // 必须进 pin——refreshOptions 重建 option bag 时要把它原样接回。
+        stageFinish: opts.stageFinish,
       },
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
@@ -1445,6 +1462,9 @@ export class AgentSessionManagerImpl {
       // Re-bound here too: a client can disconnect and reconnect between two
       // refreshes, and updateOptions replaces the bag wholesale.
       hostedAvailable: agentClientRegistry.isHostedCapable(sessionId),
+      // 阶段完成协议同属 pin：设置刷新不能把 finish_stage 从阶段会话上摘掉
+      // （摘掉后模型会退回文本契约，结算面还会照常兜底，但主通道静默消失）。
+      stageFinish: entry.pinned.stageFinish,
     })
   }
 

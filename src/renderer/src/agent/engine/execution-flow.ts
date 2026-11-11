@@ -15,6 +15,7 @@ import { safeInvoke, safeInvokeObserver, editToolTargetPaths } from '../agent-ut
 import { TOOL_PARAM_LIMITS, MAX_LIVE_OUTPUT_CHARS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
+import { STAGE_FINISH_TOOL } from '../../../../shared/workflow/finish-tool'
 import { backgroundStartNote } from '../../../../shared/background-notice'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
 import { isProjectInstructionsPath } from '../system-prompt-builder'
@@ -592,7 +593,12 @@ export class ExecutionFlow {
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
     const procReadTools = tools.filter(t => t.name === 'exec_logs' || t.name === 'exec_list')
-    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list')
+    // 阶段完成协议（2026-11-11）：finish_stage 是纯协议调用（只写引擎上的结算
+    // 记录，没有文件/进程副作用），永远不上审批梯子——它一旦被扣留，无人值守
+    // 的阶段会停在 awaiting_approval 直到超时，最需要完成信号的时候偏偏没有。
+    // 与 exec_logs 同款：独立分组 + execOtherTool 派发，不进 otherTools。
+    const stageFinishTools = tools.filter(t => t.name === STAGE_FINISH_TOOL)
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
     const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
     // exec_logs is a read (P0-3 #14) dispatched through execOtherTool — never a
@@ -682,6 +688,7 @@ export class ExecutionFlow {
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
       if (experienceTools.length > 0) for (const t of experienceTools) await this.engine.toolExecutor.execOtherTool(t)
       if (procReadTools.length > 0) for (const t of procReadTools) await this.engine.toolExecutor.execOtherTool(t)
+      if (stageFinishTools.length > 0) for (const t of stageFinishTools) await this.engine.toolExecutor.execOtherTool(t)
       if (autoOther.length > 0) { for (const t of autoOther) await this.engine.toolExecutor.execOtherTool(t) }
       if (spawnBatch) await spawnBatch
       // One completed tool batch (results landed, loop about to re-request) —
@@ -793,7 +800,9 @@ export class ExecutionFlow {
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list')
+    // finish_stage 不进 otherTools：它是阶段完成协议，派发侧独立成组（永不
+    // 上梯子），这里若漏掉排除，outside-ask 下它会被当成普通工具扣留。
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
     // calls at 'outside-ask' and above, file writes as well at 'always-ask',
@@ -893,11 +902,20 @@ export class ExecutionFlow {
       if (askUserTools.length > 0) {
         this.engine.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
       } else if (this.engine.pendingToolIds.size === 0) {
-        // kick() true = the scheduler just dispatched a wave (or an attempt
-        // owns the turn): status is `executing` and the batch's own drain
-        // re-enters here — painting `completed` over it would report the turn
-        // finished while experts are still running.
-        if (!this.engine.planScheduler.kick()) this.engine.continueLoop()
+        // 阶段完成协议（2026-11-11）：本批里有合法的 finish_stage 时，回合到这里
+        // 就结束——不再起一轮 LLM（模型已声明结果状态，结算交给 pipeline-engine）。
+        // 放在 kick() 之前：finish 是阶段级终止信号，调度器没有接下来要派的东西。
+        // 同批的写工具并不被跳过——本分支只在整批跑完且 pending 清空后才到。
+        if (this.engine.consumeStageFinishTurnEnd()) {
+          this.engine.agentStatus = { status: 'completed' }
+          this.engine.resolveCompletionIfSpawned('completed')
+        } else if (!this.engine.planScheduler.kick()) {
+          // kick() true = the scheduler just dispatched a wave (or an attempt
+          // owns the turn): status is `executing` and the batch's own drain
+          // re-enters here — painting `completed` over it would report the turn
+          // finished while experts are still running.
+          this.engine.continueLoop()
+        }
       } else if (this.engine.planScheduler.kick({ midDrain: true })) {
         // Chained attempts (2026-09-30) are still registered in the pending
         // set: the scheduler owns the turn — its kick settles, chains more or

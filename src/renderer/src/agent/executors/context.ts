@@ -10,6 +10,7 @@ import type { SpawnSubAgentFn } from '../tool-executors'
 import type { SkillKeywordAgent } from '../one-shot-agent'
 import type { Plan, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import type { SplitChildSpec } from '../../../../shared/plan/split-proposal'
+import type { PipelineContract } from '../../../../shared/workflow/contract'
 
 /** Tool-block output preview cap shared by executors and the engine. */
 export const UI_PREVIEW_MAX = 3000
@@ -149,6 +150,10 @@ export interface ToolExecContext {
    *  so old test fakes construct; AgentEngine 构造后晚接线（followUpSubAgent
    *  同款）。 */
   registerBackgroundCommand?: (pid: number, command: string) => void
+  /** 阶段完成协议（2026-11-11）：finish_stage 校验通过后把契约交给引擎记录。
+   *  Optional（测试桩缺席时调用会报「tool unavailable」而不是静默成功）;
+   *  AgentEngine 构造后晚接线。 */
+  recordStageFinish?: (contract: PipelineContract) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */
   formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
 }

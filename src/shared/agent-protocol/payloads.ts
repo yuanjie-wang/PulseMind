@@ -4,6 +4,7 @@
 import type { SandboxApprovalMode } from '../sandbox/policy'
 import type { Plan } from '../types/plan'
 import type { ExpertProfile } from '../types/expert'
+import type { StageFinishConfig } from '../workflow/finish-tool'
 
 // ── hello ────────────────────────────────────────────────────────────
 
@@ -108,6 +109,10 @@ export interface AgentSessionCreateOptions {
    *  the active profile. Pinned for the session's life: a global model switch
    *  does not move it, and a deleted profile falls back to the active one. */
   profileId?: string
+  /** 流水线阶段的完成协议（2026-11-11）：存在即给本会话注入 `finish_stage`
+   *  工具，并把最近一次合法调用记在引擎上供 pipeline-engine 结算读取。
+   *  普通会话不传 = 工具表与行为逐字节不变。 */
+  stageFinish?: StageFinishConfig
 }
 
 export interface SessionListResult {

@@ -9,6 +9,7 @@ import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../../tools
 import { PAGE_BUILT_IN_TOOLS, SUB_AGENT_DENY_TOOLS, SUB_PLAN_BUILT_IN_TOOLS } from '../../tools/built-in-tools'
 import { sanitizeSchema } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
+import { STAGE_FINISH_TOOL, buildStageFinishTool } from '../../../../shared/workflow/finish-tool'
 import { ensureCache, getCachedExpertProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
 import { registerToolDescriptions } from '../../components/chat/tool-descriptions'
 
@@ -309,6 +310,16 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
       }
     }
     console.log(`[AgentEngine] Sub-agent tool whitelist: kept ${enabledTools.length}/${originalCount} tools`)
+  }
+
+  // ── 阶段完成协议（2026-11-11）：finish_stage 只服务流水线阶段会话 ──
+  // 合并点在 allowedToolsSet 白名单之后：它不是模型的可选能力，而是阶段会话的
+  // 协议面——子代理/工具工作室的白名单不该把完成信号一并滤掉。同名用户工具被
+  // 顶掉，否则同名调用会先被 dispatch 到别处，完成信号静默丢失。
+  if (deps.opts.stageFinish) {
+    const at = enabledTools.findIndex((t) => t.name === STAGE_FINISH_TOOL)
+    if (at !== -1) enabledTools.splice(at, 1)
+    enabledTools.push(buildStageFinishTool(deps.opts.stageFinish))
   }
 
   // Feed the display layer's name→description registry (PLAN-tool-ux T1):

@@ -32,10 +32,12 @@ import { SessionFileLedger } from '../../../shared/agent-session/file-changes'
 
 
 import { execRecallTool, execMemoryTool, execContextCompactTool, execToolResultSearchTool, execSkillCommand } from './executors/domain-tools'
+import { execStageFinishTool } from './executors/stage-finish-tool'
 import { MAX_READ_RESULT_TOKENS, READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
 import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
+import type { PipelineContract } from '../../../shared/workflow/contract'
 import { serializeScriptFences } from '../../../shared/experience/script-fence'
 import { isLivePage, type MemoryPageRecord } from '../../../shared/memory-pages'
 
@@ -340,6 +342,10 @@ export class ToolExecutor implements ToolExecContext {
    *  ToolExecContext.registerBackgroundCommand）：由 AgentEngine 构造后晚接线
    *  （followUpSubAgent 同款）；absent（旧测试桩）时后台通道只跑不记名。 */
   registerBackgroundCommand?: (pid: number, command: string) => void
+
+  /** finish_stage 的落点（2026-11-11 阶段完成协议）：由 AgentEngine 构造后
+   *  晚接线；absent（旧测试桩）时工具报不可用，而不是静默成功。 */
+  recordStageFinish?: (contract: PipelineContract) => void
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -1320,6 +1326,7 @@ export class ToolExecutor implements ToolExecContext {
   async execOtherTool(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
+      if (await execStageFinishTool(this, t)) return
       if (await execRecallTool(this, t)) return
       if (await execMemoryTool(this, t)) return
       if (await execContextCompactTool(this, t)) return

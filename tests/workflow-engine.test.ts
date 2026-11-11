@@ -20,8 +20,16 @@ const sessionState = {
   stopped: [] as string[],
   releasedPins: [] as string[],
   approvalModes: [] as Array<{ convId: string; mode: string }>,
-  /** 每次ask 消费一个剧本项：'none' = 无契约行，否则是该 verdict 的契约行。 */
-  script: [] as Array<'none' | 'hang' | { verdict: string; summary: string; artifacts?: string[] }>,
+  /** 每次ask 消费一个剧本项：'none' = 无契约行，否则是该 verdict 的契约行；
+   *  finish = 模拟模型调用了 finish_stage（引擎记录的完成契约），text 是那一轮
+   *  的可见正文（可故意再放一条不同的 PIPELINE_RESULT 验证记录优先）。 */
+  script: [] as Array<
+    'none' | 'hang'
+    | { verdict: string; summary: string; artifacts?: string[] }
+    | { finish: { verdict: string; summary: string; artifacts?: string[] }; text?: string }
+  >,
+  /** 阶段会话的 finish_stage 记录（sessionId → 契约），getStageFinishRecord 的读面。 */
+  stageFinishRecords: new Map<string, { verdict: string; summary: string; artifacts?: string[] }>(),
   /** 阶段会话的落盘面（git checkpoint 用例）：ask 时往这里写文件，模拟
    *  「agent 改了工作区」——否则仓库无改动，commit 是 no-op，提交链断言测空。 */
   stageTouchDir: '' as string,
@@ -53,7 +61,16 @@ vi.mock('../src/main/agent/session-manager', () => ({
           /* 夹具面 */
         }
       }
-      const text = item === 'none' ? '随便说两句，没有契约行。' : contractLine(item)
+      let text: string
+      if (typeof item === 'object' && 'finish' in item) {
+        // 阶段完成协议：工具调用的记录落在会话上，正文可以什么都没有（甚至
+        // 故意带一条不同 verdict 的文本契约，用来验证结算优先读工具记录）。
+        // 真实的 record 来 validateStageFinishArgs，artifacts 永远是数组。
+        sessionState.stageFinishRecords.set(sessionId, { artifacts: [], ...item.finish })
+        text = item.text ?? '已调用 finish_stage 声明阶段完成。'
+      } else {
+        text = item === 'none' ? '随便说两句，没有契约行。' : contractLine(item)
+      }
       // ask 即回合；回合完 → completed 事件（契约结算面）。下一个 tick，
       // 让 runStage 的事件订阅先挂上。
       await new Promise((r) => setTimeout(r, 10))
@@ -67,6 +84,9 @@ vi.mock('../src/main/agent/session-manager', () => ({
       messages: [{ role: 'assistant', contentBlocks: [{ type: 'text', text: sessionState.lastAnswer ?? '' }] }],
       agentId: 'default',
     }),
+    // 阶段完成协议（2026-11-11）：结算面先读 finish_stage 记录。真实实现挂在
+    // 会话引擎上；这里用剧本写入的 map 代替。
+    getStageFinishRecord: (sessionId: string) => sessionState.stageFinishRecords.get(sessionId) ?? null,
     engineCall: async (sessionId: string, method: string) => {
       if (method === 'stopExecution') sessionState.stopped.push(sessionId)
       return undefined
@@ -138,7 +158,10 @@ const linearWorkflow = {
 
 const planPath = 'PLAN.md'
 
-function freshState(script: Array<'none' | { verdict: string; summary: string; artifacts?: string[] }>): void {
+function freshState(script: Array<
+  'none' | { verdict: string; summary: string; artifacts?: string[] }
+  | { finish: { verdict: string; summary: string; artifacts?: string[] }; text?: string }
+>): void {
   sessionState.sinks.clear()
   sessionState.created.length = 0
   sessionState.asks.length = 0
@@ -146,6 +169,7 @@ function freshState(script: Array<'none' | { verdict: string; summary: string; a
   sessionState.releasedPins.length = 0
   sessionState.approvalModes.length = 0
   sessionState.script = [...script]
+  sessionState.stageFinishRecords.clear()
   sessionState.stageTouchDir = ''
   sessionState.lastAnswer = ''
   runRows.clear()
@@ -576,6 +600,68 @@ describe('runWorkflowInstance', () => {
     // 默认单出口的节点不加噪音（内置模板的 prompt 逐字不变）。
     expect(sessionState.asks[1].content).not.toContain('PIPELINE_RESULT')
     expect(sessionState.asks[1].content).not.toContain('结果状态只能取')
+    // 完成协议进阶段 prompt：主通道是 finish_stage 工具，文本契约只作兜底。
+    expect(sessionState.asks[0].content).toContain('finish_stage')
+    expect(sessionState.asks[0].content).toContain('如果工具不可用')
+    expect(sessionState.asks[1].content).not.toContain('finish_stage')
+    // 阶段会话的 createSession 带着本节点的出口词汇表（工具 schema 的 enum 源）。
+    expect(sessionState.created[0].opts.stageFinish).toEqual({ verdicts: ['成功', '需修订'] })
+    expect(sessionState.created[1].opts.stageFinish).toEqual({ verdicts: ['pass'] })
+  })
+
+  it('阶段完成协议：finish_stage 记录是主通道，正文里的另一条契约不抢结算', async () => {
+    // 模型同一回合既调了工具（成功）又在正文里写了一条不同的 PIPELINE_RESULT
+    // （需修订）：结算必须走工具记录——参数过了 schema + 词汇表双重校验，
+    // 正文只是散文。走错这里就是不报错的分支错投。
+    const custom = {
+      ...linearWorkflow,
+      entry: 'a',
+      nodes: [
+        { id: 'a', title: 'a', prompt: '节点A', verdicts: ['成功', '需修订'] },
+        { id: 'b', title: 'b', prompt: '节点B', verdicts: ['pass'] },
+        { id: 'c', title: 'c', prompt: '节点C', verdicts: ['pass'] },
+      ],
+      edges: [
+        { from: 'a', when: '成功', to: 'b' },
+        { from: 'a', when: '需修订', to: 'c' },
+        { from: 'b', when: 'pass', to: 'DONE' },
+        { from: 'c', when: 'pass', to: 'DONE' },
+      ],
+    }
+    freshState([
+      {
+        finish: { verdict: '成功', summary: '工具记录：通过' },
+        text: contractLine({ verdict: '需修订', summary: '正文契约：要改' }),
+      },
+      { verdict: 'pass', summary: 'ok' },
+    ])
+    const result = await runWorkflowInstance({ runId: 'prun_finish_priority', workflow: custom, planPath, workspaceDir: makeWorkspace() })
+    expect(result.status).toBe('success')
+    expect(sessionState.asks).toHaveLength(2)
+    expect(sessionState.asks[1].content).toContain('节点B')
+    expect(sessionState.asks[1].content).not.toContain('节点C')
+  })
+
+  it('阶段完成协议：记录越表时接受合法文本兜底，激发话术点名 finish_stage', async () => {
+    // 工作流在运行中被改了词汇表：旧记录里的 verdict 越表，但模型按新词汇表
+    // 在正文里补了契约。结算不能因为那条陈旧记录永远判失败（激发臂会耗尽）。
+    const custom = {
+      ...linearWorkflow,
+      entry: 'a',
+      nodes: [{ id: 'a', title: 'a', prompt: '节点A', verdicts: ['成功'] }],
+      edges: [{ from: 'a', when: '成功', to: 'DONE' }],
+    }
+    freshState([
+      { finish: { verdict: '失败', summary: '旧词汇表的记录' } },
+      { verdict: '成功', summary: '文本兜底' },
+    ])
+    const result = await runWorkflowInstance({ runId: 'prun_finish_stale', workflow: custom, planPath, workspaceDir: makeWorkspace() })
+    expect(result.status).toBe('success')
+    expect(sessionState.asks).toHaveLength(2)
+    // 激发话术两个通道都写明：先 finish_stage，工具不可用才退回文本契约。
+    expect(sessionState.asks[1].content).toContain('finish_stage')
+    expect(sessionState.asks[1].content).toContain('PIPELINE_RESULT')
+    expect(sessionState.asks[1].content).toContain('失败')
   })
 
   it('状态定义进阶段 prompt：每个状态一行「- 名：定义」，没定义的那条只列名', async () => {
