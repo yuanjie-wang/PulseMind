@@ -53,7 +53,12 @@ export type BrowserCommand =
   | { method: 'reload'; tabId: string }
   | { method: 'close'; tabId: string }
   | { method: 'snapshot'; tabId: string; full?: boolean }
-  | { method: 'screenshot'; tabId: string; fullPage?: boolean; selector?: string }
+  /** `save`: true → auto-named PNG in the OS Downloads folder; any other string
+   *  is a destination — a bare filename goes to Downloads, while `~/…`,
+   *  absolute and token paths (`desktop/名称.png`) are taken literally. Missing
+   *  folders are created and existing files are never overwritten (see
+   *  screenshot-save.ts). */
+  | { method: 'screenshot'; tabId: string; fullPage?: boolean; selector?: string; save?: boolean | string }
   | { method: 'evaluate'; tabId: string; expression: PageExpression }
   | { method: 'playwright'; tabId: string; selector: string; op: string; arg?: string; timeoutMs?: number }
   | { method: 'playwrightWaitForTimeout'; tabId: string; ms: number }

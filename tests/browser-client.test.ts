@@ -122,7 +122,45 @@ describe('facade against a mock execute', () => {
     expect(tab.id).toBe('t1')
     const shot = await tab.screenshot()
     expect(shot.emitted).toBe(true)
+    expect(shot).toEqual({ emitted: true, mime: 'image/png' })
+    expect('path' in shot).toBe(false)
     expect(images).toEqual([{ mime: 'image/png', base64: 'abc123' }])
+  })
+  it('forwards save to the host and returns the written path', async () => {
+    const sent: BrowserCommand[] = []
+    const images: Array<{ mime: string; base64: string }> = []
+    const facade = createBrowserFacade({
+      execute: (cmd) => {
+        sent.push(cmd)
+        if (cmd.method === 'listTabs') return { ok: true, value: [{ id: 't1', url: 'https://a.com/' }] }
+        if (cmd.method === 'getState') return { ok: true, value: { id: 't1', url: 'https://a.com/', title: 'A' } }
+        if (cmd.method === 'screenshot') {
+          return { ok: true, value: { mime: 'image/png', base64: 'abc123', path: '/Users/me/Downloads/首页.png' } }
+        }
+        return { ok: true }
+      },
+      emitImage: (img) => images.push(img),
+    })
+    const tab = await facade.agent.browsers.open('https://a.com/')
+    const shot = await tab.screenshot({ fullPage: true, save: '首页.png' })
+    expect(sent.at(-1)).toMatchObject({ method: 'screenshot', tabId: 't1', fullPage: true, save: '首页.png' })
+    expect(shot).toEqual({ emitted: true, mime: 'image/png', path: '/Users/me/Downloads/首页.png' })
+    // Saving never replaces the inline emission — both channels fire.
+    expect(images).toEqual([{ mime: 'image/png', base64: 'abc123' }])
+  })
+  it('rejects a malformed save before reaching the host', async () => {
+    const methods: string[] = []
+    const facade = createBrowserFacade({
+      execute: (cmd) => {
+        methods.push(cmd.method)
+        if (cmd.method === 'listTabs') return { ok: true, value: [{ id: 't1', url: 'https://a.com/' }] }
+        return { ok: true }
+      },
+      emitImage: () => {},
+    })
+    const tab = await facade.agent.browsers.open('https://a.com/')
+    await expect(tab.screenshot({ save: 42 as never })).rejects.toThrow(/只接受 true 或路径字符串/)
+    expect(methods).not.toContain('screenshot')
   })
   it('surfaces command errors as thrown messages and rejects bad schemes early', async () => {
     const facade = createBrowserFacade({

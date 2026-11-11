@@ -8,8 +8,9 @@
 
 import { prefixedId } from '../utils/id'
 import { existsSync, readdirSync, statSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BrowserWindow, clipboard, shell, type WebContents, type WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, shell, type WebContents, type WebContentsView } from 'electron'
 import {
   assertAllowedUrl,
   browserError,
@@ -36,6 +37,8 @@ import { isSubpath, resolveTarget } from '../../shared/sandbox/path-jail'
 import { resolveRealTarget } from '../sandbox/real-path'
 import { normalizeUserPath } from '../sandbox/guard'
 import { DATA_DIR, WORKSPACE_DIR } from '../storage'
+import { resolveScreenshotSave, writeScreenshotFile } from './screenshot-save'
+import { captureAppViewScreenshot } from './app-view-screenshot'
 import { auditStore } from '../storage/audit-store'
 import { browserHistoryStore } from '../storage/browser-history-store'
 import { settingsStore } from '../storage/settings-store'
@@ -542,8 +545,61 @@ export class BrowserService {
           return browserOk(snap.text)
         }
         case 'screenshot': {
-          const buffer = cmd.selector ? await page.locator(cmd.selector).screenshot() : await page.screenshot({ fullPage: cmd.fullPage })
-          return browserOk({ mime: 'image/png', base64: buffer.toString('base64') })
+          // App-view pages are laid out at the 1280 design width and shrunk by
+          // page zoom; Playwright's CDP screenshot mixes the zoomed layout
+          // viewport with CSS-sized clips and returns a mostly-white canvas
+          // (2026-11-11 「截图有问题」). That path captures in document DIP —
+          // see app-view-screenshot.ts. Managed pages have no zoom and keep
+          // Playwright's own screenshot.
+          let buffer: Buffer
+          if (entry.backendId === 'app-view') {
+            const view = this.viewOfTab(entry.id)
+            if (!view || view.webContents.isDestroyed()) {
+              throw new Error('截图失败：应用窗格标签页已关闭')
+            }
+            buffer = await captureAppViewScreenshot(page, {
+              zoom: view.webContents.getZoomFactor(),
+              selector: cmd.selector,
+              fullPage: cmd.fullPage,
+            })
+          } else {
+            buffer = cmd.selector
+              ? await page.locator(cmd.selector).screenshot()
+              : await page.screenshot({ fullPage: cmd.fullPage })
+          }
+          const shot: { mime: string; base64: string; path?: string } = {
+            mime: 'image/png',
+            base64: buffer.toString('base64'),
+          }
+          // `save` writes a real file so the user can get the screenshot out of
+          // the app (the inline image is display-only). ANY destination is
+          // accepted: `~/…` and absolute paths go where they say, relative
+          // paths start from Downloads, and the token spellings
+          // (`desktop/名称.png` …) resolve through app.getPath so one string
+          // means the same thing on macOS, Windows and Linux. Missing folders
+          // are created; the app's own data dir is the one carve-out, and an
+          // existing file is never overwritten (writeScreenshotFile).
+          if (cmd.save) {
+            const dirs = {
+              home: app.getPath('home'),
+              downloads: app.getPath('downloads'),
+              desktop: app.getPath('desktop'),
+              documents: app.getPath('documents'),
+              pictures: app.getPath('pictures'),
+            }
+            const dest = resolveScreenshotSave(cmd.save, {
+              dirs,
+              protectedRoots: [DATA_DIR],
+            })
+            try {
+              await mkdir(dest.dir, { recursive: true })
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err)
+              throw new Error(`截图失败：无法创建保存目录 ${dest.dir}：${reason}`)
+            }
+            shot.path = await writeScreenshotFile(dest, buffer)
+          }
+          return browserOk(shot)
         }
         case 'evaluate':
           return browserOk(await page.evaluate(cmd.expression))

@@ -666,7 +666,10 @@ export const MessageGroup = React.memo(function MessageGroup({
             if (tr.imageData) {
               return (
                 <div key={i} style={{ margin: '8px 0', maxWidth: '100%' }}>
-                  <img
+                  {/* Click → ImageViewer → 下载: a screenshot the user can
+                      actually take out of the app. LocalImage passes data:
+                      URLs through untouched, so no temp file is needed. */}
+                  <LocalImage
                     src={`data:image/png;base64,${tr.imageData}`}
                     alt="Screenshot"
                     style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid var(--pm-border-soft)' }}

@@ -98,8 +98,9 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
           summary: 'Numbered interactive elements ([N]) first, then the AI/ARIA tree — the default and primary observation',
         },
         screenshot: {
-          signature: 'screenshot({ fullPage?, selector? }?): Promise<{emitted}>',
-          summary: 'Screenshot emitted inline in the same call — never returned as bytes',
+          signature: 'screenshot({ fullPage?, selector?, save? }?): Promise<{emitted, path?}>',
+          summary:
+            "Screenshot emitted inline in the same call — never returned as bytes; save: true (or a bare filename) writes an auto-named/named PNG to Downloads, while any path — ~/Desktop/名称.png, absolute, or a portable desktop/ documents/ downloads/ pictures/ token — writes exactly there. Missing folders are created, existing files are never overwritten; returns the absolute path",
         },
         evaluate: { signature: 'evaluate(expression): Promise<unknown>', summary: 'Run JS in the page (page context, not the kernel)' },
         playwright: {

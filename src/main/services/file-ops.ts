@@ -171,12 +171,40 @@ async function statSignature(resolved: string): Promise<string> {
  *  edit/patch — deliberately actionable: the model re-reads and retries. */
 const STALE_FILE_ERROR = 'file changed on disk since it was read — re-read and retry'
 
+/** data: URLs are the only copy source with no filesystem side: an inline
+ *  screenshot in the transcript is a base64 data URL, and the image viewer's
+ *  下载 button feeds it straight back here. The old code treated the whole
+ *  URL as a path (stat("data:image/png;…") → ENOENT) and the viewer only
+ *  console.warn'd, so downloading a screenshot looked like a no-op. Only the
+ *  DESTINATION is guarded here — there is no source to read from disk. */
+const MAX_DATA_URL_BYTES = 256 * 1024 * 1024
+
+async function copyDataUrl(sourceUrl: string, destination: string): Promise<{ success: boolean; error?: string }> {
+  const match = /^data:([^,]*),(.*)$/s.exec(sourceUrl)
+  if (!match) return { success: false, error: 'malformed data: URL' }
+  if (!/(^|;)base64(;|$)/i.test(match[1])) {
+    return { success: false, error: 'only base64-encoded data: URLs can be saved to a file' }
+  }
+  const bytes = Buffer.from(match[2], 'base64')
+  if (bytes.byteLength === 0) return { success: false, error: 'data: URL decoded to zero bytes' }
+  if (bytes.byteLength > MAX_DATA_URL_BYTES) {
+    return { success: false, error: `image is too large to save (${bytes.byteLength} bytes)` }
+  }
+  const destGuard = await guardFsTarget(destination, 'write')
+  if (!destGuard.ok) return { success: false, error: destGuard.reason }
+  const safeDest = await resolveWritablePath(destination)
+  await mkdir(path.dirname(safeDest), { recursive: true })
+  await writeFile(safeDest, bytes)
+  return { success: true }
+}
+
 export async function svcCopyFile(input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> {
   try {
     const { copyFile: cf } = await import('node:fs/promises')
     const { homedir } = await import('node:os')
     const { join } = await import('node:path')
     let sourcePath = input.sourceUrl || ''
+    if (sourcePath.startsWith('data:')) return await copyDataUrl(sourcePath, input.destination)
     // Strip local-file:// protocol
     sourcePath = sourcePath.replace(/^local-file:/, 'file:')
     // Resolve /.pulsemind/ to ~/.pulsemind/

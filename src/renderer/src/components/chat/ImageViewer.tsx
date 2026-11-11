@@ -8,7 +8,38 @@ import {
   RotateRightOutlined,
   DownloadOutlined
 } from '@ant-design/icons'
+import { message } from 'antd'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
+
+const MIME_EXT: Record<string, string> = { 'image/jpeg': 'jpg', 'image/svg+xml': 'svg' }
+
+/**
+ * Default Save-As name. A data: URL has no filename of its own — the browser
+ * tool's screenshots are exactly that — so stamp one from the mime subtype;
+ * file paths keep their basename.
+ */
+function defaultDownloadName(src: string): string {
+  const stamp = (): string => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  }
+  if (src.startsWith('data:')) {
+    const mime = (/^data:([^;,]+)/.exec(src)?.[1] || 'image/png').toLowerCase()
+    const ext = MIME_EXT[mime] || mime.replace(/^image\//, '') || 'png'
+    return `screenshot-${stamp()}.${ext}`
+  }
+  const pathPart = src.split(/[?#]/)[0]
+  const base = pathPart.slice(Math.max(pathPart.lastIndexOf('/'), pathPart.lastIndexOf('\\')) + 1)
+  if (base) {
+    try {
+      return decodeURIComponent(base)
+    } catch {
+      return base
+    }
+  }
+  return `image-${stamp()}.png`
+}
 
 const btnStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.15)',
@@ -109,15 +140,20 @@ export function ImageViewer({
 
   const handleDownload = async () => {
     try {
-      const ext = (src.match(/\.(\w{3,4})(?:\?|$)/) || [])[1] || 'png'
       const { filePath, canceled } = await window.electronAPI.showSaveDialog({
-        defaultName: `image.${ext}`,
+        defaultName: defaultDownloadName(src),
         filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
       })
       if (canceled || !filePath) return
-      await window.electronAPI.copyFile({ sourceUrl: src, destination: filePath })
+      // copyFile decodes base64 data: URLs too — that is what makes an inline
+      // screenshot (no file on disk) downloadable at all. Failures must be
+      // visible: silently warn left the user with a dialog that did nothing.
+      const result = await window.electronAPI.copyFile({ sourceUrl: src, destination: filePath })
+      if (!result.success) {
+        message.error(`保存失败：${result.error || '未知错误'}`)
+      }
     } catch (err) {
-      console.warn('[ImageViewer] Download failed:', err)
+      message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

@@ -55,6 +55,12 @@ const SCREENSHOTS_BODY = `## Screenshots (lookup)
 
 \`await tab.screenshot()\` — full visible viewport. Options: \`{ fullPage: true }\`, or \`{ selector: locator }\` for one element.
 The image is attached to your tool result automatically in the same call — never base64 it through the return value.
+
+When the user wants the picture as a FILE (「截图保存到本地」), pass \`save\` in the same call:
+- \`{ save: true }\` → auto-named PNG (\`pulsemind-screenshot-<date>-<time>.png\`) in the OS Downloads folder.
+- \`{ save: '名称.png' }\` → that filename in Downloads.
+- \`{ save: '~/Desktop/名称.png' }\` → exactly that file. Any path works: an absolute path, or a portable token (\`desktop/名称.png\`; \`documents/\`, \`downloads/\` and \`pictures/\` work the same way, with optional subfolders — the SAME string works on macOS, Windows and Linux). A relative path starts from Downloads, missing folders are created, and an existing file is NEVER overwritten (a \`-2\`, \`-3\` suffix is added). The app's own data folder (\`~/.pulsemind\`) is the only refusal.
+The return value then carries \`{ emitted: true, mime, path }\` — quote that absolute path when you tell the user where the file is. Without \`save\`, nothing is written to disk; the inline image serves you and the transcript only.
 Trigger conditions: the user asked for a picture, you need pixel judgment the snapshot can't give (layout, colors, canvas), or the target genuinely isn't in the ARIA tree. Otherwise a snapshot is cheaper and more precise.`
 
 const APP_VIEW_BODY = `## App-view backend (lookup, this backend only)

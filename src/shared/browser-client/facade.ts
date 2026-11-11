@@ -41,8 +41,15 @@ export interface TabApi {
   /** Numbered interactive elements ([N] refs) first, then the AI/ARIA tree —
    *  the default and primary observation (协议 §5.4); refs address what it saw. */
   domSnapshot: (options?: { full?: boolean }) => Promise<string>
-  /** Always emits through emitImage in the same call (协议 §5.6). */
-  screenshot: (options?: { fullPage?: boolean; selector?: string | LocatorSugar }) => Promise<{ emitted: true; mime: string }>
+  /** Always emits through emitImage in the same call (协议 §5.6). `save` ALSO
+   *  writes a PNG — `true`/a bare filename goes to Downloads; any other string
+   *  is a path (`~/Desktop/名称.png`, absolute, or a `desktop/` token) written
+   *  exactly there without overwriting. The return value carries its path. */
+  screenshot: (options?: { fullPage?: boolean; selector?: string | LocatorSugar; save?: boolean | string }) => Promise<{
+    emitted: true
+    mime: string
+    path?: string
+  }>
   /** A page-realm expression: source text or a function (Playwright calls the
    *  latter). Both are legitimate idioms — `() => document.title` is what a
    *  model writes first, and forcing it to a string by hand is the trap. */
@@ -175,13 +182,23 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
         close: async () => { await invoke({ method: 'close', tabId: id }) },
         domSnapshot: async (options) => (await invoke({ method: 'snapshot', tabId: id, full: options?.full })) as string,
         screenshot: async (options) => {
+          const save = options?.save
+          // The sandbox has no types: an object/array here used to travel
+          // through untouched and be treated as "no save". Name the expected
+          // shapes instead of failing silently.
+          if (save !== undefined && typeof save !== 'boolean' && typeof save !== 'string') {
+            throw new Error(
+              `screenshot 的 save 只接受 true 或路径字符串，收到 ${save === null ? 'null' : typeof save}——例如 screenshot({ save: '~/Desktop/名称.png' })`,
+            )
+          }
           const shot = (await invoke({
             method: 'screenshot', tabId: id,
             fullPage: options?.fullPage,
             selector: options?.selector ? (typeof options.selector === 'string' ? resolveSelectorArg(options.selector) : options.selector.selector) : undefined,
-          })) as { mime: string; base64: string }
+            save,
+          })) as { mime: string; base64: string; path?: string }
           deps.emitImage({ mime: shot.mime, base64: shot.base64 })
-          return { emitted: true, mime: shot.mime }
+          return { emitted: true, mime: shot.mime, ...(shot.path ? { path: shot.path } : {}) }
         },
         evaluate: async (expression: string | (() => unknown)) => {
           // Fail at the entry, in the model's own vocabulary: a number/null

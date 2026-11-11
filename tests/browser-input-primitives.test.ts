@@ -133,7 +133,9 @@ describe('real-input primitives — service wiring (source scan)', () => {
   })
 
   it('reads the clipboard in the main process (electron clipboard, not the page)', () => {
-    expect(service).toContain("import { BrowserWindow, clipboard, shell")
+    // Order-insensitive: other electron members (BrowserWindow, app, shell…)
+    // come and go as the service grows; what this pins is the SOURCE.
+    expect(service).toMatch(/import \{[^}]*\bclipboard\b[^}]*\} from 'electron'/)
     expect(service).toContain('clipboard.readText()')
     expect(service).toContain('clipboard.writeText(')
   })
