@@ -29,7 +29,7 @@ function guardHome(home) {
 async function probe() {
   const { writeFileSync } = await import('node:fs')
   const { routineStore, ROUTINES_DIR } = await import('../src/main/storage/routine-store.js')
-  const { workflowStore, WORKFLOWS_DIR } = await import('../src/main/storage/workflow-store.js')
+  const { workflowStore } = await import('../src/main/storage/workflow-store.js')
   const { sanitizeRoutineForExport, buildEnvelope, parseShareFile, shareNameOf } = await import('../src/shared/share/sanitize.js')
   const home = process.env.PM_HOME
 

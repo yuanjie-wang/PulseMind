@@ -1,8 +1,6 @@
 // PLAN-share-import-export：分享文件 envelope 类型（routine + workflow 统一
 // 分享面）。单导出与批量导出同构——恒为 items 数组，读写面只有一份解析器。
 
-import type { WorkflowDefinition } from '../workflow/types'
-
 export type ShareKind = 'routine' | 'workflow'
 
 export interface ShareItem {
