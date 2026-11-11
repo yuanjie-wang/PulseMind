@@ -297,4 +297,71 @@ describe('guardFsTarget — the glue passes the skills root (real fs, throwaway 
     await inside
     try { rmSync(`${skills}/office/escape-link`) } catch { /* already gone */ }
   })
+
+  // 2026-11-11: the tmp tree is the ocr/read seam — the renderer rewrites
+  // pasted images to ~/.pulsemind/tmp/screenshot and hands the path to the
+  // model, so reading it must pass the full glue (realpath, session ctx) the
+  // same way the skills exemption does. Writes stay jailed; a link inside tmp
+  // escaping to a protected root still fails closed.
+  it('adjudicates the tmp read exemption end-to-end inside a session context', async () => {
+    const { guardFsTarget } = await import('../src/main/sandbox/guard')
+    const { sessionSandbox } = await import('../src/main/sandbox/session-context')
+    const { homedir } = await import('node:os')
+    const { mkdirSync, symlinkSync, rmSync, writeFileSync } = await import('node:fs')
+    const home = homedir()
+    const shot = `${home}/.pulsemind/tmp/screenshot`
+    const workspace = `${home}/.pulsemind/workspace/glue-probe`
+    mkdirSync(shot, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(`${shot}/screenshot_1.jpg`, 'jpeg-bytes', 'utf-8')
+
+    const inside = sessionSandbox.run({ sessionId: 'conv_glue', workspaceDir: workspace }, async () => {
+      // the tool seam: reading the rewritten image path passes
+      const r = await guardFsTarget(`${shot}/screenshot_1.jpg`, 'read')
+      expect(r.ok).toBe(true)
+      // reads-only: a write into tmp is still outside the jail
+      const w = await guardFsTarget(`${shot}/copy.jpg`, 'write')
+      expect(w.ok).toBe(false)
+      expect(w.ok ? '' : w.reason).toMatch(/Write blocked by sandbox/)
+      // a symlink inside tmp escaping to a protected root fails closed
+      const link = `${shot}/escape-link`
+      try { rmSync(link) } catch { /* absent */ }
+      symlinkSync(`${home}/.ssh`, link)
+      const escape = await guardFsTarget(`${link}/id_rsa`, 'read')
+      expect(escape.ok).toBe(false)
+    })
+    await inside
+    try { rmSync(`${shot}/escape-link`) } catch { /* already gone */ }
+  })
+
+  // Same audit: browser downloads land in workspace/downloads/<convId> — a
+  // sibling of the session's timestamped workspace — and listDownloads hands
+  // the model those paths. Reading a downloaded file passes; writes and a
+  // sibling conversation's workspace stay denied.
+  it('adjudicates the downloads read exemption end-to-end inside a session context', async () => {
+    const { guardFsTarget } = await import('../src/main/sandbox/guard')
+    const { sessionSandbox } = await import('../src/main/sandbox/session-context')
+    const { homedir } = await import('node:os')
+    const { mkdirSync, rmSync, writeFileSync } = await import('node:fs')
+    const home = homedir()
+    const downloads = `${home}/.pulsemind/workspace/downloads/conv_glue`
+    const workspace = `${home}/.pulsemind/workspace/ts-glue-probe`
+    mkdirSync(downloads, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(`${downloads}/report.pdf`, 'pdf-bytes', 'utf-8')
+
+    const inside = sessionSandbox.run({ sessionId: 'conv_glue', workspaceDir: workspace }, async () => {
+      const r = await guardFsTarget(`${downloads}/report.pdf`, 'read')
+      expect(r.ok).toBe(true)
+      const w = await guardFsTarget(`${downloads}/copy.pdf`, 'write')
+      expect(w.ok).toBe(false)
+      expect(w.ok ? '' : w.reason).toMatch(/Write blocked by sandbox/)
+      // cross-conversation isolation stays: a sibling timestamped workspace is
+      // not covered by the downloads exemption
+      const other = await guardFsTarget(`${home}/.pulsemind/workspace/ts-glue-other/notes.md`, 'read')
+      expect(other.ok).toBe(false)
+    })
+    await inside
+    try { rmSync(`${downloads}/report.pdf`) } catch { /* cleanup */ }
+  })
 })

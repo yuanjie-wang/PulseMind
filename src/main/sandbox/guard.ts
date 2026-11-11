@@ -112,6 +112,36 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
   // Everything else under ~/.pulsemind (settings, db, memory, logs, mcp,
   // experiences) stays denied. Both spellings resolve like the workspace's, so
   // a symlinked ancestor or a link escaping the tree still fails the judgment.
+  //
+  // The tmp root ITSELF (2026-11-11) is read-exempt as a whole tree. The
+  // sanctioned subdir list kept growing one entry per dead link — trunc, then
+  // read-cache — and next it was tmp/screenshot: the renderer rewrites every
+  // pasted/attached/MCP-returned image to ~/.pulsemind/tmp/screenshot/<file>
+  // (agent/image-utils.ts) and hands the model that absolute path, so the ocr
+  // tool answered "ocr denied: Path is protected" for the very path the app
+  // had just given it. Rather than add the next subdir as it bites
+  // (html-cards/proc-logs/docx-backups/tool-docs advertise their paths the
+  // same way), the WHOLE tree is read-exempt: everything under tmp/ is
+  // app-transient scratch with no credentials, and baseline (no-session)
+  // callers already treat it as fully writable — buildBaselineDenyRoots never
+  // denied tmp. Reads only: writes stay jailed to the workspace plus the two
+  // sanctioned write subdirs below.
+  const tmpRoot = join(homedir(), '.pulsemind', 'tmp')
+  const tmpResolved = await resolveRealTarget(tmpRoot)
+  const tmpReal = tmpResolved.status === 'resolved' ? tmpResolved.path : null
+  // Browser downloads (2026-11-11, same audit as tmp): agent-origin page
+  // downloads land in ~/.pulsemind/workspace/downloads/<conversationId>/ —
+  // a SIBLING of the conversation's own timestamped workspace dir, and
+  // `browsers.tabs.listDownloads` hands the model those absolute paths so it
+  // can read/ocr/convert what it just downloaded. Under a per-conversation
+  // workspace the path is outside the jail AND under the deny root: another
+  // advertised dead link. Read-exempt like tmp (browser-written app scratch,
+  // baseline never denied it; cross-conversation workspaces stay denied —
+  // isolation between sessions is deliberate, only this app-owned subtree is
+  // advertised). Writes stay jailed.
+  const downloadsRoot = join(homedir(), '.pulsemind', 'workspace', 'downloads')
+  const downloadsResolved = await resolveRealTarget(downloadsRoot)
+  const downloadsReal = downloadsResolved.status === 'resolved' ? downloadsResolved.path : null
   const skillsRoot = join(homedir(), '.pulsemind', 'skills')
   const knowledgeRoot = join(homedir(), '.pulsemind', 'knowledge')
   const knowledgeReal = await resolveRealTarget(knowledgeRoot).then((r) => (r.status === 'resolved' ? r.path : null)).catch(() => null)
@@ -142,6 +172,8 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
     // session: knowledge import UI) already pass via buildBaselineDenyRoots.
     extraReadableRoots: [
       { dir: knowledgeRoot, real: knowledgeReal },
+      { dir: tmpRoot, real: tmpReal },
+      { dir: downloadsRoot, real: downloadsReal },
     ],
   })
 
