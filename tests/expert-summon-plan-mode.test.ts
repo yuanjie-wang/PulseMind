@@ -99,7 +99,7 @@ describe('single-expert @-summon: the conclusion is delivered verbatim', () => {
       expect(answer.contentBlocks).toEqual([{ type: 'text', text: '# 周报\n\n本周完成了 A、B、C。' }])
       // The turn is over (not "streaming") and the request path was never
       // entered — that is the whole point: no second round re-summarizes it.
-      expect(engine.agentStatus).toEqual({ status: 'completed' })
+      expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'unknown' })
       expect(reconciles(engine)).toBe(before)
       // The delivery is consumed: a second loop must not re-append it.
       await engine.continueLoop()
@@ -299,7 +299,7 @@ describe('plan mode: a summons that ends with no plan is re-issued exactly once'
       engine.handleEndTurnResponse(null)
       await tick()
       expect(continueLoop).toHaveBeenCalledTimes(1)
-      expect(engine.agentStatus).toEqual({ status: 'completed' })
+      expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'unknown' })
       expect(engine.turnClock.isActive()).toBe(false)
     } finally {
       continueLoop.mockRestore()

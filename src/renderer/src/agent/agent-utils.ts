@@ -277,6 +277,24 @@ export interface SubAgentResult {
   error?: string
   outputTokens?: number
   subConversationId?: string
+  /** 终态语义（2026-11-12）：status 仍是 'completed' 时，用它区分「模型自己收尾」
+   *  与「输出被长度上限切断的半截话」。故意不新增 'incomplete' 状态——spawn-tool
+   *  有 18 处分支按 status 判定交付/exitCode/isError，翻它们是另一次独立裁决。 */
+  stopReason?: import('../types/agent').TurnStopReason
+}
+
+/** 原始 stop_reason → 终态词。未识别的落 'unknown'：仍是「完成」，只是分类不明，
+ *  行为与此前完全一致——本函数不改变任何分支，只给观测层一个可统计的词。 */
+export function classifyStopReason(raw: string | null): import('../types/agent').TurnStopReason {
+  switch (raw) {
+    case 'end_turn':
+    case 'max_tokens':
+    case 'tool_use':
+    case 'stop_sequence':
+      return raw
+    default:
+      return 'unknown'
+  }
 }
 
 export interface SubAgentHandle {

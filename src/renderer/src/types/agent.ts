@@ -4,6 +4,12 @@ export type { ContentBlock, TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBl
 
 // --- Agent Loop Status ---
 
+/** 回合是怎么收尾的（2026-11-12）：纯观测字段，不参与任何分支判定。
+ *  adapter 的原始 stop_reason 经 classifyStopReason 收敛到这几个词；未识别的
+ *  （pause_turn / refusal / null）落 'unknown' —— 归一化本身是另一件事，这里
+ *  只做分类，不做纠偏：把 pause_turn 当完成还是当续跑，得单独裁。 */
+export type TurnStopReason = 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' | 'unknown'
+
 export type AgentStatus =
   | { status: 'idle' }
   | { status: 'streaming' }
@@ -16,7 +22,7 @@ export type AgentStatus =
   | { status: 'awaiting_approval'; tools: ToolUseBlock[] }
   | { status: 'awaiting_user_input'; tools: ToolUseBlock[] }
   | { status: 'executing'; toolUseId: string }
-  | { status: 'completed' }
+  | { status: 'completed'; stopReason?: TurnStopReason }
   | { status: 'error'; error: string }
   | { status: 'awaiting_extension'; currentCount: number; limit: number }
   | { status: 'awaiting_continue'; subAgentCount?: number }
@@ -39,6 +45,11 @@ export interface AgentMessage {
   inputTokens?: number
   outputTokens?: number
   promptCacheHitTokens?: number
+  /** 本回合的收尾方式（2026-11-12，runtime mark——像 memExtracted 一样只在
+   *  内存里活）：max_tokens = 输出被长度上限切断、可能半截话，与 end_turn
+   *  （模型自己停的）必须能分开。messages 表还没有这一列，落库要连带 DDL、
+   *  老库 ALTER 与 conversation.db 四处读写，另案处理。 */
+  stopReason?: TurnStopReason
   liked?: boolean
   favorited?: boolean
   autoSummary?: boolean

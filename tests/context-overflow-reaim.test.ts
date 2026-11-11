@@ -143,7 +143,7 @@ describe('a numbered provider overflow re-aims the session window', () => {
     expect(engine.contextOverflowLimit).toBeNull()
     expect(engine.opts.contextLength).toBe(32_768)
     expect(phase).toBe('ok')
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('a numberless rejection keeps the flag-only semantics — no silent shrink', async () => {

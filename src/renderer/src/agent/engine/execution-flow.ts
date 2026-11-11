@@ -7,7 +7,7 @@ import { getHost } from '../host'
 import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
-import { generateMsgId } from '../agent-utils'
+import { generateMsgId, classifyStopReason } from '../agent-utils'
 import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent'
 import { buildCommandFromSkillInput, detectShellFileWrite, shellFileWriteRejection } from '../command-builder'
 import { installTypeOf } from '../executors/install-tool'
@@ -1015,28 +1015,35 @@ export class ExecutionFlow {
     // the user (held approval / ask_user / loop-limit prompt / manual pause)
     // excluded. The clock is the accumulator that knows the difference; the
     // per-round times stay on the intermediate messages.
-    if (this.engine.turnClock.isActive()) {
-      const totalMs = Math.round(this.engine.turnClock.stop())
-      // The turn's answer is the LAST ASSISTANT message — not necessarily the
-      // last message. A plan wave's delivery, a tool result and a resume notice
-      // all append a `role: 'user'` entry right after the round that produced
-      // them, so reading `messages[len - 1]` and requiring
-      // `role === 'assistant'` skipped the stamp silently on every
-      // plan-dispatched turn (user report 2026-11-06: a 13-sub-agent review read
-      // back as its final round's 11s). Search backwards instead of trusting the
-      // tail.
-      for (let i = this.engine.messages.length - 1; i >= 0; i--) {
-        const msg = this.engine.messages[i]
-        if (msg.role !== 'assistant') continue
-        msg.processingMs = totalMs
-        break
-      }
+    // 终态词（2026-11-12）：同一次回溯顺手盖上。此前 max_tokens 截断与
+    // 「模型自己停的」在数据面完全同形——两处都写 completed，遥测层看不到
+    // 早停健康度，事后也无从统计截断率。
+    const stop = classifyStopReason(stopReason)
+    const totalMs = this.engine.turnClock.isActive() ? Math.round(this.engine.turnClock.stop()) : null
+    // The turn's answer is the LAST ASSISTANT message — not necessarily the
+    // last message. A plan wave's delivery, a tool result and a resume notice
+    // all append a `role: 'user'` entry right after the round that produced
+    // them, so reading `messages[len - 1]` and requiring
+    // `role === 'assistant'` skipped the stamp silently on every
+    // plan-dispatched turn (user report 2026-11-06: a 13-sub-agent review read
+    // back as its final round's 11s). Search backwards instead of trusting the
+    // tail.
+    for (let i = this.engine.messages.length - 1; i >= 0; i--) {
+      const msg = this.engine.messages[i]
+      if (msg.role !== 'assistant') continue
+      if (totalMs !== null) msg.processingMs = totalMs
+      msg.stopReason = stop
+      break
     }
-    this.engine.agentStatus = { status: 'completed' }
+    // 唯一需要能在日志里数出来的形态：它不是「模型选择收尾」，是输出预算耗尽。
+    if (stop === 'max_tokens') {
+      console.warn(`[AgentEngine] turn closed by max_tokens — output truncated (msgs=${this.engine.messages.length}, toolRounds=${this.engine.toolRoundsThisTurn})`)
+    }
+    this.engine.agentStatus = { status: 'completed', stopReason: stop }
     try {
       this.engine.notify()
-      safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
-      safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed' } }, 'afterSession')
+      safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed', stopReason: stop } }, 'afterLlmCall')
+      safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed', stopReason: stop } }, 'afterSession')
       // Turn-end memory salvage (PLAN-memory-extraction-dedup): the loop itself
       // no longer spends LLM calls on memory; old tool pairs at compaction risk
       // are mined HERE, once, capped. Fire-and-forget.

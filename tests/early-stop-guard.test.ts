@@ -192,7 +192,7 @@ describe('early-stop guard: fires on text-only end_turn after tool work without 
 
     expect(continueCalls).toBe(2)
     expect(statuses).toContain('retrying')
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     // One nudge consumed; no progress (second round had no tools) → no second.
     expect(engine.earlyStopContinues).toBe(1)
     expect(engine.earlyStopNudgesTotal).toBe(1)
@@ -210,7 +210,7 @@ describe('early-stop guard: fires on text-only end_turn after tool work without 
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1) // only the tool round's own continuation
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     const last = engine.messages[engine.messages.length - 1]
     const text = last.contentBlocks.find((b) => b.type === 'text') as { text: string }
     expect(text.text).not.toContain(TASK_DONE_SENTINEL)
@@ -232,7 +232,7 @@ describe('early-stop guard: fires on text-only end_turn after tool work without 
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     // The emptied text block is dropped whole — no blank bubble in history.
     const last = engine.messages[engine.messages.length - 1]
     expect(last.contentBlocks.some((b) => b.type === 'text')).toBe(false)
@@ -250,7 +250,7 @@ describe('early-stop guard: gates', () => {
 
     expect(continueCalls).toBe(1) // the tool round's own continuation only
     expect(engine.messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     expect(engine.pendingEarlyStopNudge).toBe(false)
   })
 
@@ -288,7 +288,7 @@ describe('early-stop guard: gates', () => {
 
     expect(continueCalls).toBe(0)
     expect(engine.toolRoundsThisTurn).toBe(0)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('a productive continuation re-arms the guard — the next early stop nudges again', async () => {
@@ -303,7 +303,7 @@ describe('early-stop guard: gates', () => {
     expect(continueCalls).toBe(4)
     expect(engine.earlyStopNudgesTotal).toBe(2)
     expect(engine.earlyStopContinues).toBe(1) // last nudge was unproductive... closed by sentinel instead
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('respects the per-turn hard cap', async () => {
@@ -317,7 +317,7 @@ describe('early-stop guard: gates', () => {
     const rounds = [earlyStopStream()]
     await drive(host, engine, rounds)
 
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     expect(engine.earlyStopNudgesTotal).toBe(10)
   })
 
@@ -335,7 +335,7 @@ describe('early-stop guard: gates', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'max_tokens' })
     expect(engine.pendingEarlyStopNudge).toBe(false)
   })
 })

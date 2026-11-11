@@ -138,7 +138,7 @@ describe('thinking-only rounds are re-issued once, then end loudly', () => {
     expect(continueCalls).toBe(1)
     expect(statuses).toContain('retrying')
     // The turn CLOSED normally after the productive retry — not the error path.
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
     expect(engine.thinkingOnlyRetries).toBe(0)
     // Both rounds live in the transcript: the degenerate thinking-only message
     // AND the recovered text round after it.
@@ -222,7 +222,7 @@ describe('thinking-only rounds are re-issued once, then end loudly', () => {
     // no re-issue, turn closes normally. The thinking-only branch must not
     // intercept it.
     expect(continueCalls).toBe(0)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'max_tokens' })
     expect(engine.thinkingOnlyRetries).toBe(0)
   })
 

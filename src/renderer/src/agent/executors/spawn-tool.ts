@@ -696,6 +696,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
           envelopeBudget
         )
         t.output = `子代理已完成. ${subText}`
+        if (result.stopReason === 'max_tokens') t.output += '\n\n（输出被长度上限截断，结果可能不完整）'
       } else {
         const errorDetail = result.status !== 'completed'
           ? `\n\n### Sub-agent Status: ${result.status}\n`
@@ -705,6 +706,12 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         let summary = result.status === 'completed'
           ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
           : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
+        // 截断不撒谎（2026-11-12）：status 仍是 completed（路由/exitCode/isError
+        // 一律不变），但输出被长度上限切断时，父模型必须读到「这可能是半截话」——
+        // 否则它会把缺失的结论当成「没什么可报」。
+        if (result.status === 'completed' && result.stopReason === 'max_tokens') {
+          summary += '\n\n⚠️ **Truncated:** this sub-agent hit the output length limit. The text above may stop mid-thought — treat missing conclusions as MISSING, not as "nothing to report".'
+        }
         // Close the plan loop in the model's face: the result names the node
         // and what happens to it next. Mode-gated (PLAN-plan-scheduler): a
         // delegated plan settles on delivery — telling the model to call
@@ -745,6 +752,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
           : `子代理${result.status === 'aborted' ? '已被停止' : '失败'}`
             + (result.error ? `：${result.error}` : '')
             + (subText ? `\n\n${subText}` : '')
+        if (result.status === 'completed' && result.stopReason === 'max_tokens') t.output += '\n\n（输出被长度上限截断，结果可能不完整）'
         if (splitNote) t.output += '\n\n（剩余工作已拆分回父计划）'
       }
       // Ledger the outcome (re-dispatch gate): free-form spawns only — a

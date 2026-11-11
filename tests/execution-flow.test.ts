@@ -725,6 +725,25 @@ describe('ExecutionFlow max_tokens 与回合收尾', () => {
     expect(raw.handleEndTurnResponse).toHaveBeenCalledWith('max_tokens')
   })
 
+  it('max_tokens 收尾 → 终态词落 status 与最后一条 assistant（不再与 end_turn 同形）', () => {
+    const { raw, flow } = makeCore()
+    const last = msg([toolUse('x', 'read')])
+    raw.messages.push(last)
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    flow.handleEndTurnResponse('max_tokens')
+    expect(raw.agentStatus).toMatchObject({ status: 'completed', stopReason: 'max_tokens' })
+    expect(last.stopReason).toBe('max_tokens')
+    expect(consoleWarn).toHaveBeenCalled()
+    consoleWarn.mockRestore()
+  })
+
+  it('未识别的 stop_reason → unknown，结算仍是 completed（行为不变）', () => {
+    const { raw, flow } = makeCore()
+    flow.handleEndTurnResponse('pause_turn')
+    expect(raw.agentStatus).toMatchObject({ status: 'completed', stopReason: 'unknown' })
+    expect(raw.resolveCompletionIfSpawned).toHaveBeenCalledWith('completed')
+  })
+
   it('max_tokens 带截断工具 → 合成结果 + 打点 + 钩子 + 续环', async () => {
     const afterLlmCall = vi.fn()
     const { raw, flow, calls } = makeCore({ opts: { hooks: { afterLlmCall } } })
@@ -760,7 +779,8 @@ describe('ExecutionFlow max_tokens 与回合收尾', () => {
     raw.messages.push(last)
     flow.handleEndTurnResponse('end_turn')
     expect(last.processingMs).toBe(1234)
-    expect(raw.agentStatus.status).toBe('completed')
+    expect(raw.agentStatus).toMatchObject({ status: 'completed', stopReason: 'end_turn' })
+    expect(last.stopReason).toBe('end_turn')
     expect(afterLlmCall).toHaveBeenCalled()
     expect(afterSession).toHaveBeenCalled()
     expect(raw.resolveCompletionIfSpawned).toHaveBeenCalledWith('completed')

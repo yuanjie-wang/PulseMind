@@ -274,7 +274,7 @@ describe('steer: redirect the live stream (the 方案 A core)', () => {
     expect(engine.thinkingOnlyRetries).toBe(0)
     expect(continueCalls).toBe(1)
     // The turn closed normally through the steered round.
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('drops unsigned thinking and tool_use, keeps text and COMPLETE-signature thinking', async () => {
@@ -436,7 +436,7 @@ describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
     // The stale DONE must not have walked the thinking-only branch into a
     // second concurrent loop.
     expect(calls.n).toBe(1)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('a late block_start chunk of the dead request cannot repopulate the canvas', async () => {
@@ -462,7 +462,7 @@ describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
     expect(engine.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
     expect(engine.messages[3].contentBlocks.some((b) => b.type === 'tool_use')).toBe(false)
     expect(calls.n).toBe(1)
-    expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   // review_20261007 中1: the dead-letter guard dropped the ERROR's deferred

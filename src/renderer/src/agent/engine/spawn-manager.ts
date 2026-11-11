@@ -280,7 +280,11 @@ export class SpawnManager {
     const error = status === 'error' && this.engine.agentStatus.status === 'error'
       ? this.engine.agentStatus.error
       : undefined
-    this.engine.resolveCompletion({ messages: this.engine.messages, status, outputTokens, subConversationId: convId ?? undefined, error })
+    // 终态语义随结果一起交给父代理（2026-11-12）：被 max_tokens 截断的子代理
+    // 结算仍是 'completed'（spawn-tool 18 处分支一律不动），但信封与卡片据此
+    // 标注「可能不完整」。
+    const stopReason = this.engine.agentStatus.status === 'completed' ? this.engine.agentStatus.stopReason : undefined
+    this.engine.resolveCompletion({ messages: this.engine.messages, status, outputTokens, subConversationId: convId ?? undefined, error, stopReason })
     this.engine.resolveCompletion = undefined
     // completionPromise deliberately stays: a settled promise is inert, and an
     // expert that settles while spawnSubAgent is still on its synchronous path
