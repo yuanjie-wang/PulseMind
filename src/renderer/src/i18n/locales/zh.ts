@@ -331,6 +331,7 @@ const zh = {
       initDesc: '分析当前工作区，生成项目指令文件 .pulsemind/AGENTS.md',
       compactDesc: '压缩当前对话的上下文',
       initTitle: '初始化项目指令',
+      initGrant: '已临时允许编辑 .pulsemind/AGENTS.md（{{minutes}} 分钟内有效，仅限本次会话）',
       newDesc: '新建同类会话（对话 / 项目 / 浏览器任务）；后面可直接附上第一条消息',
       newUnavailable: '独立窗口中不能新建会话，请回到主窗口',
       newLimit: '会话数已达上限（{{max}}），请先删除一些会话或开启自动清理',

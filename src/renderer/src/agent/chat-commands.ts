@@ -58,6 +58,15 @@ export function commandArgument(text: string, name: string): string {
     .trim()
 }
 
+/** How long `/init` may write .pulsemind/AGENTS.md without the per-write
+ *  approval hold (user 2026-11-11: 「在init时…给予一定的时间范围，而不是每次都要
+ *  授权」). One survey pass issues several write/edit calls in a row; ten
+ *  minutes covers a slow survey without becoming a standing permission — the
+ *  file returns to the protected-path hold on the next engine or after this
+ *  window. The grant is scoped to .pulsemind/AGENTS.md only (root AGENTS.md
+ *  stays held) and always-ask still asks. */
+export const INIT_PROJECT_INSTRUCTIONS_GRANT_MS = 10 * 60_000
+
 /** The model-facing turn text `/init` becomes. English, like every other
  *  canned prompt in the engine (system-prompt-builder conventions). The file
  *  contract it teaches mirrors buildProjectInstructionsSection exactly: the

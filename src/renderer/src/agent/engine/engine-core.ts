@@ -143,6 +143,11 @@ export interface EngineCore {
    *  pinned prompt override landing in spawnSystemPrompt) — the plan
    *  scheduler's applicability gate rides on it, as does ask_user's fail-fast. */
   isSpawnedSubAgent: boolean
+  /** Epoch-ms deadline of the /init write window for .pulsemind/AGENTS.md
+   *  (0 / past = no window). Scoped exactly to that one file: root AGENTS.md
+   *  stays held, the write tier's own approval still wins (always-ask), and
+   *  a spawned sub-agent's flat rejection is untouched. */
+  projectInstructionsGrantUntil: number
   onSpawnProgress?: (summary: string) => void
   resolveCompletion?: (result: SubAgentResult) => void
   completionPromise?: Promise<SubAgentResult>

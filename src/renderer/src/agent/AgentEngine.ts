@@ -229,6 +229,11 @@ export interface AgentEngineCallbacks {
 
 // ── AgentEngine ───────────────────────────────────────────────────────
 
+/** Upper bound on the /init write window. A grant is a courtesy for one
+ *  survey-and-write flow, not a permission level — a caller (or a future
+ *  bug) cannot ask for a window that outlives the task. */
+export const PROJECT_INSTRUCTIONS_GRANT_MAX_MS = 60 * 60_000
+
 // `implements EngineCore` keeps the class honest against the strategy
 // modules' declared dependency surface (engine/engine-core.ts).
 export class AgentEngine implements EngineCore {
@@ -427,6 +432,10 @@ export class AgentEngine implements EngineCore {
    *  runtime with no user channel (respondToTool can never reach it), which is
    *  what the ask_user park gate must actually test. */
   isSpawnedSubAgent = false
+  /** Deadline (epoch ms) of the /init write window for .pulsemind/AGENTS.md;
+   *  0 = none. Set only through grantProjectInstructionsWrite, read by
+   *  ExecutionFlow.partitionWrites — see the EngineCore declaration. */
+  projectInstructionsGrantUntil = 0
   /** @internal Conversation-list title of a spawned sub-agent. */
   spawnTitle?: string
   private spawnSystemPromptAppendix?: string
@@ -1806,6 +1815,17 @@ export class AgentEngine implements EngineCore {
   private executionFlow = new ExecutionFlow(this)
   approveTool = async (toolUseId: string, alwaysAllow?: boolean): Promise<void> => this.executionFlow.approveTool(toolUseId, alwaysAllow)
   rejectTool = (toolUseId: string): void => this.executionFlow.rejectTool(toolUseId)
+  /** Open a time-bounded window in which writes to .pulsemind/AGENTS.md run
+   *  without the protected-path hold — the /init flow's repeated approvals
+   *  (user 2026-11-11: 「在init时…给予一定的时间范围，而不是每次都要授权」).
+   *  Scope is deliberately narrow: only that file (root AGENTS.md stays held),
+   *  only for this engine (dies with the session), and the write tier's own
+   *  approval still wins inside the window (always-ask keeps asking). The TTL
+   *  is clamped so a caller can never turn this into standing permission. */
+  grantProjectInstructionsWrite = (ttlMs: number): void => {
+    const ttl = Number.isFinite(ttlMs) ? Math.min(Math.max(ttlMs, 0), PROJECT_INSTRUCTIONS_GRANT_MAX_MS) : 0
+    this.projectInstructionsGrantUntil = ttl > 0 ? Date.now() + ttl : 0
+  }
   killTool = (toolUseId: string): void => this.executionFlow.killTool(toolUseId)
   /** 运行中「转入后台」（PLAN-background-tasks A）：把一个在飞的前台 exec
    *  迁到 pid 键控后台通道。两个派发点都在前台注册表里登记——先查自动路径

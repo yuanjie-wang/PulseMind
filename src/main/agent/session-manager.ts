@@ -1236,6 +1236,10 @@ export class AgentSessionManagerImpl {
     switch (method) {
       case 'approveTool': return engine.approveTool(args[0] as string, args[1] as boolean | undefined)
       case 'rejectTool': return engine.rejectTool(args[0] as string)
+      // /init 的限时写入窗（2026-11-11）：窗口只放松 .pulsemind/AGENTS.md 的
+      // 保护路径扣留，root AGENTS.md / 子代理拒收 / always-ask 三处不动。
+      // 只能从渲染端经这条白名单进入（引擎实例随会话生灭）。
+      case 'grantProjectInstructionsWrite': return engine.grantProjectInstructionsWrite(args[0] as number)
       case 'killTool': return engine.killTool(args[0] as string)
       case 'respondToTool': return engine.respondToTool(args[0] as string, args[1] as string)
       case 'extendLoop': return engine.extendLoop()

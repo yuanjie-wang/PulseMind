@@ -522,6 +522,22 @@ export function isProjectInstructionsPath(filePath: string, workspaceDir?: strin
   return target === norm(projectAgentsPath(workspaceDir)) || target === norm(rootAgentsPath(workspaceDir))
 }
 
+/**
+ * Whether a path names ONLY PulseMind's own instructions file
+ * (.pulsemind/AGENTS.md) — the narrower predicate a time-bounded write grant
+ * is scoped to. Root AGENTS.md never matches: /init reads it as shared
+ * context and its bytes are other tools' law, so a grant issued by /init
+ * must not leak onto it. Same resolution/normalization as
+ * isProjectInstructionsPath (executor spelling, Windows separators).
+ */
+export function isProjectAgentsPath(filePath: string, workspaceDir?: string): boolean {
+  if (!workspaceDir) return false
+  const raw = filePath.trim()
+  if (!raw) return false
+  const norm = (p: string): string => p.replace(/\\/g, '/')
+  return norm(resolveToolFilePath(raw, workspaceDir)) === norm(projectAgentsPath(workspaceDir))
+}
+
 // ── repo-root discovery (the root AGENTS.md fallback's third candidate) ──
 
 /** Ancestor levels the `.git` walk visits before giving up. High enough for

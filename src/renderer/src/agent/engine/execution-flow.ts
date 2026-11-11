@@ -18,7 +18,7 @@ import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { STAGE_FINISH_TOOL } from '../../../../shared/workflow/finish-tool'
 import { backgroundStartNote } from '../../../../shared/background-notice'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
-import { isProjectInstructionsPath } from '../system-prompt-builder'
+import { isProjectAgentsPath, isProjectInstructionsPath } from '../system-prompt-builder'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { commandAllowlistKey, commandMatchesAllowlist } from '../../../../shared/sandbox/command-allowlist'
 import { registerForegroundExec, unregisterForegroundExec } from '../executors/foreground-exec'
@@ -535,11 +535,24 @@ export class ExecutionFlow {
    * Protected = the project instructions file (.pulsemind/AGENTS.md): the
    * state block teaches 「propose the change first」 — that proposal IS an
    * approval hold, now at every level including 'auto' (2026-10-27).
+   *
+   * The /init window (2026-11-11): /init surveys the workspace and writes
+   * .pulsemind/AGENTS.md in several passes, so holding every pass turned one
+   * command into a click-through. When `projectInstructionsGrantUntil` is in
+   * the future, a call whose protected targets are ALL the .pulsemind file
+   * goes to `auto` instead. Deliberately NOT relaxed, in order of the checks:
+   *  - a spawned sub-agent still gets the flat rejection (first branch);
+   *  - a held write tier still wins (always-ask keeps asking — the window is
+   *    a release from the extra protected-path hold, not a tier override);
+   *  - any call touching root AGENTS.md stays held (`every` fails for it):
+   *    /init only ever writes the .pulsemind file, so the window must not
+   *    reach the shared cross-tool instructions.
    */
   private partitionWrites(tools: ToolUseBlock[]): { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } {
     const out: { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } = { auto: [], held: [], denied: [] }
     const wd = this.engine.opts.workspaceDir
     const tierHeld = this.heldTiers().has('write')
+    const grantActive = this.engine.projectInstructionsGrantUntil > Date.now()
     for (const t of tools) {
       // editToolTargetPaths names EVERY path one call writes — including each
       // `diff --git` section of an atomic multi-file edit — so a protected
@@ -547,6 +560,7 @@ export class ExecutionFlow {
       const targets = editToolTargetPaths(t.input)
       if (wd && targets.some((p) => isProjectInstructionsPath(p, wd))) {
         if (this.engine.isSpawnedSubAgent) out.denied.push(t)
+        else if (grantActive && !tierHeld && targets.every((p) => !isProjectInstructionsPath(p, wd) || isProjectAgentsPath(p, wd))) out.auto.push(t)
         else out.held.push(t)
         continue
       }

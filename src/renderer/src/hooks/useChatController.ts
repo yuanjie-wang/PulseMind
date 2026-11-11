@@ -12,7 +12,7 @@ import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
 import { extractRoutineFromConversation } from '../components/routine/routine-extract'
 import { parseExpertMentions, parseKnowledgeBaseMention, parseSkillMentions, type SummonedExpert } from '../../../shared/expert-context'
-import { matchChatCommand, commandArgument, buildInitPrompt } from '../agent/chat-commands'
+import { matchChatCommand, commandArgument, buildInitPrompt, INIT_PROJECT_INSTRUCTIONS_GRANT_MS } from '../agent/chat-commands'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
 import { shouldDrainOnStatusChange } from '../utils/staged-drain'
@@ -513,6 +513,17 @@ export function useChatController(options: UseChatControllerOptions) {
       // 报出的「输入消息无响应」。物化分支与已激活路径在此都是 no-op。
       if (engine.activeEngineIdRef.current !== convId) engine.activateEngine(convId)
       const engineHandle = engine.getOrCreateEngine(convId)
+      // The /init write window (user 2026-11-11): open it BEFORE the turn
+      // starts, or the first write would still raise an approval card. Scoped
+      // to .pulsemind/AGENTS.md and time-bounded — see chat-commands. A grant
+      // failure must not block the turn: the protected-path hold is just the
+      // old behavior, one approval per write.
+      if (initCommand?.name === 'init') {
+        try {
+          await engineHandle.grantProjectInstructionsWrite(INIT_PROJECT_INSTRUCTIONS_GRANT_MS)
+          message.info(t('chatView.command.initGrant', { minutes: INIT_PROJECT_INSTRUCTIONS_GRANT_MS / 60_000 }))
+        } catch { /* old per-write approval fallback */ }
+      }
       // 3rd-user-message refinement latch: the send that makes the count hit
       // 3 marks the conversation; the completion effect re-titles it from the
       // full thread (the first-message title only ever saw message #1).

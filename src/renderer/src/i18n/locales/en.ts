@@ -339,6 +339,7 @@ const en: TranslationDict = {
       initDesc: 'Survey this workspace and write the project instructions file .pulsemind/AGENTS.md',
       compactDesc: "Compact this conversation's context",
       initTitle: 'Initialize project instructions',
+      initGrant: 'Temporary permission granted to edit .pulsemind/AGENTS.md (valid for {{minutes}} min, this session only)',
       newDesc: 'New conversation of the same kind (chat / project / browser task); text after it becomes the first message',
       newUnavailable: 'New conversations can only be started from the main window',
       newLimit: 'Conversation limit reached ({{max}}) — delete some or turn on auto-cleanup',
