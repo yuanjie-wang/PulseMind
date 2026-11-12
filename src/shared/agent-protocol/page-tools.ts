@@ -20,6 +20,7 @@ export const PAGE_TOOL_NAMES = [
   'page_click',
   'page_input',
   'page_select',
+  'page_navigate',
   'page_back',
   'page_execute_js',
 ] as const

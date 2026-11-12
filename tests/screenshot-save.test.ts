@@ -224,6 +224,29 @@ describe('screenshot-save destinations — POSIX', () => {
     expect(at('~/.pulsemind-notes/x.png').dir).toBe('/Users/me/.pulsemind-notes')
     expect(at('~/.pulsemind/../x.png')).toEqual({ dir: '/Users/me', name: 'x.png' })
   })
+
+  it('allowedRoots wins over protectedRoots: the agent workspace lives inside the data dir (2026-11-13)', () => {
+    // The sandbox requires task files in the workspace, and the workspace is
+    // ~/.pulsemind/workspace — the two rules used to collide head-on.
+    const at = (save: string) =>
+      resolveScreenshotSave(save, {
+        dirs: MAC,
+        now: AT,
+        platform: 'darwin',
+        protectedRoots: ['/Users/me/.pulsemind'],
+        allowedRoots: ['/Users/me/.pulsemind/workspace/conversations/conv_1'],
+      })
+    // Inside the allowed workspace subtree → lands exactly where asked.
+    expect(at('/Users/me/.pulsemind/workspace/conversations/conv_1/tmp/x.png')).toEqual({
+      dir: '/Users/me/.pulsemind/workspace/conversations/conv_1/tmp',
+      name: 'x.png',
+    })
+    // Data dir but OUTSIDE the allowed subtree → still refused.
+    expect(() => at('~/.pulsemind/shot.png')).toThrow(/应用数据目录/)
+    expect(() => at('~/.pulsemind/workspace/conversations/conv_2/x.png')).toThrow(/应用数据目录/)
+    // Sibling of the allowed root is refused too (lexical, like the deny).
+    expect(() => at('/Users/me/.pulsemind/workspace/conversations/conv_1x/x.png')).toThrow(/应用数据目录/)
+  })
 })
 
 describe('screenshot-save destinations — Windows', () => {

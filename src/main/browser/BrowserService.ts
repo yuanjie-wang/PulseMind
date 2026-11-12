@@ -48,7 +48,8 @@ import { ManagedBackend } from './backends/ManagedBackend'
 import { AppViewBackend } from './backends/AppViewBackend'
 import { appViewDock } from './app-view-dock'
 import { readDevToolsPort } from './cdp-port'
-import { runPlaywrightOp } from './PlaywrightCommands'
+import { runPlaywrightOp, runTabWait } from './PlaywrightCommands'
+import { pulsemindReadText } from '../../shared/browser-client/read-text'
 import { takeDomSnapshot } from './snapshot-refs'
 import { browserFavoriteStore } from '../storage/browser-favorite-store'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
@@ -71,9 +72,13 @@ const MUTATING_METHODS = new Set([
   'setActiveBackend',
   'claimTab',
   'mouseClick',
+  'mouseDown',
+  'mouseUp',
   'mouseDrag',
   'keyboardPress',
   'keyboardType',
+  'keyboardDown',
+  'keyboardUp',
   'clipboardRead',
   'clipboardWrite',
 ])
@@ -475,6 +480,10 @@ export class BrowserService {
           const backend = this.backendFor(entry.backendId)
           if (!backend.claimTab) return browserError('UNSUPPORTED_BACKEND', '当前后端没有应用窗格')
           await backend.claimTab(entry.id)
+          // 认领即落前台：返回的 Tab 句柄指向的视图必须真的有视口，
+          // 否则第一次交互就是 0×0 超时（2026-11-13 实测）。
+          this.paneActiveTab.set(scopeId, entry.id)
+          this.syncPane()
           return browserOk(await this.tabInfo(entry))
         }
         case 'listTabs':
@@ -488,7 +497,10 @@ export class BrowserService {
             const added = browserFavoriteStore.add(cmd.url, cmd.title)
             return browserOk({ url: added.url, title: added.title ?? undefined, added: added.created ? true : 'already' })
           } catch (err) {
-            return browserError('FAVORITE_LIMIT', err instanceof Error ? err.message : String(err))
+            const message = err instanceof Error ? err.message : String(err)
+            // 只有真的存满才是 FAVORITE_LIMIT——类型/规范化错误归 INVALID_PARAMS，
+            // 别把「参数写错」标成「收藏已满」（2026-11-13 实测误导排查方向）。
+            return browserError(/收藏已满/.test(message) ? 'FAVORITE_LIMIT' : 'INVALID_PARAMS', message)
           }
         case 'removeFavorite':
           return browserOk({ removed: browserFavoriteStore.remove(cmd.url) })
@@ -501,6 +513,10 @@ export class BrowserService {
           const downloadsDir = backendId === 'managed' ? join(WORKSPACE_DIR, 'downloads', scopeId) : undefined
           const created = await backend.newTab({ url: cmd.url, tabId: id, downloadsDir, origin: 'agent', scopeId })
           this.tabs.set(id, { id, backendId, scopeId, origin: 'agent', createdAt: new Date().toISOString(), tab: created })
+          // agent 新建的标签页落前台（2026-11-13 实测：不切前台就是 0×0 视口，
+          // 第一次交互必然可见性超时）：open() 的复用路径由 prepareInteraction
+          // 的 navigate 激活兜住，新建路径在这里直接落。
+          this.paneActiveTab.set(scopeId, id)
           this.syncPane()
           return browserOk(await this.tabInfo(this.tabs.get(id)!))
         }
@@ -517,7 +533,11 @@ export class BrowserService {
       // Tab-carrying commands from here on; the `in` guard narrows the union.
       if (!('tabId' in cmd)) return browserError('UNKNOWN_METHOD', `命令缺少 tabId：${(cmd as { method: string }).method}`)
       const entry = this.resolveTab(cmd.tabId, scopeId)
-      await this.ensureLivePage(entry)
+      // close 对 app-view 是纯 Electron 侧操作（dock detach + webContents.close），
+      // 不需要活 CDP 句柄——跳过探活，CDP 空闲重连的竞态不再把关闭卡成
+      // 「首次报错、重试才成功」（2026-11-13 四轮实测的稳定性抖动就在这层）。
+      if (cmd.method !== 'close') await this.ensureLivePage(entry)
+      await this.prepareInteraction(entry, scopeId, cmd)
       const page = entry.tab.page
       switch (cmd.method) {
         case 'getState':
@@ -590,6 +610,10 @@ export class BrowserService {
             const dest = resolveScreenshotSave(cmd.save, {
               dirs,
               protectedRoots: [DATA_DIR],
+              // 工作区在数据目录里（~/.pulsemind/workspace）而沙箱又要求任务
+              // 文件落工作区——allowedRoots 放行工作区子树，其余数据目录照旧
+              // 拒绝（2026-11-13 实测两条规则正面相撞）。
+              allowedRoots: [getConversationWorkspaceDir(scopeId) ?? WORKSPACE_DIR],
             })
             try {
               await mkdir(dest.dir, { recursive: true })
@@ -603,6 +627,13 @@ export class BrowserService {
         }
         case 'evaluate':
           return browserOk(await page.evaluate(cmd.expression))
+        case 'readText':
+          // pulsemindReadText 自包含（无 import/闭包），整体序列化进页面跑。
+          return browserOk(
+            await page.evaluate(pulsemindReadText, { selector: cmd.selector, budget: cmd.budget, offset: cmd.offset }),
+          )
+        case 'waitFor':
+          return browserOk(await runTabWait(page, cmd))
         case 'playwright': {
           // setInputFiles uploads local files into a page — jail them to the
           // conversation's workspace so a page can't exfiltrate arbitrary
@@ -645,6 +676,12 @@ export class BrowserService {
         case 'mouseMove':
           await page.mouse.move(cmd.x, cmd.y)
           return browserOk()
+        case 'mouseDown':
+          await page.mouse.down({ button: cmd.button })
+          return browserOk()
+        case 'mouseUp':
+          await page.mouse.up({ button: cmd.button })
+          return browserOk()
         case 'mouseWheel':
           await page.mouse.wheel(cmd.deltaX, cmd.deltaY)
           return browserOk()
@@ -661,6 +698,12 @@ export class BrowserService {
           return browserOk()
         case 'keyboardType':
           await page.keyboard.type(cmd.text, { delay: cmd.delayMs })
+          return browserOk()
+        case 'keyboardDown':
+          await page.keyboard.down(cmd.key)
+          return browserOk()
+        case 'keyboardUp':
+          await page.keyboard.up(cmd.key)
           return browserOk()
         default:
           return browserError('UNKNOWN_METHOD', `未知命令：${(cmd as { method: string }).method}`)
@@ -1029,6 +1072,74 @@ export class BrowserService {
       .catch(() => false)
     if (alive) return
     entry.tab = await backend.refreshTab(entry.id)
+  }
+
+  /** 观察与交互都会碰页面几何的命令：把这些标签页切到窗格前台再执行。 */
+  private static readonly FRONT_COMMANDS = new Set([
+    'snapshot',
+    'readText',
+    'waitFor',
+    'playwright',
+    'screenshot',
+    'navigate',
+    'back',
+    'forward',
+    'reload',
+    'mouseClick',
+    'mouseMove',
+    'mouseWheel',
+    'mouseDown',
+    'mouseUp',
+    'mouseDrag',
+    'keyboardPress',
+    'keyboardType',
+    'keyboardDown',
+    'keyboardUp',
+  ])
+  /** 其中真正依赖可见视口的（可见性检查/截图/真实输入坐标）。waitFor 的
+   *  selector 形态依赖（等元素可见），url/js/loadState 形态不依赖。 */
+  private static readonly VIEWPORT_COMMANDS = new Set([
+    'playwright',
+    'screenshot',
+    'waitFor',
+    'mouseClick',
+    'mouseMove',
+    'mouseWheel',
+    'mouseDown',
+    'mouseUp',
+    'mouseDrag',
+    'keyboardPress',
+    'keyboardType',
+    'keyboardDown',
+    'keyboardUp',
+  ])
+
+  /** 后台标签页 0×0（2026-11-13 四轮实测的阻断级问题）：dock 把非活跃视图
+   *  压成 0×0（zero-size 不绘制），innerWidth/innerHeight 与一切元素矩形
+   *  归零——可见性检查必然超时，而报错只说 Timeout，看不出这层原因。所以
+   *  观察/交互命令先把该标签页切到窗格前台（激活即有视口）；纯信息命令
+   *  （getState/evaluate/close/clipboard/list 类）不抢前台——evaluate 是
+   *  模型探测「哪个标签页有视口」的通道，保持廉价。折叠兜底：窗格不在
+   *  浏览器视图时连活跃视图也是 0×0——视口依赖命令快速失败并说明原因，
+   *  不让模型拿 8s 超时瞎猜选择器。 */
+  private async prepareInteraction(entry: ServiceTab, scopeId: string, cmd: BrowserCommand): Promise<void> {
+    if (entry.backendId !== 'app-view') return
+    if (!BrowserService.FRONT_COMMANDS.has(cmd.method)) return
+    this.paneActiveTab.set(scopeId, entry.id)
+    this.syncPane()
+    const needsViewport =
+      BrowserService.VIEWPORT_COMMANDS.has(cmd.method) &&
+      !(cmd.method === 'waitFor' && (cmd as { selector?: string }).selector === undefined)
+    if (!needsViewport) return
+    const viewable = await entry.tab.page
+      .evaluate(() => window.innerWidth > 0 && window.innerHeight > 0)
+      .catch(() => true)
+    if (!viewable) {
+      throw new Error(
+        '该标签页的视口为 0×0：浏览器窗格当前处于折叠状态（界面上没有显示浏览器面板），交互类命令需要可见视口。' +
+          '请在应用里把面板切回浏览器页签后重试；只想读内容时可用 evaluate()（不依赖布局），导航类命令（navigate）也不受影响。',
+      )
+    }
   }
 
   private async tabInfo(entry: ServiceTab): Promise<BrowserTabInfo> {

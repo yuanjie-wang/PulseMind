@@ -21,6 +21,7 @@ export const HOSTED_TOOL_TIMEOUT_MS: Record<string, number> = {
   page_click: 10_000,
   page_input: 10_000,
   page_select: 10_000,
+  page_navigate: 15_000,
   page_back: 10_000,
   page_execute_js: 30_000,
 }

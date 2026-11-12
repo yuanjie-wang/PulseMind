@@ -5,7 +5,11 @@
 //      running from a packaged build)
 //   3. system Chrome channel → 4. system Edge channel
 // Headless by default (screenshots + snapshots work headless); the settings
-// toggle arrives with M4. One BrowserContext per tab keeps storage isolated.
+// toggle arrives with M4. Tabs of one conversation scope share a
+// BrowserContext (2026-11-12: 「登录后开第二个 tab」丢会话是 managed 最反直觉
+// 的缺口) — cookies/storage live for the scope and die with the backend.
+// Tabs WITHOUT a scope (internal fetchRendered) keep a dedicated throwaway
+// context so a one-off render never touches conversation state.
 //
 // `chromium` is loaded on demand — a `start()` or a probe launch is the only
 // thing that needs it. The types stay static (they cost nothing at runtime).
@@ -23,14 +27,22 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 800 }
 
 export class ManagedBackend implements BackendAdapter {
   private browser: Browser | null = null
+  /** One shared context per conversation scope. The map holds the CREATION
+   *  promise (not the context) so two tabs opened in rapid succession share
+   *  one context instead of racing two; a failed creation evicts itself so
+   *  the next tab retries instead of inheriting a rejected promise. */
+  private scopeContexts = new Map<string, Promise<BrowserContext>>()
 
   descriptor(): BackendDescriptor {
     return {
       id: 'managed',
       type: 'managed',
       capabilities: {
-        browser: ['open', 'tabs', 'fetchRendered'],
-        tab: ['navigate', 'snapshot', 'screenshot', 'playwright', 'evaluate', 'download'],
+        // browser 清单必须与 facade 的 browser 级成员对齐（2026-11-13 漏报教训：
+        // favorites/downloads 明明能用、清单没有——上次是多报 recording，这次
+        // 是反向漏报；漏报会让模型低估工具面）。
+        browser: ['open', 'tabs', 'favorites', 'downloads', 'documentation', 'fetchRendered'],
+        tab: ['navigate', 'snapshot', 'readText', 'waitFor', 'screenshot', 'playwright', 'evaluate', 'download'],
       },
     }
   }
@@ -68,6 +80,9 @@ export class ManagedBackend implements BackendAdapter {
   }
 
   async stop(): Promise<void> {
+    // Drop the scope map BEFORE closing: the contexts die with the browser,
+    // and a stale entry must never hand a new session a dead context.
+    this.scopeContexts.clear()
     if (this.browser) {
       try {
         await this.browser.close()
@@ -78,10 +93,16 @@ export class ManagedBackend implements BackendAdapter {
     }
   }
 
-  async newTab(options: { url?: string; tabId: string; downloadsDir?: string }): Promise<BackendTab> {
+  async newTab(options: {
+    url?: string
+    tabId: string
+    downloadsDir?: string
+    origin?: 'user' | 'agent'
+    scopeId?: string
+  }): Promise<BackendTab> {
     void options.tabId
     await this.start()
-    const context = await this.browser!.newContext({ viewport: DEFAULT_VIEWPORT, acceptDownloads: true })
+    const context = await this.contextFor(options.scopeId)
     const page = await context.newPage()
     if (options.downloadsDir) {
       // A-M4 下载: every download in this tab lands in the conversation's
@@ -99,12 +120,36 @@ export class ManagedBackend implements BackendAdapter {
       page,
       close: async () => {
         try {
-          await context.close()
+          await page.close()
         } catch {
           /* already gone */
         }
+        // A scopeless tab owns its context — it dies with the tab. A shared
+        // scope context OUTLIVES its tabs: closing the last one must keep the
+        // login state for the next tab the conversation opens.
+        if (!options.scopeId) {
+          try {
+            await context.close()
+          } catch {
+            /* already gone */
+          }
+        }
       },
     }
+  }
+
+  /** The scope's shared context, created lazily; a scopeless tab gets a
+   *  dedicated throwaway (the old per-tab behavior). */
+  private contextFor(scopeId?: string): Promise<BrowserContext> {
+    if (!scopeId) return this.browser!.newContext({ viewport: DEFAULT_VIEWPORT, acceptDownloads: true })
+    const existing = this.scopeContexts.get(scopeId)
+    if (existing) return existing
+    const created = this.browser!.newContext({ viewport: DEFAULT_VIEWPORT, acceptDownloads: true })
+    this.scopeContexts.set(scopeId, created)
+    created.catch(() => {
+      if (this.scopeContexts.get(scopeId) === created) this.scopeContexts.delete(scopeId)
+    })
+    return created
   }
 }
 

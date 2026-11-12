@@ -21,8 +21,9 @@
  *
  * Two deviations from the Anywhere original:
  *   - own-DOM detection keys off our host attribute instead of an id prefix
- *   - MAX_NODES caps the *total* walked node count (not just interactive ones),
- *     so a pathological page cannot hang the content script
+ *   - MAX_NODES caps the output (map entries) AND the walked touches, so a
+ *     pathological page cannot hang the content script; on overflow the walk
+ *     rebuilds viewport-first (see buildFlatTree, 2026-11-12)
  */
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -69,6 +70,10 @@ interface FlatDomTree {
   rootId: string
   map: Record<string, DomNode>
   truncated: boolean
+  /** True when the viewport-first rebuild produced this tree (see
+   *  buildFlatTree): everything outside the expanded viewport is absent, and
+   *  the footer must say so instead of the generic cap warning. */
+  pruned?: boolean
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -88,6 +93,13 @@ const ATTR_WHITELIST = [
   'id', 'for', 'target', 'aria-haspopup', 'aria-controls', 'aria-owns', 'contenteditable',
 ]
 export const MAX_NODES = 4000
+
+/** In viewport-first (prune) mode the OUTPUT budget stays MAX_NODES, but the
+ *  walk may touch up to this multiple of it: dropping an off-viewport subtree
+ *  costs one cheap rect check per element (not a serialization), so off-
+ *  viewport junk must never crowd the viewport content out of the output. A
+ *  document with more junk than that still cuts off hard. */
+const PRUNE_TOUCH_FACTOR = 4
 const MAX_ATTR_LEN = 20
 
 /** The panel host element injected by `content/index.tsx`. Everything inside it
@@ -420,21 +432,46 @@ interface BuildState {
 }
 
 function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: number): FlatDomTree {
+  // Walk 1 is the document-order walk (full-page text included). Only when it
+  // overflows the cap does the viewport-first rebuild run: a boxed element
+  // wholly outside the expanded viewport is dropped with its subtree, so the
+  // budget lands on the viewport and page_scroll + re-read actually reveals
+  // the next chunk — the old cut was a document-order prefix that scrolling
+  // could never move. Refs minted during the discarded walk stay (mint-once
+  // in the shared page memory), so indices remain stable across reads.
+  const probe = buildFlatTreeOnce(root, layout, viewportExpansion, false)
+  if (!probe.truncated) return probe
+  const rebuilt = buildFlatTreeOnce(root, layout, viewportExpansion, true)
+  // Report truncated even when the rebuild stayed under the cap: the output
+  // is partial by policy (off-viewport content is absent, not merely
+  // un-numbered), and both the footer warning and the delta-baseline poison
+  // hang off this flag.
+  return { ...rebuilt, truncated: true }
+}
+
+function buildFlatTreeOnce(root: ParentNode, layout: boolean, viewportExpansion: number, pruneOffViewport: boolean): FlatDomTree {
   const state: BuildState = { map: {}, visitedShadow: new Set(), visitedDocs: new Set(), truncated: false }
-  let nodeCounter = 0
+  let idSeq = 0
+  /** Map entries — the OUTPUT budget (≤ MAX_NODES in prune mode). */
+  let kept = 0
+  /** Every addNode entry — the WORK bound. In non-prune mode this is the
+   *  same single cap the walk always had (kept ≤ touched, so the kept cap
+   *  can never fire first there — behavior is unchanged). */
+  let touched = 0
+  let prunedCount = 0
 
   function addNode(el: Node, parentId: string | null): string {
-    // Hard stop: past MAX_NODES the walk is aborting, not merely skipping, so a
-    // pathological page cannot make this linear-in-nodes pipeline hang.
-    if (nodeCounter >= MAX_NODES) {
+    touched += 1
+    if (kept >= MAX_NODES || touched > (pruneOffViewport ? MAX_NODES * PRUNE_TOUCH_FACTOR : MAX_NODES)) {
       state.truncated = true
       return ''
     }
-    const id = `n${++nodeCounter}`
+    const id = `n${++idSeq}`
 
     if (el.nodeType === Node.TEXT_NODE) {
       const text = (el.textContent ?? '').trim()
       if (!text) return ''
+      kept += 1
       state.map[id] = { type: 'text', text, isVisible: true, parentId }
       return id
     }
@@ -448,12 +485,19 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
     // Boxless containers still get walked (see isHidden); they just never get
     // numbered themselves.
     const selfVisible = hasBox(element, layout)
-
-    const interactive = selfVisible && isInteractive(element, layout) && isTopElement(element, layout) && isDistinctInteraction(element)
     const inViewport = isInExpandedViewport(element, viewportExpansion, layout)
+    // 视口优先剪枝（2026-11-12，仅溢出重启后的那一遍）：有框且完全在扩展视
+    // 口外的元素整棵跳过——不占输出预算，只花一次 rect 查询的工作量。子树的
+    // 几何包含在父元素里，与既有 boxless 剪枝（isOffViewport）接受同一个假设。
+    if (pruneOffViewport && selfVisible && !inViewport) {
+      prunedCount += 1
+      return ''
+    }
+    const interactive = selfVisible && isInteractive(element, layout) && isTopElement(element, layout) && isDistinctInteraction(element)
     const highlight = interactive && inViewport
     const isTop = isTopElement(element, layout)
     const scroll = scrollableSize(element)
+    kept += 1
 
     if (highlight) {
       // The ref is minted the first time this element is numbered and then
@@ -536,7 +580,7 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
     return id
   }
 
-  const rootId = `n${++nodeCounter}`
+  const rootId = `n${++idSeq}`
   state.map[rootId] = {
     type: 'element',
     tagName: 'root',
@@ -551,7 +595,7 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
     if (childId) (state.map[rootId] as ElementNode).children.push(childId)
   }
 
-  return { rootId, map: state.map, truncated: state.truncated }
+  return { rootId, map: state.map, truncated: state.truncated, pruned: pruneOffViewport && prunedCount > 0 }
 }
 
 // ── Serialization ────────────────────────────────────────────────────
@@ -765,6 +809,12 @@ export interface BuildDomTreeOptions {
  * obtain indices for elements that were out of view. Measured on a 5600px
  * fixture, a viewport read is no cheaper than a full read — the numbers shrink,
  * the prose does not — which is the intended trade (M2.6).
+ *
+ * Exception since 2026-11-12: when the document-order walk overflows
+ * MAX_NODES, the viewport-first rebuild drops off-viewport subtrees wholesale
+ * (footer says so, truncated stays on so delta falls back to full). The old
+ * document-order cut made the「滚动后分段读取」advice a lie — scrolling never
+ * moved the cut; now it is exactly what moves it.
  */
 export function buildDomTree(root: ParentNode = document, opts?: BuildDomTreeOptions): BuildResult {
   const doc = root instanceof Document ? root : root.ownerDocument ?? document
@@ -831,7 +881,15 @@ export function buildDomTree(root: ParentNode = document, opts?: BuildDomTreeOpt
     ? `... ${pi.pixelsBelow} pixels below (${pi.pagesBelow.toFixed(1)} pages) - scroll to see more ...`
     : '[End of page]'
   const footerParts: string[] = [scrollHintBelow]
-  if (tree.truncated) footerParts.push(`[warn] 节点数超过 ${MAX_NODES}，已截断——请用 page_scroll 滚动后分段读取`)
+  if (tree.pruned) {
+    // 视口优先重建产出的树：视口外内容整棵缺席——明说，否则模型会把缺文本
+    // 读成页面就这么多。
+    footerParts.push(
+      `[warn] 页面过大（> ${MAX_NODES} 节点），本次只保留视口附近的内容——请用 page_scroll 滚动后重新调用 page_get_content 分段读取`,
+    )
+  } else if (tree.truncated) {
+    footerParts.push(`[warn] 节点数超过 ${MAX_NODES}，已截断——请用 page_scroll 滚动后分段读取`)
+  }
   if (!tree.truncated && viewportExpansion !== -1 && pi.pixelsBelow > 4) {
     // Text is never viewport-scoped (see the note on buildDomTree): only the
     // numbered/actionable set is. Say so, or the model reads the missing index

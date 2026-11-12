@@ -45,6 +45,7 @@ const TOOL_LABELS: Record<string, string> = {
   page_click: '点击元素',
   page_input: '填写输入框',
   page_select: '选择选项',
+  page_navigate: '打开地址',
   page_back: '返回上一页',
   page_execute_js: '执行页面脚本',
   browser: '打开网页',

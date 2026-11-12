@@ -103,6 +103,21 @@ describe('documentation', () => {
     expect(text).toContain('list() items are plain DATA')
     expect(text).toContain('await tab.url()')
   })
+  it('readText and conditional waits are taught where the action rules live (2026-11-12)', () => {
+    const text = documentationText(managed)
+    // Read channel vs addressing channel, said as two different things.
+    expect(text).toContain('tab.readText()')
+    expect(text).toContain('For plain READING')
+    expect(text).toContain("{ selector: '.b_results' }")
+    // Conditional waits teach the four triggers and demote fixed sleeps.
+    expect(text).toContain('await tab.waitFor({ ... })')
+    expect(text).toContain("() => document.querySelectorAll('.item').length >= 10")
+    expect(text).toContain('LAST resort')
+    // The old absolute anti-networkidle line is gone — networkidle is now a
+    // legitimate EXPLICIT one-shot, still never a navigation default.
+    expect(text).toContain('never as a navigation default')
+    expect(text).not.toContain('never networkidle')
+  })
   it('troubleshooting answers both new failure shapes', () => {
     const text = getDocument('troubleshooting', managed) ?? ''
     expect(text).toContain('未知成员')

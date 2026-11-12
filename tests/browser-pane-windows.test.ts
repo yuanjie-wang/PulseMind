@@ -287,3 +287,77 @@ describe('immersive pane contract: insets + paneWidth 直通', () => {
     expect(base.y).toBe(56 + 100 + Math.floor((800 - 56 - 100 - height) / 2))
   })
 })
+
+// ── 后台标签页自动激活（2026-11-13 四轮实测的阻断级问题）──────────────
+// dock 把非活跃视图压成 0×0（zero-size 不绘制），后台 tab 的 innerWidth 与
+// 一切元素矩形归零——可见性检查必然超时。观察/交互命令必须先把标签页切到
+// 窗格前台；窗格折叠（browserActive=false）时连活跃视图也是 0×0，视口依赖
+// 命令快速失败并点名原因。
+
+describe('后台标签页交互自动激活', () => {
+  const mkPage = (viewportOn: boolean) => ({
+    evaluate: async () => viewportOn,
+    locator: () => ({ waitFor: async () => {} }),
+    waitForURL: async () => {},
+    waitForFunction: async () => {},
+    waitForLoadState: async () => {},
+    url: () => 'https://x.test/page',
+    title: async () => '页面',
+    goto: async () => {},
+  })
+
+  const seedRealTab = (id: string, scopeId: string, viewportOn: boolean) => {
+    ;(svc as unknown as { tabs: Map<string, unknown> }).tabs.set(id, {
+      id,
+      backendId: 'app-view',
+      scopeId,
+      origin: 'user',
+      createdAt: '2026-11-13T00:00:00.000Z',
+      tab: { close: async () => {}, page: mkPage(viewportOn) },
+    })
+  }
+
+  it('后台标签页的观察/交互命令先把它切到前台（paneActiveTab 翻转）', async () => {
+    const winA = makeWindow(1)
+    const senderA = makeSender()
+    winBySender.set(senderA, winA)
+    seedRealTab('t_fg', 'conv_a', true)
+    seedRealTab('t_bg', 'conv_a', true)
+    svc.handlePaneState(stateOf('conv_a'), senderA)
+    // 活跃标签页缺省回落到最新的 t_bg；对 t_fg（后台）做一次观察命令。
+    const activeTabOf = () => (svc as unknown as { paneActiveTab: Map<string, string> }).paneActiveTab.get('conv_a')
+    expect(activeTabOf()).toBe('t_bg')
+
+    const r = await svc.executeCommand({ method: 'waitFor', tabId: 't_fg', selector: '.x', timeoutMs: 1000 } as never, 'conv_a')
+    expect(r.ok).toBe(true)
+    expect(activeTabOf()).toBe('t_fg')
+  })
+
+  it('纯信息命令不抢前台（getState/evaluate），close 不需要活句柄', async () => {
+    const winA = makeWindow(1)
+    const senderA = makeSender()
+    winBySender.set(senderA, winA)
+    seedRealTab('t_fg', 'conv_a', true)
+    seedRealTab('t_bg', 'conv_a', true)
+    svc.handlePaneState(stateOf('conv_a'), senderA)
+    const activeTabOf = () => (svc as unknown as { paneActiveTab: Map<string, string> }).paneActiveTab.get('conv_a')
+
+    await svc.executeCommand({ method: 'getState', tabId: 't_fg' } as never, 'conv_a')
+    expect(activeTabOf()).toBe('t_bg')
+  })
+
+  it('折叠窗格上视口依赖命令快速失败并点名 0×0，不靠 8s 可见性超时', async () => {
+    const winA = makeWindow(1)
+    const senderA = makeSender()
+    winBySender.set(senderA, winA)
+    seedRealTab('t1', 'conv_a', false) // 视口关着（窗格折叠的模拟）
+    svc.handlePaneState({ ...stateOf('conv_a'), browserActive: false }, senderA)
+
+    const err = await svc
+      .executeCommand({ method: 'waitFor', tabId: 't1', selector: '.x', timeoutMs: 1000 } as never, 'conv_a')
+      .then((r) => (r.ok ? null : r))
+      .then((r) => (r ? (r as { error: { message: string } }).error.message : 'no-error'))
+    expect(err).toContain('0×0')
+    expect(err).toContain('折叠')
+  })
+})

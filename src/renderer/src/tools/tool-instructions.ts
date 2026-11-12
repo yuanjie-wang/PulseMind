@@ -146,6 +146,7 @@ Regex supported. Find the relevant files here before reading or editing them.
 3. Use ask_user uniformly for single choice, multiple choice, plan selection and feature option switching scenarios.
 4. Do NOT join options into a comma-separated string; choices must be passed as a **string array**.
 5. If the user declines to choose, the tool return value is "CANCELLED". Stop option inquiry and switch to free conversation afterward.
+6. Multiple independent questions due at the same time go out as several ask_user calls in ONE assistant message — they render as a single batch card the user answers in order. Do not split them across turns or serialize them artificially; only ask the next question separately when the first question's ANSWER decides what to ask next.
 `,
 
   exec: `## exec
@@ -216,7 +217,6 @@ Not for small talk. Any other turn that could touch the user's standing preferen
 - Full knowledge document: pass the md path to the read tool.
 - Persist a conclusion: memory_save.
 `,
-
 
   memory_save: `## memory_save
 
@@ -420,7 +420,7 @@ Your progress checklist for work you execute YOURSELF. It is visible to the user
 3. **Blocked is for waiting, not for stalling.** A step that is live but pinned on something outside your control (an external reply, a long-running check, user input) is \`blocked\` with a \`note\` saying what it waits on — NOT in_progress, NOT dropped. In-progress stays whatever you are actually hands-on with. When the wait resolves, mark it in_progress (resume) or completed — blocked decays only if you stop listing it, and the result will call that out by name (a forgotten wait is a lost task): re-send it with its id to bring it back.
 4. **Update immediately on every settle.** The moment a step finishes, call todo_write again (that step completed, the next one in_progress). Do not batch three steps of progress into one update — the panel and your context go stale between calls. A \`note\` on the settle call is where a one-line result or pointer lives.
 5. **Rescope freely.** Discovered work: append it. Obsolete steps: just drop them from the list (they retire as skipped, visible in the panel); an empty array retires every open step and closes the list. Settled steps are fully immutable — status, wording and note alike: you cannot un-complete, reword, or re-note them; a correction re-opens the work as a new entry. Up to 20 entries may be OUTSTANDING at once — settled rows never count against that cap, and once the list grows long the oldest settled rows drop off on their own.
-6. **Finish = list fully settled.** When the last open step (pending, blocked or in_progress) resolves, the list closes by itself; then write your final answer to the user as a normal message. The engine enforces the closure: ending your reply while entries are still open (a turn that did tool work) is bounced back ONCE with a closure directive — use that round to finish the remaining work and update the list, or to mark genuinely-waiting entries \`blocked\` with a note; a second open-ended reply closes as-is. A closed list is still shown to you with its numbering, and it stays CONTINUABLE: an item without an id appends (the next number keeps counting on from the last one), an item naming an existing n-number revives that entry.
+6. **Finish = list fully settled.** When the last open step (pending, blocked or in_progress) resolves, the list closes by itself; then write your final answer to the user as a normal message. The engine enforces the closure: ending your reply while entries are still open is bounced back with a closure directive whenever you did tool work since the last bounce, **and also on the first open-ended reply of a turn even when it contained zero tool rounds** (a pure-text answer does not exempt you) — use each bounce to finish the remaining work and update the list, or to mark genuinely-waiting entries \`blocked\` with a note; a bounce that produced no tool work closes as-is. A closed list is still shown to you with its numbering, and it stays CONTINUABLE: an item without an id appends (the next number keeps counting on from the last one), an item naming an existing n-number revives that entry.
 
    **A fresh list is a new PHASE, not a new project.** Pass \`fresh: true\` whenever what comes next is the next stage of work rather than a continuation of this one — "the CI pipeline is green" → "now shrink the bundle", "the root cause is found" → "now re-cut the icons", "the icons are committed" → "now chase the Windows crash" each deserve a fresh list, even though all of them serve one release. Append instead when you are continuing the stage you are in, or fixing something the closed list itself produced. The tell that you missed a boundary: one objective dragging a dozen settled rows behind it, so the panel shows a project history where it should show the current stage. The settled rows are not what the panel is for — the open ones are.
 7. **Call messages carry intent, never results** (the Tool Call Format rule, applied double here): never pre-write what the tool will return — no counts (+N added / N retired), no settled tallies (N/M settled), no snapshot lines. The tool computes those; a pre-written copy is fabricated evidence in the most trusted format. Narrate what happened only AFTER the result arrives, quoting it.
@@ -555,6 +555,9 @@ Scroll the page (or one scrollable container) so content that was outside the vi
 
 Wait for asynchronous rendering (a spinner, a lazy-loaded list, a search that is still running) before reading the page again. Waits are real time — prefer the shortest plausible one.
 
+### Conditional form
+Pass \`selector\` to wait for a concrete element instead of a fixed sleep: it polls the page and returns the moment the element appears, or reports honestly when the budget ran out. Prefer it whenever you know what to wait for — e.g. a key element of a page that just loaded.
+
 ### Use it when
 \`page_get_content\` shows a loading placeholder, or a \`page_click\` triggered work whose result is not there yet. Always follow with \`page_get_content { delta: true }\` — waiting alone changes nothing you can see. Not a retry loop: if two waits do not surface the content, the interaction did not do what you expected and the page should be re-read.
 `,
@@ -588,6 +591,14 @@ Choose an option in a native \`<select>\` dropdown on the current page. A miss r
   page_back: `## page_back
 
 Go back one entry in this tab's history (\`history.back()\`) — after a click navigated somewhere you did not need, or to return to a list you came from. Always follow with \`page_get_content\`: the page is different now and so are the indices.
+`,
+
+  page_navigate: `## page_navigate
+
+Open an http/https URL in this tab. A \`page_click\` on a link or submit already navigates — reach for this when there is nothing to click: the user gave an address, a redirect landed somewhere useless, or a SPA needs a fresh entry point. Other schemes (javascript:, data:, file:) are refused.
+
+### Always follow with
+\`page_wait\` (pass \`selector\` for a key element of the target page) then \`page_get_content\` — the new page's first read is always full, and the old page's indices do NOT survive the navigation.
 `,
 
   page_execute_js: `## page_execute_js

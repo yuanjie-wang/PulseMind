@@ -53,6 +53,20 @@ export type BrowserCommand =
   | { method: 'reload'; tabId: string }
   | { method: 'close'; tabId: string }
   | { method: 'snapshot'; tabId: string; full?: boolean }
+  /** Plain-text READING channel (read-text.ts): no selector → auto-detected
+   *  main content; selector → one container. budget/offset page through. */
+  | { method: 'readText'; tabId: string; selector?: string; budget?: number; offset?: number }
+  /** Page-level conditional wait — exactly one trigger of selector / url / js
+   *  / loadState (runTabWait validates and answers honestly on timeout). */
+  | {
+      method: 'waitFor'
+      tabId: string
+      selector?: string
+      url?: string
+      js?: PageExpression
+      loadState?: 'domcontentloaded' | 'load' | 'networkidle'
+      timeoutMs?: number
+    }
   /** `save`: true → auto-named PNG in the OS Downloads folder; any other string
    *  is a destination — a bare filename goes to Downloads, while `~/…`,
    *  absolute and token paths (`desktop/名称.png`) are taken literally. Missing
@@ -71,9 +85,17 @@ export type BrowserCommand =
   | { method: 'mouseClick'; tabId: string; x: number; y: number; button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number }
   | { method: 'mouseMove'; tabId: string; x: number; y: number }
   | { method: 'mouseWheel'; tabId: string; deltaX: number; deltaY: number }
+  /** Press/release WITHOUT moving — the primitives for drag chains the
+   *  two-point mouseDrag can't express (press → move in steps → release). */
+  | { method: 'mouseDown'; tabId: string; button?: 'left' | 'right' | 'middle' }
+  | { method: 'mouseUp'; tabId: string; button?: 'left' | 'right' | 'middle' }
   | { method: 'mouseDrag'; tabId: string; fromX: number; fromY: number; toX: number; toY: number; steps?: number }
   | { method: 'keyboardPress'; tabId: string; key: string; delayMs?: number }
   | { method: 'keyboardType'; tabId: string; text: string; delayMs?: number }
+  /** Hold/release a key WITHOUT typing — press → act → release chains that
+   *  keyboardPress cannot express. Balance every down with an up. */
+  | { method: 'keyboardDown'; tabId: string; key: string }
+  | { method: 'keyboardUp'; tabId: string; key: string }
   // System clipboard, read/written in the main process — the read-back
   // channel for canvas apps (select → Control+c → read the TSV). `read` is
   // audited: the clipboard may hold the USER's own copied secrets.

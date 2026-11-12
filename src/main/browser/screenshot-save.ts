@@ -55,6 +55,13 @@ export interface ScreenshotSaveOptions {
   /** Absolute roots that must never receive a screenshot (the app's own data
    *  dir). Lexical containment, host path semantics. */
   protectedRoots?: string[]
+  /** Absolute roots that WIN over protectedRoots (2026-11-13): the agent
+   *  workspace lives INSIDE the data dir (`~/.pulsemind/workspace`), and the
+   *  sandbox requires task files in the workspace — the two rules used to
+   *  collide head-on. The workspace subtree is the agent's own file area
+   *  (downloads already land there); hooks/skills are separate fixed dirs and
+   *  stay protected. */
+  allowedRoots?: string[]
 }
 
 type PathApi = typeof posix
@@ -142,17 +149,20 @@ function isDirectoryOnDisk(path: string): boolean {
 /** A target inside a protected root is refused — even a NEW file: under the
  *  app's data dir, a fresh `hooks/app-start.js` or `skills/…/SKILL.md` is
  *  executed or injected on the next launch. `path.relative` gives win32 its
- *  case-insensitive compare and rejects a different drive as absolute. */
-function assertNotProtected(file: string, roots: string[] | undefined, p: PathApi): void {
-  for (const root of roots ?? []) {
+ *  case-insensitive compare and rejects a different drive as absolute.
+ *  allowedRoots wins: a target inside one of them skips the refusal. */
+function assertNotProtected(file: string, roots: string[] | undefined, allowedRoots: string[] | undefined, p: PathApi): void {
+  const inside = (root: string): boolean => {
     const rel = p.relative(p.resolve(root), file)
-    const inside = rel === '' || (!p.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${p.sep}`))
-    if (inside) {
-      throw new Error(
-        `截图不能保存到应用数据目录（${p.resolve(root)}）：该目录下的 hooks/、skills/ 等文件会影响应用的启动和提示词。` +
-          `请换一个位置，例如 ~/Desktop/名称.png。`,
-      )
-    }
+    return rel === '' || (!p.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${p.sep}`))
+  }
+  for (const root of roots ?? []) {
+    if (!inside(root)) continue
+    if ((allowedRoots ?? []).some(inside)) continue
+    throw new Error(
+      `截图不能保存到应用数据目录（${p.resolve(root)}）：该目录下的 hooks/、skills/ 等文件会影响应用的启动和提示词。` +
+        `会话工作区（workspace/）内不受此限制；其他位置请用 ~/Desktop/名称.png 这类路径。`,
+    )
   }
 }
 
@@ -213,7 +223,7 @@ export function resolveScreenshotSave(
   const asDir = raw === '~' || /[/\\]$/.test(raw) || isDirectory(target)
   const dir = asDir ? target : p.dirname(target)
   const name = asDir ? autoName(now) : p.basename(target)
-  assertNotProtected(p.join(dir, name), options.protectedRoots, p)
+  assertNotProtected(p.join(dir, name), options.protectedRoots, options.allowedRoots, p)
   return { dir, name }
 }
 

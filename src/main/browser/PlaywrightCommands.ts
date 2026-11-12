@@ -5,6 +5,7 @@
 
 import type { Page } from 'playwright-core'
 import { isPmRefSelector, pmRefOf, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
+import type { PageExpression } from '../../shared/browser-client/protocol'
 import type { AriaNode } from './snapshot-refs'
 import { CHANGE_TRACKED_OPS, describeOperationResult, withChangeWatch } from './change-watch'
 
@@ -175,6 +176,89 @@ function treeEntryOf(tree: AriaNode[] | null | undefined, ref: string): { role: 
  *  independent of app locale). */
 function isTimeoutError(err: unknown): boolean {
   return err instanceof Error && /timeout \d+ms exceeded|timed out/i.test(err.message)
+}
+
+// ── tab.waitFor (2026-11-12) ── page-level CONDITIONAL waits. The sandbox has
+// no timers, and a fixed waitForTimeout before an AJAX result is both slow and
+// blind; the element-level `locator.waitFor` op existed but nothing taught it.
+// Exactly one trigger per call; a timeout answers honestly ({met:false}) instead
+// of throwing — "not yet" is an observation, and the note points at the next
+// move instead of leaving a bare TimeoutError in the transcript.
+
+export interface TabWaitCommand {
+  selector?: string
+  url?: string
+  js?: PageExpression
+  loadState?: 'domcontentloaded' | 'load' | 'networkidle'
+  timeoutMs?: number
+}
+
+export interface TabWaitOutcome {
+  met: boolean
+  waitedFor: string
+  elapsedMs: number
+  pageUrl: string
+  note?: string
+}
+
+const WAIT_LOAD_STATES = new Set(['domcontentloaded', 'load', 'networkidle'])
+
+/** The human-readable half of the outcome — what was being waited for. */
+export function describeWaitTrigger(cmd: TabWaitCommand): string {
+  if (cmd.selector !== undefined) return `selector 可见：${cmd.selector}`
+  if (cmd.url !== undefined) return `URL 匹配：${cmd.url}`
+  if (cmd.js !== undefined) return 'JS 谓词为真'
+  return `loadState：${cmd.loadState}`
+}
+
+export async function runTabWait(page: Page, cmd: TabWaitCommand): Promise<TabWaitOutcome> {
+  const given = (['selector', 'url', 'js', 'loadState'] as const).filter((k) => cmd[k] !== undefined)
+  if (given.length === 0) throw new Error('waitFor 需要一个等待条件：selector / url / js / loadState 之一')
+  if (given.length > 1) throw new Error(`waitFor 只接受一个等待条件，收到 ${given.join(' + ')}——一次等一件事`)
+  if (cmd.loadState !== undefined && !WAIT_LOAD_STATES.has(cmd.loadState)) {
+    throw new Error(`loadState 只接受 domcontentloaded / load / networkidle，收到 "${cmd.loadState}"`)
+  }
+  // url 是 Playwright 的精确/glob 匹配（实测 2026-11-13：裸子串永远等不到超时
+  // 才发现）。没有 scheme 又没有 glob 通配的字符串在 Playwright 语义里几乎
+  // 不会命中任何真实地址——预检就地教育，不等 15s 超时。
+  if (cmd.url !== undefined) {
+    // 运行时值不受协议类型约束（沙箱无类型）：正则在这里是真实输入形态。
+    const url = cmd.url as unknown
+    if (typeof url !== 'string') {
+      throw new Error(
+        `waitFor({url}) 只接受 glob / 完整 URL 的字符串，收到 ${url instanceof RegExp ? '正则' : typeof url}。` +
+          `正则匹配请改用 js 谓词：waitFor({ js: () => /baidu/.test(location.href) })`,
+      )
+    }
+    if (!url.includes('*') && !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+      throw new Error(
+        `waitFor({url}) 是精确/glob 匹配，不是子串匹配："${url}" 只会匹配地址恰好等于它的页面，通常永远等不到。` +
+          `用 glob 匹配目标片段——注意 * 不跨 /、URL 结尾的斜杠要显式写出，例如 '**/*baidu.com/*'（.com 后的 /）；` +
+          `等待完整地址则写带协议的完整 URL。`,
+      )
+    }
+  }
+  const timeout = Math.min(Math.max(cmd.timeoutMs ?? 15_000, 1_000), 60_000)
+  const waitedFor = describeWaitTrigger(cmd)
+  const started = Date.now()
+  try {
+    if (cmd.selector !== undefined) await page.locator(cmd.selector).waitFor({ state: 'visible', timeout })
+    else if (cmd.url !== undefined) await page.waitForURL(cmd.url, { timeout })
+    else if (cmd.js !== undefined) await page.waitForFunction(cmd.js as never, undefined, { timeout })
+    else await page.waitForLoadState(cmd.loadState as 'domcontentloaded' | 'load' | 'networkidle', { timeout })
+    return { met: true, waitedFor, elapsedMs: Date.now() - started, pageUrl: page.url() }
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        met: false,
+        waitedFor,
+        elapsedMs: Date.now() - started,
+        pageUrl: page.url(),
+        note: '等待超时。不要盲目重试同一条件——先 domSnapshot() 看页面现在处于什么状态，再决定换条件、加长 timeoutMs 还是放弃',
+      }
+    }
+    throw err
+  }
 }
 
 export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, lastTree?: AriaNode[] | null): Promise<unknown> {

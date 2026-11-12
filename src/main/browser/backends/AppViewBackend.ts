@@ -68,8 +68,13 @@ export class AppViewBackend implements BackendAdapter {
       id: 'app-view',
       type: 'app-view',
       capabilities: {
-        browser: ['open', 'tabs', 'user'],
-        tab: ['navigate', 'snapshot', 'screenshot', 'playwright', 'evaluate', 'recording'],
+        // browser 清单与 facade 的 browser 级成员对齐（同 ManagedBackend 的
+        // 2026-11-13 漏报注释）——favorites/downloads/documentation 双后端都有。
+        browser: ['open', 'tabs', 'favorites', 'downloads', 'documentation', 'user'],
+        // 能力词是 descriptor 清单的展示词汇表（api-policy 按 requiresCapabilities
+        // 匹配）：'recording' 从来没有对应成员，是僵尸词条（2026-11-13 实测
+        // 「清单里有、调用报未知成员」）；readText/waitFor 补进清单。
+        tab: ['navigate', 'snapshot', 'readText', 'waitFor', 'screenshot', 'playwright', 'evaluate'],
       },
     }
   }

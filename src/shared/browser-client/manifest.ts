@@ -97,6 +97,11 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
           signature: 'domSnapshot(): Promise<string>',
           summary: 'Numbered interactive elements ([N]) first, then the AI/ARIA tree — the default and primary observation',
         },
+        readText: {
+          signature: 'readText({ selector?, budget?, offset? }?): Promise<{text, totalChars, truncated, strategy}>',
+          summary:
+            'PLAIN TEXT reading channel — the cheap complement to domSnapshot (which is for ADDRESSING actions): no argument reads the auto-detected MAIN content (article/[role=main] → largest text block → body); {selector} reads one container\u2019s text (a result list: \'.b_results\'); budget/offset page through long text. Read with this, act with domSnapshot',
+        },
         screenshot: {
           signature: 'screenshot({ fullPage?, selector?, save? }?): Promise<{emitted, path?}>',
           summary:
@@ -108,17 +113,22 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
           summary:
             "THE selector engine (this is the executor; `agent.playwright` only BUILDS locators): one op — click/fill/count/textContent/… A bare number N addresses snapshot ref [N]. State-changing ops answer with a change signal: 「未检测到本页变化」 means the page did not react — check tabs.list() for a popup, then re-snapshot; never retry the old ref",
         },
-        waitForTimeout: { signature: 'waitForTimeout(ms): Promise<void>', summary: 'Bounded sleep (≤30s). Prefer domSnapshot re-checks over waiting' },
+        waitForTimeout: { signature: 'waitForTimeout(ms): Promise<void>', summary: 'Bounded sleep (≤30s). Prefer tab.waitFor over fixed sleeps' },
+        waitFor: {
+          signature: "waitFor({ selector? | url? | js? | loadState?, timeoutMs? }): Promise<{met, waitedFor, elapsedMs, note?}>",
+          summary:
+            'CONDITIONAL wait, exactly ONE trigger: selector becomes visible; url matches — Playwright EXACT/glob match, NOT a substring (\'**/results*\' works, bare \'results\' never matches); js predicate turns true (e.g. () => document.querySelectorAll(\'.item\').length >= 10); loadState: \'domcontentloaded\'/\'load\'/\'networkidle\' (one-shot only, never a navigation default). met:false on timeout — re-snapshot instead of retrying the same condition',
+        },
         mouse: {
           signature:
-            'mouse: { click(x, y, { button?, clickCount?, delayMs? }?), move(x, y), wheel(deltaX, deltaY), drag({x,y}, {x,y}, { steps? }) }',
+            'mouse: { click(x, y, { button?, clickCount?, delayMs? }?), move(x, y), wheel(deltaX, deltaY), drag({x,y}, {x,y}, { steps? }), down({ button? }), up({ button? }) }',
           summary:
-            'REAL pointer input at viewport coordinates — trusted events, no locator, no focus needed. The one channel for canvas / custom-drawn apps (在线表格、白板：domSnapshot 只有工具栏壳，值在像素里). Derive coordinates from DOM anchors (evaluate + getBoundingClientRect), NEVER guess; right-click a cell = click(x, y, { button: \'right\' }) — the menu it pops IS in the DOM',
+            'REAL pointer input at viewport coordinates — trusted events, no locator, no focus needed. The one channel for canvas / custom-drawn apps (在线表格、白板：domSnapshot 只有工具栏壳，值在像素里). drag takes TWO POINT OBJECTS (never bare numbers); down()/up() are the press/release primitives for drag chains drag() cannot express. Derive coordinates from DOM anchors (evaluate + getBoundingClientRect), NEVER guess; right-click = click(x, y, { button: \'right\' }) — the menu it pops IS in the DOM; double-click = clickCount: 2. Returns VOID with no success signal: a click at empty pixels lands nowhere and still reports ok — verify the DOM effect before building on it',
         },
         keyboard: {
-          signature: "keyboard: { press('Control+a' | 'Enter' | 'ArrowDown' | …), type(text, { delayMs? }?) }",
+          signature: "keyboard: { press('Control+a' | 'Enter' | 'ArrowDown' | …), type(text, { delayMs? }?), down(key), up(key) }",
           summary:
-            'REAL keyboard to whatever HAS FOCUS — reaches canvas editors that locator fill/press cannot (fill sets a value the canvas ignores; measured: it looks done and nothing happened). Click the target first, then type; Playwright key names, \'+\' composes modifiers',
+            'REAL keyboard to whatever HAS FOCUS — reaches canvas editors that locator fill/press cannot (fill sets a value the canvas ignores; measured: it looks done and nothing happened). Click the target first, then type; Playwright key names, \'+\' composes modifiers. down()/up() hold/release WITHOUT typing — press → act → release chains press() cannot express; balance every down with an up. Returns VOID with no success signal: typing without focus lands nowhere and still reports ok — read the value back before building on it',
         },
         clipboard: {
           signature: 'clipboard: { read(): Promise<string>, write(text): Promise<void> }',

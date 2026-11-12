@@ -15,6 +15,7 @@ import {
 import { playwrightSugar, type LocatorSugar } from './playwright-sugar'
 import { pmRefSelector, resolveSelectorArg } from './pm-refs'
 import { matchTabForUrl } from './selection'
+import type { ReadTextResult } from './read-text'
 import { documentationText, getDocument, listDocuments } from './documentation'
 import { AGENT_PLAYWRIGHT_HINT, PLAYWRIGHT_SURFACE_HINT, guardCallable, guardMembers } from './member-guard'
 
@@ -41,6 +42,23 @@ export interface TabApi {
   /** Numbered interactive elements ([N] refs) first, then the AI/ARIA tree —
    *  the default and primary observation (协议 §5.4); refs address what it saw. */
   domSnapshot: (options?: { full?: boolean }) => Promise<string>
+  /** PLAIN TEXT reading channel — the cheap complement to domSnapshot (the
+   *  action-ADDRESSING channel): no argument reads the auto-detected MAIN
+   *  content (article/[role=main] → largest text block → body); `{selector}`
+   *  reads one container (a result list: `.b_results`); `budget`/`offset`
+   *  page through long text. Read with this, act with domSnapshot. */
+  readText: (options?: { selector?: string; budget?: number; offset?: number }) => Promise<ReadTextResult>
+  /** Conditional wait — exactly ONE trigger, so an AJAX result no longer
+   *  needs fixed sleeps: `selector` becomes visible / `url` matches (glob ok)
+   *  / `js` predicate turns true / explicit `loadState`. A timeout answers
+   *  `{met: false, note}` instead of throwing: "not yet" is an observation. */
+  waitFor: (options: {
+    selector?: string
+    url?: string
+    js?: string | (() => unknown)
+    loadState?: 'domcontentloaded' | 'load' | 'networkidle'
+    timeoutMs?: number
+  }) => Promise<{ met: boolean; waitedFor: string; elapsedMs: number; pageUrl: string; note?: string }>
   /** Always emits through emitImage in the same call (协议 §5.6). `save` ALSO
    *  writes a PNG — `true`/a bare filename goes to Downloads; any other string
    *  is a path (`~/Desktop/名称.png`, absolute, or a `desktop/` token) written
@@ -69,12 +87,22 @@ export interface TabApi {
     move: (x: number, y: number) => Promise<void>
     wheel: (deltaX: number, deltaY: number) => Promise<void>
     drag: (from: { x: number; y: number }, to: { x: number; y: number }, options?: { steps?: number }) => Promise<void>
+    /** Press/release WITHOUT moving — the primitives for drag chains the
+     *  two-point drag(from, to) cannot express (press → move in steps →
+     *  release). Pair them, and balance every down with an up. */
+    down: (options?: { button?: 'left' | 'right' | 'middle' }) => Promise<void>
+    up: (options?: { button?: 'left' | 'right' | 'middle' }) => Promise<void>
   }
   /** Real keyboard to whatever HAS FOCUS — click the target first. Reaches
    *  canvas editors that locator fill/press cannot. */
   keyboard: {
     press: (key: string) => Promise<void>
     type: (text: string, options?: { delayMs?: number }) => Promise<void>
+    /** Hold/release a key WITHOUT typing — the primitives for press → act →
+     *  release chains keyboardPress cannot express (hold Shift while dragging,
+     *  hold a modifier across several actions). Balance every down with an up. */
+    down: (key: string) => Promise<void>
+    up: (key: string) => Promise<void>
   }
   /** System clipboard via the main process — the read-back channel for canvas
    *  apps (select → keyboard.press('Control+c') → read() the TSV). The
@@ -181,6 +209,44 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
         reload: async () => { await invoke({ method: 'reload', tabId: id }) },
         close: async () => { await invoke({ method: 'close', tabId: id }) },
         domSnapshot: async (options) => (await invoke({ method: 'snapshot', tabId: id, full: options?.full })) as string,
+        readText: async (options) =>
+          (await invoke({
+            method: 'readText', tabId: id,
+            selector: options?.selector, budget: options?.budget, offset: options?.offset,
+          })) as ReadTextResult,
+        waitFor: async (options) => {
+          // Fail at the entry, in the model's own vocabulary: wrong-typed
+          // triggers used to surface as internal Playwright/TypeError noise
+          // (a RegExp url died with `url.includes is not a function`,
+          // 2026-11-13).
+          if (options?.url !== undefined && typeof (options as { url?: unknown }).url !== 'string') {
+            const badUrl = (options as { url: unknown }).url
+            throw new Error(
+              `waitFor({url}) 只接受 glob / 完整 URL 的字符串，收到 ${badUrl instanceof RegExp ? '正则' : typeof badUrl}。` +
+                `正则匹配请改用 js 谓词：waitFor({ js: () => /baidu/.test(location.href) })`,
+            )
+          }
+          if (options?.selector !== undefined && typeof options.selector !== 'string') {
+            throw new Error(`waitFor({selector}) 只接受 CSS 选择器字符串，收到 ${typeof options.selector}。`)
+          }
+          if (options?.js !== undefined && typeof options.js !== 'string' && typeof options.js !== 'function') {
+            throw new Error(`waitFor({js}) 只接受表达式字符串或函数，收到 ${options.js === null ? 'null' : typeof options.js}。`)
+          }
+          // Zero or multiple triggers is a caller error, not a wait that can
+          // time out.
+          const given = (['selector', 'url', 'js', 'loadState'] as const).filter((k) => options?.[k] !== undefined)
+          if (given.length !== 1) {
+            throw new Error(
+              given.length === 0
+                ? `waitFor 需要一个等待条件：selector / url / js / loadState 之一——例如 waitFor({ selector: '.result' }) 或 waitFor({ js: () => document.title !== '' })`
+                : `waitFor 只接受一个等待条件，收到 ${given.join(' + ')}——一次等一件事`,
+            )
+          }
+          return (await invoke({
+            method: 'waitFor', tabId: id,
+            selector: options.selector, url: options.url, js: options.js, loadState: options.loadState, timeoutMs: options.timeoutMs,
+          })) as { met: boolean; waitedFor: string; elapsedMs: number; pageUrl: string; note?: string }
+        },
         screenshot: async (options) => {
           const save = options?.save
           // The sandbox has no types: an object/array here used to travel
@@ -232,12 +298,28 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
           move: async (x, y) => { await invoke({ method: 'mouseMove', tabId: id, x, y }) },
           wheel: async (deltaX, deltaY) => { await invoke({ method: 'mouseWheel', tabId: id, deltaX, deltaY }) },
           drag: async (from, to, options) => {
+            // 数字/单点/对象包对象都不可能落到 Playwright 的参数上——报内部
+            // 「x: expected float, got undefined」之前就地教签名（2026-11-13
+            // 实测四种错误形态试遍）。
+            const isPoint = (v: unknown): v is { x: number; y: number } =>
+              typeof v === 'object' && v !== null && !Array.isArray(v) &&
+              typeof (v as { x: unknown }).x === 'number' && typeof (v as { y: unknown }).y === 'number'
+            if (!isPoint(from) || !isPoint(to)) {
+              throw new Error(
+                `mouse.drag 接受两个点对象：drag({ x, y }, { x, y }, { steps? }?)，收到 ${Array.isArray(from) ? '数组' : typeof from}。` +
+                  `分步拖拽（按轨迹移动）用 mouse.down() → mouse.move() × N → mouse.up() 组合。`,
+              )
+            }
             await invoke({ method: 'mouseDrag', tabId: id, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, steps: options?.steps })
           },
+          down: async (options) => { await invoke({ method: 'mouseDown', tabId: id, button: options?.button }) },
+          up: async (options) => { await invoke({ method: 'mouseUp', tabId: id, button: options?.button }) },
         },
         keyboard: {
           press: async (key) => { await invoke({ method: 'keyboardPress', tabId: id, key }) },
           type: async (text, options) => { await invoke({ method: 'keyboardType', tabId: id, text, delayMs: options?.delayMs }) },
+          down: async (key) => { await invoke({ method: 'keyboardDown', tabId: id, key }) },
+          up: async (key) => { await invoke({ method: 'keyboardUp', tabId: id, key }) },
         },
         clipboard: {
           read: () => invoke({ method: 'clipboardRead' }) as Promise<string>,
@@ -285,19 +367,37 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
                 invoke({ method: 'listFavorites' }) as Promise<
                   Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>
                 >,
-              add: async (url: string, title?: string) => {
-                const r = (await invoke({ method: 'addFavorite', url, title })) as { url: string; title?: string; added: true | 'already' }
+              add: async (rawUrl: unknown, rawTitle?: unknown) => {
+                // 位置参数 add(url, title?)：对象形式会漏成内部类型错误（2026-11-13
+                // 实测还被误标成 FAVORITE_LIMIT），在入口就地教签名。
+                if (typeof rawUrl !== 'string') {
+                  throw new Error(
+                    `favorites.add 是位置参数：add('https://example.com', '名称')——不接受对象参数，` +
+                      `收到 ${rawUrl === null ? 'null' : typeof rawUrl}。`,
+                  )
+                }
+                if (rawTitle !== undefined && typeof rawTitle !== 'string') {
+                  throw new Error(`favorites.add 的 title 只接受字符串，收到 ${typeof rawTitle}。`)
+                }
+                const r = (await invoke({
+                  method: 'addFavorite', url: rawUrl, title: rawTitle as string | undefined,
+                })) as { url: string; title?: string; added: true | 'already' }
                 return r
               },
-              remove: async (url: string) => {
-                const r = (await invoke({ method: 'removeFavorite', url })) as { removed: boolean }
+              remove: async (rawUrl: unknown) => {
+                if (typeof rawUrl !== 'string') {
+                  throw new Error(
+                    `favorites.remove 是位置参数：remove('https://example.com')——不接受对象参数，` +
+                      `收到 ${rawUrl === null ? 'null' : typeof rawUrl}。`,
+                  )
+                }
+                const r = (await invoke({ method: 'removeFavorite', url: rawUrl })) as { removed: boolean }
                 return r.removed
               },
             },
             'agent.browsers.favorites',
             `（收藏是用户策展的站点：按需 list() 现查，绝不进 prompt。）`,
-          ),
-          documentation: documentationGuarded,
+          ),          documentation: documentationGuarded,
           open: async (url: string) => {
             const normalized = assertAllowedUrl(url)
             const tabs = (await invoke({ method: 'listTabs' })) as BrowserTabInfo[]

@@ -102,8 +102,38 @@ export function pageScroll(args: Record<string, unknown>): string {
 
 export function pageWait(args: Record<string, unknown>): Promise<string> {
   const seconds = Math.min(10, Math.max(1, Number(args?.seconds) || 2))
+  const selector = typeof args?.selector === 'string' ? args.selector.trim() : ''
+  if (selector) {
+    // 选法错误是调用方输入错误，必须在同步路径上响亮失败（runPageTool 转
+    // ok:false），而不是吃掉整个预算后报「未出现」。
+    try {
+      document.querySelector(selector)
+    } catch (err) {
+      throw new Error(`无效的选择器 "${selector}"：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   return new Promise<string>((resolve) => {
-    setTimeout(() => resolve(`已等待 ${seconds}s。请调用 page_get_content 查看是否已渲染完成。`), seconds * 1000)
+    if (!selector) {
+      setTimeout(() => resolve(`已等待 ${seconds}s。请调用 page_get_content 查看是否已渲染完成。`), seconds * 1000)
+      return
+    }
+    // 条件等待（2026-11-12）：轮询 querySelector，元素出现即刻返回——比死等
+    // 省时间；到点未现是「观察结果」不是工具失败，模型据此决定重读、换选择
+    // 器还是放弃。
+    const started = Date.now()
+    const budgetMs = seconds * 1000
+    const poll = (): void => {
+      if (document.querySelector(selector)) {
+        resolve(`元素 "${selector}" 已出现（等待了 ${((Date.now() - started) / 1000).toFixed(1)}s）。请调用 page_get_content 查看页面。`)
+        return
+      }
+      if (Date.now() - started >= budgetMs) {
+        resolve(`已等待 ${seconds}s，"${selector}" 仍未出现。请调用 page_get_content 查看当前页面状态。`)
+        return
+      }
+      setTimeout(poll, 200)
+    }
+    poll()
   })
 }
 
@@ -233,6 +263,27 @@ export function pageBack(): string {
   return '已执行 history.back()。请调用 page_get_content 查看新页面。'
 }
 
+/** page_navigate（2026-11-12）：此前家族不能换页——导航只能靠点击或走
+ *  page_execute_js 改 location（后者还落在 exec 审批档）。只收绝对
+ *  http/https（`new URL` 无隐式 base，相对路径直接无效），其余 scheme
+ *  （javascript:/data:/file:）要么是注入向量要么回不来。赋值 location.href
+ *  后跨文档导航会拆掉内容脚本，这里回执的是「正在离开」确认；连它都丢了
+ *  就由 service worker 的「导航中」结算兜住。新页首读总是全量，旧索引不延续。 */
+export function pageNavigate(args: Record<string, unknown>): string {
+  const raw = String(args?.url ?? '').trim()
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`无效的 URL: ${raw || '（空）'}——page_navigate 需要完整的 http/https 地址`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`不允许的协议 "${url.protocol}"——page_navigate 只接受 http/https 地址`)
+  }
+  location.href = url.href
+  return `正在导航到 ${url.href}。加载完成后先 page_wait（可传 selector 等新页关键元素出现），再 page_get_content 查看新页面（新页首次读取总是全量）。`
+}
+
 /** In-page evaluation. Throws an `EvalError` under a CSP that forbids eval —
  *  the service worker catches the shape and retries over CDP. */
 export function pageExecuteJs(args: Record<string, unknown>): Promise<string> {
@@ -269,6 +320,8 @@ async function dispatchPageTool(tool: string, args: Record<string, unknown>): Pr
       return pageInput(args)
     case 'page_select':
       return pageSelect(args)
+    case 'page_navigate':
+      return pageNavigate(args)
     case 'page_back':
       return pageBack()
     case 'page_execute_js':

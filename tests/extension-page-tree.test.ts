@@ -17,6 +17,7 @@ import {
   pageClick,
   pageGetContent,
   pageInput,
+  pageNavigate,
   pageSelect,
   pageWait,
   resetPageToolState,
@@ -402,6 +403,37 @@ describe('page-tree geometry', () => {
     expect(text).toContain('折叠下方按钮')
     expect(text).toContain('page_scroll')
   })
+
+  it('viewport-first truncation (2026-11-12): an overflowing page keeps the viewport, drops the far content, and says so', () => {
+    // 2600 spans + 2600 text nodes = 5200 touches > MAX_NODES → the probe walk
+    // truncates; the rebuild prunes the far block (1 touch each, no output
+    // budget) so the viewport content that document order never even reached
+    // now lands complete.
+    const far: string[] = []
+    for (let i = 0; i < 2600; i++) far.push(`<span class="far">远处的文本${i}</span>`)
+    mount(`${far.join('')}<button id="near">视口按钮</button>`)
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(100)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(20)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const y = (this as HTMLElement).classList?.contains('far') ? 2000 : 100
+      return { x: 0, y, width: 100, height: 20, top: y, left: 0, right: 100, bottom: y + 20, toJSON: () => ({}) } as DOMRect
+    })
+    stubHitTest(() => null) // no overlays anywhere
+
+    const { text, truncated, selectorMap } = buildDomTree(document)
+
+    expect(truncated).toBe(true)
+    // The viewport content survives in full — numbered AND readable. Under the
+    // old document-order cut it never appeared at all (the cap hit inside the
+    // far block, which precedes the button).
+    expect(selectorMap.get(1)?.id).toBe('near')
+    expect(text).toContain('视口按钮')
+    // The far content is GONE — not merely un-numbered — and the footer names
+    // the viewport-first policy instead of the generic cap line.
+    expect(text).not.toContain('远处的文本')
+    expect(text).toContain('只保留视口附近的内容')
+    expect(text).not.toContain(`节点数超过 ${MAX_NODES}`)
+  })
 })
 
 describe('page-tools', () => {
@@ -514,11 +546,54 @@ describe('page-tools', () => {
     vi.useRealTimers()
   })
 
+  it('page_wait with a selector returns the moment the element appears (2026-11-12)', async () => {
+    mount('<div id="late" hidden>loaded</div>')
+    vi.useFakeTimers()
+    const p = pageWait({ seconds: 10, selector: '#late' })
+    const assertion = expect(p).resolves.toContain('已出现')
+    // First poll is immediate — the element is there before any timer runs.
+    await vi.advanceTimersByTimeAsync(0)
+    await assertion
+    vi.useRealTimers()
+  })
+
+  it('page_wait reports honestly when the selector never shows within the budget', async () => {
+    vi.useFakeTimers()
+    const p = pageWait({ seconds: 3, selector: '#ghost' })
+    const assertion = expect(p).resolves.toContain('仍未出现')
+    await vi.advanceTimersByTimeAsync(3_000 + 1_000)
+    await assertion
+    vi.useRealTimers()
+  })
+
+  it('page_wait rejects an invalid selector loudly instead of eating the budget', () => {
+    // 选法校验在同步路径上——直接 throw（runPageTool 转 ok:false），不返回 promise。
+    expect(() => pageWait({ seconds: 1, selector: '>>>bad' })).toThrow(/无效的选择器/)
+  })
+
   it('goes back through history', () => {
     const back = vi.spyOn(history, 'back').mockImplementation(() => {})
     expect(pageBack()).toContain('history.back()')
     expect(back).toHaveBeenCalledTimes(1)
     back.mockRestore()
+  })
+
+  it('page_navigate assigns the URL and refuses non-http schemes', async () => {
+    // jsdom 导航未实现——用可赋值的 location 替身捕获赋值（getter mock 同款）。
+    const stub = { href: 'https://current.test/page' }
+    const loc = vi.spyOn(window, 'location', 'get').mockReturnValue(stub as unknown as Location)
+    try {
+      const res = await runPageTool('page_navigate', { url: 'https://target.test/x?q=1' })
+      expect(res).toMatchObject({ ok: true })
+      expect(stub.href).toBe('https://target.test/x?q=1')
+      expect(res.result).toContain('page_get_content')
+    } finally {
+      loc.mockRestore()
+    }
+    await expect(runPageTool('page_navigate', { url: 'not a url' })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('http') })
+    await expect(runPageTool('page_navigate', { url: 'javascript:alert(1)' })).resolves.toMatchObject({ ok: false })
+    await expect(runPageTool('page_navigate', { url: 'file:///etc/passwd' })).resolves.toMatchObject({ ok: false })
+    await expect(runPageTool('page_navigate', { url: '' })).resolves.toMatchObject({ ok: false })
   })
 
   it('runs page JS for all three accepted shapes and reports empty input', async () => {

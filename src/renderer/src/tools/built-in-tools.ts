@@ -1208,12 +1208,17 @@ export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'page_wait',
-    description: 'Wait for asynchronous rendering to finish before reading the page again.',
+    description: 'Wait for asynchronous rendering to finish before reading the page again. Pass selector to wait for a concrete element instead of a fixed sleep.',
     category: 'page',
     input_schema: {
       type: 'object',
       properties: {
         seconds: { type: 'integer', description: 'Seconds to wait, 1–10 (default 2).' },
+        selector: {
+          type: 'string',
+          description:
+            'CSS selector to wait for. Polls the page and returns the moment the element appears; reports honestly if the budget runs out first. Prefer over a fixed sleep when you know what to wait for.',
+        },
       },
       required: ['seconds'],
     },
@@ -1262,6 +1267,21 @@ export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['index', 'option'],
     },
     instructions: toolInstructions.page_select,
+    builtIn: true,
+  },
+  {
+    name: 'page_navigate',
+    description:
+      'Navigate this tab to an http/https URL. A click on a link or submit already navigates — use this when there is no element to click (the user gave an address, or a redirect landed somewhere useless).',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Complete http/https address to open.' },
+      },
+      required: ['url'],
+    },
+    instructions: toolInstructions.page_navigate,
     builtIn: true,
   },
   {

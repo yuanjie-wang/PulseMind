@@ -52,6 +52,7 @@ describe('page tool tiers', () => {
     expect(pageToolTier('page_click')).toBe('write')
     expect(pageToolTier('page_input')).toBe('write')
     expect(pageToolTier('page_select')).toBe('write')
+    expect(pageToolTier('page_navigate')).toBe('write')
     expect(pageToolTier('page_back')).toBe('write')
     // Arbitrary code in a page holding the user's session — the exec rung.
     expect(pageToolTier('page_execute_js')).toBe('exec')
@@ -193,5 +194,38 @@ describe('page tool availability', () => {
     expect(names).not.toContain('exec')
     expect(names).not.toContain('write')
     expect(names).not.toContain('browser')
+  })
+})
+
+// ── Session whitelist wiring (§3.4.1 → mechanism, 2026-11-12) ─────────
+// PAGE_SESSION_ALLOWED_TOOLS used to be a declared-but-unconsumed constant:
+// hosted sessions carried the FULL desktop toolset, held back only by the
+// approval ladder. The wiring is cross-layer (ws-server pins, session-manager
+// releases at handoff, engine drops the derived set), so the real protocol
+// behavior lives in agent-protocol-ws.test.ts; these scans pin the two halves
+// no protocol test reaches — the release body and the engine clear.
+
+describe('hosted session whitelist wiring', () => {
+  it('ws-server pins sessionCreate to the page whitelist and releases at handoff', () => {
+    const ws = source('src/main/agent/ws-server.ts')
+    expect(ws).toContain("import { PAGE_SESSION_ALLOWED_TOOLS } from '../../shared/agent-protocol/page-tools'")
+    // One gate for both create paths (resume + fresh), shared with the
+    // registry bind: a bare (non-extension) client has no reverse channel to
+    // execute page tools, so pinning it would only empty its toolset.
+    expect(ws).toMatch(/isHostedClientId\(conn\.clientId\) \? \[\.\.\.PAGE_SESSION_ALLOWED_TOOLS\] : undefined/)
+    expect(ws.match(/allowedTools: pageToolWhitelist/g)?.length).toBe(2)
+    expect(ws).toContain('sessions.releaseToolWhitelist?.(sessionId)')
+  })
+
+  it('the manager releases both the pin and the engine-derived set', () => {
+    const mgr = source('src/main/agent/session-manager.ts')
+    const body = mgr.slice(mgr.indexOf('releaseToolWhitelist(sessionId: string): void'))
+    // Either half alone leaves the whitelist alive: the pin is what
+    // refreshOptions re-attaches, the derived set is constructor-only state
+    // that updateOptions never rebuilds.
+    expect(body).toContain('entry.pinned.allowedTools = undefined')
+    expect(body).toContain('entry.engine.clearAllowedTools()')
+    const engine = source('src/renderer/src/agent/AgentEngine.ts')
+    expect(engine).toMatch(/clearAllowedTools\(\): void \{[\s\S]*?this\.allowedToolsSet = undefined/)
   })
 })

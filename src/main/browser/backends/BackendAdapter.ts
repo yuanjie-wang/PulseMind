@@ -29,7 +29,8 @@ export interface BackendAdapter {
   newTab(options: { url?: string; tabId: string; downloadsDir?: string; origin?: 'user' | 'agent'; scopeId?: string }): Promise<BackendTab>
   /** Backends may keep browser-level state (the launch browser itself). */
   rawBrowser(): Browser | null
-  /** Context of a tab, when the backend associates one (managed: per-tab). */
+  /** Context of a tab, when the backend associates one (managed: shared per
+ *  conversation scope, dedicated for scopeless tabs). */
   contextOf(tab: BackendTab): BrowserContext | null
   /** Tabs the user can see in the app pane (app-view only). */
   userOpenTabs?(): Promise<Array<{ id: string; url: string; title: string }>>
