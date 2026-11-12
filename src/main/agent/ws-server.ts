@@ -39,6 +39,7 @@ import {
 import { agentSessionManager } from './session-manager'
 import type { AgentServiceSessions } from './service-sessions'
 import { agentClientRegistry, isHostedClientId, type ClientTransport } from './client-registry'
+import { PAGE_SESSION_ALLOWED_TOOLS } from '../../shared/agent-protocol/page-tools'
 import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
@@ -389,6 +390,12 @@ export async function startAgentService(
             void (async () => {
               let sessionId = requestedId
               let resumed = false
+              // §3.4.1 的机制化（page-tools.ts 的会话白名单）：扩展驱动的会话
+              // 「发生在网页里」，桌面工具集（shell/file/Playwright browser）
+              // 不得随行——钉 page_*+ask_user。门与下面 bind 的 isHostedClientId
+              // 同源：bare（非扩展）客户端没有反向通道执行 page 工具，钉了只会
+              // 把它的工具集清空。resume 与新建两条路同一把门。
+              const pageToolWhitelist = isHostedClientId(conn.clientId) ? [...PAGE_SESSION_ALLOWED_TOOLS] : undefined
               if (sessionId && !sessions.hasSession(sessionId)) {
                 const conv = store.hydrate(sessionId)
                 if (conv) {
@@ -396,7 +403,13 @@ export async function startAgentService(
                   // conversation so a desktop restart or a fresh SW keeps the
                   // thread going. Same fill-in of tool_result content the
                   // desktop "continue conversation" path uses.
-                  await sessions.createSession(sessionId, { agentId, title: title || conv.title, clientId: conn.origin, tabKey })
+                  await sessions.createSession(sessionId, {
+                    agentId,
+                    title: title || conv.title,
+                    clientId: conn.origin,
+                    tabKey,
+                    allowedTools: pageToolWhitelist,
+                  })
                   await sessions.hydrate(
                     sessionId,
                     conv.messages,
@@ -409,7 +422,13 @@ export async function startAgentService(
               }
               if (!sessionId) {
                 sessionId = `ws_${Date.now()}_${shortUuid(8)}`
-                await sessions.createSession(sessionId, { agentId, title, clientId: conn.origin, tabKey })
+                await sessions.createSession(sessionId, {
+                  agentId,
+                  title,
+                  clientId: conn.origin,
+                  tabKey,
+                  allowedTools: pageToolWhitelist,
+                })
               }
               conn.sessions.add(sessionId)
               // Bind here too (2026-10-10): agentAsk was the ONLY bind site, so
@@ -705,6 +724,10 @@ export async function startAgentService(
               // ④ 双向解绑：事件停止推给扩展 + registry 释放反向通道。
               conn.sessions.delete(sessionId)
               agentClientRegistry.unbindSession(sessionId)
+              // ④' 白名单随移交释放：会话创建时钉的 page_*+ask_user 白名单是
+              //     hosted 姿态的一部分，桌面续聊必须拿回完整工具集（pin +
+              //     引擎派生集一起清，session-manager 的实现是唯一真源）。
+              sessions.releaseToolWhitelist?.(sessionId)
               // ⑤ 广播（窗口保障在注入方）。
               opts.broadcast?.({ sessionId, title: store.title(sessionId) ?? page?.title ?? '', url: page?.url ?? '' })
               send(makeResult(msg.id ?? null, { ok: true }))

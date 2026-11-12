@@ -4,7 +4,6 @@
  */
 import { MAX_EARLYSTOP_CONTINUATIONS, MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR, classifyTransportFailure } from './engine-constants'
 import { hasTaskDoneSentinel, stripTaskDoneSentinel } from './task-sentinel'
-import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
@@ -239,7 +238,6 @@ export class StreamRunner {
             this.engine.notify()
             safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'error', error: hint } }, 'afterLlmCall')
             safeInvokeObserver(opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'error', error: hint } }, 'afterSession')
-            runTurnEndMemoryExtraction(this.engine)
             this.engine.resolveCompletionIfSpawned('error')
             this.engine.notify()
             return
@@ -487,8 +485,6 @@ export class StreamRunner {
       if (!isCancel) { this.engine.agentStatus = { status: 'error', error: message }; this.engine.notify() }
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: null, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterLlmCall')
       safeInvokeObserver(opts.hooks?.afterSession, { messages: this.engine.messages, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterSession')
-      // Turn-end memory salvage — same contract as execution-flow's call.
-      runTurnEndMemoryExtraction(this.engine)
       if (!isCancel) this.engine.resolveCompletionIfSpawned('error')
       if (isCancel) return
       this.engine.notify()

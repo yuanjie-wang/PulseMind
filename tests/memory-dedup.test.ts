@@ -35,116 +35,29 @@ describe('the loop no longer spends LLM calls on memory (P0 #1)', () => {
     expect(read('src/renderer/src/agent/engine/engine-constants.ts')).not.toContain('MEM_EXTRACTION_COOLDOWN')
   })
 
-  it('the turn-end salvage is wired at all three afterSession points and gated', () => {
+  it('抢救式提取已整体退役（user 2026-11-12）：三处 afterSession 不再调用', () => {
     for (const file of [EXEC_FLOW, STREAM_RUNNER, AGENT_ENGINE]) {
-      expect(read(file)).toContain('runTurnEndMemoryExtraction(')
+      expect(read(file)).not.toContain('runTurnEndMemoryExtraction')
     }
     const src = read(ENGINE)
-    // gate order: in-progress, sub-agent, conversation, pref, per-session cap, pressure
-    expect(src).toContain('if (engine._memExtractionInProgress) return')
-    expect(src).toContain('if (engine.spawnSystemPrompt) return')
-    expect(src).toContain('if (engine._memSalvageCount >= MEM_SALVAGE_MAX_PER_SESSION) return')
-    expect(src).toContain('MEM_SALVAGE_CONTEXT_RATIO')
-  })
-
-  it('extracted pairs are marked and marked pairs are skipped — never via autoSummary', () => {
-    const src = read(ENGINE)
-    expect(src).toContain('memExtracted')
-    expect(src).not.toContain('autoSummary || next.autoSummary) continue\n      }\n      if (i') // regression guard only
+    expect(src).not.toContain('extractMemoriesFromOldToolPairs')
+    expect(src).not.toContain('_memSalvageCount')
+    expect(src).not.toContain('_memExtractionInProgress')
+    expect(src).not.toContain('MEM_SALVAGE')
+    expect(read('src/renderer/src/agent/engine/engine-constants.ts')).not.toContain('MEM_SALVAGE')
+    // memExtracted 随之删除：打标只服务于 salvage 的幂等，没人读了
+    expect(read('src/renderer/src/types/agent.ts')).not.toContain('memExtracted')
   })
 })
 
-describe('the extraction idempotence machine (mock engine, real extraction module)', () => {
-  // A mock engine shaped like EngineCore, with a COUNTING adapter: the whole
-  // point is that the second run issues ZERO LLM calls after the first run
-  // marked its pairs.
-  function makeEngine(overrides: Partial<Record<string, unknown>> = {}) {
-    const llmCalls = 0
-    const pair = (i: number): { assistant: any; user: any } => ({
-      assistant: { id: `a${i}`, role: 'assistant', contentBlocks: [{ type: 'text', text: `reasoning ${i}` }, { type: 'tool_use', name: 'read', id: `t${i}` }] },
-      user: { id: `u${i}`, role: 'user', contentBlocks: [{ type: 'tool_result', tool_use_id: `t${i}`, content: `result ${i}` }] },
-    })
-    const messages: any[] = []
-    for (let i = 0; i < (overrides.messagePairCount ?? 8); i++) {
-      const p = pair(i)
-      messages.push(p.assistant, p.user)
-    }
-    const engine = {
-      messages,
-      spawnSystemPrompt: null,
-      opts: {
-        conversationId: 'conv_test',
-        contextLength: 128000,
-        apiKey: 'k',
-        baseURL: 'https://x',
-        model: 'm',
-        memoryManager: { getPreferences: () => ({ autoCaptureEnabled: true }) },
-      },
-      compactor: { contextTokens: () => 200000 }, // ≥90% of 128k
-      _memExtractionInProgress: false,
-      _memSalvageCount: 0,
-      callCount: () => llmCalls,
-      ...overrides,
-    }
-    return engine
-  }
-
-  it('a fully-marked batch costs zero LLM calls on re-run; the window ADVANCES past marked pairs', async () => {
+describe('the extraction idempotence machine is GONE (user 2026-11-12)', () => {
+  it('模块只剩工具结果落库：两个 salvage 导出运行时确不存在', async () => {
     vi.resetModules()
-    const hostMod = await import('../src/renderer/src/agent/host')
-    hostMod.setHost({
-      saveMemory: async () => ({}),
-    } as never)
-    const { extractMemoriesFromOldToolPairs } = await import('../src/renderer/src/agent/engine/memory-extraction')
-    let calls = 0
-    const countingAdapter = {
-      callNonStreaming: async () => {
-        calls++
-        return JSON.stringify([{ content: '用户偏好把测试放在共享层', type: 'preference', category: 'user_pref' }])
-      },
-    }
-
-    // Exactly MAX pairs: the first pass mines and marks ALL of them, so a
-    // second pass over the same material has nothing left — zero calls.
-    // (载荷事实 1 of the plan: marking prevents re-mining the SAME pairs;
-    // the in-loop trigger was deleted precisely because the window would
-    // otherwise advance to fresh pairs every 30s.)
-    const capped = makeEngine({ messagePairCount: 5 }) // 5 pairs → exactly 3 pass the tail guard
-    ;(capped.opts as any).adapter = countingAdapter
-    await extractMemoriesFromOldToolPairs(capped as never)
-    expect(calls).toBe(1)
-    expect(capped.messages.filter((m) => m.memExtracted).length).toBe(6) // 3 pairs × 2
-    await extractMemoriesFromOldToolPairs(capped as never)
-    expect(calls).toBe(1)
-
-    // More pairs than the cap: the window ADVANCES — the next pass mines the
-    // NEXT batch, never the old ones again.
-    const advancing = makeEngine({ messagePairCount: 9 })
-    ;(advancing.opts as any).adapter = countingAdapter
-    await extractMemoriesFromOldToolPairs(advancing as never)
-    const firstBatchIds = new Set(advancing.messages.filter((m) => m.memExtracted).map((m) => m.id))
-    await extractMemoriesFromOldToolPairs(advancing as never)
-    const secondBatchIds = advancing.messages.filter((m) => m.memExtracted).map((m) => m.id)
-    expect(secondBatchIds.some((id) => !firstBatchIds.has(id))).toBe(true)
-  })
-
-  it('the per-session salvage cap (3) holds and the pressure gate blocks low-context runs', async () => {
-    vi.resetModules()
-    const { runTurnEndMemoryExtraction } = await import('../src/renderer/src/agent/engine/memory-extraction')
-    const engine = makeEngine({ messagePairCount: 30 })
-    ;(engine.opts as any).adapter = { callNonStreaming: async () => '[]' }
-    const flush = () => new Promise((r) => setTimeout(r, 0))
-    // Salvage is fire-and-forget and holds the in-progress flag while its LLM
-    // call runs — the drain between calls is what a real turn end provides.
-    for (let i = 0; i < 5; i++) {
-      runTurnEndMemoryExtraction(engine as never)
-      await flush()
-    }
-    expect(engine._memSalvageCount).toBe(3)
-
-    const relaxed = makeEngine({ compactor: { contextTokens: () => 1000 } })
-    runTurnEndMemoryExtraction(relaxed as never)
-    expect(relaxed._memSalvageCount).toBe(0)
+    const mod = (await import('../src/renderer/src/agent/engine/memory-extraction')) as Record<string, unknown>
+    expect(mod.extractMemoriesFromOldToolPairs).toBeUndefined()
+    expect(mod.runTurnEndMemoryExtraction).toBeUndefined()
+    // 同模块的落库函数必须还在（别为删 salvage 连带删掉它）
+    expect(typeof mod.persistUnsavedToolResults).toBe('function')
   })
 })
 

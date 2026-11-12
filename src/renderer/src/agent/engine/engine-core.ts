@@ -171,10 +171,6 @@ export interface EngineCore {
    *  不再起 LLM 轮（结算是 pipeline-engine 的事）。 */
   consumeStageFinishTurnEnd: () => boolean
 
-  // ── Background extraction bookkeeping ──
-  _memExtractionInProgress: boolean
-  _memSalvageCount: number
-
   // ── Loop control & collaborators ──
   compactor: ContextCompactor
   continueLoop: () => Promise<void>

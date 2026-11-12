@@ -182,14 +182,6 @@ export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any to
 // MAX_READ_RESULT_TOKENS.
 export const MAX_USER_INPUT_CHARS = 4_000
 
-// ── Turn-end memory salvage (PLAN-memory-extraction-dedup) ──────────────
-// In-loop extraction is GONE (scheduleMemoryExtraction deleted — the loop no
-// longer spends LLM calls on memory). The only salvage path runs at TURN END,
-// capped per session, and only when context pressure puts old tool pairs at
-// risk of being compacted away before the turn-end extractAndSaveAll sees them.
-export const MEM_SALVAGE_MAX_PER_SESSION = 3
-export const MEM_SALVAGE_CONTEXT_RATIO = 0.9
-
 // ── Live terminal-output cap ───────────────────────────────────────────
 // The engine-side accumulation of a RUNNING process's output (execution-flow's
 // shell path and domain-tools' exec executor) used to be unbounded: a `tail

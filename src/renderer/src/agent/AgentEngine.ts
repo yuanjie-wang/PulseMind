@@ -32,7 +32,7 @@ import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import type { CompactToolRequest, CompactToolOutcome } from './executors/context'
 import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools, buildToolProtocols } from './engine/tool-collection'
-import { runTurnEndMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
+import { persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
@@ -128,7 +128,6 @@ export interface AgentEngineOptions {
    *  state block's Forced Skills section orders the model to pick_skill first.
    *  Written by prepareTurn from the staged value — never set directly. */
   forcedSkills?: string[] | null
-  experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
   hooks?: HooksConfig
   onSkillStateChange?: () => void
   /** How tool calls are gated for this engine (shared ladder; a project's
@@ -367,10 +366,13 @@ export class AgentEngine implements EngineCore {
   /** @internal */
   pendingEarlyStopNudge = false
   // ── Todo closure gate state (nudgeTodoIfUnsettled) ──
-  /** Quota: the gate fires at most ONCE per turn — a second open-ended close
-   *  closes normally even if the list is still open (the "不断补充任务" bound). */
+  /** Progress gate: toolRoundsThisTurn at the last bounce (-1 = not yet this
+   *  turn). A close with NO new tool rounds since the last bounce is the
+   *  说而不做 signature and closes normally; any new tool round re-arms the
+   *  gate, so a working model is bounced back every time prose interrupts it —
+   *  the loop budget (awaiting_extension) stays the outer bound. */
   /** @internal */
-  todoCloseNudged = false
+  todoNudgeAtRounds = -1
   /** Armed by the gate, consumed by prepareLoopRequest's state block. */
   /** @internal */
   pendingTodoCloseNudge = false
@@ -994,6 +996,15 @@ export class AgentEngine implements EngineCore {
     this.toolExecutor.updateOptions(this.opts)
   }
 
+  /** Drop the tool whitelist at runtime (extension→desktop handoff): the
+   *  session manager clears the pinned bag entry, but the derived set is
+   *  constructor-only state — updateOptions never re-derives it — so without
+   *  this the live engine would keep filtering to the page family forever. */
+  clearAllowedTools(): void {
+    this.allowedToolsSet = undefined
+    this.opts = { ...this.opts, allowedTools: undefined }
+  }
+
   /** Swap the @-summoned expert config pack at runtime. Expert state lives on
    *  opts (single source of truth for the prompt builder and for the tool
    *  collection, which reads the allowed* whitelists); the pack's 可用技能 /
@@ -1097,8 +1108,8 @@ export class AgentEngine implements EngineCore {
     this.earlyStopContinues = 0
     this.earlyStopNudgesTotal = 0
     this.pendingEarlyStopNudge = false
-    // Fresh todo-closure quota too: the gate belongs to the turn that fired it.
-    this.todoCloseNudged = false
+    // Fresh todo-closure gate too: the gate belongs to the turn that fired it.
+    this.todoNudgeAtRounds = -1
     this.pendingTodoCloseNudge = false
     // Repeat-call guard belongs to the turn too: a new send starts with a
     // clean slate (stale signatures from the previous turn would flag a
@@ -1265,30 +1276,35 @@ export class AgentEngine implements EngineCore {
   }
 
   /**
-   * Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新).
+   * Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新;
+   * same-day second ruling: 未完成却光说话就停要持续循环,不是一次配额).
    * `todo_write`'s settle discipline was prompt-only — the engine closed the
    * turn on any end_turn and an open direct-plan list just stayed behind.
    * Fired from ExecutionFlow's turn end (after the summon nudge and the plan
-   * scheduler's kick, before classifyStopReason): when the turn did tool work
-   * and the live direct plan still carries pending entries, bounce the turn
-   * back ONCE with the Todo Closure directive (pendingTodoCloseNudge → the
-   * next state block). Blocked/completed/skipped entries never fire the gate
-   * (user ruling: blocked = a legitimate close — the list says what it waits
-   * on); a pure-chat turn leaves a stale list for the next working turn;
-   * max_tokens has its own continuation path. The second open-ended close
-   * closes normally — the quota is the bound against 补充任务 loops.
+   * scheduler's kick, before classifyStopReason): when the live direct plan
+   * still carries pending entries, bounce the turn back with the Todo Closure
+   * directive (pendingTodoCloseNudge → the next state block). Blocked/
+   * completed/skipped entries never fire the gate (user ruling: blocked = a
+   * legitimate close — the list says what it waits on); max_tokens has its own
+   * continuation path. Progress-gated re-arm: the FIRST open-ended close of
+   * the turn fires even with zero tool rounds (「继续」answered in prose is
+   * exactly the shape being fixed); after a bounce only NEW tool work re-arms
+   * it — a bounce that produced no tool rounds is 说而不做 and the turn
+   * closes. The outer bound is the loop budget (awaiting_extension), not a
+   * per-turn quota.
    */
   nudgeTodoIfUnsettled = (stopReason: string | null): boolean => {
     if (stopReason === 'max_tokens') return false
-    if (this.todoCloseNudged || this.isCancelled) return false
-    if (this.toolRoundsThisTurn === 0) return false
+    if (this.isCancelled) return false
     const plan = this.planManager.plan
     if (!plan || (plan.mode ?? 'delegated') !== 'direct' || plan.completed) return false
     const open = plan.nodes.filter((n) => n.status === 'pending')
     if (open.length === 0) return false
-    this.todoCloseNudged = true
+    // The 说而不做 bound: no new tool rounds since the last bounce → close.
+    if (this.toolRoundsThisTurn <= this.todoNudgeAtRounds) return false
+    this.todoNudgeAtRounds = this.toolRoundsThisTurn
     this.pendingTodoCloseNudge = true
-    console.log(`[AgentEngine] todo list still open (${open.map((n) => n.id).join(', ')}) — re-issuing the turn once for closure`)
+    console.log(`[AgentEngine] todo list still open (${open.map((n) => n.id).join(', ')}) — re-issuing the turn for closure`)
     this.agentStatus = {
       status: 'retrying',
       message: `任务清单仍有未完成条目（${open.map((n) => n.id).join('、')}），正在要求模型收口…`,
@@ -1398,8 +1414,6 @@ export class AgentEngine implements EngineCore {
       this.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: null, status: { status: 'error', error: message } }, 'afterLlmCall')
       safeInvokeObserver(opts.hooks?.afterSession, { messages: this.messages, status: { status: 'error', error: message } }, 'afterSession')
-      // Turn-end memory salvage (error path — the pairs are still in memory).
-      runTurnEndMemoryExtraction(this)
       this.resolveCompletionIfSpawned('error')
     } finally {
       this.prepareLoopInProgress = false
@@ -2292,15 +2306,4 @@ export class AgentEngine implements EngineCore {
       return ''
     }
   }
-
-
-  // ── Background memory extraction (replaces old autoCompact) ──────────
-
-  /** Prevents concurrent memory extraction runs */
-  /** @internal */
-  _memExtractionInProgress = false
-  /** Turn-end salvage runs used by this session (PLAN-memory-extraction-dedup:
-   *  MEM_SALVAGE_MAX_PER_SESSION caps the whole process lifetime of a session). */
-  /** @internal */
-  _memSalvageCount = 0
 }

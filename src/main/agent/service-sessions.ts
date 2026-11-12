@@ -11,7 +11,17 @@ export interface AgentServiceSessions {
    *  (the extension's per-tab 历史会话 list, 2026-11-03). */
   createSession(
     sessionId: string,
-    opts: { agentId?: string; title?: string; clientId?: string; tabKey?: string },
+    opts: {
+      agentId?: string
+      title?: string
+      clientId?: string
+      tabKey?: string
+      /** Create-time tool whitelist (the hosted page-tool posture): ws-server
+       *  pins every extension-driven session to `PAGE_SESSION_ALLOWED_TOOLS`
+       *  — the desktop toolset must not ride along into a conversation that
+       *  happens inside a web page (page-tools.ts §3.4.1). */
+      allowedTools?: string[]
+    },
   ): Promise<{ sessionId: string; agentId: string }>
   ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void>
   cancel(sessionId: string): void
@@ -42,4 +52,7 @@ export interface AgentServiceSessions {
    *  keeps its own, so the caller must reconcile against this answer rather
    *  than against what it asked for. */
   setApprovalMode(sessionId: string, mode: SandboxApprovalMode): Promise<SandboxApprovalMode>
+  /** session.handoff 的随件（可选，fake 免实现）：解除该会话的 create-time
+   *  工具白名单——移交桌面后续聊必须拿回完整桌面工具集。 */
+  releaseToolWhitelist?(sessionId: string): void
 }

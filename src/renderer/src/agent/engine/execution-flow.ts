@@ -4,7 +4,6 @@
  * AgentEngine with a back-reference to the owning engine.
  */
 import { getHost } from '../host'
-import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
 import { generateMsgId, classifyStopReason } from '../agent-utils'
@@ -598,8 +597,9 @@ export class ExecutionFlow {
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (_name: string): boolean => false  // knowledge_read 已退役（E8）：知识读取走 read 绝对路径（read 组）
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
-    const experienceTools = tools.filter(t => isExperienceTool(t.name))
+    // experience_read/experience_save 已退役（2026-11-12 经验 SKILL 化， absorbed 进
+    // memory_save/pick_skill）：审批路由由 memory 组（MEMORY_GROUP_TOOL_NAMES）承担，
+    // 不再单列一组——勿按旧 G73 契约加回来。
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
     // Gated (requireApproval) MCP tools behave like otherTools: held for approval
     // at any level above 'auto', auto-executed otherwise.
@@ -612,7 +612,7 @@ export class ExecutionFlow {
     // 的阶段会停在 awaiting_approval 直到超时，最需要完成信号的时候偏偏没有。
     // 与 exec_logs 同款：独立分组 + execOtherTool 派发，不进 otherTools。
     const stageFinishTools = tools.filter(t => t.name === STAGE_FINISH_TOOL)
-    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
     const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
     // exec_logs is a read (P0-3 #14) dispatched through execOtherTool — never a
@@ -700,7 +700,6 @@ export class ExecutionFlow {
       }
       if (memoryTools.length > 0) for (const t of memoryTools) await this.engine.toolExecutor.execOtherTool(t)
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
-      if (experienceTools.length > 0) for (const t of experienceTools) await this.engine.toolExecutor.execOtherTool(t)
       if (procReadTools.length > 0) for (const t of procReadTools) await this.engine.toolExecutor.execOtherTool(t)
       if (stageFinishTools.length > 0) for (const t of stageFinishTools) await this.engine.toolExecutor.execOtherTool(t)
       if (autoOther.length > 0) { for (const t of autoOther) await this.engine.toolExecutor.execOtherTool(t) }
@@ -808,15 +807,15 @@ export class ExecutionFlow {
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (_name: string): boolean => false  // knowledge_read 已退役（E8）：知识读取走 read 绝对路径（read 组）
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
-    const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
+    // experience_read/experience_save 已退役（2026-11-12 经验 SKILL 化）：见上方
+    // dispatch 侧同款注释——审批路由由 memory 组承担，不再单列。
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
     // finish_stage 不进 otherTools：它是阶段完成协议，派发侧独立成组（永不
     // 上梯子），这里若漏掉排除，outside-ask 下它会被当成普通工具扣留。
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs' && t.name !== 'exec_list' && t.name !== STAGE_FINISH_TOOL)
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
     // calls at 'outside-ask' and above, file writes as well at 'always-ask',
@@ -1051,10 +1050,6 @@ export class ExecutionFlow {
       this.engine.notify()
       safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed', stopReason: stop } }, 'afterLlmCall')
       safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed', stopReason: stop } }, 'afterSession')
-      // Turn-end memory salvage (PLAN-memory-extraction-dedup): the loop itself
-      // no longer spends LLM calls on memory; old tool pairs at compaction risk
-      // are mined HERE, once, capped. Fire-and-forget.
-      runTurnEndMemoryExtraction(this.engine)
     } catch (err) {
       // 回合收尾面上的异常就地吞掉：onStreamComplete 对本函数是同步调用且无
       // await 方，一个逃逸的 rejection 就是静默死亡——终局消息已入库、状态已

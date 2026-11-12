@@ -19,7 +19,6 @@ const { SkillManager } = await import('../src/renderer/src/skills/SkillManager')
 const { setHost } = await import('../src/renderer/src/agent/host')
 const { extractInvokeToolCalls } = await import('../src/renderer/src/agent/engine/result-ingestion')
 const { ContextCompactor } = await import('../src/renderer/src/agent/engine/context-compactor')
-const { ExperienceManager } = await import('../src/renderer/src/experiences/ExperienceManager')
 const { buildSystemPrompt } = await import('../src/renderer/src/agent/system-prompt-builder')
 const {
   acquireSubAgentSlot, tryAcquireSubAgentSlot, setSubAgentParallelLimit,
@@ -289,22 +288,6 @@ describe('emergencyTruncate: thinking-block stripping (phase 2b)', () => {
     expect(out[out.length - 2].contentBlocks.some(b => b.type === 'text')).toBe(true)
     // And the live copy is untouched (API-copy contract).
     expect(messages.filter(m => m.role === 'assistant').every(m => m.contentBlocks.some(b => b.type === 'thinking'))).toBe(true)
-  })
-})
-
-// ── B4: the experience index renders byte-stable (name-sorted) ──────────────
-describe('ExperienceManager.buildNameIndex: name-sorted, not LRU-ordered', () => {
-  afterEach(() => setHost(null as unknown as PulseHost))
-
-  it('renders names in code-unit order regardless of the store\'s LRU order', async () => {
-    setHost({
-      listExperiences: async () => [
-        { name: 'zeta-latest' }, { name: 'alpha-oldest' }, { name: 'mid-used' },
-      ],
-    } as unknown as PulseHost)
-    const mgr = new ExperienceManager()
-    const index = await mgr.buildNameIndex()
-    expect(index).toContain('alpha-oldest, mid-used, zeta-latest')
   })
 })
 

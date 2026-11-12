@@ -154,7 +154,7 @@ export function migrateWorkbenchPersisted(persisted: unknown, version: number): 
   let s = persisted as Partial<WorkbenchState> & { width?: number; activeTab?: WorkbenchTab; widthByTab?: Record<string, number> }
   if (version < 2) {
     const { width: legacy, ...rest } = s
-    const kept = typeof legacy === 'number' && Number.isFinite(legacy) ? { browser: legacy } : {}
+    const kept: Record<string, number> = typeof legacy === 'number' && Number.isFinite(legacy) ? { browser: legacy } : {}
     s = { ...rest, widthByTab: kept }
   }
   if (version < 3) {

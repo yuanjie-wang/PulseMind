@@ -134,7 +134,6 @@ function makeCore(over: {
     handleEndTurnResponse: vi.fn(),
     // 阶段完成协议：普通会话没有 finish_stage 记录，drain 走 kick/continueLoop。
     consumeStageFinishTurnEnd: vi.fn(() => false),
-    _memExtractionInProgress: false, _memSalvageCount: 0,
     compactor: { contextTokens: () => 0 },
     continueLoop: vi.fn(async () => {}),
     cancelLoop: vi.fn(),
@@ -448,8 +447,9 @@ describe('ExecutionFlow dispatch 扇出（auto 模式）', () => {
       toolUse('t_subplan', 'create_sub_plan'),
       toolUse('t_mem', 'recall'),
       toolUse('t_compact', 'context_compact'),
-      
-      toolUse('t_exp', 'experience_read'),
+      // experience_read/experience_save 家族已退役（2026-11-12 经验 SKILL 化）：
+      // memory_save/pick_skill 接管，审批由 memory 组承担——全家族批次里不再有它。
+
       toolUse('t_logs', 'exec_logs'),
       toolUse('t_other', 'custom_thing'),
       toolUse('spawn_ok', 'spawn_agent'),
@@ -470,7 +470,7 @@ describe('ExecutionFlow dispatch 扇出（auto 模式）', () => {
     expect(got('execWebFetch')).toEqual(['webfetch'])
     expect(got('execBrowser')).toEqual(['browser'])
     expect(got('execCreateSubPlan')).toEqual(['create_sub_plan'])
-    expect(got('execOtherTool')).toEqual(['recall', 'context_compact', 'experience_read', 'exec_logs', 'custom_thing'])
+    expect(got('execOtherTool')).toEqual(['recall', 'context_compact', 'exec_logs', 'custom_thing'])
     expect(got('execSpawnAgent').sort()).toEqual(['spawn_agent', 'spawn_agent'])
     expect(raw.planManager.execAdvancePlan).toHaveBeenCalled()
     // spawn 失败被兜住：块标 completed + 错误结果，其余专家不受牵连

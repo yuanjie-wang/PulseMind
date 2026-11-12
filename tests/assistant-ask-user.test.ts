@@ -16,6 +16,8 @@
 // park test (measured), because that is exactly the pre-fix shape.
 
 import { describe, expect, it, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import { setHost } from '../src/renderer/src/agent/host'
 import { AgentEngine } from '../src/renderer/src/agent/AgentEngine'
@@ -41,15 +43,38 @@ function makeMockHost(): PulseHost {
     getSettings: () => Promise.resolve({ locale: 'zh' }),
     ...Object.fromEntries(
       [
-        'apiAbortStream', 'apiFetch', 'apiFetchStream', 'execCommandSync', 'executeCommand',
-        'killCommand', 'readFile', 'writeFile', 'editFile', 'patchFile', 'getFileStat',
-        'convertFileToMarkdown', 'copyFileToTmp', 'saveBase64Image', 'gitInvoke',
-        'mcpStartServer', 'mcpRegisterServer', 'mcpUpdateServerSummary', 'mcpCallTool',
-        'setSkillPreferences', 'readSkillRaw', 'installSkill', 'readExperienceRecord',
-        'touchExperienceRecord', 'saveMemory', 'searchConversationsByKeyword', 'getToolResult',
-        'getConversation', 'saveConversation', 'appendConversationMessages',
-        'persistToolResults', 'saveConversationPlan', 'getConversationPlan',
-      ].map(k => [k, record(k)]),
+        'apiAbortStream',
+        'apiFetch',
+        'apiFetchStream',
+        'execCommandSync',
+        'executeCommand',
+        'killCommand',
+        'readFile',
+        'writeFile',
+        'editFile',
+        'patchFile',
+        'getFileStat',
+        'convertFileToMarkdown',
+        'copyFileToTmp',
+        'saveBase64Image',
+        'gitInvoke',
+        'mcpStartServer',
+        'mcpRegisterServer',
+        'mcpUpdateServerSummary',
+        'mcpCallTool',
+        'setSkillPreferences',
+        'readSkillRaw',
+        'installSkill',
+        'saveMemory',
+        'searchConversationsByKeyword',
+        'getToolResult',
+        'getConversation',
+        'saveConversation',
+        'appendConversationMessages',
+        'persistToolResults',
+        'saveConversationPlan',
+        'getConversationPlan',
+      ].map((k) => [k, record(k)]),
     ),
   } as unknown as PulseHost
 }
@@ -84,9 +109,11 @@ const makeAskUser = (id: string): ToolUseBlock =>
   }) as ToolUseBlock
 
 const toolResults = (engine: AgentEngine): Array<{ tool_use_id: string; is_error?: boolean; content?: string }> =>
-  engine.messages
-    .flatMap(m => m.contentBlocks)
-    .filter((b): b is Extract<typeof b, { type: 'tool_result' }> => b.type === 'tool_result') as Array<{ tool_use_id: string; is_error?: boolean; content?: string }>
+  engine.messages.flatMap((m) => m.contentBlocks).filter((b): b is Extract<typeof b, { type: 'tool_result' }> => b.type === 'tool_result') as Array<{
+    tool_use_id: string
+    is_error?: boolean
+    content?: string
+  }>
 
 describe('ask_user: hosted sessions park, spawned agents refuse', () => {
   beforeEach(() => setHost(makeMockHost()))
@@ -164,5 +191,25 @@ describe('ask_user: hosted sessions park, spawned agents refuse', () => {
     // The loop re-issued and landed on the assertable no-key guard — with the
     // gate still raised this stays `{ status: 'idle' }` (the silent no-op).
     expect(engine.agentStatus).toEqual({ status: 'error', error: 'API key not configured' })
+  })
+})
+
+// ── One-turn batch: the manual must teach parallel ask_user calls ───────────
+// The engine parks the whole batch and the UI renders ONE AskUserBatchCard
+// (MessageGroup's 2026-10-06 merge; probe-panel-ask-user's 「一轮两题」 fixture),
+// but no prompt ever said so — PARALLEL_CALLS_SECTION scopes batching to
+// read-only exploration, so models asked their questions one turn each. The
+// rule lives in the tool's own manual (static bytes, cached-prefix safe).
+describe('ask_user manual: batch guidance present', () => {
+  const manual = readFileSync(join(__dirname, '../src/renderer/src/tools/tool-instructions.ts'), 'utf8')
+  const askSection = manual.slice(manual.indexOf('ask_user: `## ask_user'))
+
+  it('rule 6 tells the model to emit several asks in one message', () => {
+    expect(askSection).toContain('several ask_user calls in ONE assistant message')
+    expect(askSection).toContain('batch card')
+  })
+
+  it('the dependency carve-out is stated (answer-dependent questions stay serial)', () => {
+    expect(askSection).toContain('ANSWER decides what to ask next')
   })
 })

@@ -473,7 +473,7 @@ describe('execPickSkill 矩阵', () => {
     expect(h.results[0].content).toContain("not in this session's allowed skills")
 
     // 旧经验兜底分支被整段拆除：经验名不再可经 pick_skill 读到（回归守卫）
-    h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] }, experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', dir: '/exp/exp1', description: 'd' }]), touch: vi.fn(async () => {}) } } })
+    h = makeHarness({ opts: { skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] } } })
     await h.executor.execPickSkill(t('t2', 'pick_skill', { name: 'exp1' }))
     expect(h.results[0]).toMatchObject({ isError: true, content: 'Skill "exp1" not found.' })
     expect(h.results[0].content).not.toContain('EXP BODY')
@@ -691,7 +691,6 @@ describe('execPickSkill — 白名单只拦技能（#9 的经验半边已随池�
     const h = makeHarness({ opts: {
       allowedSkills: ['other'],
       skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] },
-      experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', dir: '/exp/exp1' }]), touch: vi.fn(async () => {}) },
     } })
     await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'exp1' }))
     expect(h.results[0].isError).toBe(true)

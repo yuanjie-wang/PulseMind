@@ -8,6 +8,7 @@ import { agentClientRegistry } from '../src/main/agent/client-registry'
 import { hostedToolProxy } from '../src/main/agent/hosted/proxy'
 import { hostedPromptRouter } from '../src/main/agent/hosted/prompts'
 import { ErrorCodes, PROTOCOL_VERSION, type AgentEventData } from '../src/shared/agent-protocol'
+import { PAGE_TOOL_NAMES } from '../src/shared/agent-protocol/page-tools'
 import type { AgentServiceSessions } from '../src/main/agent/service-sessions'
 import type { SandboxApprovalMode } from '../src/shared/sandbox/policy'
 
@@ -126,6 +127,9 @@ interface FakeSessions extends AgentServiceSessions {
   sessionModels: Array<{ sessionId: string; profileId: string | null }>
   /** Session ids the model.list was asked for (undefined = global default). */
   modelStateCalls: Array<string | undefined>
+  /** 白名单随移交释放的记录（§3.4.1 的机制化：session.handoff 必须解除
+   *  create 时钉的 page 白名单，桌面续聊才拿得回完整工具集）。 */
+  releasedWhitelists: string[]
   emit: (sessionId: string, data: AgentEventData) => void
   setAskHandler: (fn: (sessionId: string, content: string, pageContext: any) => Promise<void>) => void
 }
@@ -148,6 +152,7 @@ function makeFakeSessions(): FakeSessions {
     approvalModes: [] as Array<{ sessionId: string; mode: SandboxApprovalMode }>,
     sessionModels: [] as Array<{ sessionId: string; profileId: string | null }>,
     modelStateCalls: [] as Array<string | undefined>,
+    releasedWhitelists: [] as string[],
     /** The live transcript a snapshot() would answer with (the persistence
      *  tests seed it before emitting a turn end). */
     messages: [] as unknown[],
@@ -180,6 +185,9 @@ function makeFakeSessions(): FakeSessions {
     },
     get modelStateCalls() {
       return state.modelStateCalls
+    },
+    get releasedWhitelists() {
+      return state.releasedWhitelists
     },
     get state() {
       return state
@@ -219,6 +227,9 @@ function makeFakeSessions(): FakeSessions {
       state.sessionModels.push({ sessionId, profileId })
       const activeId = profileId ?? state.model.activeId
       return { profiles: state.model.profiles, activeId }
+    },
+    releaseToolWhitelist: (sessionId: string) => {
+      state.releasedWhitelists.push(sessionId)
     },
     emit: (sessionId, data) => {
       for (const s of sinks) s(sessionId, data)
@@ -525,6 +536,39 @@ describe('M0.4 session surface', () => {
     }
   })
 
+  // §3.4.1 的机制化（page-tools.ts 的会话白名单从声明变生产线）：扩展驱动的
+  // 会话创建即钉 page_*+ask_user，桌面工具集（shell/file/Playwright）不随行；
+  // resume 与新建两条路同一把门。bare（非扩展）客户端没有反向通道执行 page
+  // 工具，钉了只会清空它的工具集——不钉。
+  it('session.create pins the page whitelist for hosted clients only', async () => {
+    const { handle, sessions, store } = await start()
+    try {
+      store.rows.set('ws_pin_resume', { title: '旧会话', origin: 'pulsemind-extension', updatedAt: new Date().toISOString() })
+
+      const ext = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`, { Origin: 'chrome-extension://abcdefg' })
+      await ext.open()
+      await ext.hello('pulsemind-extension')
+      await ext.request('session.create', {})
+      await ext.request('session.create', { sessionId: 'ws_pin_resume' })
+
+      const extCreates = sessions.created.filter((c) => typeof c.opts.clientId === 'string' && c.opts.clientId.startsWith('pulsemind-extension'))
+      expect(extCreates.length).toBe(2)
+      const expected = [...PAGE_TOOL_NAMES, 'ask_user']
+      for (const c of extCreates) expect(c.opts.allowedTools).toEqual(expected)
+
+      const bare = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await bare.open()
+      await bare.hello('cli-client')
+      await bare.request('session.create', {})
+      const bareCreate = sessions.created.find((c) => c.opts.clientId === 'cli-client')
+      expect(bareCreate).toBeDefined()
+      expect(bareCreate?.opts.allowedTools).toBeUndefined()
+      ext.close()
+      bare.close()
+    } finally {
+      await handle.close()
+    }
+  })
   // review_20261103 高3：doCreateSession 把「上次使用」档位种进新会话列，而
   // session.list 只列有消息的会话——面板在首条消息落库前没有别的渠道读到它。
   // session.create 必须把列值带回来（best-effort：行不存在/存储抛错 → undefined，
@@ -1700,6 +1744,8 @@ describe('session.handoff — 扩展会话移交桌面端', () => {
       expect(store.rows.get('conv_go')?.origin).toBe('local')
       // ④ registry 解绑
       expect(agentClientRegistry.get('conv_go')).toBeUndefined()
+      // ④' 白名单随移交释放：桌面续聊拿回完整工具集
+      expect(sessions.releasedWhitelists).toEqual(['conv_go'])
       // ⑤ 广播
       await waitUntil(() => broadcasts.length > 0)
       expect(broadcasts[0]).toMatchObject({ sessionId: 'conv_go', url: 'https://example.test/article' })

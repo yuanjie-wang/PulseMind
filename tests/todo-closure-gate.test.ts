@@ -20,16 +20,20 @@ import type { AgentEngineOptions } from '../src/renderer/src/agent/AgentEngine'
 import type { Plan } from '../src/shared/types/plan'
 
 /**
- * Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新).
+ * Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新;
+ * same-day second ruling: 未完成却光说话就停要持续循环).
  *
- * The shape it fixes: the turn does real tool work against a direct-mode
- * checklist and the model closes with prose while entries are still open —
- * todo_write's settle discipline was prompt-only, so the list just stayed
- * behind. The gate bounces the turn back ONCE (quota in the engine, the
- * "不断补充任务" bound) with the Todo Closure directive riding the state
- * block. Blocked entries don't fire the gate (user ruling: blocked = a
- * legitimate close); a pure-chat turn leaves a stale list alone; max_tokens
- * keeps its own continuation path; delegated plans are the scheduler's.
+ * The shape it fixes: the model closes with prose while a direct-mode
+ * checklist still has open entries — todo_write's settle discipline was
+ * prompt-only, so the list just stayed behind. The gate bounces the turn
+ * back with the Todo Closure directive riding the state block, PROGRESS-
+ * GATED: the first open-ended close fires even with zero tool rounds (a
+ * prose 「继续」 is exactly the shape being fixed); after a bounce only NEW
+ * tool work re-arms it — a bounce that produced no tool rounds is 说而不做
+ * and the turn closes (the outer bound is the loop budget, not a quota).
+ * Blocked entries don't fire the gate (user ruling: blocked = a legitimate
+ * close); max_tokens keeps its own continuation path; delegated plans are
+ * the scheduler's.
  *
  * Same harness as tests/early-stop-guard.test.ts (the REAL StreamRunner
  * dispatch over a fake host pumping queued SSE chunks per request), with the
@@ -174,8 +178,8 @@ async function drive(host: ReturnType<typeof makeStreamHost>, engine: InstanceTy
   return { get continueCalls() { return continueCalls } }
 }
 
-describe('todo closure gate: fires once on an open list after tool work', () => {
-  it('bounces the first open-ended close; the second closes normally even with the list still open', async () => {
+describe('todo closure gate: bounces an open list; tool progress re-arms it', () => {
+  it('bounces the first open-ended close; a bounce with no new tool work closes normally', async () => {
     const host = makeStreamHost()
     setHost(host)
     const { engine, statuses } = makeEngine(host)
@@ -184,21 +188,68 @@ describe('todo closure gate: fires once on an open list after tool work', () => 
       { id: 'n2', description: 'step two' },
     ])
 
-    // tool round → text close (gate fires) → text close again (quota spent).
-    // continueCalls = 2: the tool round's own continuation + the gate.
+    // tool round → text close (gate fires) → text close again (说而不做 —
+    // no new tool rounds since the bounce). continueCalls = 2: the tool
+    // round's own continuation + the gate.
     const rounds = [toolStream(), endTurnStream(), endTurnStream()]
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(2)
     expect(statuses).toContain('retrying')
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
-    expect(engine.todoCloseNudged).toBe(true)
+    expect(engine.todoNudgeAtRounds).toBe(1)
     // The directive armed for the bounced round (prepareLoopRequest never ran
     // under the faked continueLoop — the prompt tests below prove delivery).
     expect(engine.pendingTodoCloseNudge).toBe(true)
     expect(engine.toolRoundsThisTurn).toBe(1)
     // All three rounds live in the transcript; the gate never deletes.
     expect(engine.messages.filter((m) => m.role === 'assistant')).toHaveLength(3)
+  })
+
+  it('tool work between bounces re-arms the gate — the model keeps getting bounced until it settles or goes silent', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine, statuses } = makeEngine(host)
+    engine.planManager.plan = makeDirectPlan([
+      { id: 'n1', description: 'step one', status: 'completed' },
+      { id: 'n2', description: 'step two' },
+    ])
+
+    // tool → prose (bounce 1) → tool → prose (bounce 2) → prose (close).
+    // Each tool round re-arms: the snapshot advances 1 → 2, so the second
+    // prose close still fires. continueCalls = 4 (two tool continuations +
+    // two gates); the outer bound this test deliberately never reaches is
+    // the loop budget (awaiting_extension), not any per-turn quota.
+    const rounds = [toolStream(), endTurnStream(), toolStream(), endTurnStream(), endTurnStream()]
+    const { continueCalls } = await drive(host, engine, rounds)
+
+    expect(continueCalls).toBe(4)
+    // Both bounces surfaced as a 收口 retrying status (the notify chain may
+    // re-push the same status several times — assert the floor, not the shape).
+    expect(statuses.filter((s) => s === 'retrying').length).toBeGreaterThanOrEqual(2)
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
+    expect(engine.todoNudgeAtRounds).toBe(2)
+    expect(engine.toolRoundsThisTurn).toBe(2)
+    expect(engine.messages.filter((m) => m.role === 'assistant')).toHaveLength(5)
+  })
+
+  it('a prose answer over a pending list is bounced once too (zero tool rounds)', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine, statuses } = makeEngine(host)
+    engine.planManager.plan = makeDirectPlan([{ id: 'n1', description: 'stale step' }])
+
+    // 「继续」 answered in prose is the shape being fixed: the FIRST
+    // open-ended close fires with zero tool rounds (snapshot starts at -1).
+    // The bounced round is also prose — no progress, the turn closes.
+    const rounds = [endTurnStream(), endTurnStream()]
+    const { continueCalls } = await drive(host, engine, rounds)
+
+    expect(continueCalls).toBe(1)
+    expect(statuses).toContain('retrying')
+    expect(engine.toolRoundsThisTurn).toBe(0)
+    expect(engine.todoNudgeAtRounds).toBe(0)
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
   it('a real todo_write round drives the gate end-to-end (reconcile → plan → gate)', async () => {
@@ -214,7 +265,7 @@ describe('todo closure gate: fires once on an open list after tool work', () => 
     const plan = engine.planManager.plan
     expect(plan?.mode).toBe('direct')
     expect(plan?.nodes.find((n) => n.id === 'n2')?.status).toBe('pending')
-    expect(engine.todoCloseNudged).toBe(true)
+    expect(engine.todoNudgeAtRounds).toBe(1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 })
@@ -233,7 +284,7 @@ describe('todo closure gate: exempt shapes close without a nudge', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1) // the tool round's own continuation only
-    expect(engine.todoCloseNudged).toBe(false)
+    expect(engine.todoNudgeAtRounds).toBe(-1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
@@ -246,7 +297,7 @@ describe('todo closure gate: exempt shapes close without a nudge', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.todoCloseNudged).toBe(false)
+    expect(engine.todoNudgeAtRounds).toBe(-1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
@@ -263,7 +314,7 @@ describe('todo closure gate: exempt shapes close without a nudge', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.todoCloseNudged).toBe(false)
+    expect(engine.todoNudgeAtRounds).toBe(-1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
@@ -286,22 +337,7 @@ describe('todo closure gate: exempt shapes close without a nudge', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.todoCloseNudged).toBe(false)
-    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
-  })
-
-  it('a pure-chat turn never fires — no tool rounds, no bounce', async () => {
-    const host = makeStreamHost()
-    setHost(host)
-    const { engine } = makeEngine(host)
-    engine.planManager.plan = makeDirectPlan([{ id: 'n1', description: 'stale step' }])
-
-    const rounds = [endTurnStream()]
-    const { continueCalls } = await drive(host, engine, rounds)
-
-    expect(continueCalls).toBe(0)
-    expect(engine.toolRoundsThisTurn).toBe(0)
-    expect(engine.todoCloseNudged).toBe(false)
+    expect(engine.todoNudgeAtRounds).toBe(-1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
   })
 
@@ -315,7 +351,7 @@ describe('todo closure gate: exempt shapes close without a nudge', () => {
     const { continueCalls } = await drive(host, engine, rounds)
 
     expect(continueCalls).toBe(1)
-    expect(engine.todoCloseNudged).toBe(false)
+    expect(engine.todoNudgeAtRounds).toBe(-1)
     expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'max_tokens' })
   })
 })
@@ -360,18 +396,19 @@ describe('the Todo Closure directive rides exactly one state block', () => {
 describe('wiring scans (a half-landed edit must fail here)', () => {
   const read = (p: string): string => readFileSync(join(__dirname, '..', p), 'utf-8')
 
-  it('EngineCore declares the gate; the engine fields and quota exist', () => {
+  it('EngineCore declares the gate; the engine fields and progress snapshot exist', () => {
     const core = read('src/renderer/src/agent/engine/engine-core.ts')
     expect(core).toContain('nudgeTodoIfUnsettled: (stopReason: string | null) => boolean')
     const engineSrc = read('src/renderer/src/agent/AgentEngine.ts')
-    expect(engineSrc).toContain('todoCloseNudged = false')
+    expect(engineSrc).toContain('todoNudgeAtRounds = -1')
     expect(engineSrc).toContain('pendingTodoCloseNudge = false')
     expect(engineSrc).toContain('nudgeTodoIfUnsettled')
+    expect(engineSrc).toContain('this.toolRoundsThisTurn <= this.todoNudgeAtRounds')
   })
 
-  it('prepareTurn resets the quota — a new turn never inherits the old bound', () => {
+  it('prepareTurn resets the gate — a new turn never inherits the old snapshot', () => {
     const src = read('src/renderer/src/agent/AgentEngine.ts')
-    expect(src).toContain('this.todoCloseNudged = false')
+    expect(src).toContain('this.todoNudgeAtRounds = -1')
     expect(src).toContain('this.pendingTodoCloseNudge = false')
   })
 
@@ -403,6 +440,7 @@ describe('wiring scans (a half-landed edit must fail here)', () => {
   it('the todo_write manual teaches the enforced closure', () => {
     const src = read('src/renderer/src/tools/tool-instructions.ts')
     expect(src).toContain('The engine enforces the closure')
-    expect(src).toContain('bounced back ONCE')
+    expect(src).toContain('bounced back with a closure directive')
+    expect(src).toContain('a bounce that produced no tool work closes as-is')
   })
 })

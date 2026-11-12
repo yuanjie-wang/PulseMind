@@ -120,9 +120,11 @@ describe('the no-thinking prompt directive rides every one-shot call', () => {
     expect(withNoThinkingDirective('')).toContain('不要思考')
   })
 
-  it('the direct callNonStreaming site is wrapped too', () => {
+  it('memory-extraction no longer holds a direct callNonStreaming site (salvage retired 2026-11-12)', () => {
     const src = readFileSync(join(ROOT, 'src/renderer/src/agent/engine/memory-extraction.ts'), 'utf-8')
-    expect(src).toMatch(/withNoThinkingDirective\(prompt\)/)
+    // 唯一的直调点曾在这里；salvage 退役后本文件不再发起任何 LLM 调用
+    expect(src).not.toMatch(/callNonStreaming/)
+    expect(src).not.toMatch(/withNoThinkingDirective\(prompt\)/)
   })
 })
 
@@ -208,10 +210,12 @@ describe('wiring: the separation is real in source', () => {
     expect(src).toMatch(/parseResponse\(enforceMaxOutputTokens\(raw, options\.maxOutputTokens\)/)
   })
 
-  it('memory-extraction: wire = model limit, content capped at its own 500', () => {
+  it('memory-extraction: the capped-wire site is gone with the salvage path', () => {
     const src = readFileSync(join(ROOT, 'src/renderer/src/agent/engine/memory-extraction.ts'), 'utf-8')
-    expect(src).toMatch(/engine\.opts\.maxTokens/)
-    expect(src).toMatch(/enforceMaxOutputTokens\(raw, 500\)/)
+    // 这两处曾把 engine 的模型上限接成调用预算；salvage 退役后整段消失。
+    // 保留反向断言，防止有人把「直调 + 500 字上限」的旧形态接回来。
+    expect(src).not.toMatch(/engine\.opts\.maxTokens/)
+    expect(src).not.toMatch(/enforceMaxOutputTokens\(raw, 500\)/)
   })
 
   it('callers declare the scenario cap as maxOutputTokens, not maxTokens', () => {
@@ -224,7 +228,6 @@ describe('wiring: the separation is real in source', () => {
       'src/renderer/src/agent/executors/install-tool.ts',
       'src/renderer/src/hooks/useGreeting.ts',
       'src/renderer/src/knowledge/KnowledgeManager.ts',
-      'src/renderer/src/experiences/ExperienceManager.ts',
     ]) {
       const src = readFileSync(join(ROOT, rel), 'utf-8')
       expect(src).toMatch(/maxOutputTokens: \d+/)
