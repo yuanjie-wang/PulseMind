@@ -52,7 +52,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.stubGlobal('matchMedia', vi.fn().mockImplementation(() => ({ matches: false,
     addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} })))
-  useWorkbenchStore.setState({ activeTab: 'browser', openByConversation: {} })
+  useWorkbenchStore.setState({ activeTabByConversation: { conv_1: 'browser' }, openByConversation: {} })
   usePreviewPaneStore.setState({ tabsByConversation: {}, activeByConversation: {} })
 })
 afterEach(() => { vi.unstubAllGlobals() })
@@ -136,7 +136,7 @@ describe('TurnDeliverablesCard', () => {
       const tabs = store.tabsByConversation['conv_1'] ?? []
       expect(tabs.map((tb) => tb.path)).toContain('/ws/report.md')
       expect(store.activeByConversation['conv_1']).toBe('/ws/report.md')
-      expect(useWorkbenchStore.getState().activeTab).toBe('workspace')
+      expect(useWorkbenchStore.getState().activeTabByConversation['conv_1']).toBe('workspace')
     } finally {
       await mounted.unmount()
     }
@@ -212,10 +212,10 @@ describe('Wiring (source scans — the mount itself is probe territory)', () => 
     const src = read(WORKBENCH_PANE)
     expect(src).not.toContain('DeliverablesPanel')
     expect(src).not.toContain("'deliverables'")
-    // a persisted activeTab naming the removed tab — or one that IS the
+    // a remembered tab naming the removed tab — or one that IS the
     // primary itself (视图模式) — must not blank the pane; reconcileActiveTab
     // owns that fallback now (PLAN-layout-modes).
-    expect(src).toContain('reconcileActiveTab(primary, s.activeTab)')
+    expect(src).toContain('reconcileActiveTab(primary, activeTabOf(s, key))')
   })
 
   it('ChatView: the live turn card waits for the turn to settle (2026-10-25)', () => {

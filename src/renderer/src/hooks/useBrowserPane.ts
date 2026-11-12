@@ -20,7 +20,7 @@ import { useCallback, useEffect, type RefObject } from 'react'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
 import { useSecondaryLayoutStore } from '../stores/secondaryLayoutStore'
-import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary } from '../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, activeTabOf } from '../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
 import { IS_PROJECT_WINDOW } from '../popout/boot'
 import {
@@ -73,12 +73,13 @@ export function useBrowserPaneBinding(
   // 沉浸窗口读右卡面板态（订阅对其它窗口无害——selector 结果只在项目分支用）。
   const rightPanel = useSecondaryLayoutStore((s) => s.rightPanel)
   const immersiveCardWidth = useBrowserPaneStore((s) => s.immersiveCardWidth)
-  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[conversationId ?? DRAFT_CONVERSATION_KEY] ?? false)
-  const workbenchTab = useWorkbenchStore((s) => s.activeTab)
+  const wbPaneKey = conversationId ?? DRAFT_CONVERSATION_KEY
+  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbPaneKey] ?? false)
+  const workbenchTab = useWorkbenchStore((s) => activeTabOf(s, wbPaneKey))
   // 视图模式（PLAN-layout-modes）：浏览器主视图时浏览器恒在前（它就是主卡），
   // 侧栏集合里没有浏览器 tab，workbenchTab 判定不适用。
-  const primary = useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)
-  const workbenchWidth = useWorkbenchWidth()
+  const primary = useConversationPrimary(wbPaneKey)
+  const workbenchWidth = useWorkbenchWidth(wbPaneKey)
   const primaryPaneWidth = useBrowserPaneStore((s) => s.primaryPaneWidth)
   // 浮窗让位（十三期）：useFloatOverlayShift 量出的左右内收 px。
   const floatOverlay = useBrowserPaneStore((s) => s.floatOverlay)

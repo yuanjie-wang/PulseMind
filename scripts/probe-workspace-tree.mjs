@@ -90,7 +90,7 @@ window.__mount = () => {
     style.textContent = buildThemeCss()
     document.head.appendChild(style)
   }
-  useWorkbenchStore.setState({ openByConversation: { [CONV]: true }, activeTab: 'workspace' })
+  useWorkbenchStore.setState({ openByConversation: { [CONV]: true }, activeTabByConversation: { [CONV]: 'workspace' } })
   usePreviewPaneStore.getState().setWorkspaceDir(${JSON.stringify(ROOT)})
   root = createRoot(document.getElementById('root'))
   root.render(
@@ -203,7 +203,7 @@ const listed = () => page.evaluate(() => window.__listed.slice())
 const deleteCalls = () => page.evaluate(() => window.__deleteCalls.slice())
 const tabs = () => page.evaluate((k) => (window.__stores.preview.getState().tabsByConversation[k] ?? []).map((t) => t.path), CONV)
 const drafts = () => page.evaluate(() => Object.keys(window.__stores.preview.getState().drafts))
-const activeTab = () => page.evaluate(() => window.__stores.workbench.getState().activeTab)
+const activeTab = () => page.evaluate((k) => window.__stores.workbench.getState().activeTabByConversation[k] ?? 'workspace', CONV)
 const addressPath = () => page.locator('[data-ws-address-path]').innerText()
 /** The one selected row's paint: the treenode's background + the title's ink.
  *  DirectoryTree derives both from its own component tokens — pinned to the

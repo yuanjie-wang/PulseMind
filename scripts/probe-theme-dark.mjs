@@ -2439,7 +2439,7 @@ window.__mountWB = () => {
   // plan with two nodes (工作计划's link-blue progress badge) and a browser tab
   // (浏览器's muted count badge) so both badge roles have an element to ride.
   // The 文件预览 tab merged into 工作区 (2026-10-25): the front tab IS 工作区.
-  useWorkbenchStore.setState({ openByConversation: { 'wb-conv': true }, activeTab: 'workspace', width: 420 })
+  useWorkbenchStore.setState({ openByConversation: { 'wb-conv': true }, activeTabByConversation: { 'wb-conv': 'workspace' } })
   createRoot(mk('wb-shell', 300)).render(
     <WBMode>
       <WorkbenchPane

@@ -80,16 +80,18 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     })
   })
 
-  it('setConversationPrimary 落 map 并调和 activeTab', async () => {
+  it('setConversationPrimary 落 map 并调和该会话的 activeTab（2026-11-12 按会话独立）', async () => {
     const mod = await freshStore()
     const s = mod.useWorkbenchStore.getState()
     // 'workspace' 在 browser 侧栏集合内（侧栏=对话/工作区/计划）——合法保留；
     // 被顶掉的是 'browser'（浏览器已是主卡）。
-    mod.useWorkbenchStore.getState().setActiveTab('browser')
+    mod.useWorkbenchStore.getState().setActiveTab('conv1', 'browser')
     s.setConversationPrimary('conv1', 'browser')
     const st = mod.useWorkbenchStore.getState()
     expect(st.primaryByConversation['conv1']).toBe('browser')
-    expect(st.activeTab).toBe('chat')
+    expect(st.activeTabByConversation['conv1']).toBe('chat')
+    // 别的会话的 tab 记忆不受牵连。
+    expect(st.activeTabByConversation['conv_other']).toBeUndefined()
   })
 
   it('无条目（新会话/DRAFT）= chat —— 新建对话天然回整页 welcome', async () => {
@@ -99,18 +101,20 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     expect(mod.conversationPrimaryOf(undefined)).toBe('chat')
   })
 
-  it('openTab 按「该会话」的主视图调和 activeTab', async () => {
+  it('openTab 按「该会话」的主视图调和该会话的 tab，会话间互不串', async () => {
     const mod = await freshStore()
     const s = mod.useWorkbenchStore.getState()
     s.setConversationPrimary('convB', 'browser')
     // 会话 A（chat 优先）上手动弹工作区：'workspace' 在 A 的侧栏集合里，保留。
     s.openTab('convA', 'workspace')
-    expect(mod.useWorkbenchStore.getState().activeTab).toBe('workspace')
+    expect(mod.useWorkbenchStore.getState().activeTabByConversation['convA']).toBe('workspace')
     // 会话 B（browser 优先）上手动弹浏览器 tab：被主视图顶掉 → 调和 chat
     // （'workspace' 在 browser 侧栏集合里，不会触发调和）。
     s.openTab('convB', 'browser')
-    expect(mod.useWorkbenchStore.getState().activeTab).toBe('chat')
+    expect(mod.useWorkbenchStore.getState().activeTabByConversation['convB']).toBe('chat')
     expect(mod.useWorkbenchStore.getState().openByConversation['convB']).toBe(true)
+    // A 的 tab 记忆原样保留——这是 2026-11-12「tab 选中状态按会话独立」的核心。
+    expect(mod.useWorkbenchStore.getState().activeTabByConversation['convA']).toBe('workspace')
   })
 
   it('autoOpenTab：目标 tab 被「该会话的主视图」顶掉时零动作', async () => {
@@ -124,7 +128,7 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     mod.autoOpenTab('convA', 'browser')
     st = mod.useWorkbenchStore.getState()
     expect(st.openByConversation['convA']).toBe(true)
-    expect(st.activeTab).toBe('browser')
+    expect(st.activeTabByConversation['convA']).toBe('browser')
   })
 
   it('autoOpenTab：primaryTab 映射 files↔workspace（禁等值比的回归钉）', async () => {
@@ -136,14 +140,16 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     expect(mod.useWorkbenchStore.getState().openByConversation['convF']).toBeUndefined()
   })
 
-  it('persist 不携带 primaryByConversation（重启回归对话优先，与 openByConversation 同裁定）', () => {
+  it('persist 不携带 primaryByConversation / activeTabByConversation（重启回归对话优先+无活面板，与 openByConversation 同裁定）', () => {
     const src = read(STORE)
-    // 2026-11-06 起落盘形状提成具名纯函数（宽度按 tab 分开），断言口径从
-    // 「partialize 的字面写法」改为「落盘字段就这三个」。
+    // 2026-11-06 起落盘形状提成具名纯函数；2026-11-12 宽度收敛成会话标量
+    // （widthByConversation，v2 的 widthByTab 一并退役），全局 activeTab 退役。
     expect(src).toContain('partialize: workbenchPersistShape')
-    expect(src).toContain('return { widthByTab: s.widthByTab, activeTab: s.activeTab, treeWidth: s.treeWidth } as WorkbenchState')
+    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n  } as WorkbenchState')
     expect(src).not.toContain('primaryByConversation: s.')
     expect(src).not.toContain('openByConversation: s.')
+    expect(src).not.toContain('activeTabByConversation: s.')
+    expect(src).not.toContain('widthByTab: s.')
   })
 
   it('只有项目沉浸窗口恒按 chat 消费；弹出窗口按本窗生效（2026-11-04 裁定）', async () => {
@@ -303,7 +309,7 @@ describe('接线扫描 — welcome 浏览器任务链路（模式跟任务走）
     const body = src.slice(src.indexOf('const createBrowserTask'), src.indexOf('const createBrowserTask') + 1400)
     expect(body).toContain("setConversationPrimary(convId, 'browser')")
     expect(body).toContain('setOpen(convId, true)')
-    expect(body).toContain("setActiveTab('chat')")
+    expect(body).toContain("setActiveTab(convId, 'chat')")
     expect(body).toContain('persistence.activateConversation(convId)')
     // 引擎活跃会话（2026-11-04）：「输入消息无响应」的根因——容器不经侧栏切换，
     // 只激活 persistence 那一半时，dock 里发的消息只进镜像、不进 React。
@@ -393,7 +399,7 @@ describe('接线扫描 — welcome 浏览器任务链路（模式跟任务走）
     expect(view).toContain("primary === 'files' ? (")
     expect(view).toContain("chatSlot={primary !== 'chat' ? chatBody : undefined}")
     expect(view).toContain("if (isWelcomeForm && primary === 'chat') {")
-    expect(read(WORKBENCH_PANE)).toContain('useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)')
+    expect(read(WORKBENCH_PANE)).toContain('useConversationPrimary(key)')
     expect(read(WORKBENCH_PANE)).toContain("activeTab === 'chat' && chatSlot")
     // auto-open 漏斗三处统一 autoOpenTab。
     expect(read(PREVIEW_STORE)).toContain("autoOpenTab(key, 'workspace')")

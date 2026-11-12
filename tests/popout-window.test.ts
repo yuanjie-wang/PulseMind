@@ -357,7 +357,7 @@ describe('renderer: main entry + App wiring', () => {
     // conversation's own primary mode (2026-11-04). Assembled once in
     // popoutSeedFor — every popoutOpen entry point carries the same seed.
     expect(app).toContain('window.electronAPI.popoutOpen(key, label, popoutSeedFor(key))')
-    expect(app).toContain('wb.openByConversation[key] ? wb.activeTab : undefined')
+    expect(app).toContain('wb.openByConversation[key] ? activeTabOf(wb, key) : undefined')
     expect(app).toContain('pp.tabsByConversation[key]?.map((t) => t.path)')
     expect(app).toContain('pp.activeByConversation[key] ?? null')
     expect(app).toContain('onPopoutConversation=')
@@ -472,12 +472,12 @@ describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
     return import('../src/renderer/src/popout/seed')
   }
 
-  it('opens the workbench on the seeded tab', async () => {
+  it('opens the workbench on the seeded tab (this conversation only)', async () => {
     const seed = await importFresh()
     const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')
     seed.applyPopoutSeed('conv_seed', { workbenchTab: 'browser' })
     expect(useWorkbenchStore.getState().openByConversation['conv_seed']).toBe(true)
-    expect(useWorkbenchStore.getState().activeTab).toBe('browser')
+    expect(useWorkbenchStore.getState().activeTabByConversation['conv_seed']).toBe('browser')
   })
 
   it('restores the preview tab strip and the active file', async () => {
@@ -557,12 +557,12 @@ describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
     seed.applyPopoutSeed('conv_files_tab', { primary: 'files', workbenchTab: 'workspace' })
     const files = useWorkbenchStore.getState()
     expect(files.primaryByConversation['conv_files_tab']).toBe('files')
-    expect(files.activeTab).toBe('chat')
+    expect(files.activeTabByConversation['conv_files_tab']).toBe('chat')
     // 浏览器优先下 workspace 是合法的侧栏成员，照常保留。
     seed.applyPopoutSeed('conv_browser_tab', { primary: 'browser', workbenchTab: 'workspace' })
     const browser = useWorkbenchStore.getState()
     expect(browser.primaryByConversation['conv_browser_tab']).toBe('browser')
-    expect(browser.activeTab).toBe('workspace')
+    expect(browser.activeTabByConversation['conv_browser_tab']).toBe('workspace')
   })
 
   it('wiring: the donor assembles the seed from the live mode and both entries carry it', () => {

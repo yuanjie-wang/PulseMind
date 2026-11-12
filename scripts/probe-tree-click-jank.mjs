@@ -43,7 +43,7 @@ window.__mount = () => {
     style.textContent = buildThemeCss()
     document.head.appendChild(style)
   }
-  useWorkbenchStore.setState({ openByConversation: { [CONV]: true }, activeTab: 'workspace' })
+  useWorkbenchStore.setState({ openByConversation: { [CONV]: true }, activeTabByConversation: { [CONV]: 'workspace' } })
   usePreviewPaneStore.getState().setWorkspaceDir(${JSON.stringify(ROOT)})
   root = createRoot(document.getElementById('root'))
   root.render(

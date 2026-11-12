@@ -456,8 +456,10 @@ function AppLayout({
           setCollapsed((c) => !c)
           break
         case 'toggle-workbench':
+          // 开臂只补开（setOpen）：重开恢复该会话记住的 tab（2026-11-12 按
+          // 会话独立裁定），无记忆回落工作区。
           if (workbenchOpen) useWorkbenchStore.getState().setOpen(wbKey, false)
-          else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+          else useWorkbenchStore.getState().setOpen(wbKey, true)
           break
         case 'open-search':
           // ⌘F fork (review_20261103 高4): the app-menu accelerator (mac) and
@@ -545,9 +547,10 @@ function AppLayout({
       toggleSidebar: () => setCollapsed((c) => !c),
       toggleWorkbench: () => {
         // Items rebuild every render, so this closes over the current pane
-        // state directly — no ref indirection needed.
+        // state directly — no ref indirection needed. 开臂只补开（setOpen）：
+        // 重开恢复该会话记住的 tab，无记忆回落工作区（同快捷键臂）。
         if (workbenchOpen) useWorkbenchStore.getState().setOpen(wbKey, false)
-        else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+        else useWorkbenchStore.getState().setOpen(wbKey, true)
       },
       openSearch: () => void navigate({ kind: 'search' }),
       openUsage: () => void guardedNavigateKind('usage'),
@@ -942,7 +945,8 @@ function AppLayout({
                   aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
                   icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
                   onClick={() =>
-                    workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                    // 开臂只补开（setOpen）：重开恢复该会话记住的 tab（同快捷键臂）。
+                    workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().setOpen(wbKey, true)
                   }
                 />
               </Tooltip>

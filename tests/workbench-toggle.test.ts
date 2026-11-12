@@ -1,18 +1,20 @@
-// ── 手动打开工作台，默认落在「工作区」tab ──
-// 用户要求（2026-09-17）：主动打开侧边窗口时默认选择工作区 tab。此前标题栏
-// 的开关只是 `setOpen(key, !open)`，打开后显示的是上次持久化的 activeTab
-// （全新安装曾是「文件预览」，该 tab 已于 2026-10-25 并入「工作区」），与
-// 用户预期不符。
+// ── 手动打开工作台的 tab 落点 ──
+// 2026-09-17 用户裁定的旧契约（主动打开恒落「工作区」）已被 2026-11-12 的
+// 「tab 选中状态每个会话独立管理」修订：开臂只补开（setOpen），重开恢复**该
+// 会话**记住的 tab；无记忆（新会话/DRAFT）回落 workspace——旧裁定防的「打开
+// 落在一个陈旧 tab」在新形态下仍成立（tab 记忆按会话、写路径都过
+// reconcileActiveTab，removed tab 渲染不出空 body）。
 //
-// 两条腿，互不覆盖（vitest 是 node 环境，组件挂不了）：store 的 openTab
-// 语义在这里真跑；「按钮的打开分支走的是 openTab 而不是 setOpen」是接线
-// 事实，只能扫源码——见 tests/pending-approval.test.ts 的同一手法。
+// 三条腿，互不覆盖（vitest 是 node 环境，组件挂不了）：store 的 openTab /
+// setOpen 语义在这里真跑；「按钮的打开分支走的是 setOpen 而不是 openTab」是
+// 接线事实，只能扫源码——见 tests/pending-approval.test.ts 的同一手法。
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   useWorkbenchStore,
+  activeTabOf,
 } from '../src/renderer/src/stores/workbenchStore'
 
 const KEY = 'conv_test'
@@ -21,23 +23,33 @@ describe('workbenchStore (manual-open contract)', () => {
   beforeEach(() => {
     useWorkbenchStore.setState({
       openByConversation: {},
-      widthByTab: {},
-      activeTab: 'workspace',
+      widthByConversation: {},
+      activeTabByConversation: {},
     })
   })
 
-  it('openTab opens the pane and brings the named tab to the front', () => {
+  it('openTab opens the pane and brings the named tab to the front (this conversation only)', () => {
     useWorkbenchStore.getState().openTab(KEY, 'workspace')
     const s = useWorkbenchStore.getState()
     expect(s.openByConversation[KEY]).toBe(true)
-    expect(s.activeTab).toBe('workspace')
+    expect(activeTabOf(s, KEY)).toBe('workspace')
+    // 别的会话不受牵连。
+    expect(activeTabOf(s, 'conv_other')).toBe('workspace')
   })
 
-  it('closing remembers the tab, so only the OPEN branch may pick 工作区', () => {
+  it('closing remembers the tab, so re-opening via setOpen restores it', () => {
     useWorkbenchStore.getState().openTab(KEY, 'browser')
     useWorkbenchStore.getState().setOpen(KEY, false)
-    // 收起不动 tab：下次打开走哪条路径，看到的就是哪条路径选的 tab。
-    expect(useWorkbenchStore.getState().activeTab).toBe('browser')
+    // 收起不动 tab 记忆：重开看到的就是该会话记住的那张。
+    expect(activeTabOf(useWorkbenchStore.getState(), KEY)).toBe('browser')
+    // 开臂 = 纯补开：tab 记忆不被改写。
+    useWorkbenchStore.getState().setOpen(KEY, true)
+    expect(activeTabOf(useWorkbenchStore.getState(), KEY)).toBe('browser')
+  })
+
+  it('a conversation with no memory opens on 工作区 (the old default lives on as the fallback)', () => {
+    useWorkbenchStore.getState().setOpen(KEY, true)
+    expect(activeTabOf(useWorkbenchStore.getState(), KEY)).toBe('workspace')
   })
 
   it('auto-open funnels still override with their own tab', () => {
@@ -45,7 +57,7 @@ describe('workbenchStore (manual-open contract)', () => {
     // 手动默认不得粘住它们。
     useWorkbenchStore.getState().openTab(KEY, 'workspace')
     useWorkbenchStore.getState().openTab(KEY, 'plan')
-    expect(useWorkbenchStore.getState().activeTab).toBe('plan')
+    expect(activeTabOf(useWorkbenchStore.getState(), KEY)).toBe('plan')
   })
 })
 
@@ -59,8 +71,11 @@ describe('标题栏开关接线 (AppLayout)', () => {
     expect(src).toContain('header-pane-btn')
   })
 
-  it('the open branch routes through openTab with 工作区, not the tab-less setOpen', () => {
-    expect(src).toContain("openTab(wbKey, 'workspace')")
+  it('the open branch only re-opens (setOpen): the conversation remembers its own tab', () => {
+    // 2026-11-12：开臂不再点名 'workspace'——重开恢复该会话记住的 tab，
+    // 无记忆回落 workspace（fallback 在 store 读法里）。
+    expect(src).toContain('setOpen(wbKey, true)')
+    expect(src).not.toContain("openTab(wbKey, 'workspace')")
     // Non-vacuity: the tab-less toggle form must be gone, not merely accompanied.
     expect(src).not.toContain('setOpen(wbKey, !workbenchOpen)')
   })

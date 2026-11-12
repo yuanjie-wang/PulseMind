@@ -483,7 +483,7 @@ export function useChatController(options: UseChatControllerOptions) {
           useWorkbenchStore.getState().setOpen(convId, true)
           // 首帧确定性：'workspace'/'plan' 在 browser 侧栏集合里是合法成员、
           // 不会被 reconcile，但刚起步的浏览器任务该落在对话 tab（转录面）。
-          useWorkbenchStore.getState().setActiveTab('chat')
+          useWorkbenchStore.getState().setActiveTab(convId, 'chat')
         }
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
@@ -574,7 +574,7 @@ export function useChatController(options: UseChatControllerOptions) {
       useWorkbenchStore.getState().setConversationPrimary(convId, 'browser')
       useWorkbenchStore.getState().setOpen(convId, true)
       // 首帧确定性：dock 落对话 tab（浏览器主视图下转录面的唯一出口）。
-      useWorkbenchStore.getState().setActiveTab('chat')
+      useWorkbenchStore.getState().setActiveTab(convId, 'chat')
       // 容器也必须是「引擎活跃会话」（2026-11-04 实锤：浏览器模式下输入消息
       // 无响应）。镜像的 React 同步只认 activeEngineIdRef（useConversationEngine
       // 的事件订阅 `if (activeEngineIdRef.current === sessionId)`）——容器不经
@@ -600,7 +600,7 @@ export function useChatController(options: UseChatControllerOptions) {
       persistence.addConversation({ key: convId, label, updatedAt: new Date().toISOString() }, 'prepend')
       useWorkbenchStore.getState().setConversationPrimary(convId, 'browser')
       useWorkbenchStore.getState().setOpen(convId, true)
-      useWorkbenchStore.getState().setActiveTab('chat')
+      useWorkbenchStore.getState().setActiveTab(convId, 'chat')
       engine.activateEngine(convId)
       persistence.activateConversation(convId)
       void persistence.adoptConversation(convId)

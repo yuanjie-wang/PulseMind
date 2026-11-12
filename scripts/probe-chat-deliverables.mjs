@@ -281,7 +281,7 @@ window.__hAlign = () => {
 }
 window.__workbench = () => {
   const s = useWorkbenchStore.getState()
-  return { tab: s.activeTab, open: !!s.openByConversation[CONV_KEY] }
+  return { tab: s.activeTabByConversation[CONV_KEY] ?? 'workspace', open: !!s.openByConversation[CONV_KEY] }
 }
 window.__previewTabs = () => usePreviewPaneStore.getState().tabsByConversation[CONV_KEY]?.map((t) => t.path) ?? []
 window.__scrollContainer = () =>

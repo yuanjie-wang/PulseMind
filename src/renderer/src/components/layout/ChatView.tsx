@@ -27,7 +27,7 @@ import { startBottomPin } from '../../utils/bottom-pin'
 import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
-import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, autoOpenTab } from '../../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, activeTabOf, autoOpenTab } from '../../stores/workbenchStore'
 import { WorkbenchPane } from '../workbench/WorkbenchPane'
 import { WorkspacePane } from '../workbench/WorkspacePane'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
@@ -443,9 +443,9 @@ function ChatView({
   // hooks; the flag is static per window either way).
   const workbenchOpen = workbenchOpenRaw && !hideWorkbench
   // 与面板自身同一个读数口子（useWorkbenchWidth）：reserve 和 pane 宽度必须
-  // 取同一个 tab 的值，否则会出现缝或覆盖。
-  const workbenchWidth = useWorkbenchWidth()
-  const workbenchTab = useWorkbenchStore((s) => s.activeTab)
+  // 取同一个会话的值，否则会出现缝或覆盖（宽度是会话标量，与 tab 无关）。
+  const workbenchWidth = useWorkbenchWidth(wbKey)
+  const workbenchTab = useWorkbenchStore((s) => activeTabOf(s, wbKey))
   // 视图模式（PLAN-layout-modes 二期裁定「模式跟任务走」）：主视图归属决定
   // 这张 ChatView 的主卡放什么（对话 / 工作区 / 浏览器），以及对话降级到侧栏
   // 时的 chatSlot 注入。按会话读——DRAFT 无条目恒 'chat'，新建对话天然回

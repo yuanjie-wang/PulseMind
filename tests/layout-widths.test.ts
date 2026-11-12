@@ -117,12 +117,13 @@ describe('layout width wiring', () => {
     expect(src).toMatch(/direction: 1,/)
   })
 
-  it('workbenchStore persists treeWidth with the per-tab pane widths', () => {
+  it('workbenchStore persists treeWidth with the per-conversation pane widths', () => {
     const src = read('src/renderer/src/stores/workbenchStore.ts')
     expect(src).toContain('WORKBENCH_DEFAULT_TREE_WIDTH')
-    // 2026-11-06：宽度按 tab 分开（widthByTab），落盘形状随之改名。
+    // 2026-11-12：宽度是每会话一份标量（widthByConversation）——同日二次裁定
+    // 「切 tab 不改宽」把 2026-11-06 的按 tab 维度退役，落盘形状随之收敛。
     expect(src).toContain('partialize: workbenchPersistShape')
-    expect(src).toContain('return { widthByTab: s.widthByTab, activeTab: s.activeTab, treeWidth: s.treeWidth } as WorkbenchState')
+    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n  } as WorkbenchState')
   })
 
   it('both drags share the pointer guards the workbench handle paid for', () => {

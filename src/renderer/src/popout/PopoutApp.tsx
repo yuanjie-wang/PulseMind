@@ -533,7 +533,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   const subAgentPlanNode = subAgentView?.kind === 'plan' ? plan?.nodes.find((n) => n.id === subAgentView.nodeId) : null
   const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
   const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
-  const workbenchWidth = useWorkbenchWidth()
+  const workbenchWidth = useWorkbenchWidth(wbKey)
   // 卡片形态（2026-11-04 用户裁定「弹出独立弹窗应该和主窗统一，用圆角矩形包裹
   // 主交互区和右侧边窗口」）：会话弹出窗口与主窗同一套卡片语言——card 直通
   // ChatView（对话卡 + 工作台卡）+ Layout 灰底做窗口底衬，与主窗
@@ -1007,7 +1007,9 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
                         aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
                         icon={<PanelRightIcon size={14} filled={workbenchOpen} />}
                         onClick={() =>
-                          workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                          // 开臂只补开（setOpen）：重开恢复该会话记住的 tab
+                          // （2026-11-12 按会话独立裁定），无记忆回落工作区。
+                          workbenchOpen ? useWorkbenchStore.getState().setOpen(wbKey, false) : useWorkbenchStore.getState().setOpen(wbKey, true)
                         }
                       />
                     </Tooltip>

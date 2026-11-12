@@ -15,7 +15,7 @@ import React, { useRef } from 'react'
 import { X } from 'lucide-react'
 import { WORKBENCH_CARD_MARGIN, clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
 import { IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
-import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, reconcileActiveTab, sideTabsFor, type WorkbenchTab } from '../../stores/workbenchStore'
+import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary, activeTabOf, reconcileActiveTab, sideTabsFor, type WorkbenchTab } from '../../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { PlanGraphView } from './PlanGraphView'
@@ -75,26 +75,26 @@ export function WorkbenchPane({
   onBrowserWidth,
   chatSlot,
 }: Props): React.ReactElement {
-  // 宽度按 tab 取（2026-11-06）：浏览器被拖宽不会再把计划面板一起撑开。
-  const width = useWorkbenchWidth()
+  const key = conversationId ?? DRAFT_CONVERSATION_KEY
+  // 宽度是会话标量（2026-11-12 二次裁定「切 tab 不改宽」）：拖拽是唯一的写
+  // 路径，切 tab 只换 body 不换几何；跨会话互不串（2026-11-12 首条裁定）。
+  const width = useWorkbenchWidth(key)
   // The persisted width predates every window it renders into (a drag under
   // one monitor survives onto a smaller one; this instance also predates the
   // 2026-10-06 zoom fix, whose 3× CSS viewport stored an 1854px drag) — the
   // drag clamp is not enough, every consumption of the stored value clamps.
   const effWidth = clampPaneWidth(width, chatAreaWidth)
-  // 视图模式：side tab 集合与 activeTab 调和都跟着 primary 走（次级窗口恒
-  // 'chat'）。A persisted activeTab naming a removed tab (the one-day
+  // 视图模式：side tab 集合与 tab 调和都跟着 primary 走（次级窗口恒
+  // 'chat'）。A remembered tab naming a removed tab (the one-day
   // deliverables aggregate, or 'files' before its merge into 工作区) — or one
   // that IS the primary itself — would otherwise render a pane body with no
   // view; reconcileActiveTab falls back per mode.
-  const primary = useConversationPrimary(conversationId ?? DRAFT_CONVERSATION_KEY)
-  const activeTab = useWorkbenchStore((s) => reconcileActiveTab(primary, s.activeTab))
+  const primary = useConversationPrimary(key)
+  const activeTab = useWorkbenchStore((s) => reconcileActiveTab(primary, activeTabOf(s, key)))
   const setWidth = useWorkbenchStore((s) => s.setWidth)
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab)
   const setOpen = useWorkbenchStore((s) => s.setOpen)
   const drag = useRef<{ pointerId: number; startX: number; startWidth: number; lastSent: number } | null>(null)
-
-  const key = conversationId ?? DRAFT_CONVERSATION_KEY
   // This conversation's pane state; a conversation with no entry is closed.
   const open = useWorkbenchStore((s) => s.openByConversation[key] ?? false)
   const fileTabs = usePreviewPaneStore((s) => s.tabsByConversation[key]?.length ?? 0)
@@ -122,7 +122,7 @@ export function WorkbenchPane({
     const now = Date.now()
     if (now - d.lastSent > 40) {
       d.lastSent = now
-      setWidth(next)
+      setWidth(key, next)
       if (activeTab === 'browser') onBrowserWidth(next)
     }
   }
@@ -207,7 +207,7 @@ export function WorkbenchPane({
             return (
               <div
                 key={tab.id}
-                onClick={() => !active && setActiveTab(tab.id)}
+                onClick={() => !active && setActiveTab(key, tab.id)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
