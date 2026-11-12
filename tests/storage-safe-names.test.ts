@@ -19,9 +19,8 @@ vi.mock('../src/main/storage/database', () => ({
 }))
 
 import { safeChildPath } from '../src/main/storage/safe-name'
-import { DATA_DIR, SKILLS_DIR, TOOLS_DIR, EXPERIENCES_DIR } from '../src/main/storage/index'
+import { DATA_DIR, SKILLS_DIR, TOOLS_DIR } from '../src/main/storage/index'
 import { ROUTINES_DIR, routineStore } from '../src/main/storage/routine-store'
-import { experienceStore } from '../src/main/storage/experience-store'
 import { toolStore } from '../src/main/storage/tool-store'
 import { skillStore } from '../src/main/storage/skill-store'
 
@@ -50,29 +49,9 @@ describe('safeChildPath', () => {
 })
 
 describe('storage delete/write entry points refuse escaping names (M9-P0-1)', () => {
-  it('experienceStore.delete("..") throws and leaves the data dir intact', async () => {
-    // The throwaway HOME starts bare — materialize the layout first so the
-    // assertion "still intact" means something.
-    mkdirSync(EXPERIENCES_DIR, { recursive: true })
-    const canary = join(DATA_DIR, 'canary.txt')
-    writeFileSync(canary, 'keep me', 'utf-8')
-    await expect(experienceStore.delete('..')).rejects.toThrow(/invalid experience name/)
-    await expect(experienceStore.delete('')).rejects.toThrow(/invalid experience name/)
-    expect(existsSync(canary)).toBe(true)
-    expect(existsSync(EXPERIENCES_DIR)).toBe(true)
-  })
-
-  it('experienceStore.read no longer follows ../skills/<x> (the pick_skill fallback door)', async () => {
-    const decoyDir = join(DATA_DIR, 'skills', 'outside-pack')
-    mkdirSync(decoyDir, { recursive: true })
-    writeFileSync(join(decoyDir, 'SKILL.md'), 'TOP SECRET SKILL BODY', 'utf-8')
-    expect(await experienceStore.read('../skills/outside-pack')).toBeNull()
-    // A hostile read must not leak the decoy through any return path:
-    expect(await experienceStore.read('..')).toBeNull()
-    expect(await experienceStore.read('')).toBeNull()
-  })
-
   it('toolStore.remove refuses traversal and empty ids', () => {
+    // The throwaway HOME starts bare — materialize the layout the assertions probe.
+    mkdirSync(DATA_DIR, { recursive: true })
     expect(() => toolStore.remove('..')).toThrow(/invalid tool id/)
     expect(() => toolStore.remove('')).toThrow(/invalid tool id/)
     expect(() => toolStore.remove('../../settings')).toThrow(/invalid tool id/)
@@ -82,6 +61,7 @@ describe('storage delete/write entry points refuse escaping names (M9-P0-1)', ()
   })
 
   it('routineStore.remove refuses the `.json`-suffixed traversal', () => {
+    mkdirSync(DATA_DIR, { recursive: true })
     const settingsPath = join(DATA_DIR, 'settings.json')
     const sentinel = '{ "probe": true }'
     if (!existsSync(settingsPath)) writeFileSync(settingsPath, sentinel, 'utf-8')

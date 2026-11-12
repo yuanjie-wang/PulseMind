@@ -45,7 +45,7 @@ export interface AgentMessage {
   inputTokens?: number
   outputTokens?: number
   promptCacheHitTokens?: number
-  /** 本回合的收尾方式（2026-11-12，runtime mark——像 memExtracted 一样只在
+  /** 本回合的收尾方式（2026-11-12，runtime mark——只在
    *  内存里活）：max_tokens = 输出被长度上限切断、可能半截话，与 end_turn
    *  （模型自己停的）必须能分开。messages 表还没有这一列，落库要连带 DDL、
    *  老库 ALTER 与 conversation.db 四处读写，另案处理。 */
@@ -54,12 +54,6 @@ export interface AgentMessage {
   favorited?: boolean
   autoSummary?: boolean
   compressedIds?: string[]
-  /** Memory-mining mark (PLAN-memory-extraction-dedup): the pair has been
-   *  offered to the extraction LLM once — never again. Deliberately NOT
-   *  autoSummary, which is the compaction-eligibility contract. Not persisted
-   *  as a semantic field; sanitize strips it on save like other runtime marks
-   *  live in memory only. */
-  memExtracted?: boolean
 }
 
 // --- Plan (v2 DAG — the model lives in shared so the main process and the

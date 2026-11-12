@@ -5,7 +5,6 @@ import { registerTerminalHandlers } from './terminal.handler'
 import { registerToolHandlers } from './tools.handler'
 import { registerSkillHandlers } from './skills.handler'
 import { registerTemplateHandlers } from './template.handler'
-import { registerExperienceHandlers } from './experiences.handler'
 import { registerApiProxyHandlers } from './api-proxy.handler'
 import { registerMemoryHandlers, registerMemoryPageHandlers } from './memory.handler'
 import { registerAppHandlers } from './app.handler'
@@ -45,7 +44,6 @@ export function registerIpcHandlers(): void {
   registerToolHandlers()
   registerSkillHandlers()
   registerTemplateHandlers()
-  registerExperienceHandlers()
   registerApiProxyHandlers()
   registerMemoryHandlers()
   registerMemoryPageHandlers()

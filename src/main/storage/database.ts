@@ -262,6 +262,26 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_memory_pages_type ON memory_pages(type);
     CREATE INDEX IF NOT EXISTS idx_memory_pages_updated ON memory_pages(updated_at DESC);
 
+    -- 经验流水（2026-11-12 经验 SKILL 化）：经验的正文与静态元数据已搬到磁盘
+    -- 「~/.pulsemind/experience/<id>/EXPERIENCE.md」，这里只承接「用了几次、何时用、
+    -- 采没采纳、退没退役」。键是经验目录名，也就是磁盘上的身份。
+    CREATE TABLE IF NOT EXISTS experience_uses (
+      id                     TEXT PRIMARY KEY,
+      use_count              INTEGER NOT NULL DEFAULT 0,
+      recurrence             INTEGER NOT NULL DEFAULT 0,
+      last_used_at           TEXT,
+      last_reinforced_at     TEXT,
+      sop_attempts           INTEGER NOT NULL DEFAULT 0,
+      sop_last_attempt_at    TEXT,
+      superseded_by          TEXT,
+      retired_at             TEXT,
+      retired_reason         TEXT,
+      source_conversation_id TEXT,
+      enabled                INTEGER NOT NULL DEFAULT 1,
+      created_at             TEXT NOT NULL,
+      updated_at             TEXT NOT NULL
+    );
+
     -- 技能使用计数（2026-10-27）：pick_skill 选中已注册技能时 +1（经验页的对应物是
     -- memory_pages.use_count）。按技能名键控——内置技能不在任何表里，这是它们唯一的
     -- 持久化落点；技能被删除时行留着无害（重装同名即续计）。
@@ -329,8 +349,8 @@ function createTables(): void {
   try { database.exec('ALTER TABLE memory_pages ADD COLUMN sop_last_attempt_at TEXT') } catch {}
   // 2026-10-27 经验卡开关（经验也是技能）：停用 = 不进候选/提示/自动固化；旧行默认启用。
   try { database.exec('ALTER TABLE memory_pages ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1') } catch {}
-  // 2026-10-27 退役软态（compile pass 的 retire op）：过时页退出活页池，行保留、
-  // 理由留档、UI 可恢复；旧行 NULL = 活页。
+  // 2026-10-27 退役软态 → 2026-11-12 用户裁定改硬删除：retire 现在删行删 FTS 影子，
+  // 这两列保留定义只为旧库平稳 ALTER，活页上恒为 NULL，不再写入。
   try { database.exec('ALTER TABLE memory_pages ADD COLUMN retired_at TEXT') } catch {}
   try { database.exec('ALTER TABLE memory_pages ADD COLUMN retire_reason TEXT') } catch {}
   try {

@@ -21,12 +21,13 @@ describe('经验浏览器接线', () => {
 
   it('SkillBrowser：经验与技能共用三栏——body 即 page.md，files 即 scripts/*', () => {
     const src = read('src/renderer/src/components/settings/SkillBrowser.tsx')
-    expect(src).toContain("listMemoryPages('experience')")
+    // 经验真源改磁盘 EXPERIENCE.md（2026-11-12 经验 SKILL 化），不再从 memory_pages 取。
+    expect(src).toContain('listExperienceFiles()')
     expect(src).toContain("EXPERIENCE_KEY_PREFIX = 'exp:'")
     // 经验的文件视图与 sop-runner 落库、pick_skill 信封同形
-    // 经验正文文件与技能同名 SKILL.md（2026-10-27 用户裁定），files 还原成 scripts/*
-    expect(src).toContain("'SKILL.md', ...(rec.files ?? []).map((f) => f.path)")
-    expect(src).toContain("if (path === 'SKILL.md') return Promise.resolve(activeExperience.body)")
+    // 正文文件为 EXPERIENCE.md（2026-11-12 起与技能 SKILL.md 分名），files 还原成 scripts/*
+    expect(src).toContain("'EXPERIENCE.md', ...(rec.files ?? []).map((f) => f.path)")
+    expect(src).toContain("if (path === 'EXPERIENCE.md') return Promise.resolve(activeExperience.body)")
     expect(src).not.toContain("'page.md'")
     // 左列表三分区组标与网格同构（内置 / 已安装 / 经验）
     expect(src).toContain("t('skillsSection.builtIn')")
@@ -42,7 +43,10 @@ describe('经验浏览器接线', () => {
 
   it('设置面板的记忆浏览保持 Modal 形态（不传 onOpenPage）', () => {
     const src = read('src/renderer/src/components/settings/MemorySettings.tsx')
-    expect(src).toContain('<MemoryPagesBrowser deletable />')
+    // 2026-11-12 加清空按钮后此处多了 key={pagesKey}（清空即重挂载，否则灰卡赖着不走）。
+    // 按属性而非整串断言，避免下次加属性又假红。
+    expect(src).toMatch(/<MemoryPagesBrowser\b[^>]*\bdeletable\b/)
+    expect(src).toMatch(/key=\{pagesKey\}/)
     expect(src).not.toContain('onOpenPage')
   })
 

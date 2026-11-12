@@ -212,7 +212,9 @@ export function joinDataPath(...segments: string[]): string {
 
 export function ensureDataDir(): void {
   // Create parent directories if they don't exist
-  for (const dir of [DATA_DIR, SKILLS_DIR, EXPERIENCES_DIR, KNOWLEDGE_DIR, KNOWLEDGE_SCHEMA_DIR, KNOWLEDGE_BASES_DIR, getBaseRawDir('default'), getBaseWikiDir('default'), WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
+  // experience/（单数，2026-11-12 经验 SKILL 化的磁盘真源）与 experiences/（复数，
+  // 一代遗留、冻结只读）并存：前者进清单保证首启即存在，后者不动。
+  for (const dir of [DATA_DIR, SKILLS_DIR, EXPERIENCES_DIR, join(DATA_DIR, 'experience'), KNOWLEDGE_DIR, KNOWLEDGE_SCHEMA_DIR, KNOWLEDGE_BASES_DIR, getBaseRawDir('default'), getBaseWikiDir('default'), WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
     if (!existsSync(dir)) {
       try {
         mkdirSync(dir, { recursive: true })

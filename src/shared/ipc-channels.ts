@@ -95,12 +95,15 @@ export const IPC_CHANNELS = {
   MEMORY_PAGE_APPLY_OPS: 'memory-page:apply-ops',
   MEMORY_PAGE_TOUCH: 'memory-page:touch',
   MEMORY_PAGE_SET_ENABLED: 'memory-page:set-enabled',
-  MEMORY_PAGE_SET_RETIRED: 'memory-page:set-retired',
   MEMORY_PAGE_DISTILL_SOP: 'memory-page:distill-sop',
   MEMORY_PAGE_DELETE: 'memory-page:delete',
+  MEMORY_PAGE_CLEAR: 'memory-page:clear',
   MEMORY_PAGE_COUNT: 'memory-page:count',
   MEMORY_PAGE_CATALOG: 'memory-page:catalog',
   MEMORY_SWEEP_RUN: 'memory-sweep:run',
+
+  // ── Experience 文件真源（经验 SKILL 化，2026-11-12）── 读 ~/.pulsemind/experience/<id>/EXPERIENCE.md
+  EXPERIENCE_FILE_LIST: 'experience:list',
 
   // ── Settings ──
   SETTINGS_GET: 'settings:get',
@@ -137,16 +140,6 @@ export const IPC_CHANNELS = {
   // 「导入模板包」。zip = 整份 settings.json + 可选 skills/ + 可选 hooks/
   // + 可选 tools/，settings 整份替换语义) ──
   TEMPLATE_IMPORT: 'template:import',
-
-  // ── Experiences ──
-  EXPERIENCES_LIST: 'experiences:list',
-  EXPERIENCES_SAVE: 'experiences:save',
-  EXPERIENCES_DELETE: 'experiences:delete',
-  EXPERIENCES_READ: 'experiences:read',
-  EXPERIENCES_READ_FILE: 'experiences:read-file',
-  EXPERIENCES_TOUCH: 'experiences:touch',
-  EXPERIENCES_CLEAR: 'experiences:clear',
-  EXPERIENCES_CHANGED: 'experiences:changed',
 
   // ── Terminal ──
   TERMINAL_EXECUTE: 'terminal:execute',

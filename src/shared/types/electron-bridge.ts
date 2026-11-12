@@ -18,7 +18,6 @@ import type { ExpertProfile } from './expert'
 import type { BrowserPaneState } from '../browser/pane'
 import type { SummonedExpert } from '../expert-context'
 import type { GitAction, GitResult } from './git'
-import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from './project'
 import type { SandboxApprovalMode } from '../sandbox/policy'
@@ -294,17 +293,6 @@ export interface ElectronAPI {
   /** 技能中心卡片的「使用 N 次 · 安装于 …」数据：按技能名键控；installedAt = 技能目录
    *  创建时间（内置技能由 UI 显示 `--`，不看这个值）。 */
   listSkillUses: () => Promise<Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }>>
-
-  // Experiences
-  listExperiences: () => Promise<ExperienceRecord[]>
-  saveExperienceRecord: (draft: ExperienceDraft) => Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }>
-  /** Read a companion script of an experience (read-only panel view). Jail-checked; null on any refusal. */
-  readExperienceFile: (name: string, relPath: string) => Promise<string | null>
-  deleteExperienceRecord: (name: string) => Promise<void>
-  readExperienceRecord: (name: string) => Promise<string | null>
-  touchExperienceRecord: (name: string, outcome?: 'ok' | 'fail') => Promise<void>
-  clearExperiences: () => Promise<number>
-  onExperiencesChanged: (callback: () => void) => () => void
 
   // Terminal. `shellKey` (the calling engine's conversationId) selects the
   // engine's persistent shell on the main-process host (review P0-1): a parent
@@ -601,17 +589,20 @@ export interface ElectronAPI {
 
   // Memory pages（PLAN-memory-wiki，2026-10-25）—— 记忆 wiki 化的统一读写面
   listMemoryPages: (type?: MemoryPageType) => Promise<MemoryPageRecord[]>
+  /** 经验的真源是磁盘（`~/.pulsemind/experience/<id>/EXPERIENCE.md`）。返回与
+   *  MemoryPageRecord 同形的记录，让上层消费面不必分辨真源。 */
+  listExperienceFiles: () => Promise<MemoryPageRecord[]>
   getMemoryPage: (id: string) => Promise<MemoryPageRecord | null>
   searchMemoryPages: (data: { query: string; type?: MemoryPageType; limit?: number }) => Promise<(MemoryPageRecord & { viaFts: boolean })[]>
   applyMemoryPageOps: (ops: PageOp[]) => Promise<PageOpResult[]>
   touchMemoryPage: (pageId: string) => Promise<void>
   /** 经验卡开关（2026-10-27）：停用 = 不进候选表/提示/自动固化。 */
   setMemoryPageEnabled: (pageId: string, enabled: boolean) => Promise<void>
-  /** 退役/恢复（2026-10-27）：恢复 = 清空退役软态回活页池；理由仅在退役方向生效
-   *  （UI 目前只有恢复方向，退役由 compile pass 产出）。 */
-  setMemoryPageRetired: (pageId: string, retired: boolean, reason?: string) => Promise<void>
   distillSop: (pageId: string) => Promise<{ conversationId?: string; error?: string }>
   deleteMemoryPage: (id: string) => Promise<void>
+  /** 清空提取记忆（2026-11-12 用户裁定）：按类型整族删，含退役/被取代历史行；
+   *  经验页刻意不在调用方传入的 types 里。返回实际删除行数。 */
+  clearMemoryPages: (types: MemoryPageType[]) => Promise<number>
   countMemoryPages: (type?: MemoryPageType) => Promise<number>
   memoryPageCatalog: () => Promise<{ text: string; mode: 'full' | 'bucketed'; liveCount: number }>
   runMemorySweepNow: () => Promise<{ extracted: number; error?: string }>

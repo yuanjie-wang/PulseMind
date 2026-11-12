@@ -75,13 +75,13 @@ interface SkillBrowserProps {
   onBack: () => void
 }
 
-/** 经验页的文件视图：正文是 SKILL.md（经验也是技能——正文文件与技能同名），files 数组还原成 scripts/* 路径——
- *  与 sop-runner 落库、pick_skill 信封的形状一致。 */
+/** 经验页的文件视图：正文是 `EXPERIENCE.md`（磁盘真源，2026-11-12 经验 SKILL 化），
+ *  files 数组还原成 scripts/* 路径——与 sop-runner 落库、pick_skill 信封的形状一致。 */
 function experienceFileList(rec: MemoryPageRecord): string[] {
-  return ['SKILL.md', ...(rec.files ?? []).map((f) => f.path)]
+  return ['EXPERIENCE.md', ...(rec.files ?? []).map((f) => f.path)]
 }
 
-/** 统一的读取入口：经验从内存记录解析（body → SKILL.md，files → scripts/*），
+/** 统一的读取入口：经验从内存记录解析（body → EXPERIENCE.md，files → scripts/*），
  *  技能走目录 IPC——两侧经同一个三栏渲染。 */
 function readEntryFile(
   activeExperience: MemoryPageRecord | null,
@@ -90,7 +90,7 @@ function readEntryFile(
 ): Promise<string | null> {
   if (key.startsWith(EXPERIENCE_KEY_PREFIX)) {
     if (!activeExperience) return Promise.resolve(null)
-    if (path === 'SKILL.md') return Promise.resolve(activeExperience.body)
+    if (path === 'EXPERIENCE.md') return Promise.resolve(activeExperience.body)
     return Promise.resolve(activeExperience.files?.find((f) => f.path === path)?.content ?? null)
   }
   return window.electronAPI.readSkillFile(key, path)
@@ -121,7 +121,9 @@ function SkillBrowser({ skills, activeKey, onSelect, onBack }: SkillBrowserProps
   useEffect(() => {
     let cancelled = false
     window.electronAPI
-      .listMemoryPages('experience')
+      // 经验真源是磁盘 `EXPERIENCE.md`（2026-11-12 经验 SKILL 化），面板不再从
+      // memory_pages 取 —— 那条路径在新经验页上只剩流水行，正文是空的。
+      .listExperienceFiles()
       .then((list) => {
         if (cancelled) return
         setExperiences(list)
@@ -167,7 +169,7 @@ function SkillBrowser({ skills, activeKey, onSelect, onBack }: SkillBrowserProps
         setFiles(list)
         setFilesSource(activeKey)
         setSelectedFile(
-          list.includes('SKILL.md') ? 'SKILL.md' : (list[0] ?? null)
+          list.includes('EXPERIENCE.md') ? 'EXPERIENCE.md' : list.includes('SKILL.md') ? 'SKILL.md' : (list[0] ?? null)
         )
       })
       .catch(() => {
@@ -461,7 +463,7 @@ function SkillBrowser({ skills, activeKey, onSelect, onBack }: SkillBrowserProps
               )}
             </div>
           )}
-          {activeExperience && selectedFile === 'SKILL.md' && (activeExperience.aliases.length > 0 || activeExperience.useCount > 0) && (
+          {activeExperience && selectedFile === 'EXPERIENCE.md' && (activeExperience.aliases.length > 0 || activeExperience.useCount > 0) && (
             <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginBottom: 8 }}>
               {activeExperience.aliases.length > 0 && (
                 <span style={activeExperience.useCount > 0 ? { marginRight: 10 } : undefined}>

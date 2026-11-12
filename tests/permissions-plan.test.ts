@@ -8,7 +8,8 @@ describe('buildPermissionPlan — the explicit checklist (P0)', () => {
   const paths = plan.map((t) => t.path)
 
   it('covers the sensitive dirs at 0700', () => {
-    for (const dir of [dataDir, join(dataDir, 'db'), join(dataDir, 'logs'), join(dataDir, 'logs', 'llm-requests'), join(dataDir, 'memory'), join(dataDir, 'tmp')]) {
+    // experience/（2026-11-12 经验 SKILL 化）：磁盘真源根目录与 db/logs 同待遇。
+    for (const dir of [dataDir, join(dataDir, 'db'), join(dataDir, 'logs'), join(dataDir, 'logs', 'llm-requests'), join(dataDir, 'memory'), join(dataDir, 'tmp'), join(dataDir, 'experience')]) {
       const t = plan.find((p) => p.path === dir)
       expect(t, dir).toBeTruthy()
       expect(t!.mode).toBe(0o700)

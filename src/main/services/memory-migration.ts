@@ -47,7 +47,9 @@ function parseJsonArray<T>(raw: string | null | undefined): T[] {
   try { const p = JSON.parse(raw); return Array.isArray(p) ? (p as T[]) : [] } catch { return [] }
 }
 
-/** ① 经验池 → experience 页（字节平移）。返回迁移条数；幂等：已存在的确定性 id 被 upsert 覆写为同值。 */
+/** ① 经验池 → experience 页（字节平移）。返回迁移条数；幂等：已存在的确定性 id 被 upsert 覆写为同值。
+ *  正文撞重门（2026-11-12）会让同正文的后者被跳过——upsert 返回既有页，id 与预期不符
+ *  即 skipped，不计入条数（否则日志数虚高）。 */
 export function migrateExperiencesToPages(): number {
   const rows = listExperienceRows()
   let migrated = 0
@@ -58,8 +60,9 @@ export function migrateExperiencesToPages(): number {
     const body = raw ? parseExperienceMd(raw, row.title).content : (row.description || row.title)
     const files = parseJsonArray<MemoryPageFile>(row.files_json)
     const aliases = [...new Set([row.name, ...parseJsonArray<string>(row.triggers)].filter(Boolean))]
-    upsertMemoryPage({
-      id: `page_mig_exp_${row.id}`,
+    const expectedId = `page_mig_exp_${row.id}`
+    const stored = upsertMemoryPage({
+      id: expectedId,
       title: row.title || row.name,
       type: 'experience',
       body,
@@ -71,7 +74,7 @@ export function migrateExperiencesToPages(): number {
       lastUsedAt: row.last_used_at,
       createdAt: row.created_at,
     })
-    migrated++
+    if (stored.id === expectedId) migrated++
   }
   return migrated
 }

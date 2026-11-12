@@ -6,15 +6,16 @@ import {
   applyPageOps,
   touchMemoryPage,
   setMemoryPageEnabled,
-  setMemoryPageRetired,
   countMemoryPages,
   deleteMemoryPage,
+  clearMemoryPagesByTypes,
   getMemoryPageById,
   listMemoryPages,
   pageCatalog,
   searchMemoryPages,
   type MemoryPageSearchHit,
 } from '../storage/memory-pages-store'
+import { listExperienceRecords } from '../storage/experience-records'
 import type { MemoryPageType, PageOp, PageOpResult } from '../../shared/memory-pages'
 import { MEMORY_MD_PATH } from '../storage/index'
 import { withErrorLogging } from './ipc-utils'
@@ -200,6 +201,9 @@ function toSearchHit(hit: MemoryPageSearchHit) {
 export function registerMemoryPageHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_LIST, withRawResponse(async (type?: MemoryPageType) => listMemoryPages(type)))
 
+  // 经验的真源在磁盘（~/.pulsemind/experience/），与上面的 LIST 同形不同源。
+  ipcMain.handle(IPC_CHANNELS.EXPERIENCE_FILE_LIST, withRawResponse(async () => listExperienceRecords()))
+
   ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_GET, withRawResponse(async (id: string) => getMemoryPageById(id)))
 
   ipcMain.handle(
@@ -221,12 +225,11 @@ export function registerMemoryPageHandlers(): void {
     withErrorLogging(async (pageId: string, enabled: boolean) => setMemoryPageEnabled(pageId, enabled === true))
   )
 
-  ipcMain.handle(
-    IPC_CHANNELS.MEMORY_PAGE_SET_RETIRED,
-    withErrorLogging(async (pageId: string, retired: boolean, reason?: string) => setMemoryPageRetired(pageId, retired === true, typeof reason === 'string' ? reason : undefined))
-  )
-
   ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_DELETE, withErrorLogging(async (id: string) => deleteMemoryPage(id)))
+
+  // 清空提取记忆（2026-11-12 用户裁定）：按类型整族删。
+  // 经验页由调用方刻意排除在 types 之外——经验归技能中心，不随「清空记忆」消失。
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_CLEAR, withRawResponse(async (types: MemoryPageType[]) => clearMemoryPagesByTypes(types)))
 
   ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_COUNT, withRawResponse(async (type?: MemoryPageType) => countMemoryPages(type)))
 

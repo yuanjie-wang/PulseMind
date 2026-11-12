@@ -392,7 +392,7 @@ async function buildStateBlock(params: {
   // 一回合白调。
   if (handoffNotice) {
     sections.push(
-      '## Handoff\n- 本会话已从浏览器扩展转入桌面端：page_* 系列工具（page_snapshot/page_click 等）不再可用。如需页面信息，请让用户粘贴内容或截图。'
+      '## Handoff\n- 本会话已从浏览器扩展转入桌面端：page_* 系列工具（page_get_content/page_click 等）不再可用。如需页面信息，请让用户粘贴内容或截图。'
     )
   }
 
@@ -943,7 +943,7 @@ function matchSkills(userText: string, opts: AgentEngineOptions): string | null 
 /** 经验 hint v2（PLAN-capability-followups E6）：experience 记忆页的 aliases
  *  关键词命中（matchSkills 同款 substring），命中页 hint 内联全文（title + summary
  *  (E3)/正文首段 + body）——与 recall 彻底隔离（E7 收窄：列表召回排除 experience）。
- *  索引 60s TTL（ExperienceManager 先例）。 */
+ *  索引 60s TTL（沿用旧经验池历史先例）。 */
 const EXP_HINT_CACHE_TTL_MS = 60_000
 let expHintCache: { at: number; pages: Array<{ title: string; summary: string | null; body: string; aliases: string[] }> } | null = null
 
@@ -958,7 +958,9 @@ async function matchExperiences(
   const now = Date.now()
   if (!expHintCache || now - expHintCache.at >= EXP_HINT_CACHE_TTL_MS) {
     try {
-      const all = await getHost().listMemoryPages('experience')
+      // 经验真源是磁盘 EXPERIENCE.md（2026-11-12 经验 SKILL 化）：走 listExperienceFiles。
+      // 仍从 memory_pages 取的话，n7 摘掉 body 列之后这里会拿到一片空正文。
+      const all = await getHost().listExperienceFiles()
       expHintCache = {
         at: now,
         // 停用的经验不进提示（matchSkills 只看 getEnabledSkills 的同款语义）；只有显式 false 才算停用；

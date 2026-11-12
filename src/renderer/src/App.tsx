@@ -165,7 +165,6 @@ function AppContent(): React.ReactElement {
   // Stable refs for memory and knowledge managers (set after useChatController is instantiated)
   const memoryManagerRef = useRef<MemoryManager | null>(null)
   const knowledgeManagerRef = useRef<KnowledgeManager | null>(null)
-  const experienceManagerRef = useRef<import('./experiences/ExperienceManager').ExperienceManager | null>(null)
 
   // Ref for conversationId so the afterSession hook can access it
   // (hooks useMemo runs before useChatController's return values are destructured)
@@ -240,7 +239,6 @@ function AppContent(): React.ReactElement {
     refreshSkillsFromDisk,
     memoryManager,
     knowledgeManager,
-    experienceManager,
     convLights,
     bgRunningCounts,
     togglePin,
@@ -279,17 +277,15 @@ function AppContent(): React.ReactElement {
   /* eslint-disable react-hooks/refs -- latest-instance mirrors for hook access below; consumers run in effects and callbacks, never during render */
   memoryManagerRef.current = memoryManager
   knowledgeManagerRef.current = knowledgeManager
-  experienceManagerRef.current = experienceManager
   /* eslint-enable react-hooks/refs */
 
-  // Mirror the 设置 → 记忆/经验 master switches onto the renderer-side managers
+  // Mirror the 设置 → 记忆 master switch onto the renderer-side manager
   // (session backfill, startup compression). The main-side managers are synced
   // in settings.handler on every save.
   useEffect(() => {
     const memoryOn = settings.memoryEnabled ?? true
     memoryManager.setPreferences({ autoCaptureEnabled: memoryOn, autoInjectEnabled: memoryOn })
-    experienceManager.setEnabled(settings.experienceEnabled ?? true)
-  }, [memoryManager, experienceManager, settings.memoryEnabled, settings.experienceEnabled])
+  }, [memoryManager, settings.memoryEnabled])
 
   // ── Popout lifecycle (PLAN-conversation-popout) ──
   // The MAIN window is the single transcript writer: a conversation a popout

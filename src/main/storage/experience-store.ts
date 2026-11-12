@@ -1,453 +1,340 @@
-import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
-import { join, isAbsolute, relative } from 'node:path'
-import { tmpdir } from 'node:os'
-import { randomBytes } from 'node:crypto'
-import type { ExperienceRecord, ExperienceDraft } from '../../shared/types/experience-types'
-import { MAX_EXPERIENCES } from '../../shared/types/experience-types'
-import { sha256Hex, normalizeMemoryContent } from '../../shared/memory/content-hash'
-import { parseExperienceMd } from '../../shared/experience/frontmatter'
-import { EXPERIENCES_DIR } from './index'
-import { getDb } from './database'
-import { safeChildPath } from './safe-name'
+/**
+ * 第二代经验存储：磁盘为真源，一条经验一个目录。
+ *
+ * 形态与 SKILL 一致 —— `~/.pulsemind/experience/<id>/EXPERIENCE.md`（YAML
+ * frontmatter + 五节正文）+ `scripts/` 子目录 —— 但住在独立目录、独立命名
+ * 空间里，不进技能注册表，也不与 `skills/` 混名。
+ *
+ * 为什么不是第一代的 `experiences/`（复数）：那是 2026-11-12 弃用的孤立池，
+ * 表已清空、磁盘上 80 个目录已成孤儿。新目录是 `experience/`（单数），二者
+ * 不共用，避免把历史垃圾读回来。
+ *
+ * 分工（user 2026-11-12 裁定）：静态元数据进 frontmatter（title /
+ * description / maturity / aliases / createdAt / updatedAt），会随每次命中
+ * 变动的流水（use_count / last_used_at / recurrence / enabled）留给 DB 的
+ * `experience_uses` —— 与技能把 use_count 放在 `skill_uses` 而非写回
+ * SKILL.md 是同一个理由：热路径不能每次点一次就重写文件。
+ *
+ * frontmatter 里的 `name` 就是目录名（稳定 id，形如
+ * `page_1793029436441_9w3bhsh`），所以改标题永远不用重命名目录、不会断链。
+ * 标题是中文，被 `parseSkillMarkdown` 归入 `extra.title` —— 复用它而不改它
+ * 意味着的 Agent Skills 规范校验（SPEC_NAME_RE 只认 ASCII slug）不会挡路。
+ */
 
-// ── Script payload gates (PLAN-experience-scripts 1.3/1.5) ──
-// An experience's SKILL.md is documentation; its scripts are RUNNABLE. Three
-// gates at save: path jail (scripts/ prefix, no escaping), size (8KB/file,
-// 3 files), and a syntax parse via `node --check` — parse only, never execute.
-// Electron ships Node 20, so scripts run anywhere the app runs WITHOUT npm —
-// hence the prompt-level constraint "node: builtins only".
-const MAX_SCRIPT_BYTES = 8 * 1024
-const MAX_SCRIPTS_PER_EXPERIENCE = 3
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { DATA_DIR } from './index'
+import { parseSkillMarkdown, type ParsedFrontmatter } from '../utils/skill-parser'
 
-/** `path` must name a file under <experienceDir>/scripts/ — relative, no `..`,
- *  no absolute, no backticks into other dirs. Returns the error or null. */
-export function scriptPathError(relPath: string): string | null {
-  if (!relPath || typeof relPath !== 'string') return 'path is empty'
-  if (isAbsolute(relPath)) return `path must be relative: ${relPath}`
-  if (!relPath.startsWith('scripts/')) return `path must start with scripts/: ${relPath}`
-  const rel = relative(join('exp', 'scripts'), join('exp', relPath))
-  if (rel.startsWith('..') || isAbsolute(rel)) return `path escapes the experience dir: ${relPath}`
-  if (relPath.includes('\\')) return `backslashes are not path separators here: ${relPath}`
-  return null
+export const EXPERIENCE_V2_DIR = join(DATA_DIR, 'experience')
+export const EXPERIENCE_FILE = 'EXPERIENCE.md'
+
+/** 目录名 = 经验 id。只认 id 形态，任何路径分隔符/`..` 都进不来。 */
+const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+export type ExperienceMaturity = 'clue' | 'sop'
+
+/** frontmatter 里存放的静态元数据。 */
+export interface ExperienceFileMeta {
+  /** 目录名，稳定不变（来自 memory_pages.id 或新建时生成）。 */
+  id: string
+  /** 中文标题，可随意改而不用改目录。 */
+  title: string
+  /** 一句话摘要（原 MemoryPage.summary）。 */
+  description: string
+  maturity: ExperienceMaturity
+  aliases: string[]
+  sourceConversationId?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
-/** Syntax parse only (`node --check`) — the script never executes at save.
- *  Runs under ELECTRON_RUN_AS_NODE so process.execPath (the Electron binary)
- *  behaves as plain Node. Returns null when OK, or the failing reason. */
-export function scriptSyntaxError(_dir: string, relPath: string, content: string): string | null {
-  // tmp lives in the OS temp dir — the experience dir may not exist yet (the
-  // gates run before the save's mkdir) and we must not create half-trees.
-  // Keep the script's extension: `node --check` picks CJS/ESM by extension,
-  // and an extensionless tmp file parses `import` as a SyntaxError.
-  const ext = relPath.endsWith('.mjs') ? '.mjs' : relPath.endsWith('.cjs') ? '.cjs' : '.js'
-  const tmp = join(tmpdir(), `pm-expcheck-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`)
-  try {
-    require('node:fs').writeFileSync(tmp, content, 'utf-8')
-    const res = spawnSync(process.execPath, ['--check', tmp], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      timeout: 10_000,
-    })
-    if (res.status === 0) return null
-    const stderr = (res.stderr ?? '').toString().split('\n').slice(0, 3).join(' ').trim()
-    return `node --check failed: ${stderr || 'syntax error'}`
-  } catch (err) {
-    return `node --check could not run: ${err instanceof Error ? err.message : String(err)}`
-  } finally {
-    try { require('node:fs').unlinkSync(tmp) } catch {}
+export interface ExperienceFile {
+  meta: ExperienceFileMeta
+  /** 五节正文（`## 适用场景` / `## 步骤` / `## 注意事项` …），不含 frontmatter。 */
+  body: string
+}
+
+/** YAML 标量一律走双引号 —— parseYamlLite 的双引号转义覆盖 \\ " \n \t \r。 */
+function emitScalar(value: string): string {
+  return JSON.stringify(value)
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean)
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
+function asMaturity(value: unknown): ExperienceMaturity {
+  return asString(value) === 'sop' ? 'sop' : 'clue'
+}
+
+/** 把一个目录的 EXPERIENCE.md 文本解析成 ExperienceFile；不合形态就抛错。 */
+export function parseExperienceMd(content: string, fileName: string): ExperienceFile {
+  const parsed: ParsedFrontmatter = parseSkillMarkdown(content, fileName)
+  const extra = parsed.extra ?? {}
+
+  const id = asString(parsed.name)
+  if (!ID_RE.test(id)) {
+    throw new Error(`${fileName}: frontmatter "name" (${JSON.stringify(id)}) is not a valid experience id`)
+  }
+  // 只有显式标了 category: experience 的目录才算经验，防止误读别的形态。
+  if (asString(parsed.category) !== 'experience') {
+    throw new Error(`${fileName}: frontmatter "category" must be "experience" (got ${JSON.stringify(parsed.category)})`)
+  }
+
+  const title = asString(extra.title)
+  if (!title) throw new Error(`${fileName}: missing required "title" field in frontmatter`)
+
+  return {
+    meta: {
+      id,
+      title,
+      // parseSkillMarkdown 在 description 缺失时回退成 name —— 那是格式兜底，
+      // 不是语义。读回时还原成空串，否则 id 会冒充摘要污染 intent 匹配。
+      description: asString(parsed.description) === id ? '' : asString(parsed.description),
+      maturity: asMaturity(extra.maturity),
+      aliases: asStringList(extra.aliases),
+      sourceConversationId: asString(parsed.sourceConversationId) || undefined,
+      createdAt: asString(parsed.createdAt) || undefined,
+      updatedAt: asString(extra.updatedAt) || undefined,
+    },
+    body: parsed.systemPrompt,
   }
 }
 
-function generateId(): string {
-  return `exp_${Date.now()}_${randomBytes(4).toString('hex')}`
-}
-
-export function slugifyTitle(title: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .slice(0, 80)
-  return slug || `experience-${Date.now()}`
-}
-
-function localTimestamp(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-function parseTriggers(raw: unknown): string[] | undefined {
-  if (typeof raw !== 'string' || !raw) return undefined
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((k) => typeof k === 'string') : undefined
-  } catch {
-    return undefined
+/** 把 ExperienceFile 序列化回 EXPERIENCE.md 文本（与 parseExperienceMd 互逆）。 */
+export function formatExperienceMd(file: ExperienceFile): string {
+  const { meta, body } = file
+  const lines: string[] = ['---']
+  lines.push(`name: ${emitScalar(meta.id)}`)
+  lines.push(`title: ${emitScalar(meta.title)}`)
+  lines.push(`description: ${emitScalar(meta.description)}`)
+  lines.push('category: experience')
+  lines.push(`maturity: ${emitScalar(meta.maturity)}`)
+  if (meta.aliases.length > 0) {
+    lines.push('aliases:')
+    for (const alias of meta.aliases) lines.push(`  - ${emitScalar(alias)}`)
   }
-}
-
-function formatExperienceMd(rec: ExperienceRecord, content: string): string {
-  const lines = [
-    '---',
-    `name: ${rec.name}`,
-    `title: ${rec.title}`,
-    `description: ${rec.description}`,
-    `category: ${rec.category}`,
-    `createdAt: ${rec.createdAt}`
-  ]
-  if (rec.updatedAt) lines.push(`updatedAt: ${rec.updatedAt}`)
-  if (rec.triggers && rec.triggers.length > 0) {
-    lines.push('triggers:', ...rec.triggers.map((t) => `  - ${t}`))
-  }
-  if (rec.sourceConversationId) lines.push(`sourceConversationId: ${rec.sourceConversationId}`)
-  if (rec.lastUsedAt) lines.push(`lastUsedAt: ${rec.lastUsedAt}`)
-  lines.push(`useCount: ${rec.useCount}`, '---', '', content)
+  if (meta.sourceConversationId) lines.push(`sourceConversationId: ${emitScalar(meta.sourceConversationId)}`)
+  if (meta.createdAt) lines.push(`createdAt: ${emitScalar(meta.createdAt)}`)
+  if (meta.updatedAt) lines.push(`updatedAt: ${emitScalar(meta.updatedAt)}`)
+  lines.push('---', '', body.trim(), '')
   return lines.join('\n')
 }
 
-function rowToRecord(r: any): ExperienceRecord {
-  let files: string[] | undefined
-  if (typeof r.files_json === 'string' && r.files_json) {
-    try {
-      const parsed = JSON.parse(r.files_json)
-      if (Array.isArray(parsed)) files = parsed.filter((f: unknown) => typeof f === 'string')
-    } catch { /* malformed → treated as absent; the SKILL.md body still carries the docs */ }
-  }
-  let outcome: ExperienceRecord['outcome'] | undefined
-  if (typeof r.outcome_json === 'string' && r.outcome_json) {
-    try {
-      const parsed = JSON.parse(r.outcome_json)
-      if (parsed && typeof parsed === 'object' && (Number.isFinite(parsed.ok) || Number.isFinite(parsed.fail))) {
-        outcome = {
-          ok: Number.isFinite(parsed.ok) ? parsed.ok : 0,
-          fail: Number.isFinite(parsed.fail) ? parsed.fail : 0,
-          lastOutcomeAt: typeof parsed.lastOutcomeAt === 'string' ? parsed.lastOutcomeAt : null,
-        }
-      }
-    } catch { /* malformed → absent; counters are advisory */ }
-  }
-  return {
-    id: r.id,
-    name: r.name,
-    title: r.title,
-    description: r.description,
-    category: r.category,
-    sourceConversationId: r.source_conversation_id ?? undefined,
-    createdAt: r.created_at,
-    lastUsedAt: r.last_used_at,
-    useCount: r.use_count,
-    triggers: parseTriggers(r.triggers),
-    files: files && files.length > 0 ? files : undefined,
-    dir: join(EXPERIENCES_DIR, r.name), // computed, never stored
-    updatedAt: r.updated_at ?? null,
-    outcome
-  }
+/** 生成一个新经验 id（迁移沿用旧 id，新建时才用）。 */
+export function newExperienceId(): string {
+  const stamp = Date.now()
+  const rand = Math.random().toString(36).slice(2, 9)
+  return `page_${stamp}_${rand}`
 }
 
-/** The raw `experiences` row shape save() reads back for upsert decisions —
- *  only the columns that gate id/createdAt/LRU preservation. */
-interface ExperienceRow {
-  id: string
-  title: string
-  created_at: string
-  last_used_at: string | null
-  use_count: number
-  triggers: string | null
-  files_json: string | null
-  updated_at: string | null
-  content_hash: string | null
-}
-
-/** Content hash of an experience body (PLAN-experience-iteration): the
- *  save-layer gate that distinguishes a real revision from a no-op re-save.
- *  Reuses the memory dedup's normalizer + SHA-256 — same rule: trim +
- *  collapse whitespace, then hash. */
-export function experienceContentHash(content: string): string {
-  return sha256Hex(normalizeMemoryContent(content))
+export interface ExperienceScriptFile {
+  /** `scripts/` 下的相对路径，如 `check.sh`。 */
+  relativePath: string
+  content: string
 }
 
 export class ExperienceStore {
-  // ── Reads ──
+  constructor(private readonly rootDir: string = EXPERIENCE_V2_DIR) {}
 
-  list(): ExperienceRecord[] {
-    const rows = getDb()
-      .prepare('SELECT * FROM experiences ORDER BY COALESCE(last_used_at, created_at) DESC')
-      .all() as any[]
-    return rows.map(rowToRecord)
+  get root(): string {
+    return this.rootDir
   }
 
-  /** Read a companion script (panel's read-only view). Same jail as the save
-   *  gate; null on ANY refusal — the panel shows 读取失败, never partial bytes. */
-  async readFileContent(name: string, relPath: string): Promise<string | null> {
-    if (scriptPathError(relPath)) return null
-    const dir = join(EXPERIENCES_DIR, name)
-    const target = join(dir, relPath)
-    const rel = relative(dir, target)
-    if (rel.startsWith('..') || isAbsolute(rel)) return null
+  /** id → 目录绝对路径。ID_RE 已挡掉分隔符与 `..`，越界在这里就抛。 */
+  private dirOf(id: string): string {
+    if (!ID_RE.test(id)) throw new Error(`invalid experience id: ${JSON.stringify(id)}`)
+    const dir = join(this.rootDir, id)
+    const rel = relative(this.rootDir, dir)
+    if (!rel || rel.startsWith('..')) throw new Error(`unsafe experience dir: ${dir}`)
+    return dir
+  }
+
+  async listIds(): Promise<string[]> {
     try {
-      return await readFile(target, 'utf-8')
-    } catch {
-      return null
+      const entries = await readdir(this.rootDir, { withFileTypes: true })
+      return entries
+        .filter((e) => e.isDirectory() && ID_RE.test(e.name))
+        .map((e) => e.name)
+        .sort()
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw err
     }
   }
 
-  async read(name: string): Promise<string | null> {
-    // 名字消毒（full_20261011 M9-P0-1/X3）：read 的 name 从 agent 侧
-    // pick_skill 的经验兜底可达，`../skills/<x>` 曾能穿出 EXPERIENCES_DIR。
-    const mdPath = safeChildPath(EXPERIENCES_DIR, join(name, 'SKILL.md'))
-    if (!mdPath) return null
-    try {
-      return await readFile(mdPath, 'utf-8')
-    } catch {
-      return null
-    }
-  }
-
-  // ── Writes ──
-
-  /**
-   * Persist an experience as a standalone SKILL.md under ~/.pulsemind/experiences/.
-   * Enforces the MAX_EXPERIENCES cap with LRU eviction (least recently used wins
-   * the old age first; never-used entries are evicted before used ones).
-   *
-   * Iteration (PLAN-experience-iteration): a draft carrying `targetName` looks
-   * the row up by THAT name instead of the slugified title, so a revised title
-   * lands on the record it revises instead of forking a second entry. An
-   * unknown target falls back to the create path (宁可多一条不可丢洞见) with a
-   * warning. `updated_at` is stamped only when an iteration's content hash
-   * actually differs — a no-op re-save (or the trigger-extraction rewrite,
-   * which only touches frontmatter) never marks the record as revised.
-   */
-  async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }> {
-    const slug = slugifyTitle(draft.title)
-    const db = getDb()
-    let name = slug
-    let existing: ExperienceRow | undefined
-    if (draft.targetName) {
-      existing = db.prepare('SELECT * FROM experiences WHERE name = ?').get(draft.targetName) as ExperienceRow | undefined
-      if (existing) name = draft.targetName
-      else console.warn(`[experience] target "${draft.targetName}" not in the pool — falling back to create`)
-    }
-    if (!existing) {
-      existing = db.prepare('SELECT * FROM experiences WHERE name = ?').get(slug) as ExperienceRow | undefined
-      name = slug
-    }
-    const now = localTimestamp()
-    const contentHash = experienceContentHash(draft.content)
-    const contentChanged = !existing || existing.content_hash !== contentHash
-
-    // ── Script gates (only when the draft carries files at all) ──
-    const rejectedFiles: string[] = []
-    const acceptedFiles: ExperienceDraft['files'] = []
-    if (draft.files && draft.files.length > 0) {
-      if (draft.files.length > MAX_SCRIPTS_PER_EXPERIENCE) {
-        for (const f of draft.files.slice(MAX_SCRIPTS_PER_EXPERIENCE)) rejectedFiles.push(f.path)
-      }
-      for (const f of draft.files.slice(0, MAX_SCRIPTS_PER_EXPERIENCE)) {
-        const pathErr = scriptPathError(f.path)
-        if (pathErr) { rejectedFiles.push(f.path); console.warn('[experience] file rejected:', pathErr); continue }
-        if (typeof f.content !== 'string' || f.content.length === 0) { rejectedFiles.push(f.path); continue }
-        if (Buffer.byteLength(f.content, 'utf-8') > MAX_SCRIPT_BYTES) {
-          rejectedFiles.push(f.path)
-          console.warn(`[experience] file rejected (over ${MAX_SCRIPT_BYTES} bytes): ${f.path}`)
-          continue
-        }
-        const syntaxErr = scriptSyntaxError(join(EXPERIENCES_DIR, name), f.path, f.content)
-        if (syntaxErr) {
-          rejectedFiles.push(f.path)
-          console.warn(`[experience] file rejected (${syntaxErr}): ${f.path}`)
-          continue
-        }
-        acceptedFiles.push(f)
-      }
-    }
-
-    // 落盘规则只有一条：save 只写它收到的文件，从不清理目录。draft 不带
-    // files 时保留旧 files_json（ensureTriggers 的回写只重写 SKILL.md，
-    // 不许把脚本清单洗掉——记录与磁盘从此对不上）。
-    const effectiveFiles = draft.files && draft.files.length > 0
-      ? acceptedFiles.map((f) => f!.path)
-      : (parseTriggers(existing?.files_json) as string[] | undefined)
-    // `updated_at` marks an ITERATION: a declared target whose content really
-    // changed (a pre-existing row whose content_hash is NULL counts as changed
-    // — it was written before this gate existed). Creation leaves it null;
-    // ensureTriggers carries no targetName, so a frontmatter-only rewrite
-    // never reads as "revised". Legacy NULL hashes therefore only misfire when
-    // a targetName save lands on a pre-upgrade row with byte-identical content
-    // — a contradiction (the model was told to revise, produced no change).
-    const bumpUpdated = Boolean(draft.targetName && existing && contentChanged)
-
-    // ── Truncation-driven loss guard (review 2026-09-26 中5) ──
-    // The iteration prompt shows each pool record truncated to the first 1500
-    // characters (MemoryManager.buildExistingExperiencesText's per-record
-    // budget) and asks for the FULL revised document back — so a record longer
-    // than that budget gets merged from a PARTIAL view, and the whole-body
-    // upsert below would silently drop everything the model never saw
-    // (script-carrying records blow past 1500 easily: 8KB per script, 3 of
-    // them). When the target's existing body exceeds the budget and the draft
-    // comes back meaningfully SHORTER than that body, the revision is refused
-    // with the record untouched; the agent reads the full SKILL.md (its
-    // envelope names the directory) and resubmits with everything included.
-    if (bumpUpdated && existing) {
+  /** 扫描全部目录；单个目录坏掉不该拖垮整次读取，坏的那条跳过并上报。 */
+  async list(onBad?: (id: string, err: unknown) => void): Promise<ExperienceFile[]> {
+    const out: ExperienceFile[] = []
+    for (const id of await this.listIds()) {
       try {
-        const oldMd = await readFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), 'utf-8')
-        const oldLen = parseExperienceMd(oldMd, existing.title).content.length
-        const DEDUP_VIEW_BODY_BUDGET = 1500
-        if (oldLen > DEDUP_VIEW_BODY_BUDGET && draft.content.length < oldLen * 0.9) {
-          throw new Error(
-            `修订被拒绝：「${existing.title}」现有正文共 ${oldLen} 字符，而提炼视图只展示前 ${DEDUP_VIEW_BODY_BUDGET} 字符；` +
-            `新稿只有 ${draft.content.length} 字符，会把模型从未见过的尾部整体丢掉。` +
-            `请先读取该记录目录下的完整 SKILL.md，把全部既有内容并入修订稿后重试（修订稿不应显著短于原正文）。`
-          )
-        }
+        const file = await this.read(id)
+        if (file) out.push(file)
       } catch (err) {
-        if (err instanceof Error && err.message.startsWith('修订被拒绝')) throw err
-        /* old file unreadable (dir deleted etc.) → nothing to lose, save proceeds */
+        onBad?.(id, err)
       }
     }
+    return out
+  }
 
-    const record: ExperienceRecord = {
-      id: existing?.id ?? generateId(),
-      name,
-      title: draft.title,
-      description: draft.description,
-      category: draft.category,
-      sourceConversationId: draft.sourceConversationId,
-      createdAt: existing?.created_at ?? now,
-      lastUsedAt: existing?.last_used_at ?? null,
-      useCount: existing?.use_count ?? 0,
-      triggers: draft.triggers && draft.triggers.length > 0
-        ? draft.triggers
-        : parseTriggers(existing?.triggers),
-      updatedAt: bumpUpdated ? now : existing?.updated_at ?? null
+  async read(id: string): Promise<ExperienceFile | null> {
+    const path = join(this.dirOf(id), EXPERIENCE_FILE)
+    let content: string
+    try {
+      content = await readFile(path, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
     }
-    // Rewrite SKILL.md only when the rendered bytes differ from what is on
-    // disk — a stricter test than the content hash alone: the hash misses
-    // frontmatter-only changes (ensureTriggers persisting new triggers), which
-    // still have to reach the file the raw view and pick_skill hand to the model.
-    const nextMd = formatExperienceMd(record, draft.content)
-    let writeSkill = true
-    if (existing) {
+    const parsed = parseExperienceMd(content, path)
+    // 目录名是稳定的身份，frontmatter 与目录不一致说明文件被手工挪过 —— 报出来而不是默默信任。
+    if (parsed.meta.id !== id) {
+      throw new Error(`${path}: frontmatter name ${JSON.stringify(parsed.meta.id)} does not match directory ${JSON.stringify(id)}`)
+    }
+    return parsed
+  }
+
+  /** 经验正文文件的绝对路径（pick_skill 信封里的 **Location:** 用它）。 */
+  pathOf(id: string): string {
+    return join(this.dirOf(id), EXPERIENCE_FILE)
+  }
+
+  async exists(id: string): Promise<boolean> {
+    return (await this.read(id)) !== null
+  }
+
+  async write(file: ExperienceFile): Promise<void> {
+    const dir = this.dirOf(file.meta.id)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, EXPERIENCE_FILE), formatExperienceMd(file), 'utf-8')
+  }
+
+  async remove(id: string): Promise<void> {
+    await rm(this.dirOf(id), { recursive: true, force: true })
+  }
+
+  /** `scripts/` 下的脚本（取代第一代塞进 files_json 的内嵌 JSON）。 */
+  async listScripts(id: string): Promise<ExperienceScriptFile[]> {
+    const scriptsDir = join(this.dirOf(id), 'scripts')
+    let names: string[]
+    try {
+      names = await readdir(scriptsDir)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw err
+    }
+    const out: ExperienceScriptFile[] = []
+    for (const name of names.sort()) {
+      const content = await readFile(join(scriptsDir, name), 'utf-8').catch(() => null)
+      if (content !== null) out.push({ relativePath: name, content })
+    }
+    return out
+  }
+
+  async writeScript(id: string, relativePath: string, content: string): Promise<void> {
+    const safe = relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+    if (!safe || safe.split('/').includes('..')) {
+      throw new Error(`unsafe script path: ${JSON.stringify(relativePath)}`)
+    }
+    const scriptsDir = join(this.dirOf(id), 'scripts')
+    await mkdir(scriptsDir, { recursive: true })
+    await writeFile(join(scriptsDir, safe), content, 'utf-8')
+  }
+
+  // ── 同步镜像（2026-11-12）─────────────────────────────────────────────
+  // 记忆写入链是同步的（`applyPageOps(ops): PageOpResult[]`，跑在 better-sqlite3
+  // 事务里），经验写盘不能把 async 传染进去。promises 版留给读取面与迁移脚本，
+  // 写入面走这里 —— 两份共用 parseExperienceMd / formatExperienceMd / dirOf，
+  // 形态不会走散。
+
+  listIdsSync(): string[] {
+    try {
+      return readdirSync(this.rootDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && ID_RE.test(e.name))
+        .map((e) => e.name)
+        .sort()
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw err
+    }
+  }
+
+  readSync(id: string): ExperienceFile | null {
+    const path = join(this.dirOf(id), EXPERIENCE_FILE)
+    let content: string
+    try {
+      content = readFileSync(path, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+    const parsed = parseExperienceMd(content, path)
+    // 与异步版同一条纪律：目录名才是身份，frontmatter 对不上就报错。
+    if (parsed.meta.id !== id) {
+      throw new Error(`${path}: frontmatter name ${JSON.stringify(parsed.meta.id)} does not match directory ${JSON.stringify(id)}`)
+    }
+    return parsed
+  }
+
+  listSync(onBad?: (id: string, err: unknown) => void): ExperienceFile[] {
+    const out: ExperienceFile[] = []
+    for (const id of this.listIdsSync()) {
       try {
-        writeSkill = await readFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), 'utf-8').then((s) => s !== nextMd)
-      } catch { /* no file yet (dir deleted, row remains) → write */ }
+        const file = this.readSync(id)
+        if (file) out.push(file)
+      } catch (err) {
+        onBad?.(id, err)
+      }
     }
-    if (writeSkill) {
-      await mkdir(join(EXPERIENCES_DIR, name), { recursive: true })
-      await writeFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), nextMd, 'utf-8')
-    }
-    for (const f of acceptedFiles) {
-      if (!f) continue
-      await mkdir(join(EXPERIENCES_DIR, name, 'scripts'), { recursive: true })
-      await writeFile(join(EXPERIENCES_DIR, name, f.path), f.content, 'utf-8')
-    }
-    record.files = effectiveFiles && effectiveFiles.length > 0 ? effectiveFiles : undefined
-    getDb()
-      .prepare(
-        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers, files_json, updated_at, content_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(name) DO UPDATE SET
-           title = excluded.title,
-           description = excluded.description,
-           category = excluded.category,
-           source_conversation_id = excluded.source_conversation_id,
-           triggers = excluded.triggers,
-           files_json = COALESCE(excluded.files_json, experiences.files_json),
-           updated_at = excluded.updated_at,
-           content_hash = excluded.content_hash`
-      )
-      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []), record.files ? JSON.stringify(record.files) : null, record.updatedAt ?? null, contentHash)
-    const evicted = await this.enforceLimit()
-    return {
-      record,
-      evicted,
-      rejectedFiles: rejectedFiles.length > 0 ? rejectedFiles : undefined,
-    }
+    return out
   }
 
-  /** Evict experiences beyond MAX_EXPERIENCES using LRU ordering.
-   *  The count read and the row deletes run inside ONE synchronous
-   *  transaction (PLAN-parallel-experts T11): two concurrent saves used to
-   *  compute deletions from a stale total and over-evict. File removal
-   *  happens after — outside the transaction, best-effort. */
-  private async enforceLimit(): Promise<ExperienceRecord | undefined> {
-    const db = getDb()
-    const evict = db.transaction((): any[] => {
-      const total = (db.prepare('SELECT COUNT(*) as c FROM experiences').get() as { c: number }).c
-      if (total <= MAX_EXPERIENCES) return []
-      const rows = db
-        .prepare(
-          `SELECT * FROM experiences
-           ORDER BY (last_used_at IS NULL) DESC, COALESCE(last_used_at, '0') ASC, use_count ASC
-           LIMIT ?`
-        )
-        .all(total - MAX_EXPERIENCES) as any[]
-      const del = db.prepare('DELETE FROM experiences WHERE name = ?')
-      for (const row of rows) del.run(row.name)
-      return rows
-    })
-    const rows = evict()
-    let evicted: ExperienceRecord | undefined
-    for (const row of rows) {
-      evicted = rowToRecord(row)
-      await rm(join(EXPERIENCES_DIR, row.name), { recursive: true, force: true }).catch(() => {})
-    }
-    return evicted
+  writeSync(file: ExperienceFile): void {
+    const dir = this.dirOf(file.meta.id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, EXPERIENCE_FILE), formatExperienceMd(file), 'utf-8')
   }
 
-  async delete(name: string): Promise<void> {
-    // 名字消毒（full_20261011 M9-P0-1）：join 不做越界检查，`..` 会把
-    // 「删一个经验目录」变成递归删 ~/.pulsemind 的任意祖先。
-    const dir = safeChildPath(EXPERIENCES_DIR, name)
-    if (!dir) throw new Error(`invalid experience name: ${JSON.stringify(name)}`)
-    await rm(dir, { recursive: true, force: true })
-    getDb().prepare('DELETE FROM experiences WHERE name = ?').run(name)
+  removeSync(id: string): void {
+    rmSync(this.dirOf(id), { recursive: true, force: true })
   }
 
-  /** Remove every experience: all record dirs + the whole table. Returns the
-   *  count that was removed. */
-  async clear(): Promise<number> {
-    const rows = getDb().prepare('SELECT name FROM experiences').all() as { name: string }[]
-    getDb().prepare('DELETE FROM experiences').run()
-    for (const row of rows) {
-      await rm(join(EXPERIENCES_DIR, row.name), { recursive: true, force: true }).catch(() => {})
+  listScriptsSync(id: string): ExperienceScriptFile[] {
+    const scriptsDir = join(this.dirOf(id), 'scripts')
+    let names: string[]
+    try {
+      names = readdirSync(scriptsDir)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw err
     }
-    return rows.length
-  }
-
-  /** Record a trigger of an experience (called when the LLM reads it).
-   *  `outcome` (PLAN-experience-outcome M1) rides the SAME touch — a script
-   *  run observed by the exec settlement's static matcher books its exit
-   *  verdict alongside the usage count, so one row update carries both. */
-  async touch(name: string, outcome?: 'ok' | 'fail'): Promise<void> {
-    if (!outcome) {
-      getDb()
-        .prepare('UPDATE experiences SET last_used_at = ?, use_count = use_count + 1 WHERE name = ?')
-        .run(localTimestamp(), name)
-      return
-    }
-    const db = getDb()
-    const row = db.prepare('SELECT outcome_json FROM experiences WHERE name = ?').get(name) as { outcome_json?: string | null } | undefined
-    if (!row) return
-    let data: { ok: number; fail: number; lastOutcomeAt?: string | null } = { ok: 0, fail: 0, lastOutcomeAt: null }
-    if (typeof row.outcome_json === 'string' && row.outcome_json) {
+    const out: ExperienceScriptFile[] = []
+    for (const name of names.sort()) {
       try {
-        const parsed = JSON.parse(row.outcome_json)
-        if (parsed && typeof parsed === 'object') {
-          data = {
-            ok: Number.isFinite(parsed.ok) ? parsed.ok : 0,
-            fail: Number.isFinite(parsed.fail) ? parsed.fail : 0,
-            lastOutcomeAt: typeof parsed.lastOutcomeAt === 'string' ? parsed.lastOutcomeAt : null,
-          }
-        }
-      } catch { /* malformed → start fresh; the counters are advisory */ }
+        out.push({ relativePath: name, content: readFileSync(join(scriptsDir, name), 'utf-8') })
+      } catch {
+        // 单个脚本读不出来就跳过，与异步版同款
+      }
     }
-    data[outcome] += 1
-    data.lastOutcomeAt = localTimestamp()
-    db.prepare('UPDATE experiences SET last_used_at = ?, use_count = use_count + 1, outcome_json = ? WHERE name = ?')
-      .run(data.lastOutcomeAt, JSON.stringify(data), name)
+    return out
+  }
+
+  writeScriptSync(id: string, relativePath: string, content: string): void {
+    const safe = relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+    if (!safe || safe.split('/').includes('..')) {
+      throw new Error(`unsafe script path: ${JSON.stringify(relativePath)}`)
+    }
+    const scriptsDir = join(this.dirOf(id), 'scripts')
+    mkdirSync(scriptsDir, { recursive: true })
+    writeFileSync(join(scriptsDir, safe), content, 'utf-8')
   }
 }
 

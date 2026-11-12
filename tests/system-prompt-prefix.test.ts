@@ -35,12 +35,6 @@ const userMsg = (text: string) => ({
 const memoryStub = (context: string) =>
   ({ getManualMemoryContext: async () => context }) as unknown as AgentEngineOptions['memoryManager']
 
-const experienceStub = (matched: { name: string; description: string }[]) =>
-  ({
-    buildNameIndex: async () => null,
-    matchByTriggers: async () => matched,
-  }) as unknown as NonNullable<AgentEngineOptions['experienceManager']>
-
 /** Minimal Plan shape — only the fields the v2 plan section reads (PLAN-plan-dag). */
 const plan = (mode: string, stepDone: boolean) =>
   ({
@@ -166,7 +160,6 @@ describe('session state block', () => {
         workspaceDir: '/tmp/ws-a',
         memoryManager: memoryStub('# Memory Context\n- stable-ish'),
         pageContext: { url: 'https://example.test/a', title: 'Example Page' },
-        experienceManager: experienceStub([{ name: 'perf-tuning', description: 'tuning notes' }]),
       }),
       messages: [userMsg('tune the perf of this')],
       plan: plan('auto', false),
@@ -184,7 +177,7 @@ describe('session state block', () => {
   })
 
   it('carries the per-turn capability hints without touching the user message; 经验 hint 已退役（M4）', async () => {
-    const hint = () => opts({ experienceManager: experienceStub([{ name: 'perf-tuning', description: 'tuning notes' }]) })
+    const hint = () => opts()
     const msgs = [userMsg('tune the perf of this')]
     const { stateBlock, systemPrompt } = await buildSystemPrompt({ opts: hint(), messages: msgs, plan: null })
 

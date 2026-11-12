@@ -13,7 +13,6 @@ import { SkillManager } from '../../renderer/src/skills/SkillManager'
 import { BUILT_IN_SKILLS } from '../../renderer/src/skills/built-in-skills'
 import { MemoryManager } from '../../renderer/src/memory/MemoryManager'
 import { KnowledgeManager } from '../../renderer/src/knowledge/KnowledgeManager'
-import { ExperienceManager } from '../../renderer/src/experiences/ExperienceManager'
 import { createLlmAdapter } from '../../renderer/src/llm'
 import { SkillKeywordAgent } from '../../renderer/src/agent/one-shot-agent'
 import type { PlatformInfo } from '../../shared/types/electron-bridge'
@@ -66,7 +65,6 @@ interface Managers {
   skillManager: SkillManager
   memoryManager: MemoryManager
   knowledgeManager: KnowledgeManager
-  experienceManager: ExperienceManager
   skillKeywordAgent: SkillKeywordAgent
   platformInfo: PlatformInfo
 }
@@ -441,7 +439,6 @@ export class AgentSessionManagerImpl {
           skillManager,
           memoryManager: new MemoryManager(),
           knowledgeManager: new KnowledgeManager(),
-          experienceManager: new ExperienceManager(),
           skillKeywordAgent: new SkillKeywordAgent(),
           platformInfo: sessionPlatformInfo(),
         }
@@ -649,13 +646,11 @@ export class AgentSessionManagerImpl {
     return settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]
   }
 
-  /** Mirror the 设置 → 记忆/经验 master switches onto the shared managers.
-   *  memoryEnabled maps onto MemoryPreferences (auto capture + prompt injection);
-   *  experienceEnabled onto ExperienceManager's own flag. */
+  /** Mirror the 设置 → 记忆 master switch onto the shared managers.
+   *  memoryEnabled maps onto MemoryPreferences (auto capture + prompt injection). */
   private syncFeatureToggles(managers: Managers, settings: AppSettings): void {
     const memoryOn = settings.memoryEnabled ?? true
     managers.memoryManager.setPreferences({ autoCaptureEnabled: memoryOn, autoInjectEnabled: memoryOn })
-    managers.experienceManager.setEnabled(settings.experienceEnabled ?? true)
   }
 
   /** Mirror the 设置 → 助手设置 run limits onto the engine-side module state:
@@ -966,7 +961,6 @@ export class AgentSessionManagerImpl {
       skillManager: managers.skillManager,
       memoryManager: managers.memoryManager,
       knowledgeManager: managers.knowledgeManager,
-      experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
       workspaceDir,
       projectName,
@@ -1036,6 +1030,20 @@ export class AgentSessionManagerImpl {
     // re-attaches it (with its mirror fields) on every option rebuild.
     if (entry && pinnedExpert) entry.expertState = pinnedExpert
     if (entry) await this.refreshExpertContext(sessionId, entry)
+  }
+
+  /** Drop the create-time tool whitelist (extension→desktop handoff): a
+   *  hosted session is born pinned to `PAGE_SESSION_ALLOWED_TOOLS` (ws-server
+   *  sessionCreate), and handoff moves the conversation to the desktop, whose
+   *  continuation must carry the full desktop toolset again. Both halves must
+   *  go: `pinned.allowedTools` is what refreshOptions re-attaches, and the
+   *  engine's derived set is constructor-only state that updateOptions never
+   *  rebuilds. */
+  releaseToolWhitelist(sessionId: string): void {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return
+    entry.pinned.allowedTools = undefined
+    entry.engine.clearAllowedTools()
   }
 
   private sandboxContexts = new Map<string, SessionSandboxContext>()
@@ -1438,7 +1446,6 @@ export class AgentSessionManagerImpl {
       skillManager: managers.skillManager,
       memoryManager: managers.memoryManager,
       knowledgeManager: managers.knowledgeManager,
-      experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
       workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir ?? settings.workspaceDir ?? WORKSPACE_DIR,
       projectName,

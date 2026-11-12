@@ -25,9 +25,9 @@ import {
 } from '../storage/conversation.db'
 import { skillStore } from '../storage/skill-store'
 import { expertStore } from '../storage/expert-store'
-import { experienceStore } from '../storage/experience-store'
 import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
 import { applyPageOps, listMemoryPages, searchMemoryPages, touchMemoryPage } from '../storage/memory-pages-store'
+import { listExperienceRecords } from '../storage/experience-records'
 import { recordSkillUse } from '../storage/skill-use-store'
 import { MEMORY_MD_PATH } from '../storage'
 import * as svcDocx from '../services/docx-ops'
@@ -248,16 +248,6 @@ export const mainHost: PulseHost = {
   installSkill: (name) => Promise.resolve(skillStore.install(name)),
   writeSkillSource: (content, expectedName) => Promise.resolve(skillStore.writeRawSkill(content, expectedName)),
   expertList: async () => expertStore.getAll(),
-  listExperiences: async () => experienceStore.list(),
-  saveExperienceRecord: async (draft) => experienceStore.save(draft),
-  deleteExperienceRecord: async (name) => {
-    experienceStore.delete(name)
-  },
-  readExperienceRecord: (name) => Promise.resolve(experienceStore.read(name)),
-  readExperienceFile: (name, relPath) => experienceStore.readFileContent(name, relPath),
-  touchExperienceRecord: async (name, outcome) => {
-    experienceStore.touch(name, outcome)
-  },
 
   // ── Memory / knowledge / conversation store ──
   saveMemory: async (data) => {
@@ -378,6 +368,8 @@ export const mainHost: PulseHost = {
   searchMemories: async (data) => searchMemories(data.query, data.limit, data.category).map(toMemoryEntry),
   // memory pages（PLAN-memory-wiki，2026-10-25）
   listMemoryPages: (type) => Promise.resolve(listMemoryPages(type)),
+  // 经验的真源在磁盘，这条与 listMemoryPages 同形不同源（2026-11-12）。
+  listExperienceFiles: () => listExperienceRecords(),
   searchMemoryPages: (data) => Promise.resolve(searchMemoryPages(data).map((h) => ({ ...h.record, viaFts: h.viaFts }))),
   applyMemoryPageOps: async (ops) => applyPageOps(ops),
   touchMemoryPage: async (pageId) => touchMemoryPage(pageId),

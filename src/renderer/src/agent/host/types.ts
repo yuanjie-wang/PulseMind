@@ -70,12 +70,6 @@ export const HOST_METHOD_KEYS = [
   'installSkill',
   'writeSkillSource',
   'expertList',
-  'listExperiences',
-  'saveExperienceRecord',
-  'deleteExperienceRecord',
-  'readExperienceRecord',
-  'readExperienceFile',
-  'touchExperienceRecord',
   // memory / knowledge / conversation store
   'saveMemory',
   'searchConversationsByKeyword',
@@ -143,6 +137,8 @@ export const HOST_METHOD_KEYS = [
   'updateConversationSummary',
   // memory pages（PLAN-memory-wiki）
   'listMemoryPages',
+  // 经验文件真源（2026-11-12）：磁盘 EXPERIENCE.md，与 listMemoryPages 同形不同源
+  'listExperienceFiles',
   'searchMemoryPages',
   'applyMemoryPageOps',
   // pick_skill 的经验选中记账（PLAN-experience-sop B5）

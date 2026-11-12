@@ -6,7 +6,6 @@ import type { ToolManager } from '../tools/ToolManager'
 import type { SkillManager } from '../skills/SkillManager'
 import type { MemoryManager } from '../memory/MemoryManager'
 import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
-import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
@@ -132,7 +131,6 @@ export interface UseConversationEngineOptions {
   skillManager: SkillManager
   memoryManager: MemoryManager
   knowledgeManager: KnowledgeManager
-  experienceManager?: ExperienceManager
   skillsDir: string
   platformInfo: PlatformInfo | undefined
   /** Called when a non-active engine transitions to 'completed' status. */

@@ -25,7 +25,7 @@ function makeMockHost(): PulseHost {
     'killCommand', 'readFile', 'writeFile', 'editFile', 'patchFile', 'getFileStat',
     'saveBase64Image', 'gitInvoke', 'mcpStartServer', 'mcpRegisterServer',
     'mcpUpdateServerSummary', 'mcpCallTool', 'setSkillPreferences', 'readSkillRaw',
-    'installSkill', 'readExperienceRecord', 'touchExperienceRecord', 'saveMemory',
+    'installSkill', 'saveMemory',
   ]
   return {
     ...Object.fromEntries(keys.map((k) => [k, noop])),

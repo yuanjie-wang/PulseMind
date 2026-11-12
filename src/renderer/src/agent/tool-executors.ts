@@ -133,9 +133,8 @@ function formatSelectedSkill(name: string, definition: SkillDefinition, skillsDi
 // 开关）镜像技能的语义：候选表只列启用页（getEnabledSkills 同款），显式按名拉取
 // 仍能解析停用页（getSkill 同款）。
 
-/** 活经验候选的索引 TTL（matchExperiences 同款先例）。 */
+/** 活经验索引 TTL（matchExperiences 同款先例）。 */
 const EXP_CANDIDATE_TTL_MS = 60_000
-const EXP_CANDIDATE_MAX = 30
 let expCandidateCache: { at: number; pages: MemoryPageRecord[] } | null = null
 
 /** tests/probes 的复位钩子：60s TTL 缓存在同进程的用例间会串味。 */
@@ -143,13 +142,21 @@ export function resetExperienceCandidateCache(): void {
   expCandidateCache = null
 }
 
-/** 活页全集（含停用）——按名解析的查找面。 */
+/** 活页全集（含停用）——按名解析的查找面，也是候选表的唯一来源。
+ *
+ *  用户裁定（2026-11-12）：技能中心经验板块显示的经验必须全部可被 pick_skill 读取。
+ *  此处曾 `slice(0, EXP_CANDIDATE_MAX=30)` —— 一份缓存同时喂两个面，截断把查找面也
+ *  一起砍了：面板的 66 条里只有 updated_at 最新的 30 条能按名解析，其余即便报出准确
+ *  标题也返回 not found，且无任何提示。帽移除后查找面与候选表同源于全量活页，
+ *  intent 候选表按 enabled 过滤（见 enabledExperiencePages），代价是候选表随经验数
+ *  线性增长。2026-11-12 起经验真源是磁盘 EXPERIENCE.md，候选表的摘要来自
+ *  description（迁移时由 `## 背景` 首段兜底补齐），不再是页面上恒空的 summary 列。 */
 async function liveExperiencePages(): Promise<MemoryPageRecord[]> {
   const now = Date.now()
   if (!expCandidateCache || now - expCandidateCache.at >= EXP_CANDIDATE_TTL_MS) {
     try {
-      const all = await getHost().listMemoryPages('experience')
-      expCandidateCache = { at: now, pages: all.filter(isLivePage).slice(0, EXP_CANDIDATE_MAX) }
+      const all = await getHost().listExperienceFiles()
+      expCandidateCache = { at: now, pages: all.filter(isLivePage) }
     } catch {
       return expCandidateCache?.pages ?? []
     }
@@ -179,14 +186,15 @@ async function resolveExperiencePage(name: string): Promise<MemoryPageRecord | n
     ?? null
 }
 
-/** 经验信封（B3）：**无 `**Location:**` 行**——无磁盘文件，freshSkillDefinition
- *  的「信封与 Location 广告文件同文」纪律不适用；DB 现读即构造性新鲜。正文 =
- *  页 body 全文；files_json 的脚本反向序列化回 `### File:` 围栏；尾行是数据指针。 */
+/** 经验信封（B3）：经验已 SKILL 化，真源是 `~/.pulsemind/experience/<id>/EXPERIENCE.md`，
+ *  所以补回 **Location:** 行 —— 与技能信封同一条纪律（信封与广告文件同文）。
+ *  正文 = 页 body 全文；脚本反向序列化回 `### File:` 围栏；尾行是数据指针。 */
 function formatSelectedExperience(p: MemoryPageRecord): string {
   const scripts = p.files && p.files.length > 0 ? `${serializeScriptFences(p.files)}\n\n` : ''
   const summary = p.summary ? `**Summary:** ${p.summary}\n` : ''
+  const location = p.filePath ? `**Location:** \`${p.filePath}\`\n` : ''
   const source = p.sourceConversationId ?? 'unknown'
-  return `## Experience: ${p.title}\n\n${summary}${scripts}${p.body}\n\n(source: ${source}, extracted ${p.updatedAt.slice(0, 10)}, maturity: ${p.maturity})`
+  return `## Experience: ${p.title}\n\n${location}${summary}${scripts}${p.body}\n\n(source: ${source}, extracted ${p.updatedAt.slice(0, 10)}, maturity: ${p.maturity})`
 }
 
 /** B5 使用侧记账：pick 是有意图的拉取，才是干净的 touch 点（hint 触达刻意

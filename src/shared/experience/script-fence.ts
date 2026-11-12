@@ -10,9 +10,14 @@
 // this parser splits the fences out of the content. Pure + isomorphic so the
 // vitest suite drives the exact function the agent's parseResponse calls.
 
-import type { ExperienceDraftFile } from '../types/experience-types'
-
 export const MAX_SCRIPTS_PER_EXPERIENCE = 3
+
+/** A script file that ships with an experience. `path` is relative to the
+ *  experience dir and MUST start with `scripts/`. */
+export interface ExperienceDraftFile {
+  path: string
+  content: string
+}
 
 export interface ScriptFenceResult {
   /** Content with the file fences stripped out. */

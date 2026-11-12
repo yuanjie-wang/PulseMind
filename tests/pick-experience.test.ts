@@ -54,6 +54,8 @@ function runPick(
   const seen: PickOutcome[] = []
   const host = {
     listMemoryPages: async (type?: string) => (type === 'experience' ? pages : []),
+    // 经验真源已改磁盘（2026-11-12）：pick_skill 走这一条，不再从 listMemoryPages 取。
+    listExperienceFiles: async () => pages,
     touchMemoryPage: async (id: string) => { touched.push(id) },
     recordSkillUse: async (name: string) => { skillTouches.push(name) },
     installSkill: async () => null,
@@ -130,6 +132,21 @@ describe('名字分支：注册表未命中 → 经验页', () => {
     expect(out?.isError).toBeTruthy()
     expect(out?.content).toContain('not found')
   })
+
+  it('第 31 条及以后仍可按名命中（帽已移除，2026-11-12 裁定：面板所见全部可读）', async () => {
+    const many: MemoryPageRecord[] = Array.from({ length: 66 }, (_, i) => ({
+      ...cluePage, id: `p${i}`, title: `经验${i}`, aliases: i === 65 ? ['第六十五条'] : [],
+    }))
+    const touched: string[] = []
+    const byTitle = await runPick({ name: '经验65' }, many, undefined, {}, touched)
+    expect(byTitle?.isError).toBeFalsy()
+    expect(byTitle?.content).toContain('## Experience: 经验65')
+    expect(touched).toEqual(['p65'])
+    // 尾页的 alias 同样可达——查找面整体不截断，不是只抬高了 title 命中
+    const byAlias = await runPick({ name: '第六十五条' }, many)
+    expect(byAlias?.isError).toBeFalsy()
+    expect(byAlias?.content).toContain('## Experience: 经验65')
+  })
 })
 
 describe('意图分支：候选表扩源', () => {
@@ -162,15 +179,15 @@ describe('意图分支：候选表扩源', () => {
     expect(out?.content).toContain('## Experience: 手工部署八步')
   })
 
-  it('候选表帽 30（页多于帽时 [experience] 行只有 30 条）', async () => {
-    const many: MemoryPageRecord[] = Array.from({ length: 35 }, (_, i) => ({ ...cluePage, id: `p${i}`, title: `经验${i}`, aliases: [] }))
+  it('候选表全量（帽已移除：面板所见经验全部进候选表，2026-11-12 裁定）', async () => {
+    const many: MemoryPageRecord[] = Array.from({ length: 65 }, (_, i) => ({ ...cluePage, id: `p${i}`, title: `经验${i}`, aliases: [] }))
     let capturedList = ''
     await runPick(
       { intent: 'x' },
       many,
       { execute: async (input) => { capturedList = (input as { skillsList: string }).skillsList; return 'none' } }
     )
-    expect(capturedList.split('- [experience] ')).toHaveLength(31) // 30 行 + 首段
+    expect(capturedList.split('- [experience] ')).toHaveLength(66) // 65 行 + 首段
   })
 
   it('技能与经验双空 → No skills or experiences available.', async () => {

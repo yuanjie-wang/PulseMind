@@ -800,7 +800,6 @@ export function useChatController(options: UseChatControllerOptions) {
     importError: managers.importError,
     memoryManager: managers.memoryManager,
     knowledgeManager: managers.knowledgeManager,
-    experienceManager: managers.experienceManager,
     convLights: engine.convLights,
     /** 每会话后台运行中计数（PLAN-background-tasks B），侧栏灯槽标记。 */
     bgRunningCounts: engine.bgRunningCounts,

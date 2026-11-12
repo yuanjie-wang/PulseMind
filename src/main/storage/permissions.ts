@@ -37,6 +37,7 @@ export function buildPermissionPlan(dataDir: string, opts?: { settingsPath?: str
   const llmRequestsDir = join(logsDir, 'llm-requests')
   const tmpDir = join(dataDir, 'tmp')
   const memoryDir = join(dataDir, 'memory')
+  const experienceDir = join(dataDir, 'experience')
 
   const plan: PermissionTarget[] = [
     { path: dataDir, mode: 0o700, kind: 'dir' },
@@ -45,6 +46,9 @@ export function buildPermissionPlan(dataDir: string, opts?: { settingsPath?: str
     { path: llmRequestsDir, mode: 0o700, kind: 'dir' },
     { path: memoryDir, mode: 0o700, kind: 'dir' },
     { path: tmpDir, mode: 0o700, kind: 'dir' },
+    // 经验磁盘真源（2026-11-12 经验 SKILL 化）：EXPERIENCE.md 正文是会话衍生内容，
+    // 根目录钉 0700；页内嵌套文件由 umask 兜住新建（清单不做递归走，见头注）。
+    { path: experienceDir, mode: 0o700, kind: 'dir' },
     { path: settingsPath, mode: 0o600, kind: 'file' },
     { path: serviceTokenPath, mode: 0o600, kind: 'file' },
     { path: memoryPath, mode: 0o600, kind: 'file' },
