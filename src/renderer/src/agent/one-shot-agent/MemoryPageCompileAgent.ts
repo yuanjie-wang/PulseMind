@@ -1,8 +1,11 @@
-// ── Memory page compile pass（PLAN-memory-wiki M6，2026-10-25；retire 2026-10-27）──
+// ── Memory page compile pass（PLAN-memory-wiki M6，2026-10-25；retire 硬删 2026-11-12）──
 // 低频页面整理：合并近似页（迁移兜底臂的 per-row 页在此归并）、别名卫生、
-// links 补全、过时页退役。输出复用 PageOp 协议；**只允许 supersede/alias/update/
-// retire，不允许 create/硬删**——整理是收敛不是生产，被并页留在取代链谱系里，
-// 退役页留行留理由（软态，UI 可恢复）：本 pass 不从库里删任何东西。
+// links 补全、过时页删除。输出复用 PageOp 协议；**只允许 supersede/alias/update/
+// retire，不允许 create**——整理是收敛不是生产。两种收敛的后果**不同**，别混为一谈：
+//   supersede —— 旧页保留（记 superseded_by，取代链谱系可追溯，merge 的首选）；
+//   retire   —— **永久删除**：行、FTS 影子行、（经验的）整个目录连脚本一并消失，
+//               不可恢复、没有 UI 逃生面；reason 是必填项，但只落主进程日志。
+// 带脚本的页（SOP）禁止 retire：固化流程管辖，本 pass 删不动。
 import { OneShotAgent } from './OneShotAgent'
 import { extractJson } from './json-utils'
 import { MEMORY_PAGE_TYPES, type MemoryPageType, type PageIndexEntry, type PageOp } from '../../../../shared/memory-pages'
@@ -38,11 +41,11 @@ Allowed actions, per insight:
 - **supersede** — two or more pages cover the SAME topic (near-duplicates, or fragments of one subject): merge them into ONE canonical page. Emit one op per duplicate, all naming the SAME new title and the SAME complete merged body: {"action":"supersede","target":"<duplicate's exact title or alias>","title":"<canonical title>","type":"preference|decision|fact|experience","content":"<COMPLETE merged body — keep every still-valid sentence from every merged page, never truncate>","aliases":["<union of their aliases + likely search terms>"]}. The store marks each old page superseded_by the new page; lineage is preserved.
 - **alias** — a page is findable under another obvious name: {"action":"alias","target":"...","aliases":["..."]}.
 - **update** — ONLY for a page whose full body is shown without the 「正文被截断」 marker, and only to fix structure, fill "links", or add a missing "summary": {"action":"update","target":"...","content":"<FULL revised body>","summary":"<ONE sentence, max 50 chars — include this whenever the page has no summary line>","links":["<related page title>"]}.
-- **retire** — a page is OBSOLETE: factually wrong now, about something the user explicitly retracted, or fully subsumed by another listed page so that merging would add nothing new. {"action":"retire","target":"...","reason":"<ONE sentence — why this page no longer belongs in the live pool>"}. Retire is a LAST resort, judged from the page's own content and the 使用/重现 counters on its line:
-  - prefer supersede whenever the content still has value — merge, don't discard;
+- **retire** — a page is OBSOLETE and must GO: factually wrong now, about something the user explicitly retracted, or fully subsumed by another listed page so that merging would add nothing new. {"action":"retire","target":"...","reason":"<ONE sentence — why this page no longer belongs in the live pool>"}. Retire DELETES the page permanently — it is not a soft state and there is no undo. Judged from the page's own content and the 使用/重现 counters on its line:
+  - retire is the LAST resort: prefer supersede whenever the content still has value — merge, don't discard;
   - NEVER retire a page merely for being old, short, or rarely used — low usage alone is not obsolescence;
   - never retire a page whose insight contradicts no other page and is not wrong.
-  A retired page keeps its row and reason (auditable, restorable) but leaves the live pool, recall, and every candidate list.
+  When in doubt, leave it alone: a wrong retire destroys content, a missed retire only leaves clutter.
 
 Experience pages are DRAFT SKILLS — their bodies follow the SKILL.md manual standard:
 - The manual structure is: ## 适用场景 (when to apply) / ## 步骤 (numbered imperative procedure) / ## 注意事项 (pitfalls, optional). A merged or restructured experience body KEEPS this structure.
@@ -50,7 +53,8 @@ Experience pages are DRAFT SKILLS — their bodies follow the SKILL.md manual st
 - An experience "summary" is the skill-standard description (what it does + when to use), not an outcome report.
 
 Hard rules:
-- NEVER create a new topic and NEVER hard-delete anything — merges go through supersede, retirements go through retire (soft state with a reason); rows are never removed by this pass.
+- **Addressing** — a page's line may carry a bracketed id (\`[#page_xxx]\`) right after its type. That id is only present when the pool holds MORE THAN ONE page under that same title: such pages are indistinguishable by title, so target them by \`"target":"#<id>"\` (a bare duplicate title is AMBIGUOUS and your op will be dropped). Pages without a bracketed id are addressed by title or alias as usual.
+- NEVER create a new topic. The ONLY way a page leaves the pool is retire, which deletes it permanently along with its search index entry (and, for an experience, its whole folder including scripts) — the reason you give goes to the main-process log, nowhere else. Merging still goes through supersede: the old pages are KEPT as lineage.
 - A merged page inherits the most fitting type of its parts; "type" is required on supersede.
 - You only see a SLICE: judge each page on its own merits and the pages visible here — never assume pages exist beyond the list.
 - If nothing needs tidying, return {"pages": []} — a fully successful outcome.
@@ -73,16 +77,42 @@ Return ONLY a JSON object: {"pages":[{"action":"supersede|alias|update|retire","
     const parsed = extractJson<{ pages?: unknown[] }>(raw)
     if (!parsed || !Array.isArray(parsed.pages)) return { pages: [] }
 
-    const refs = new Map<string, string>()
+    // target 解析（2026-11-12 记忆防重）：裸名（title/alias）命中多页时是**歧义**——
+    // 旧实现 refs.set 让后者覆盖前者，两个 supersede 会双双落到同一页，合并组只
+    // 取代一页。现在歧义名一律不收：agent 必须用目录里的 [#id] 精确指认。唯一名
+    // 仍解析成 title（apply 层按 title 寻址的老契约不变）；显式 id 解析成 id。
+    const refToId = new Map<string, string>()
+    const ambiguous = new Set<string>()
+    const idToId = new Map<string, string>()
     for (const p of input.pageIndex) {
-      refs.set(p.title.toLowerCase(), p.title)
-      for (const a of p.aliases) refs.set(a.toLowerCase(), p.title)
+      idToId.set(p.id.toLowerCase(), p.id)
+      for (const name of [p.title, ...p.aliases]) {
+        const key = name.trim().toLowerCase()
+        if (!key) continue
+        const prev = refToId.get(key)
+        if (prev !== undefined && prev !== p.id) {
+          ambiguous.add(key)
+          refToId.delete(key)
+        } else if (!ambiguous.has(key)) {
+          refToId.set(key, p.id)
+        }
+      }
+    }
+    const resolveRef = (raw: string, pageIndex: readonly PageIndexEntry[]): string | null => {
+      const ref = raw.trim()
+      if (!ref) return null
+      const key = ref.toLowerCase()
+      const byId = key.startsWith('#') ? idToId.get(key.slice(1)) : idToId.get(key)
+      if (byId) return byId
+      const hit = refToId.get(key)
+      if (!hit) return null // 幻觉或歧义 target：丢弃（整理宁缺毋滥）
+      return pageIndex.find((p) => p.id === hit)?.title ?? hit
     }
     const ops: PageOp[] = []
     for (const r of parsed.pages as RawOp[]) {
       const action = typeof r.action === 'string' ? r.action : ''
-      const target = typeof r.target === 'string' ? refs.get(r.target.trim().toLowerCase()) : undefined
-      if (!target) continue // 幻觉 target：丢弃（整理宁缺毋滥）
+      const target = typeof r.target === 'string' ? resolveRef(r.target, input.pageIndex) : null
+      if (!target) continue // 幻觉/歧义 target：丢弃（整理宁缺毋滥）
       const content = typeof r.content === 'string' ? r.content : ''
       const aliases = Array.isArray(r.aliases) ? r.aliases.filter((a): a is string => typeof a === 'string' && !!a.trim()) : []
       const links = Array.isArray(r.links) ? r.links.filter((l): l is string => typeof l === 'string' && !!l.trim()) : []
@@ -102,10 +132,11 @@ Return ONLY a JSON object: {"pages":[{"action":"supersede|alias|update|retire","
         if (aliases.length === 0) continue
         ops.push({ action: 'alias', target, aliases, links })
       } else if (action === 'retire') {
-        // 退役只在满目视图放行：titles-only 的降级视图看不足以判「过时」。
+        // retire 只在满目视图放行：titles-only 的降级视图看不足以判「过时」——
+        // 而 retire 是永久删除，看漏一页就是永久丢内容。
         if (input.mode === 'bucketed') continue
         const reason = typeof r.reason === 'string' ? r.reason.trim() : ''
-        if (!reason) continue // 无理由的退役一律丢弃（审计面要求，apply 层同门）
+        if (!reason) continue // 无理由的删除一律丢弃（删除必须留审计理由，apply 层同门）
         ops.push({ action: 'retire', target, reason })
       }
       // create / 其它 action 一律丢弃：整理不生产新主题

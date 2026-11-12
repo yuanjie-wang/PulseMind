@@ -11,8 +11,6 @@ import type { AgentMessage, TextBlock } from '../types/agent'
 import { MemoryPageCompileAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 import { getHost } from '../agent/host'
 import { buildExtractionCatalog, isLivePage, type PageOp } from '../../../shared/memory-pages'
-import { parseExperienceMd } from '../../../shared/experience/frontmatter'
-import type { ExperienceRecord } from '../../../shared/types/experience-types'
 
 /**
  * Manages memory capture, storage, and retrieval.
@@ -191,8 +189,9 @@ export class MemoryManager {
   // ── 页面编译层（PLAN-memory-wiki M6，2026-10-25；分区整理 + retire 2026-10-27）──
   // 取代旧扁平记忆归并（随旧表冻结退役，记录见 _review/review_20261025-memory-wiki.md）：
   // 低频整理活页——合并近似页（迁移兜底臂的 per-row 页在此归并）、别名卫生、
-  // links 补全、过时页退役（retire op：软态、理由留档、UI 可恢复）。
-  // 只经 supersede/alias/update/retire，不删不建，谱系可回溯。
+  // links 补全、过时页删除（retire op：2026-11-12 起**硬删**，不可恢复，理由只落日志）。
+  // 只经 supersede/alias/update/retire：supersede 保留旧页挂链（谱系可回溯），
+  // retire 才是真删；不新建页面。
   /** 页数增长阈值：活页较上次编译 +N 即到期。 */
   static readonly COMPILE_MIN_NEW = 8
   static readonly COMPILE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -259,7 +258,17 @@ export class MemoryManager {
     try {
       // 页面视图：行尾带 使用/重现 计数——退役判断的价值信号（高价值页禁 retire
       // 的判断依据在 agent 侧，数据从这里来）。
+      // 同名标题的页带 [#id]（2026-11-12 记忆防重）：同名两页在目录里长得一模一样，
+      // agent 只能指认其中一个——apply 层按 title 解析永远命中第一个，合并组会退化
+      // 成「只取代第一页」。带 id 后 agent 能精确指认。跨分区也标：这个标题在池子里
+      // 不唯一，新页别取同名（否则撞名门直接拒）。
+      const titleCounts = new Map<string, number>()
+      for (const p of all.filter(isLivePage)) {
+        const key = p.title.toLowerCase()
+        titleCounts.set(key, (titleCounts.get(key) ?? 0) + 1)
+      }
       const lines = batch.map((p) => {
+        const idTag = (titleCounts.get(p.title.toLowerCase()) ?? 0) > 1 ? ` [#${p.id}]` : ''
         const alias = p.aliases.length > 0 ? ` 别名: ${p.aliases.join(', ')}` : ''
         const usage = p.useCount > 0 ? ` 使用${p.useCount}次` : ''
         const recurrence = p.recurrence > 0 ? ` 重现${p.recurrence}次` : ''
@@ -267,7 +276,7 @@ export class MemoryManager {
           ? p.body
           : `${p.body.slice(0, MemoryManager.COMPILE_PAGE_BODY)} 「正文被截断」`
         const missingSummary = p.summary ? '' : ' 〔summary 缺失——update 时补一句结论〕'
-        return `- ${p.title} (${p.type})${alias}${usage}${recurrence}${missingSummary}\n  正文: ${body.replace(/\n/g, ' ')}`
+        return `- ${p.title} (${p.type})${idTag}${alias}${usage}${recurrence}${missingSummary}\n  正文: ${body.replace(/\n/g, ' ')}`
       })
       const result = await this.compileAgent.execute(
         { pagesText: lines.join('\n'), mode: 'full', pageIndex: batch.map((p) => ({ id: p.id, title: p.title, type: p.type, aliases: p.aliases })), locale: undefined },
@@ -579,76 +588,5 @@ export class MemoryManager {
       out.push({ role: m.role, content: texts.join('\n') })
     }
     return out
-  }
-
-  /**
-   * Bounded reference of the LIVE experience pool (newest first) so the model
-   * can judge DUPLICATES / EXTENDS / NEW against actual content — one summary
-   * line per record plus the entry's body (truncated per record), with a
-   * pool-wide budget so 20 full entries cannot blow the context.
-   *
-   * Reads `listExperiences` + `readExperienceRecord`; an absent host surface
-   * (or an unreadable file) degrades to '' exactly as the old try/catch did.
-   * Returns the LINES ONLY — the section header belongs to the agent's
-   * buildUserMessages (the old code emitted it in both places). The previous
-   * source was the KNOWLEDGE BASE (rows only the 0.3.4 one-shot migration ever
-   * wrote), so live pool entries were invisible to dedup.
-   */
-  private async buildExistingExperiencesText(maxCount = 40, maxBodyLen = 1500, maxTotal = 30000): Promise<string> {
-    let records: ExperienceRecord[]
-    try {
-      records = (await getHost().listExperiences()) ?? []
-    } catch {
-      return ''
-    }
-    if (records.length === 0) return ''
-    const lines: string[] = []
-    let total = 0
-    for (const rec of records.slice(0, maxCount)) {
-      let body = ''
-      let truncatedAt = 0
-      try {
-        const raw = await getHost().readExperienceRecord(rec.name)
-        if (raw) {
-          const content = parseExperienceMd(raw, rec.title).content
-          if (content.length > maxBodyLen) {
-            body = content.slice(0, maxBodyLen)
-            truncatedAt = content.length
-          } else {
-            body = content
-          }
-        }
-      } catch {
-        /* unreadable file → the summary line still lands */
-      }
-      // An explicit 截断 marker, not a silent slice (review 2026-09-26 中5):
-      // the revision prompt asks for the FULL document, so the model must be
-      // able to tell a complete entry from a partial one — and the store's
-      // loss guard rejects a revision that would drop the unseen tail.
-      const bodyText = body
-        ? truncatedAt
-          ? `${body}\n（……本条正文在提炼视图中被截断，完整正文共 ${truncatedAt} 字符——不要以这份节选为唯一事实来源去修订该条）`
-          : body
-        : ''
-      const line = bodyText
-        ? `- ${rec.name} | ${rec.category} | ${rec.description}\n${bodyText}`
-        : `- ${rec.name} | ${rec.category} | ${rec.description}`
-      if (total + line.length > maxTotal) break // pool-wide budget: stop, don't truncate mid-record
-      total += line.length
-      lines.push(line)
-    }
-    return lines.join('\n')
-  }
-
-  /**
-   * Bounded reference of existing memories (newest first) so extraction skips
-   * facts/decisions/preferences already recorded.
-   */
-  private async buildExistingMemoriesText(maxCount = 30, maxLen = 120): Promise<string> {
-    const all = await this.listMemories()
-    const recent = (all || []).slice(0, maxCount)
-    if (recent.length === 0) return ''
-    const lines = recent.map((m) => `- [${m.type}/${m.category}] ${m.content.slice(0, maxLen)}`)
-    return 'EXISTING MEMORIES (do not extract memories that duplicate these):\n' + lines.join('\n')
   }
 }

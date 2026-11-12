@@ -119,9 +119,9 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 - **四类页面** — 偏好 / 决策 / 事实 / 经验，语义分明，全库 trigram 全文索引
 - **定时提取** — 按设置的间隔自动从会话中提取新页（默认 6 小时，可关），也可随时手动触发
-- **自动整理** — 池子增大时自动归并重复页、更新过时内容；判过时的页退役留档、随时可恢复，带脚本的经验页永不误动
+- **自动整理** — 池子增大时自动归并重复页、更新过时内容；判过时的页**永久删除、不可恢复**，带脚本的经验页永不误动
 - **手动记忆** — MEMORY.md 手写内容永远注入每一段系统提示词
-- **记忆浏览** — 「设置 → 记忆」里浏览、搜索、恢复已退役页
+- **记忆浏览** — 「设置 → 记忆」里浏览、搜索、删除记忆页
 
 ## 经验
 
@@ -318,9 +318,9 @@ From 0.4.3, memories and experiences are unified as memory pages: one place to e
 
 - **Four page types** — preferences / decisions / facts / experiences, each with its own meaning under one search, full-library trigram indexing
 - **Scheduled extraction** — new pages are pulled out of conversations on an interval you set (6 hours by default, can be turned off), or extracted on demand
-- **Automatic curation** — as the pool grows, duplicates are merged and stale content updated; pages judged outdated are retired with their reason on file and restorable any time, and script-bearing experience pages are never touched
+- **Automatic curation** — as the pool grows, duplicates are merged and stale content updated; pages judged outdated are deleted permanently (no undo), and script-bearing experience pages are never touched
 - **Hand-written memory** — MEMORY.md is injected into every system prompt, always
-- **Memory browser** — browse, search, and restore retired pages under Settings → Memory
+- **Memory browser** — browse, search, and delete memory pages under Settings → Memory
 
 ## Experiences
 

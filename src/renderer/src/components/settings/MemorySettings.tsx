@@ -1,10 +1,11 @@
 // ── Memory settings section（v2，PLAN-memory-wiki M7 / E5，2026-10-25）──
 // 三个分区，用户面前只有一个名词「记忆」：手动记忆（MEMORY.md 编辑）、
 // 自动记忆（总开关卡片内含提取频率与「立即提取」）、已提取的记忆（浏览/搜索/删除，
-// 经验归技能中心）。旧的提取记忆列表/清空随旧表冻结一并退役。
+// 经验归技能中心）。2026-11-12 用户裁定恢复「清空」按钮：只清自动提取的三类
+// （preference/decision/fact，含退役与被取代的历史行），经验与手写 MEMORY.md 不动。
 import React, { useState, useEffect, useCallback } from 'react'
-import { Drawer, Typography, Button, Input, InputNumber, Space } from 'antd'
-import { BookOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { Drawer, Typography, Button, Input, InputNumber, Space, Popconfirm } from 'antd'
+import { BookOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify, notifyFailure } from '../../utils/notify'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
@@ -25,6 +26,10 @@ interface MemorySettingsProps {
 function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettingsProps): React.ReactElement {
   const [mdContent, setMdContent] = useState('')
   const [sweeping, setSweeping] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  // 清空后重挂载浏览件：面板的 load 只依赖 fixedType/typeFilter/submitted，
+  // 宿主手里没有别的刷新把手，换 key 是最省事也最不会漏的一条。
+  const [pagesKey, setPagesKey] = useState(0)
   // 上次自动记忆提取时刻：不读 useSettings 的启动快照——定时清扫由主进程随时
   // 落笔，快照必旧；面板打开时和手动提取后各自 getSettings 取新鲜值。
   const [lastSweepAt, setLastSweepAt] = useState<string | undefined>(undefined)
@@ -85,6 +90,22 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
     }
   }
 
+  // 清空提取记忆（2026-11-12 用户裁定「记忆设置面板中，需要提供清空按钮」）：
+  // 只清记忆三型——经验归技能中心、手写 MEMORY.md 都不动。连退役/被取代的历史行
+  // 一并删除：面板把灰卡也画出来，只清活页会留一屏灰卡，看着像没清干净。
+  const handleClearAll = async () => {
+    setClearing(true)
+    try {
+      const removed = await window.electronAPI.clearMemoryPages(['preference', 'decision', 'fact'])
+      notify.success(t('memoryPages.cleared', { count: removed }))
+      setPagesKey((k) => k + 1)
+    } catch (err) {
+      notifyFailure('memory.clearAll', err, t('memoryPages.clearFailed'))
+    } finally {
+      setClearing(false)
+    }
+  }
+
   const body = (
     <>
       <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>{t('memoryDrawer.title')}</Text>
@@ -137,8 +158,24 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       </FeatureSwitch>
 
       {/* ── 已提取的记忆（E5：内容归位设置面板；经验归技能中心不在过滤内）── */}
-      <SettingCard title={t('memoryPages.browseTitle')} help={t('memoryPages.browseHelp')}>
-        <MemoryPagesBrowser deletable />
+      <SettingCard
+        title={t('memoryPages.browseTitle')}
+        help={t('memoryPages.browseHelp')}
+        extra={
+          <Popconfirm
+            title={t('memoryPages.clearConfirm')}
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
+            okButtonProps={{ danger: true }}
+            onConfirm={handleClearAll}
+          >
+            <Button danger size="small" icon={<DeleteOutlined />} loading={clearing}>
+              {t('memoryPages.clearAll')}
+            </Button>
+          </Popconfirm>
+        }
+      >
+        <MemoryPagesBrowser key={pagesKey} deletable />
       </SettingCard>
     </>
   )

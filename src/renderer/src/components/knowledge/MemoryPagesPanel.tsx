@@ -9,8 +9,8 @@
 //     同头部/圆角/动作区/栅格，点卡进三栏浏览器。
 // 知识中心不再挂载（E5 还原裁定：知识中心=纯知识库）。
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Typography, Input, Segmented, Tag, Empty, Spin, Modal, Popconfirm, Button, Tooltip } from 'antd'
-import { DeleteOutlined, ThunderboltOutlined, UndoOutlined } from '@ant-design/icons'
+import { Typography, Input, Segmented, Tag, Empty, Spin, Modal, Popconfirm, Button } from 'antd'
+import { DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import CapabilityCard, { CAPABILITY_GRID, CapabilityEmpty, CapabilitySwitch } from '../common/CapabilityCard'
@@ -77,12 +77,6 @@ export function MemoryPageDetailModal({ page, allPages, onClose }: {
             </Text>
           )}
           <Paragraph style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{page.body}</Paragraph>
-          {page.retiredAt && (
-            <Text type="warning" style={{ fontSize: 12, display: 'block', margin: '8px 0' }}>
-              {t('memoryPages.retiredAt', { date: page.retiredAt.slice(0, 10) })}
-              {page.retireReason ? `：${page.retireReason}` : ''}
-            </Text>
-          )}
           {page.files && page.files.length > 0 && (
             <div>
               <Text strong style={{ display: 'block', margin: '12px 0 6px' }}>{t('memoryPages.scripts')}</Text>
@@ -208,18 +202,6 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
     }
   }
 
-  /** 退役恢复（2026-10-27，retire op 的 UI 面）：清空退役软态，页面回活页池。
-   *  退役判错的逃生面——园丁的判断必须可逆，否则退役就是另一场静默丢数据。 */
-  const handleRestore = async (p: MemoryPageRecord): Promise<void> => {
-    try {
-      await window.electronAPI.setMemoryPageRetired(p.id, false)
-      notify.success(t('memoryPages.restored'))
-      await load()
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   /** 卡片动作区（两种卡壳共用）：固化为 SOP（刀三：仅 clue 态 + 有源会话指针的活
    *  经验页可点）· 删除。技能卡形态下删除走 danger（与 CapabilityDeleteButton 同重——
    *  Popconfirm 需要能转发 ref 的直接子元素，所以这里直接写 Button 而不包一层）。 */
@@ -236,13 +218,6 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
           : <Button type="text" size="small" icon={<DeleteOutlined style={{ color: 'var(--pm-text-faint)' }} />} />}
       </Popconfirm>
     </>
-  )
-
-  /** 已退役页的恢复按钮（开关位）：title 带退役理由——审计面就地可读。 */
-  const restoreButton = (p: MemoryPageRecord): React.ReactElement => (
-    <Tooltip title={p.retireReason ? `${t('memoryPages.retired')}：${p.retireReason}` : t('memoryPages.retired')}>
-      <Button type="text" size="small" icon={<UndoOutlined style={{ color: 'var(--pm-text-faint)' }} />} title={t('memoryPages.restore')} onClick={() => { void handleRestore(p) }} />
-    </Tooltip>
   )
 
   return (
@@ -289,15 +264,11 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
               key={p.id}
               icon={<ThunderboltOutlined />}
               name={p.title}
-              dimmed={!!p.supersededBy || !!p.retiredAt}
+              dimmed={!!p.supersededBy}
               badge={
                 p.supersededBy ? (
                   <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
                     {t('memoryPages.superseded')}
-                  </Tag>
-                ) : p.retiredAt ? (
-                  <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
-                    {t('memoryPages.retired')}
                   </Tag>
                 ) : p.maturity === 'sop' ? (
                   <Tag color="gold" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
@@ -308,10 +279,8 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
               onClick={() => (onOpenPage ? onOpenPage(p) : setDetail(p))}
               actions={
                 <>
-                  {/* 开关在前、删除在后——CapabilityCard 的动作序；被取代/已退役的旧页没有开关，
-                      退役页以恢复按钮顶开关位（园丁的判断必须可逆） */}
+                  {/* 开关在前、删除在后——CapabilityCard 的动作序；被取代的旧页没有开关 */}
                   {isLivePage(p) && <CapabilitySwitch checked={p.enabled !== false} onToggle={() => { void handleToggleEnabled(p) }} />}
-                  {p.retiredAt && restoreButton(p)}
                   {deletable && actionButtons(p, true)}
                 </>
               }
@@ -337,7 +306,7 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
               onClick={() => (onOpenPage ? onOpenPage(p) : setDetail(p))}
               style={{
                 border: '1px solid var(--pm-border-hairline)', borderRadius: 10, padding: 12, cursor: 'pointer',
-                opacity: p.supersededBy || p.retiredAt ? 0.55 : 1,
+                opacity: p.supersededBy ? 0.55 : 1,
               }}
             >
               <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
@@ -348,11 +317,9 @@ export default function MemoryPagesBrowser({ fixedType, deletable, onOpenPage, o
                   </Tag>
                 )}
                 {p.supersededBy && <Tag style={{ marginInlineEnd: 0 }}>{t('memoryPages.superseded')}</Tag>}
-                {p.retiredAt && <Tag style={{ marginInlineEnd: 0 }}>{t('memoryPages.retired')}</Tag>}
                 {p.useCount > 0 && <Text type="secondary" style={{ fontSize: 11 }}>{t('memoryPages.useCount', { count: p.useCount })}</Text>}
-                {(deletable || p.retiredAt) && (
+                {deletable && (
                   <span style={{ marginLeft: 'auto', flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                    {p.retiredAt && restoreButton(p)}
                     {deletable && actionButtons(p, false)}
                   </span>
                 )}

@@ -68,6 +68,21 @@ describe('resolvePageByRef（poolNamesOf 的推广）', () => {
     expect(resolvePageByRef(pages, '不存在的页')).toBeNull()
     expect(resolvePageByRef(pages, '')).toBeNull()
   })
+
+  it('id 直查（#id 与裸 id 都认）：同名页只有它能无歧义指认', () => {
+    // 2026-11-12 记忆防重：同名组里的第二页，title/alias 永远只能命中第一个，
+    // 只有 id 能指认——合并组要靠它才不会两 op 撞同一页。
+    expect(resolvePageByRef(pages, '#2')).toBe('2')
+    expect(resolvePageByRef(pages, '2')).toBe('2')
+    expect(resolvePageByRef(pages, '#1')).toBe('1')
+    expect(resolvePageByRef(pages, '#ghost')).toBeNull()
+  })
+
+  it('id 优先于同名 title：同名的两页各自被 #id 精确命中', () => {
+    const twins = [page('1', '天气交付'), page('2', '天气交付')]
+    expect(resolvePageByRef(twins, '天气交付')).toBe('1') // 裸名仍落第一个（老契约）
+    expect(resolvePageByRef(twins, '#2')).toBe('2') // id 打破歧义
+  })
 })
 
 describe('findNameCollisions（title 与 alias 共用 NOCASE 命名空间）', () => {
@@ -83,6 +98,16 @@ describe('findNameCollisions（title 与 alias 共用 NOCASE 命名空间）', (
   it('alias 撞既有页同样冲突；ignoreId 豁免自身（update 场景）', () => {
     expect(findNameCollisions(pages, { aliases: ['天气播报'] })).toHaveLength(1)
     expect(findNameCollisions(pages, { aliases: ['天气播报'], ignoreId: '2' })).toHaveLength(0)
+  })
+
+  it('ignoreIds 批量豁免：合并组里正被取代的旧页不算占名（2026-11-12 记忆防重）', () => {
+    const twins = [page('1', '天气交付'), page('2', '天气交付'), page('3', '别的页')]
+    // 不豁免：新页叫「天气交付」撞名（每个名字只报一条，holders 去重）
+    expect(findNameCollisions(twins, { title: '天气交付' })).toHaveLength(1)
+    // 豁免掉这两页（它们在同一批里被取代）：名字腾出来了
+    expect(findNameCollisions(twins, { title: '天气交付', ignoreIds: ['1', '2'] })).toHaveLength(0)
+    // 部分豁免：还剩一页占着名
+    expect(findNameCollisions(twins, { title: '天气交付', ignoreIds: ['1'] })).toHaveLength(1)
   })
 
   it('干净名字零冲突；大小写不敏感', () => {

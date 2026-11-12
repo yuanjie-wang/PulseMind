@@ -45,9 +45,10 @@ export interface MemoryPageRecord {
    *  数据面；成功的尝试 supersede 掉页面，不留在候选里。手动按钮不受此门。 */
   sopAttempts: number
   sopLastAttemptAt: string | null
-  /** 退役软态（compile pass 的 retire op，2026-10-27）：页面被判过时/错误/被完全
-   *  吸收时退出活页池——行保留、理由留档、UI 可见可恢复（恢复 = 清空两字段）。
-   *  与 supersededBy 独立：退役不挂链；名字空间随之释放（新页可复用该标题）。 */
+  /** 退役两字段（compile pass 的 retire op）：2026-11-12 用户裁定改为**硬删除**——
+   *  retire 走 deleteMemoryPage，行与 FTS 影子行一并消失，不再有可恢复软态，
+   *  这两个列因此在活页上恒为 NULL（保留列定义只为让旧库平稳 ALTER，勿再写入）。
+   *  与 supersededBy 独立：取代（supersede）仍保留旧页并挂链，谱系可追溯。 */
   retiredAt: string | null
   retireReason: string | null
   /** 启用开关（2026-10-27，经验也是技能——技能卡有开关，经验卡同样有）。
@@ -55,6 +56,9 @@ export interface MemoryPageRecord {
    *  固化；显式按名拉取仍可解析（与 SkillManager.getSkill 对停用技能的行为一致）。
    *  supersede 的继任页继承该态。非经验页恒为 true（列在页上、查询面单列）。 */
   enabled: boolean
+  /** 经验页磁盘真源的绝对路径（2026-11-12 起经验以 EXPERIENCE.md 为真源）。
+   *  仅经验页有值；其它类型的页住在 DB 里，字段缺席。 */
+  filePath?: string
 }
 
 /** 经验页成熟度：'clue' = 一阶段叙事线索；'sop' = 携带脚本的经验页（存储层按
@@ -63,7 +67,8 @@ export type MemoryPageMaturity = 'clue' | 'sop'
 
 export type PageOpAction = 'create' | 'update' | 'alias' | 'supersede' | 'reinforce' | 'retire'
 
-/** 写协议的一次操作。target = 既有页的 title 或 alias（NOCASE，update/alias/supersede/reinforce/retire 必填）；
+/** 写协议的一次操作。target = 既有页的 title 或 alias（NOCASE，update/alias/supersede/reinforce/retire 必填），
+ *  也可以是页 id 或 `#<id>`（同名页无法按 title 区分时的精确指认，2026-11-12）；
  *  title = 新页标题（create/supersede 必填，update 忽略）。 */
 export interface PageOp {
   action: PageOpAction
@@ -148,9 +153,14 @@ export interface PageIndexEntry {
   aliases: string[]
 }
 
-/** target 解析：title 精确（NOCASE）优先，其次 alias（NOCASE）。poolNamesOf 的推广。 */
+/** target 解析：id 精确（`<id>` 或 `#<id>`）优先，其次 title（NOCASE），最后 alias（NOCASE）。
+ *  id 直查是 2026-11-12 加的：同名页按 title 永远命中第一个，只有 id 能指认第二个。 */
 export function resolvePageByRef(pages: readonly PageIndexEntry[], ref: string): string | null {
-  const want = normalizeTitle(ref).toLowerCase()
+  const raw = ref.trim()
+  if (!raw) return null
+  const bare = raw.startsWith('#') ? raw.slice(1).trim() : raw
+  if (bare) for (const p of pages) if (p.id === bare) return p.id
+  const want = normalizeTitle(raw).toLowerCase()
   if (!want) return null
   for (const p of pages) if (p.title.toLowerCase() === want) return p.id
   for (const p of pages) if (p.aliases.some((a) => a.toLowerCase() === want)) return p.id
@@ -181,15 +191,20 @@ export interface NameCollision {
   holderTitle: string
 }
 
-/** 新 title/alias 与既有页的 title/alias 撞名清单（忽略 ignoreId 指向的页自身，用于 update）。 */
+/** 新 title/alias 与既有页的 title/alias 撞名清单（忽略 ignoreId/ignoreIds 指向的页自身）。
+ *  ignoreIds 是 2026-11-12 加的：同批里会被 supersede/retire 掉的页即将离开活页池，
+ *  它们占着的名字此刻该算「已腾出」——否则把一个同名组并回同名标题时，第一个 op 就
+ *  撞上同批第二个 op 的目标页，合并组永远开不了工。 */
 export function findNameCollisions(
   pages: readonly PageIndexEntry[],
-  incoming: { title?: string; aliases?: string[]; ignoreId?: string }
+  incoming: { title?: string; aliases?: string[]; ignoreId?: string; ignoreIds?: readonly string[] }
 ): NameCollision[] {
+  const skip = new Set<string>(incoming.ignoreIds ?? [])
+  if (incoming.ignoreId) skip.add(incoming.ignoreId)
   const owned = new Set<string>()
   const holders = new Map<string, PageIndexEntry>()
   for (const p of pages) {
-    if (incoming.ignoreId && p.id === incoming.ignoreId) continue
+    if (skip.has(p.id)) continue
     for (const value of [p.title, ...p.aliases]) {
       const key = value.toLowerCase()
       if (!owned.has(key)) {

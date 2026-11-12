@@ -50,21 +50,24 @@ describe('wiring 扫描：三条写路径的短句规则 + 检索通道', () => 
     expect(src).toContain("body.length > 100")  // 结构兜底（normalizeOp）
   })
 
-  it('MemoryPageCompileAgent 的整理纪律：不硬删、合并保全量正文（M6；retire 软态 2026-10-27）', () => {
+  it('MemoryPageCompileAgent 的整理纪律：retire 永久删除、supersede 保留取代链（M6；retire 硬删 2026-11-12 用户裁定）', () => {
     const src = read('src/renderer/src/agent/one-shot-agent/MemoryPageCompileAgent.ts')
-    expect(src).toContain('NEVER create a new topic and NEVER hard-delete anything')
+    expect(src).toContain('NEVER create a new topic')
+    expect(src).toContain('deletes it permanently')
+    expect(src).toContain('the old pages are KEPT as lineage')
     expect(src).toContain('never truncate')
     expect(src).toContain('supersede')
-    expect(src).toContain('rows are never removed by this pass')
   })
 
-  it('打捞路径：prompt 带短句规则，保存循环带结构兜底（不再 slice(0, 2000)）', () => {
+  it('打捞路径已退役：memory-extraction 不再有 prompt 与保存循环（user 2026-11-12）', () => {
     const src = read('src/renderer/src/agent/engine/memory-extraction.ts')
-    expect(src).toContain('at most 100 characters')
-    expect(src).toContain('MEMORY_ENTRY_MAX_CHARS')
+    // 短句规则与结构兜底随 salvage 一起删除——本文件只剩工具结果落库
+    expect(src).not.toContain('at most 100 characters')
+    expect(src).not.toContain('MEMORY_ENTRY_MAX_CHARS')
     expect(src).not.toContain('slice(0, 2000)')
-    // 取向钉子不回退（memory-extraction-orientation.test.ts 的同款断言）
-    expect(src).toContain('ONLY durable ENVIRONMENT and TOOL facts')
+    expect(src).not.toContain('ONLY durable ENVIRONMENT and TOOL facts')
+    // 落库函数必须还在：本条同时守住「别为删 salvage 连带删掉它」
+    expect(src).toContain('persistUnsavedToolResults')
   })
 
   it('searchMemories 走 LIKE 全表扫，FTS MATCH 通路已摘除', () => {

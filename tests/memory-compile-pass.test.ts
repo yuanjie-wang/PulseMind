@@ -26,10 +26,11 @@ const input = (mode: 'full' | 'bucketed'): MemoryPageCompileInput => ({
 })
 
 describe('整理纪律抵达 LIVE prompt', () => {
-  it('不硬删、合并保全量正文的红线原文在场', () => {
-    expect(prompt).toContain('NEVER create a new topic and NEVER hard-delete anything')
+  it('retire 是永久删除、supersede 保留谱系的红线原文在场', () => {
+    expect(prompt).toContain('NEVER create a new topic')
     expect(prompt).toContain('never truncate')
     expect(prompt).toContain('lineage is preserved')
+    expect(prompt).toContain('there is no undo')
   })
   it('经验页按 SKILL 标准保持手册结构；旧叙事页的手册化重构就是 fix structure（2026-10-26 用户裁定）', () => {
     expect(prompt).toContain('DRAFT SKILLS')
@@ -38,7 +39,7 @@ describe('整理纪律抵达 LIVE prompt', () => {
     expect(prompt).toContain('## 背景 / ## 过程 / ## 问题 / ## 优化')
     expect(prompt).toContain('skill-standard description')
   })
-  it('retire 是 last resort：带理由、禁「老/短/少用」判据、优先 merge（2026-10-27 退役出口）', () => {
+  it('retire 是 last resort：带理由、禁「老/短/少用」判据、优先 merge（2026-11-12 改硬删除）', () => {
     expect(prompt).toContain('**retire**')
     expect(prompt).toContain('LAST resort')
     expect(prompt).toContain('NEVER retire a page merely for being old, short, or rarely used')
@@ -118,6 +119,43 @@ describe('parseResponse 校验矩阵', () => {
   it('非 JSON / 缺 pages → 空产出（不抛）', () => {
     expect(parse('not json').pages).toEqual([])
     expect(parse('{}').pages).toEqual([])
+  })
+})
+
+describe('target 寻址（2026-11-12 记忆防重）：同名不塌缩，只有 #id 能指认', () => {
+  const twins: PageIndexEntry[] = [
+    { id: 'p1', title: '天气交付', type: 'fact', aliases: [] },
+    { id: 'p2', title: '天气交付', type: 'fact', aliases: [] },
+  ]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parseTwins = (raw: string) => (agent as any).parseResponse(raw, { pagesText: 'x', mode: 'full', pageIndex: twins }) as { pages: any[] }
+
+  it('同名裸 target 是歧义 → 丢弃（旧实现 refs 后者覆盖前者，两 op 双双落到同一页）', () => {
+    const out = parseTwins(JSON.stringify({ pages: [{ action: 'retire', target: '天气交付', reason: '重复' }] }))
+    expect(out.pages).toEqual([])
+  })
+
+  it('#id 精确指认：同名两页各自被单独取代，互不塌缩', () => {
+    const out = parseTwins(
+      JSON.stringify({
+        pages: [
+          { action: 'retire', target: '#p1', reason: '重复' },
+          { action: 'retire', target: '#p2', reason: '重复' },
+        ],
+      }),
+    )
+    expect(out.pages.map((p) => p.target)).toEqual(['p1', 'p2'])
+  })
+
+  it('唯一名仍解析成 title（apply 层按 title 寻址的老契约不变）', () => {
+    const out = parse(JSON.stringify({ pages: [{ action: 'retire', target: '称呼偏好', reason: 'x' }] }))
+    expect(out.pages[0].target).toBe('称呼偏好')
+  })
+
+  it('prompt 带 Addressing 条，且写明裸同名会被丢弃', () => {
+    expect(prompt).toContain('**Addressing**')
+    expect(prompt).toContain('[#page_xxx]')
+    expect(prompt).toContain('AMBIGUOUS')
   })
 })
 
