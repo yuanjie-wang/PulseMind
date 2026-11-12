@@ -1010,6 +1010,13 @@ export class ExecutionFlow {
     // above). consult/none fall through: a failure the model has not answered,
     // or the completed plan's final synthesis, is an ordinary turn end.
     if (this.engine.planScheduler.kick()) return
+    // Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新): a
+    // turn that did tool work and stops while the direct plan's checklist
+    // still has pending entries is re-issued ONCE with the closure directive —
+    // settle or block the entries, then close. Blocked entries don't fire the
+    // gate (a legitimate close), and the quota bound lives in the engine like
+    // the nudge above: the second open-ended close closes normally.
+    if (this.engine.nudgeTodoIfUnsettled(stopReason)) return
     // The turn's duration — user send → this last output character, with every
     // thinking round and tool call in between counted and any stretch parked on
     // the user (held approval / ask_user / loop-limit prompt / manual pause)

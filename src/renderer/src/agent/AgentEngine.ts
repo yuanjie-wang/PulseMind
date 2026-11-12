@@ -366,6 +366,14 @@ export class AgentEngine implements EngineCore {
   /** Armed by the guard, consumed by prepareLoopRequest's state block. */
   /** @internal */
   pendingEarlyStopNudge = false
+  // ── Todo closure gate state (nudgeTodoIfUnsettled) ──
+  /** Quota: the gate fires at most ONCE per turn — a second open-ended close
+   *  closes normally even if the list is still open (the "不断补充任务" bound). */
+  /** @internal */
+  todoCloseNudged = false
+  /** Armed by the gate, consumed by prepareLoopRequest's state block. */
+  /** @internal */
+  pendingTodoCloseNudge = false
   /** Provider context-overflow state (0.4.1 fix). The limit is parsed off the
    *  provider's own rejection — the one ground truth the estimates answer to —
    *  and prepareLoopRequest answers it with compactor.emergencyTruncate on the
@@ -1089,6 +1097,9 @@ export class AgentEngine implements EngineCore {
     this.earlyStopContinues = 0
     this.earlyStopNudgesTotal = 0
     this.pendingEarlyStopNudge = false
+    // Fresh todo-closure quota too: the gate belongs to the turn that fired it.
+    this.todoCloseNudged = false
+    this.pendingTodoCloseNudge = false
     // Repeat-call guard belongs to the turn too: a new send starts with a
     // clean slate (stale signatures from the previous turn would flag a
     // legitimate first call of this one as churn).
@@ -1253,6 +1264,43 @@ export class AgentEngine implements EngineCore {
     return true
   }
 
+  /**
+   * Todo closure gate (2026-11-12, user: 任务已完成但 todo list 未更新).
+   * `todo_write`'s settle discipline was prompt-only — the engine closed the
+   * turn on any end_turn and an open direct-plan list just stayed behind.
+   * Fired from ExecutionFlow's turn end (after the summon nudge and the plan
+   * scheduler's kick, before classifyStopReason): when the turn did tool work
+   * and the live direct plan still carries pending entries, bounce the turn
+   * back ONCE with the Todo Closure directive (pendingTodoCloseNudge → the
+   * next state block). Blocked/completed/skipped entries never fire the gate
+   * (user ruling: blocked = a legitimate close — the list says what it waits
+   * on); a pure-chat turn leaves a stale list for the next working turn;
+   * max_tokens has its own continuation path. The second open-ended close
+   * closes normally — the quota is the bound against 补充任务 loops.
+   */
+  nudgeTodoIfUnsettled = (stopReason: string | null): boolean => {
+    if (stopReason === 'max_tokens') return false
+    if (this.todoCloseNudged || this.isCancelled) return false
+    if (this.toolRoundsThisTurn === 0) return false
+    const plan = this.planManager.plan
+    if (!plan || (plan.mode ?? 'delegated') !== 'direct' || plan.completed) return false
+    const open = plan.nodes.filter((n) => n.status === 'pending')
+    if (open.length === 0) return false
+    this.todoCloseNudged = true
+    this.pendingTodoCloseNudge = true
+    console.log(`[AgentEngine] todo list still open (${open.map((n) => n.id).join(', ')}) — re-issuing the turn once for closure`)
+    this.agentStatus = {
+      status: 'retrying',
+      message: `任务清单仍有未完成条目（${open.map((n) => n.id).join('、')}），正在要求模型收口…`,
+      attempt: 1,
+      maxRetries: 1,
+      delay: 0
+    }
+    this.notify()
+    setTimeout(() => { void this.continueLoop() }, 0)
+    return true
+  }
+
   // stopReason dispatch delegation (ExecutionFlow, split 8)
   async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> { return this.executionFlow.handleToolUseResponse(toolUses) }
   async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> { return this.executionFlow.handleMaxTokensResponse(toolUses) }
@@ -1388,8 +1436,15 @@ export class AgentEngine implements EngineCore {
     // The early-stop guard's continuation directive rides THIS request's state
     // block (final message — never persisted, never rendered) and is consumed
     // by the build: a stream-idle retry of the nudge round rebuilds without it.
-    const continuationNudge = this.pendingEarlyStopNudge
+    // The todo closure gate shares the same one-shot channel with its own
+    // section ('todoClose'); the guard wins the slot when both armed in one
+    // drain (at most one overlap request per turn — same tradeoff as the
+    // summon nudge).
+    const continuationNudge: boolean | 'todoClose' = this.pendingEarlyStopNudge
+      ? true
+      : this.pendingTodoCloseNudge ? 'todoClose' : false
     this.pendingEarlyStopNudge = false
+    this.pendingTodoCloseNudge = false
     // Background-exit notices (2026-10-28 后台任务唤醒): drained into THIS
     // request's state block and cleared on build — one-shot wake-up, the
     // pointer names exec_logs as the recovery channel if the model misses it.

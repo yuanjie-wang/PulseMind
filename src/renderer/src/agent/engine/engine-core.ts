@@ -198,4 +198,9 @@ export interface EngineCore {
    *  owed. True means the caller must NOT close the turn (the engine is about
    *  to re-run it). See AgentEngine.nudgeSummonIfUnplanned. */
   nudgeSummonIfUnplanned: () => boolean
+  /** Todo closure gate (2026-11-12): the turn did tool work but the live
+   *  direct plan still carries pending entries — one closure re-issue is owed
+   *  (blocked entries exempt). True means the caller must NOT close the turn.
+   *  See AgentEngine.nudgeTodoIfUnsettled. */
+  nudgeTodoIfUnsettled: (stopReason: string | null) => boolean
 }

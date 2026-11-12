@@ -25,11 +25,13 @@ export interface BuildSystemPromptParams {
    *  schemas change, which invalidates the prefix anyway. Ignored on the
    *  spawned-sub-agent path — a spawn prompt owns its whole system message. */
   toolProtocols?: string
-  /** The early-stop guard's continuation directive (2026-10-08): true makes
-   *  the state block carry a `## Turn Continuation` section (second-to-last,
-   *  clock still last). Consumed by prepareLoopRequest — one request build
+  /** The continuation directive channel (2026-10-08 early-stop guard;
+   *  2026-11-12 todo closure gate shares it): `true` renders the guard's
+   *  `## Turn Continuation` section, `'todoClose'` the gate's `## Todo
+   *  Closure` section — either way the state block carries it second-to-last,
+   *  clock still last. Consumed by prepareLoopRequest — one request build
    *  only, never persisted, never rendered. */
-  continuationNudge?: boolean
+  continuationNudge?: boolean | 'todoClose'
   /** Context window gauge (user 2026-10-10): the POST-PIPELINE size of THIS
    *  request — what the model is actually reading after the automatic
    *  nano/light/hard passes (2026-10-24 口径修正). The pre-pipeline reading
@@ -117,10 +119,10 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     // stream-runner 的守卫对子代理照常开火——没有这里的最小 state block，
     // pendingEarlyStopNudge 会被 prepareLoopRequest 消费后无处着落，子代理的
     // 续跑退化成一次没有指令的裸重采样。块里只有这一节，单次请求，不落库。
-    return {
-      systemPrompt,
-      stateBlock: continuationNudge ? `<session-state>\n${TURN_CONTINUATION_NUDGE}\n</session-state>` : null,
-    }
+      return {
+        systemPrompt,
+        stateBlock: continuationNudge ? `<session-state>\n${continuationNudgeSection(continuationNudge)}\n</session-state>` : null,
+      }
   }
 
   const systemPrompt = await buildCorePrompt(opts, toolProtocols)
@@ -256,7 +258,7 @@ async function buildStateBlock(params: {
   messages: AgentMessage[]
   plan: Plan | null
   summon?: SummonState | null
-  continuationNudge?: boolean
+  continuationNudge?: boolean | 'todoClose'
   contextUsage?: { tokens: number | null; window: number }
   backgroundNotices?: Array<{ pid: number; code: number | null; command?: string }>
   /** Still-running background tasks (PLAN-background-tasks E #3) — pid+name,
@@ -411,11 +413,12 @@ async function buildStateBlock(params: {
     sections.push(gaugeSection)
   }
 
-  // Early-stop continuation directive (2026-10-08): armed by stream-runner's
-  // guard for exactly one request. Volatile by nature — present only on nudge
-  // rounds — so it sits last-but-clock: when absent, only the block tail
-  // re-bills. Never persisted, never rendered (state-block contract).
-  if (continuationNudge) sections.push(TURN_CONTINUATION_NUDGE)
+  // Continuation directive (2026-10-08 early-stop guard; 2026-11-12 todo
+  // closure gate shares the slot): armed for exactly one request. Volatile by
+  // nature — present only on nudge rounds — so it sits last-but-clock: when
+  // absent, only the block tail re-bills. Never persisted, never rendered
+  // (state-block contract).
+  if (continuationNudge) sections.push(continuationNudgeSection(continuationNudge))
 
   sections.push(buildClockSection())
 
@@ -1126,6 +1129,20 @@ const TURN_CONTINUATION_NUDGE = `\
 ## Turn Continuation
 
 Your previous reply ended without tool calls, but this turn has already done tool work and the completion marker was absent — this may be an unfinished turn. If the task still has remaining steps, continue it NOW by calling tools. Only if it is fully complete, restate the final result briefly and end with <<TASK_DONE>> alone on the last line.`
+
+// Todo closure gate (2026-11-12): NOT sentinel-gated — the <<TASK_DONE>>
+// protocol belongs to earlyStopGuard models only, and this gate fires for
+// every model. Points at the Current Plan section the same state block
+// already carries; the status markers are describeTodoNode's vocabulary.
+const TODO_CLOSURE_NUDGE = `\
+## Todo Closure
+
+Your previous reply ended while the todo list (see Current Plan) still has open entries ([ ] or [~]). Before ending this turn: continue the open entries NOW, and call todo_write the moment each one settles; if an entry's work is actually already done, mark it completed; if it genuinely waits on something outside your control, mark it blocked with a note saying what it waits on. End the turn only once every entry is completed, blocked, or retired.`
+
+/** Section text for the one-shot continuation channel — `true` is the
+ *  early-stop guard's directive, 'todoClose' the closure gate's. */
+const continuationNudgeSection = (nudge: boolean | 'todoClose'): string =>
+  nudge === 'todoClose' ? TODO_CLOSURE_NUDGE : TURN_CONTINUATION_NUDGE
 
 const COMPRESSED_TOOL_RESULTS = `\
 ## Compressed Tool Results

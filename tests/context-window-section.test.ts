@@ -59,10 +59,12 @@ describe('wiring 扫描：引擎传数、节在钟前、续跑指令契约不动
   const BUILDER = 'src/renderer/src/agent/system-prompt-builder.ts'
   const ENGINE = 'src/renderer/src/agent/AgentEngine.ts'
 
-  it('buildStateBlock 在 Turn Continuation 之前推入 Context Window 节（哨兵或成品皆然）', () => {
+  it('buildStateBlock 在续跑指令之前推入 Context Window 节（哨兵或成品皆然）', () => {
     const src = read(BUILDER)
     const push = src.indexOf('if (contextUsage) {')
-    const nudge = src.indexOf('if (continuationNudge) sections.push(TURN_CONTINUATION_NUDGE)')
+    // 2026-11-12 todo 收口门与早停守卫共用这一个推入点（continuationNudgeSection
+    // 按值分支选节），last-but-clock 的既有契约不破。
+    const nudge = src.indexOf('if (continuationNudge) sections.push(continuationNudgeSection(continuationNudge))')
     expect(push).toBeGreaterThan(-1)
     expect(nudge).toBeGreaterThan(push) // 钟最后、nudge 次之的既有契约不破
   })

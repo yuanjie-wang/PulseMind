@@ -143,6 +143,7 @@ function makeCore(over: {
     steer: vi.fn(),
     schedulePostTurnCompaction: vi.fn(),
     nudgeSummonIfUnplanned: vi.fn(() => false),
+    nudgeTodoIfUnsettled: vi.fn(() => false),
   }
   const execStub: Record<string, (t: ToolUseBlock | ToolUseBlock[], classify?: (names: string[]) => void) => Promise<void>> = {}
   for (const m of EXEC_METHODS) {
