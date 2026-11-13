@@ -17,7 +17,6 @@ import {
   pageClick,
   pageGetContent,
   pageInput,
-  pageNavigate,
   pageSelect,
   pageWait,
   resetPageToolState,
