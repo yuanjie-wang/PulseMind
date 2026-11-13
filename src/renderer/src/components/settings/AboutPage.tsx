@@ -40,7 +40,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.1 把重复的活管了起来：任务中心同一列表混排对话式任务与工作流任务，用同一个向导编辑；跑得久的事也看得见了——终端命令一键「转入后台」，输入框上方常驻任务条、悬停即见实时输出，扩展面板的会话还能一键移交桌面接着聊。此前 0.5.0 已把窗口还给了任务：同一段对话在对话 / 工作区 / 浏览器三视图间随时轮转、按会话记住，欢迎页三档开局，预览即编辑，对话与项目都能弹出为独立窗口，浏览器扩展的历史按 Chrome 页签隔离。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.1 把重复的活管了起来：任务中心把定时、批量与文件触发的活收进同一列表，用同一个向导编辑；跑得久的事也看得见了——终端命令一键「转入后台」，输入框上方常驻任务条、悬停即见实时输出，扩展面板的会话还能一键移交桌面接着聊。此前 0.5.0 已把窗口还给了任务：同一段对话在对话 / 工作区 / 浏览器三视图间随时轮转、按会话记住，欢迎页三档开局，预览即编辑，对话与项目都能弹出为独立窗口，浏览器扩展的历史按 Chrome 页签隔离。所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -65,7 +65,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **欢迎页** — 对话 / 项目 / 浏览器三档开局：对话形态是「继续对话 / 开始日常 / 知识沉淀」三类卡片加「试试」提示词；项目形态先挑一个工作目录，选好即压缩成一条横条、随时「更换」；浏览器形态只需输入网址
 - **主窗三视图** — 会话头右上角的循环钮在对话 / 工作区 / 浏览器之间轮转，视图跟着任务走、按会话记住；新建任务也能从侧栏子菜单直接落进对应形态
-- **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务（对话式任务与工作流任务混排）/ 能力 • 知识 • 创作
+- **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务（定时 / 批量执行）/ 能力 • 知识 • 创作
 - **设置页** — 常规（语言、外观、开机自启、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
@@ -103,12 +103,12 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 ## 日常任务
 
-任务中心装下两类任务：**对话式任务**是一条提示词的定时 / 批量执行，**工作流任务**是按流程推进的多环节任务。两类卡片同列表混排，用同一个四步向导编辑（基本信息 / 任务内容 / 运行设置 / 触发与批量），「变量」声明两模式同一套。
+任务中心装下的是**对话式任务**：一条提示词按定时、批量或文件变化去跑。卡片单列排布，用四步向导编辑（基本信息 / 任务内容 / 运行设置 / 触发与批量）。
 
-- **定时与触发** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），两类任务同一组配置；定时卡带开关，停用即静默
-- **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表，最大 50MB），表头自动映射为变量；每行数据用独立会话执行一次任务，并发与单次超时可调（工作流批量串行执行），中断可续跑，运行历史按行展示，点击钻入该行的会话
-- **分享与导入** — 两类任务都能导出分享；导入走任务中心头部唯一入口，先预览、确认才落库
-- **运行历史** — 右侧统一栏归并两类任务的运行记录，今天 / 昨天 / 本周 / 更早 分组，可删除、清理、设置保留期限
+- **定时与触发** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），同一组配置；定时卡带开关，停用即静默
+- **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表，最大 50MB），表头自动映射为变量；每行数据用独立会话执行一次任务，并发与单次超时可调，中断可续跑，运行历史按行展示，点击钻入该行的会话
+- **分享与导入** — 任务能导出分享；导入走任务中心头部唯一入口，先预览、确认才落库
+- **运行历史** — 右侧统一栏归并运行记录，今天 / 昨天 / 本周 / 更早 分组，可删除、清理、设置保留期限
 - **对话式配置** — 用聊天的方式填表；先出提案卡片，确认后才落库
 - **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
 - **从对话提炼** — 一段好用的对话，可以直接提炼为对话式任务
@@ -239,7 +239,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.1 brings the repetitive work under one roof: the task center mixes conversational tasks and workflow tasks in one list, edited in one wizard; and long-running work becomes visible — a terminal command can be sent to the background with one click, a task strip above the composer shows what is running (hover for live output), and a session started in the extension panel can be handed off to the desktop to continue. Before that, 0.5.0 handed the window back to the task: one conversation rotates between chat, workspace, and browser views and the view is remembered per conversation; the welcome page opens in three modes where a URL alone starts a browsing task; previews became editors with what-changed review; conversations and projects pop out into their own windows; and the extension's history is scoped per Chrome tab. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.1 brings the repetitive work under one roof: the task center gathers scheduled, batch and file-triggered work into one list, edited in one wizard; and long-running work becomes visible — a terminal command can be sent to the background with one click, a task strip above the composer shows what is running (hover for live output), and a session started in the extension panel can be handed off to the desktop to continue. Before that, 0.5.0 handed the window back to the task: one conversation rotates between chat, workspace, and browser views and the view is remembered per conversation; the welcome page opens in three modes where a URL alone starts a browsing task; previews became editors with what-changed review; conversations and projects pop out into their own windows; and the extension's history is scoped per Chrome tab. All data stays on your own machine.
 
 ## Quick Start
 
@@ -264,7 +264,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 - **Welcome page** — three ways to begin: chat shows continue-the-conversation / start-a-routine / knowledge cards plus Try-these prompts; project asks for a working folder first, then collapses into a single strip with a change affordance; browser just wants a URL
 - **Three main views** — a cycle button in the conversation header rotates chat / workspace / browser, the view follows the task and is remembered per conversation; New Task's submenu drops you straight into the mode you want
-- **Sidebar** — New Task (chat / project / browser) / Search / Routines (conversational and workflow tasks in one list) / Capability · Knowledge · Studio
+- **Sidebar** — New Task (chat / project / browser) / Search / Routines (scheduled and batch tasks) / Capability · Knowledge · Studio
 - **Settings** — General (language, appearance, launch at login, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
@@ -302,12 +302,12 @@ Every file the AI writes lives here: the address bar lays the workspace path out
 
 ## Routines
 
-The task center holds two kinds of tasks: a **conversational task** is one prompt on a schedule or over a batch, and a **workflow task** is a multi-stage task that advances through its flow. Both kinds mix in one list and are edited in the same four-step wizard (basics / content / run settings / triggers & batch), with one shared notion of variables.
+The task center holds **conversational tasks**: one prompt run on a schedule, over a batch, or on a file change. Cards sit in a single list, edited in a four-step wizard (basics / content / run settings / triggers & batch).
 
-- **Schedules & triggers** — cron schedules, manual runs, or file-change triggers (watching files or folders you name) — the same settings for both kinds; scheduled cards carry an on/off toggle, and a disabled schedule stays silent
-- **CSV/Excel batch runs** — point a task at a CSV or an Excel sheet (first worksheet, up to 50MB) and headers map themselves into variables; each data row runs the task in its own session, concurrency and the per-row timeout are adjustable (workflow batches run serially), interrupted batches resume, and the run history lists every row, clickable into its session
-- **Share & import** — both kinds export as share files; import lives in one place in the task center header, preview first and nothing lands until you confirm
-- **Run history** — one sidebar column merges both kinds' runs, grouped into Today / Yesterday / This week / Earlier; delete, clear, or set a retention window
+- **Schedules & triggers** — cron schedules, manual runs, or file-change triggers (watching files or folders you name) — one set of settings; scheduled cards carry an on/off toggle, and a disabled schedule stays silent
+- **CSV/Excel batch runs** — point a task at a CSV or an Excel sheet (first worksheet, up to 50MB) and headers map themselves into variables; each data row runs the task in its own session, concurrency and the per-row timeout are adjustable, interrupted batches resume, and the run history lists every row, clickable into its session
+- **Share & import** — tasks export as share files; import lives in one place in the task center header, preview first and nothing lands until you confirm
+- **Run history** — one sidebar column merges runs, grouped into Today / Yesterday / This week / Earlier; delete, clear, or set a retention window
 - **Conversational setup** — fill the form by chatting; a proposal card comes first, and nothing is saved until you confirm
 - **Starter templates** — five workplace templates, one click into the editor
 - **Distill from a conversation** — turn a conversation that worked into a conversational task
