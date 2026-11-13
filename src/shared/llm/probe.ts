@@ -57,6 +57,20 @@ export function probeMissingFields(input: LlmProbeInput): string | null {
   return null
 }
 
+/** 400 bodies that read as a gateway/upstream AVAILABILITY failure rather
+ *  than a config error. Checked BEFORE the model-name branch — gateways like
+ *  OpenCode Zen report their own upstream outages as HTTP 400 + "Model is
+ *  unavailable" (2026-11-13 实测：错误模型名与上游临时故障返回同一个
+ *  {"type":"server_error","message":"Upstream request failed: Model is
+ *  unavailable."}），而旧的 `body.includes('model')` 把它翻成「模型名不存在
+ *  或当前 Key 无权访问它」，让用户去修一份没坏的配置。 */
+const UPSTREAM_FAILURE_400_RE = /server_error|upstream|unavailable|at capacity|overloaded|temporarily|try again later|稍后重试|上游/i
+
+/** Genuine model-IDENTITY errors — much narrower than "body mentions model":
+ *  only these phrases mean the model name itself is wrong or unauthorized. */
+const MODEL_IDENTITY_400_RE =
+  /model[_ ]?not[_ ]?found|model.{0,30}not (?:exist|found|supported)|does not (?:exist|have access)|no such model|unknown model|invalid model|not a valid model|decommission|has been retired|not entitled|have no access|无权|模型不存在|没有权限/i
+
 /** HTTP status (plus the response body snippet) → human words. */
 export function describeHttpProbeFailure(status: number, bodyText: string): { message: string; hint?: string; detail?: string } {
   const body = bodyText.slice(0, 500)
@@ -72,10 +86,17 @@ export function describeHttpProbeFailure(status: number, bodyText: string): { me
         message: '接口路径不存在',
         hint: 'OpenAI 兼容端点的 Base URL 通常要以 /v1 结尾（如 https://api.deepseek.com/v1）；也请核对模型名拼写',
       }
-    case status === 400 && bodyLower.includes('model'):
+    case status === 400 && UPSTREAM_FAILURE_400_RE.test(bodyLower):
+      return {
+        message: '服务商上游暂时不可用',
+        hint: 'Key 与地址都已到达服务商——是它背后的模型/上游临时故障，稍后重试；如果反复出现，再到服务商控制台核对模型名（部分网关对「模型不可用」与「上游故障」返回同一句话）',
+        detail: body,
+      }
+    case status === 400 && MODEL_IDENTITY_400_RE.test(bodyLower):
       return {
         message: '模型名不存在或当前 Key 无权访问它',
         hint: '到服务商控制台核对模型名（注意区分 claude-3 / claude-sonnet-4 这类前缀）',
+        detail: body,
       }
     case status === 400:
       return {

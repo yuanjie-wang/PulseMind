@@ -66,10 +66,35 @@ describe('describeHttpProbeFailure —— 状态码 → 人话 + 下一步', () 
     expect(r.message).toContain('路径不存在')
     expect(r.hint).toContain('/v1')
   })
-  it('400 且 body 提到 model → 模型名问题；否则 Base URL 组合', () => {
+  it('400 且 body 是模型身份错误 → 模型名问题；否则 Base URL 组合', () => {
     expect(describeHttpProbeFailure(400, '{"error":"model not found"}').message).toContain('模型名')
     const other = describeHttpProbeFailure(400, '{"error":"bad request"}')
     expect(other.message).not.toContain('模型名')
+  })
+  it('400 且 body 是网关上游故障 → 「上游暂时不可用」而非模型名误报（OpenCode Zen 实测形态）', () => {
+    const zen = describeHttpProbeFailure(400, '{"error":{"type":"server_error","message":"Upstream request failed: Model is unavailable."}}')
+    expect(zen.message).toContain('上游暂时不可用')
+    expect(zen.message).not.toContain('模型名')
+    expect(zen.detail).toContain('Upstream request failed')
+    // 其他网关措辞
+    for (const body of ['upstream error', 'all models at capacity', 'provider is overloaded, try again later']) {
+      expect(describeHttpProbeFailure(400, body).message).toContain('上游暂时不可用')
+    }
+  })
+  it('400 且 body 是各家真实的模型身份错误 → 仍报「模型名」', () => {
+    // OpenAI 兼容网关（code=model_not_found）
+    expect(
+      describeHttpProbeFailure(400, '{"error":{"message":"The model `gpt-5-turbo` does not exist or you do not have access to it.","code":"model_not_found"}}')
+        .message,
+    ).toContain('模型名')
+    // DeepSeek
+    expect(describeHttpProbeFailure(400, '{"err_msg":"Model Not Exist"}').message).toContain('模型名')
+    // Ollama（带引号模型名隔开 not found）
+    expect(describeHttpProbeFailure(400, `{"error":"model 'llama3:70b' not found, try pulling it first"}`).message).toContain('模型名')
+    // 中文网关
+    expect(describeHttpProbeFailure(400, '{"error":{"message":"模型不存在或无权访问"}}').message).toContain('模型名')
+    // 模型名分支现在带原始响应体留痕
+    expect(describeHttpProbeFailure(400, '{"error":"model not found"}').detail).toContain('model')
   })
   it('429 → 网络是通的，指向额度/频率', () => {
     const r = describeHttpProbeFailure(429, '')
