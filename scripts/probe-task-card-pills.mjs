@@ -183,9 +183,10 @@ root.render(<div />)
 window.__ready = true
 `
 
-/** 0.5.1 的展示门（WORKFLOW_TASKS_UI=false）把工作流卡片收起来了，但这张卡片与
- *  routine 共用同一个 TaskCard、那颗开关也必须仍然工作——探针在 bundle 期把该常量
- *  钉成 true。隐藏面本身由 tests/workflow-hidden.test.ts 钉。 */
+/** 工作流卡片与 routine 共用同一个 TaskCard、那颗开关也必须一直工作。展示门
+ *  （WORKFLOW_TASKS_UI）0.5.1 关闭、0.5.2 放开，所以这里的 stub 现在是 no-op——
+ *  但不许删：门翻回 false 时少了它，卡片选择器会静默全落空。门本身由
+ *  tests/workflow-hidden.test.ts 钉。 */
 const forceWorkflowUi = {
   name: 'force-workflow-ui',
   setup(b) {

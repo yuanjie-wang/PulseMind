@@ -501,9 +501,10 @@ window.__headActions = () => {
 window.__ready = true
 `
 
-/** 0.5.1 的展示门（WORKFLOW_TASKS_UI=false）把工作流卡片收起来了，但卡片的契约
- *  （同一 TaskCard、两颗胶囊、定时开关）必须原样完好——探针在 bundle 期把该常量
- *  钉成 true，测「翻转开关后一切照旧」。隐藏面本身由 tests/workflow-hidden.test.ts 钉。 */
+/** 工作流卡片的契约（同一 TaskCard、两颗胶囊、定时开关）必须一直完好。展示门
+ *  （WORKFLOW_TASKS_UI）0.5.1 关闭、0.5.2 放开，所以这里的 stub 现在是 no-op——
+ *  但不许删：门翻回 false 时少了它，卡片选择器会静默全落空。门本身由
+ *  tests/workflow-hidden.test.ts 钉。 */
 const forceWorkflowUi = {
   name: 'force-workflow-ui',
   setup(b) {
