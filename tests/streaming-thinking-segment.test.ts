@@ -76,7 +76,9 @@ describe('streaming tail (tenth ruling: one open segment, blocks 塞入 it)', ()
 
   it('text closes the live segment: [group] [streaming text]', () => {
     const segs = build([msg('user', [text('继续')])], [think('reason'), text('答')])
-    expect(segs.map(s => s.type)).toEqual(['single', 'execution', 'streaming'])
+    expect(segs.map(s => s.type)).toEqual(['single', 'execution', 'single'])
+    // 2026-11-13 step 2: the tail is a `single` carrying `live`, not a type of its own
+    expect(segs[segs.length - 1]).toMatchObject({ live: { toolsStarted: false } })
   })
 
   it('redacted_thinking joins the live segment too', () => {
@@ -87,7 +89,8 @@ describe('streaming tail (tenth ruling: one open segment, blocks 塞入 it)', ()
 
   it('no thinking blocks → unchanged shapes', () => {
     const segs = build([msg('user', [text('hi')])], [text('hello')])
-    expect(segs.map(s => s.type)).toEqual(['single', 'streaming'])
+    expect(segs.map(s => s.type)).toEqual(['single', 'single'])
+    expect(segs[segs.length - 1]).toMatchObject({ live: { toolsStarted: false } })
   })
 
   it('live synthetic slices never match the segment cache (no frozen header)', () => {
@@ -246,6 +249,8 @@ describe('cache semantics', () => {
   it('live synthetic slices never match (they are appended fresh each build)', () => {
     const liveSeg: Segment = { type: 'execution', msgs: [{ id: 'streaming-exec', role: 'assistant', contentBlocks: [tool('t')], createdAt: '' }] }
     expect(matchSegment(liveSeg, { type: 'execution', msgs: [{ id: 'streaming-exec', role: 'assistant', contentBlocks: [tool('t')], createdAt: '' }] })).toBe(false)
-    expect(matchSegment(liveSeg, { type: 'streaming', blocks: [] })).toBe(false)
+    // A live tail single never matches either — not even itself (2026-11-13
+    // step 2: the flag is what marks it, since the type no longer differs).
+    expect(matchSegment(liveSeg, liveSeg)).toBe(false)
   })
 })

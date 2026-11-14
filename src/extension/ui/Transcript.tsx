@@ -24,16 +24,13 @@
  * *held* on the client: a tool call waiting for approval, and an ask_user
  * question. Both are answered from here over the extension's reverse RPC. */
 
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useRef } from 'react'
+import { useTailFollow } from '../../shared/ui/useTailFollow'
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from '../../shared/types/agent'
 import type { SessionState } from '../../shared/agent-session/mirror'
 import { ActionRow, AskUserBatchBlock, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
 
 type Message = SessionState['messages'][number]
-
-/** How close to the bottom still counts as "following the tail" (px). The panel
- *  scrollport is ~450px tall, so this is the chat's 100px rule scaled down. */
-const NEAR_BOTTOM_PX = 80
 
 /** Tool calls whose tool_result is already in the transcript. Hydrated history
  *  has tool_use statuses stripped on save, so a matching result is the only
@@ -281,8 +278,14 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
   onClearError: () => void
 }): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
-  /** Whether the next commit should keep the view at the tail (see handleScroll). */
-  const followRef = useRef(true)
+  // Tail following is the shared engine (shared/tail-follow.ts): intent decides,
+  // never a gap measured after the content grew. This panel used to keep its own
+  // 80px read plus a per-commit snap and a ResizeObserver workaround for the size
+  // transition — all three are the engine's job now, which is what makes the hand
+  // feel identical to the desktop transcript instead of merely similar. Called
+  // bare: the engine attaches its own listeners and starts out following, which
+  // is all this panel needed from the old followRef/snap/RO trio.
+  useTailFollow(() => scrollRef.current)
   const status = session.agentStatus
   const handlers: BlockHandlers = {
     awaitingApproval: status.status === 'awaiting_approval',
@@ -290,55 +293,12 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
     onAnswer,
   }
 
-  // Whether the view is close enough to the tail to keep following it. Written
-  // by scroll events only, never by a measurement taken after the content
-  // changed: growth moves the tail away on its own, and one update can easily
-  // add more than the threshold (a whole answer appended at once, a chunk of
-  // streamed markdown) — measuring there reads as "the user scrolled up" and
-  // then un-follows for the rest of the turn. The desktop chat tracks it the
-  // same way (ChatView's `isNearBottomRef`, written by handleScroll and by
-  // nothing else).
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
-  }, [])
-
-  // Follow the tail while the user is already at the bottom, so scrolling back
-  // through an earlier run is not yanked forward (TranscriptView's rule). Snaps
-  // after every commit — streaming deltas, appended messages and the busy cursor
-  // all change the height — and before the paint, so new content cannot flash at
-  // the old offset first. A plain `scrollTop` write, not `scrollIntoView`:
-  // `block: 'end'` stops at the scrollport's edge and leaves the tail this
-  // transcript's own bottom padding short of it (measured 7px), and the write
-  // this way stays scoped to this element.
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el || !followRef.current) return
-    el.scrollTop = el.scrollHeight
-  })
-
-  // 尺寸切换的补间（App 的 .pm-panel-animating）逐帧改变滚动区的盒子，而过渡
-  // 期间 React 不提交——上面那次提交时的吸底会停在中间态，尾巴一直差着直到下
-  // 一条流式分片。ResizeObserver 把跟随补齐到每一帧：只在跟随态动作，尺寸不
-  // 变时它不触发，没有常驻成本。observe 的首次回调和上面的初始吸底等价，无害。
-  // 回调里写 scrollTop 会触发一次 scroll 事件，handleScroll 重算后仍是跟随态，
-  // 不会成环（RO 只看盒子尺寸，不看滚动位置）。
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      if (followRef.current) el.scrollTop = el.scrollHeight
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
   const hasContent = session.messages.length > 0 || session.streamingBlocks.length > 0
+
   const rowIds = actionRowIds(session.messages, busy)
 
   return (
-    <div className="pm-transcript" ref={scrollRef} onScroll={handleScroll}>
+    <div className="pm-transcript" ref={scrollRef}>
       {!hasContent && !busy ? (
         <div className="pm-empty">
           在当前页面里直接对话。{'\n'}试试「总结这个页面」「把这个表单填了」。

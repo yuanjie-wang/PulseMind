@@ -121,11 +121,16 @@ describe('ChatBody: dynamic spacer + at-tail re-pin', () => {
   })
 
   it('re-pins only for a reader who was at the tail', () => {
-    // The flag is written by the scroll handler (pre-update reading) — the
-    // point of the re-pin is that padding growth itself makes the tail look
-    // far away, so measuring after the update can never see "was at tail".
-    expect(CHAT_BODY).toContain('atTailRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100')
-    expect(CHAT_BODY).toMatch(/useLayoutEffect\(\(\) => \{[\s\S]{0,500}if \(!el \|\| !atTailRef\.current\) return[\s\S]{0,200}el\.scrollTop = el\.scrollHeight/)
+    // The decision is the host's tail-follow engine (intent), not a gap measured
+    // after the reserve grew — padding growth IS what pushes the tail away, so a
+    // post-update measurement can never see "was at tail". isFollowing() carries
+    // the intent, which is exactly what the re-pin needs.
+    expect(CHAT_BODY).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]{0,400}if \(!tail\?\.isFollowing\(\)\) return[\s\S]{0,120}tail\.snap\(\)/,
+    )
+    // The local 100px threshold is retired — it was the second of the three
+    // per-host thresholds that drifted apart.
+    expect(CHAT_BODY).not.toContain('atTailRef')
     // Hooks live before the welcome early-return (hook order must not change
     // with the arm).
     expect(CHAT_BODY.indexOf('const [aboveCardReserve')).toBeLessThan(CHAT_BODY.indexOf('if (welcome)'))

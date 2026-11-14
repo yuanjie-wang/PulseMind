@@ -1,7 +1,7 @@
 // ── Immersive right-card panels (2026-10-31, 用户裁定「对话 | 浏览器 | 工作计划」) ──
 // The immersive window's right card is a THREE-PANEL switcher, not just the
 // conversation: 对话 (kept alive — the main-window precedent of ChatView
-// staying mounted under display:none, so streaming/composer/bottom-pin all
+// staying mounted under display:none, so streaming/composer/tail-follow all
 // survive a panel switch), 浏览器 (BrowserPaneChrome over the per-window
 // native view — the same pane contract the main window's workbench uses, with
 // the immersive window's own pane-state push carrying card-geometry insets),

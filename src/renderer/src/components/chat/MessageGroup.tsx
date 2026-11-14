@@ -37,12 +37,13 @@ import { ApprovalArea } from './ApprovalArea'
 import { toolDetailSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
+import { AssistantMarkdown } from './assistant-markdown'
 import { ThinkingBlockView, ThinkingRedactedRow } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/compile-queue'
 import { createKnowledgeSaveAction } from './knowledge-save'
-import { stripMessageIdSuffix } from './message-segments'
+import { lastLiveTextIndex, stripMessageIdSuffix } from './message-segments'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import { CollapseBody, POP_ANIM, SHAKE_ANIM } from './motion'
 
@@ -359,7 +360,8 @@ export const MessageGroup = React.memo(function MessageGroup({
   onOpenSubAgent,
   onExtractRoutine,
   onResendUserMessage,
-  awaitingApproval = true
+  awaitingApproval = true,
+  live
 }: {
   msg: AgentMessage
   actions?: MessageActions
@@ -396,6 +398,13 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  an engine primitive — session-manager's whitelist only offers
    *  retryLastTurn, which covers the last turn alone. */
   onResendUserMessage?: (text: string) => void
+  /** 流式尾段 (2026-11-13, step 2): the round is still streaming this text, so
+   *  the block body renders through AssistantMarkdown's live path. The point of
+   *  routing the tail through THIS component instead of giving it its own
+   *  streaming view is that the landed paragraph mounts the identical tree —
+   *  `live` going undefined is a props change, not a type change. Optional:
+   *  every settled render passes nothing and behaves exactly as before. */
+  live?: { toolsStarted?: boolean }
   /** The engine is parked awaiting approval (see CollapsibleToolBlock). */
   awaitingApproval?: boolean
 }): React.ReactElement | null {
@@ -703,7 +712,16 @@ export const MessageGroup = React.memo(function MessageGroup({
                 <div key={i} className={mdClass} style={{ paddingLeft: 12 }}>
                   <FileRefChip
                     text={block.text}
-                    textRenderer={(t) => <XMarkdown content={t} components={{ code: CodeBlock, img: LocalImage }} config={{ extensions: Latex() }} />}
+                    // 流式与落地走同一个文本体（2026-11-13, step 2）：`live` 只是
+                    // props，落地时变 undefined，React 原地更新而不再卸载整棵
+                    // markdown 子树 —— 最后一段文字不再重排的根就在这里。
+                    textRenderer={(t) => (
+                      <AssistantMarkdown
+                        text={t}
+                        live={live}
+                        tail={live !== undefined && live.toolsStarted !== true && i === lastLiveTextIndex(msg.contentBlocks)}
+                      />
+                    )}
                   />
                 </div>
               )

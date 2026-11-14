@@ -26,7 +26,11 @@ const msg = (id: string, role: 'user' | 'assistant', text?: string): AgentMessag
 
 const single = (m: AgentMessage): Segment => ({ type: 'single', msg: m })
 const execution = (ms: AgentMessage[]): Segment => ({ type: 'execution', msgs: ms })
-const streaming: Segment = { type: 'streaming', blocks: [{ type: 'text', text: '…' }] }
+const streaming: Segment = {
+  type: 'single',
+  msg: { id: 'streaming-text', role: 'assistant', createdAt: '', contentBlocks: [{ type: 'text', text: '…' }] } as AgentMessage,
+  live: {},
+}
 
 describe('routineEntryTargetIndex (where the 存为日常任务 button rides)', () => {
   it('rides the tail when the conversation closes on assistant text', () => {

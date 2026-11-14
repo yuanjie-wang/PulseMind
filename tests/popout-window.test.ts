@@ -455,8 +455,8 @@ describe('renderer: PopoutApp', () => {
 
   it('lands the first hydration at the tail (chat scroll-to-bottom on popout)', () => {
     // 「会话区滚动条滚动到底部」：弹窗的 conversationId 首帧即 convId（回退），
-    // prevConvIdRef 看不到切换——首水合必须也走 switch 落底路径（同步落底 +
-    // bottom-pin），否则内容在一次性 rAF 之后继续长高、停在半途。
+    // prevConvIdRef 看不到切换——首水合必须也走 switch 落底路径（resume +
+    // settle），否则内容在单次 settle 之后继续长高、停在半途。
     const chat = read('renderer/src/components/layout/ChatView.tsx')
     expect(chat).toContain('const isConvSwitch = prevConvIdRef.current !== conversationId || !landedOnceRef.current')
     expect(chat).toContain('landedOnceRef.current = true')

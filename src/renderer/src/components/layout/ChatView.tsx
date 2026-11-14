@@ -6,7 +6,7 @@ import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
-import { buildSegments, getSegmentAnchorId, getSegmentKey, hasLiveTextTail, type Segment } from '../chat/message-segments'
+import { buildSegments, createLiveKeys, getSegmentAnchorId, getSegmentKey, hasLiveTextTail, type Segment } from '../chat/message-segments'
 import { useSegmentEntrance } from '../chat/use-segment-entrance'
 import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
 import { ChatBody, CHAT_SCROLLER_EDGE_GAP } from '../chat/ChatBody'
@@ -15,6 +15,7 @@ import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
+import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import { BackgroundTasksStrip } from '../chat/BackgroundTasksStrip'
 import { useBackgroundTasksStore } from '../../stores/backgroundTasksStore'
 import { MessageNavControls } from '../chat/MessageNavigator'
@@ -23,7 +24,7 @@ import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { clampPaneWidth, WORKBENCH_CARD_MARGIN } from '../../../../shared/browser/pane'
 import { IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
 import { WelcomeContent } from '../chat/WelcomeContent'
-import { startBottomPin } from '../../utils/bottom-pin'
+import { useTailFollow } from '../../../../shared/ui/useTailFollow'
 import { useWelcomeShake, playWelcomeEnter } from '../../utils/welcome-shake'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
@@ -275,16 +276,29 @@ function ChatView({
     () => projectContextUsed(messages, lastCompaction, contextLength),
     [messages, lastCompaction, contextLength],
   )
+  // The other half of the context panel's story: how much of what we ship is
+  // already cached. Reads the same `messages` the ring does and leans on the
+  // aggregator for the sidecar exclusions and the clamp, so this figure agrees
+  // with the `[LLM Cache] session=…` log line instead of drifting from a second
+  // implementation. Memoised on the array identity the store already keeps.
+  const cacheHit = useMemo(() => sessionCacheHitRate(messages), [messages])
   // The spawn tree's delivered files (hydrated at terminal status — see
   // useDeliverables): the per-child map the per-turn cards attribute with.
   const childDeliverables = useDeliverables(conversationId, messages, agentStatus)
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
   const scrollRef = useRef<HTMLDivElement>(null)
-  const isNearBottomRef = useRef(true)
   // 对话区离开底部 → 悬浮按钮组（回到底部 + 上/下一条）出现，回到底部即
-  // 消失（用户裁定：滑动之后才出现）。handleScroll 只在翻面时 setState，
-  // 所以它必须声明在 handleScroll 之前。
+  // 消失（用户裁定：滑动之后才出现）。翻面来源是引擎的跟随状态（意图判定），
+  // 不再是 handleScroll 里的几何读数。
   const [awayFromBottom, setAwayFromBottom] = useState(false)
+  // Tail following lives in utils/tail-follow.ts — it replaced the geometric
+  // isNearBottomRef, which stalled mid-stream when one commit grew more than the
+  // threshold, and turned any small scroll-up inside that threshold into a
+  // magnetic band. Declaration order matters: `awayFromBottom` must exist before
+  // the callback that writes it.
+  const follow = useTailFollow(() => scrollRef.current, {
+    onFollowingChange: (f) => setAwayFromBottom(!f),
+  })
   // The welcome composer's half of the 新建任务 guidance shake (the picker's
   // half lives in ProjectCards): the wrapper — not InputArea itself, so the
   // component never remounts and the draft survives — wiggles once per click.
@@ -300,10 +314,10 @@ function ChatView({
   // InputArea 的 memo 生效的前提。
   const sendMessageAndPin = useCallback(
     (content: string) => {
-      isNearBottomRef.current = true
+      follow.resume()
       onSendMessage(content)
     },
-    [onSendMessage],
+    [follow, onSendMessage],
   )
 
   // 项目模式未选项目时 Composer 拒绝发送（灰按钮 + Enter 静默）——这次拒绝的
@@ -359,37 +373,25 @@ function ChatView({
   const loadMoreRef = useRef<() => void>(() => {})
   const loadMoreBusyRef = useRef(false)
 
-  // Scroll tracking: near-bottom drives autoscroll and drops prepended history;
-  // scroll-up near the top lazily loads one more page of older segments.
+  // Windowing only — following is the engine's job now (hooks/useTailFollow →
+  // utils/tail-follow): it owns the scroll listener, decides from INTENT, and
+  // recognises its own writes so a growth spurt is never read as "the user
+  // scrolled up". What is left here is purely about the rendered slice: drop
+  // the widened window while following, lazily load one more page at the top.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-    isNearBottomRef.current = nearBottom
-    // 悬浮导航组（回到底部 + 上/下一条）的显隐：离开底部即出现。必须放在
-    // landing/suppress 早退之前——平滑滚动期间的滚动事件被早退拦截，显隐若
-    // 排在其后，跳转结束后就会停在过期状态。翻面才 setState（功能式更新
-    // 原值即 bail out，滚动洪流不会触发 re-render）。
-    setAwayFromBottom((prev) => (prev === !nearBottom ? prev : !nearBottom))
-    // While a landing is running (conversation switch) or a jump's smooth
-    // scroll is animating, don't collapse the widened window or trigger
-    // lazy-load: our own writes move scrollTop, and the early frames near the
-    // top would otherwise widen the window and fight the landing back to the tail.
-    if (landingRef.current || suppressJumpScrollRef.current) return
-    if (nearBottom) {
+    // A jump's smooth scroll sweeps past the top on its way down; those frames
+    // must not widen the window or queue history pages.
+    if (suppressJumpScrollRef.current) return
+    if (follow.isFollowing()) {
       setExtraTop(0)
       return
     }
     if (el.scrollTop < 150) {
       loadMoreRef.current()
     }
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [])
+  }, [follow])
 
   const prevConvIdRef = useRef(conversationId)
   // In-app browser pane (A-M5): live state from the host store + the
@@ -553,40 +555,24 @@ function ChatView({
       ) : null,
     [plan, planTotal, planSettled, workbenchOpen, wbKey, hideWorkbench],
   )
-  // 回到底部：平滑滚回尾部（用户裁定：点击后要有滚动动画），并重新接上
-  // 跟随。动画期间挂 suppress 守卫（与跳转 effect 同款）——handleScroll 的
-  // 早退防住 extraTop 塌缩与懒加载抢跑；isNearBottomRef 由动画自身的滚动
-  // 事件翻面，落点的最后一帧回到 true 重新接上跟随。声明在 navTopSlot 之
-  // 前：后者是 inline 执行的 useMemo 工厂，引用后置声明是真 TDZ。
-  // 守卫计时器独立一枚：与统一跳转 effect 的 scrollTimerRef 分开，避免
-  // useCallback 捕获同一个 ref 后被编译器判成跨 hook 变异。
+  // 回到底部：平滑滚回尾部（用户裁定：点击后要有滚动动画）并重新接上跟随。
+  // 落点在点击瞬间就固定为当时的 scrollHeight，而流式期间尾部还在长——动画
+  // 走完时落点已经落后。引擎的 jump() 自己挂 hold 窗口，窗口到期后由 settle
+  // 循环按帧接管尾部（旧实现为此挂了一枚 bottom-pinner），这里只需压住窗口化
+  // 的早退：平滑滚动会扫过顶部，那些帧不该触发懒加载与 extraTop 塌缩。
   const bottomSuppressTimerRef = useRef<ReturnType<typeof setTimeout>>()
-  // 回到底部的 pinner 句柄独立一枚：cancelPinRef（切会话 landing）只在
-  // effect 里写入，这里若共用，工厂体内的写入会改变 ref 值的出处建模，
-  // 殃及切会话 effect 里同字段的合法写入（react-hooks/immutability 误报）。
-  const jumpPinCancelRef = useRef<(() => void) | null>(null)
   const jumpToBottom = useCallback(() => {
-    isNearBottomRef.current = true
-    const el = scrollRef.current
-    if (!el) return
     // eslint-disable-next-line react-hooks/immutability -- 同步置守卫，防动画中途的滚动事件触发塌缩
     suppressJumpScrollRef.current = true
     clearTimeout(bottomSuppressTimerRef.current)
     bottomSuppressTimerRef.current = setTimeout(() => {
       suppressJumpScrollRef.current = false
     }, 700)
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    // 平滑滚动的落点在点击瞬间就固定为当时的 scrollHeight，而流式输出期间
-    // 尾部还在长——动画（300-700ms）走完时落点距真实底部可超 100px 阈值，
-    // 最后一次滚动事件把 isNearBottomRef 翻回 false，append effect 从此不再
-    // 跟随、悬浮组不消失（review_20261006 中4；现场注释「落点的最后一帧回
-    // 到 true」只在动画期间尾部不增长时成立）。复用切会话 landing 的
-    // bottom-pinner：动画结束后持续把视口钉回真实底部，高度稳定或用户真滚
-    // （wheel/触摸/按键）即让位。landingRef 不置——这里没有先同步跳再钉的
-    // 塌缩对抗面，suppress 守卫已覆盖动画期。
-    jumpPinCancelRef.current?.()
-    jumpPinCancelRef.current = startBottomPin(() => scrollRef.current, {})
-  }, [])
+    // 落地后必须继续钉住尾巴（review_20261006 中4）：引擎的 jump() 记下
+    // holdUntil，动画期间的中间位置不算用户滚动，hold 到期后 settle 循环重新
+    // 接管——旧的二次钉底 pinner（utils/bottom-pin）因此退役。
+    follow.jump()
+  }, [follow])
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定：计划条与悬浮导
   // 航组合一个 slot——计划条/后台任务条**左对齐**（2026-11-08 用户裁定：居中
   // 与【回到底部】圆钮冲突），回到底部居中、步进对右侧，互不占位——
@@ -615,21 +601,11 @@ function ChatView({
     [planStrip, awayFromBottom, hasBgTasks, userPrompts, jumpToBottom, handleNavJump, conversationId],
   )
   const pendingScrollRef = useRef(false)
-  const scrollRafRef = useRef<number>(0)
-  // Cancel handle for the bottom-pinner started after a conversation switch —
-  // content height keeps growing for frames after the messages commit
-  // (XMarkdown renders null on first pass; images/code/mermaid load later), so
-  // a one-shot scroll lands mid-content. See utils/bottom-pin.ts.
-  const cancelPinRef = useRef<(() => void) | null>(null)
-  // True while the bottom-pinner owns the viewport. handleScroll must not
-  // lazy-load or collapse the window during that window — the pin's own writes
-  // move scrollTop, and reacting to them would fight the landing.
-  const landingRef = useRef(false)
   // 从未落过底的首水合也按切换处理（2026-10-31 弹窗裁定「会话区滚动条滚动到
   // 底部」）：弹窗的 conversationId 首帧即到位（activeConvKey 回退 convId），
-  // prevConvIdRef 看不到切换，消息水合走的是无 pin 的一次性 rAF——内容在
-  // 之后几帧持续长高（XMarkdown 首帧 null、代码块/图片更晚），最终停在半途。
-  // 首次消息落地走 switch 路径 = 同步落底 + bottom-pin 到高度稳定，与主窗
+  // prevConvIdRef 看不到切换，消息水合走的是一次性 settle——内容在之后几帧持
+  // 续长高（XMarkdown 首帧 null、代码块/图片更晚），单次 settle 早已结束，最终
+  // 停在半途。首次消息落地走 switch 路径 = resume + settle 追到高度稳定，与主窗
   // 打开会话同一条路。只影响「本挂载的第一次」，此后一切照旧。
   const landedOnceRef = useRef(false)
 
@@ -638,10 +614,6 @@ function ChatView({
     if (isConvSwitch) {
       pendingScrollRef.current = true
       prevConvIdRef.current = conversationId
-      cancelPinRef.current?.()
-      cancelPinRef.current = null
-      jumpPinCancelRef.current?.()
-      jumpPinCancelRef.current = null
       setExtraTop(0)
       // 切会话 = 离开导航器的上下文：收回悬浮导航组、弃未完成的跳转请求
       // （与 landing 复位同一个块——这个 effect 本来就是会话切换的总复位点）。
@@ -653,57 +625,34 @@ function ChatView({
 
     if (pendingScrollRef.current) {
       // Conversation switch: always land at the tail, regardless of where the
-      // previous conversation was scrolled — isNearBottomRef describes the old
-      // viewport and must not veto this. Scroll synchronously (DOM is already
-      // committed) so the switch never paints the new conversation at the old
-      // scroll offset, then pin while the content height settles.
+      // previous conversation was scrolled — the previous viewport's follow
+      // state must not veto this. resume() snaps synchronously (the DOM is
+      // already committed, so the switch never paints at the old offset) and
+      // then keeps the tail while the height settles — the settle loop replaces
+      // the old bottom-pinner frame for frame.
       pendingScrollRef.current = false
-      isNearBottomRef.current = true
       setExtraTop(0)
-      const el = scrollRef.current
-      if (el) el.scrollTop = el.scrollHeight
-      cancelPinRef.current?.()
-      // Must be set synchronously with starting the pin so handleScroll (which
-      // reads it) never reacts to the landing's own scroll writes.
-      // eslint-disable-next-line react-hooks/immutability
-      landingRef.current = true
       landedOnceRef.current = true
-      cancelPinRef.current = startBottomPin(() => scrollRef.current, {
-        onStop: () => {
-          landingRef.current = false
-        },
-      })
+      follow.resume()
       return
     }
 
-    if (!isNearBottomRef.current) return
-    setExtraTop(0)
-    // Use rAF to let DOM layout settle before measuring scrollHeight
-    cancelAnimationFrame(scrollRafRef.current)
-    scrollRafRef.current = requestAnimationFrame(scrollToBottom)
-  }, [messages, streamingBlocks, scrollToBottom, conversationId])
+    // Every other commit is just growth: the hook reports it to the engine on
+    // each render (settle), so only the window collapse is left to do here.
+    if (follow.isFollowing()) setExtraTop(0)
+  }, [messages, streamingBlocks, follow, conversationId])
 
-  // When streaming completes, scroll again after DOM settles (double rAF)
+  // When streaming completes, the final chunk's Markdown body often commits a
+  // render AFTER the status flips (XMarkdown returns null on its first pass), so
+  // the growth is reported by a later commit rather than this one. Nudging the
+  // engine here just extends the settle window across that gap — no scroll of our
+  // own, the engine already snaps on every commit while following.
   const prevStatusRef = useRef(agentStatus.status)
   useEffect(() => {
     const prev = prevStatusRef.current
     prevStatusRef.current = agentStatus.status
-    if (prev === 'streaming' && agentStatus.status === 'completed' && isNearBottomRef.current) {
-      cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = requestAnimationFrame(() => {
-        scrollRafRef.current = requestAnimationFrame(scrollToBottom)
-      })
-    }
-  }, [agentStatus.status, scrollToBottom])
-
-  // Cleanup rAF on unmount
-  useEffect(() => {
-    return () => {
-      cancelAnimationFrame(scrollRafRef.current)
-      cancelPinRef.current?.()
-      jumpPinCancelRef.current?.()
-    }
-  }, [])
+    if (prev === 'streaming' && agentStatus.status === 'completed') follow.settle()
+  }, [agentStatus.status, follow])
 
   const isStreaming = agentStatus.status === 'streaming'
   const isAwaitingExtension = agentStatus.status === 'awaiting_extension'
@@ -759,6 +708,10 @@ function ChatView({
   // Accumulate streaming tool_use blocks across renders so OpenAI's per-delta
   // tool_call chunks don't appear as scattered execution segments.
   const streamingToolAccumRef = useRef<Map<string, ToolUseBlock>>(new Map())
+  /** Live-tail key registry (message-segments' LiveKeys): keeps one React key
+   *  alive across the streaming→settled boundary so a finished paragraph is
+   *  reconciled, not remounted. Per-view on purpose — keys never leave it. */
+  const liveKeysRef = useRef(createLiveKeys())
 
   useEffect(() => {
     if (!isStreaming) streamingToolAccumRef.current.clear()
@@ -776,6 +729,7 @@ function ChatView({
       streamingBlocks,
       cached: cachedSegmentsRef.current,
       streamingToolAccum: streamingToolAccumRef.current,
+      liveKeys: liveKeysRef.current,
     })
     cachedSegmentsRef.current = segs
     /* eslint-enable react-hooks/refs */
@@ -1157,6 +1111,7 @@ function ChatView({
                 onResetProfile={onResetProfile}
                 contextUsed={contextUsed}
                 contextLength={contextLength}
+                cacheHit={cacheHit}
                 lastCompaction={lastCompaction}
                 approvalMode={approvalMode}
                 onChangeApprovalMode={onChangeApprovalMode}
@@ -1202,6 +1157,7 @@ function ChatView({
       emptySlot={emptySlot}
       scrollRef={scrollRef}
       onScroll={handleScroll}
+      tail={follow}
       renderedSegments={renderedSegments}
       windowTop={windowTop}
       turnPlacement={turnPlacement}
@@ -1237,6 +1193,7 @@ function ChatView({
       onResetProfile={onResetProfile}
       contextUsed={contextUsed}
       contextLength={contextLength}
+      cacheHit={cacheHit}
       lastCompaction={lastCompaction}
       activeExpertId={activeExpertId}
       onUnbindExpert={handleUnbindExpert}

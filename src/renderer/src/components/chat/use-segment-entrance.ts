@@ -17,10 +17,10 @@
  *   change the seen set is discarded and the incoming list is treated as
  *   history, so a switch reads as an open, not an entrance wave.
  *
- * The `streaming` segment is skipped on purpose: its key is the same string
- * every turn, so it could animate at most once per mount — while the turn's
- * real arrivals (the user message, then the settled single/execution segments
- * that replace it) carry unique keys and animate on their own.
+ * The `streaming` segment is marked seen but never animated: its key is minted
+ * per round (message-segments' LiveKeys) precisely so the settled text segment
+ * can adopt it at commit, and the footer cursor / tool cards that arrive during
+ * the round carry their own keys and animate on their own.
  */
 import { useLayoutEffect, useRef, useState } from 'react'
 import { getSegmentKey, type Segment } from './message-segments'
@@ -42,8 +42,18 @@ export function useSegmentEntrance(segments: readonly Segment[], resetKey?: stri
     const seen = seenRef.current ?? new Set<string>()
     const newly: string[] = []
     for (const seg of segments) {
-      if (seg.type === 'streaming') continue
+      // The live tail marks its key seen WITHOUT animating. At commit the
+      // settled text segment adopts that key (message-segments' adoptLiveKeys),
+      // and it must already read as present — treating the adoption as an
+      // arrival would play the very entrance animation it exists to prevent
+      // (user report 2026-11-13: one visible refresh per finished paragraph).
+      // The live tail is a `single` segment carrying `live` (2026-11-13, step
+      // 2) — the type no longer distinguishes it, so test the flag.
       const key = getSegmentKey(seg)
+      if (seg.type === 'single' && seg.live !== undefined) {
+        seen.add(key)
+        continue
+      }
       if (!seen.has(key)) {
         seen.add(key)
         if (!first) newly.push(key)

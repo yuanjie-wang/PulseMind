@@ -247,9 +247,9 @@ mkdirSync(SHOTS, { recursive: true })
 await page.screenshot({ path: join(SHOTS, '1-staged-two-rows.png') })
 
 console.log('\n§2 上滚的读者不被拽下来')
-// 用真实滚轮：会话落地的 bottom-pin 以真实输入事件（wheel/pointer/key）为
-// 「用户接管」信号，程序化写 scrollTop 不在其列——那样测到的「被拽回」是
-// pin 在补高度，不是暂存预留的锅。
+// 用真实滚轮：尾随引擎以真实输入事件（wheel/pointer/key）为「用户接管」信号，
+// 程序化写 scrollTop 不在其列——那样测到的「被拽回」是引擎在追高度，不是暂存
+// 预留的锅。
 const scroller = await page.locator('[data-pm-chat-scroll]').boundingBox()
 await page.mouse.move(scroller.x + scroller.width / 2, scroller.y + scroller.height / 2)
 await page.mouse.wheel(0, -1500)

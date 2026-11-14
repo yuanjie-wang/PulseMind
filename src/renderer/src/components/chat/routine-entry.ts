@@ -22,6 +22,8 @@ export function routineEntryAllowed(status: AgentStatus['status']): boolean {
  *  on an earlier message the button would read as 「提炼到这里为止」. */
 export function routineEntryTargetIndex(segments: readonly Segment[]): number | null {
   const last = segments[segments.length - 1]
-  if (!last || last.type !== 'single' || last.msg.role !== 'assistant') return null
+  // 2026-11-13 step 2：流式尾段现在也是 `single`，类型不再能区分「还在写」和
+  // 「已落地」——必须靠 `live` 标志跳过它，否则按钮会随每一次流式尾段闪一下。
+  if (!last || last.type !== 'single' || last.live !== undefined || last.msg.role !== 'assistant') return null
   return segments.length - 1
 }

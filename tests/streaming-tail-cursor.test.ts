@@ -83,15 +83,23 @@ describe('hasLiveTextTail / lastLiveTextIndex', () => {
     expect(lastLiveTextIndex([text('a'), text('b')])).toBe(1)
   })
 
-  it('is true only for a streaming segment carrying text', () => {
-    expect(hasLiveTextTail([{ type: 'streaming', blocks: [text('hi')] }])).toBe(true)
-    expect(hasLiveTextTail([{ type: 'streaming', blocks: [text('')] }])).toBe(false)
+  // 2026-11-13 step 2: the live tail is a `single` segment carrying `live` —
+  // the `type: 'streaming'` union member is gone, so the flag is the only test.
+  const liveSeg = (blocks: ContentBlock[], toolsStarted = false): Segment => ({
+    type: 'single',
+    msg: { id: 'streaming-text', role: 'assistant', createdAt: '', contentBlocks: blocks },
+    live: { toolsStarted },
+  })
+
+  it('is true only for a live tail segment carrying text', () => {
+    expect(hasLiveTextTail([liveSeg([text('hi')])])).toBe(true)
+    expect(hasLiveTextTail([liveSeg([text('')])])).toBe(false)
     expect(hasLiveTextTail([{ type: 'execution', msgs: [{ id: 'streaming-think', role: 'assistant', createdAt: '', contentBlocks: [thinking('…')] }] }])).toBe(false)
     expect(hasLiveTextTail([])).toBe(false)
   })
 
   it('is false once the round\'s tool call has begun — the finished text yields to the foot', () => {
-    expect(hasLiveTextTail([{ type: 'streaming', blocks: [text('done narrating')], toolsStarted: true }])).toBe(false)
+    expect(hasLiveTextTail([liveSeg([text('done narrating')], true)])).toBe(false)
   })
 })
 
@@ -208,19 +216,19 @@ describe('one cursor per run', () => {
 // the first tick that carries the block — which can land INSIDE the parse
 // throttle's 150ms interval — and the sentence above it must be COMPLETE in
 // that same render, not one interval behind. buildSegments stamps the round's
-// tool_use presence as `toolsStarted` on the streaming segment; StreamingText
+// tool_use presence as `live.toolsStarted` on the tail segment; AssistantMarkdown
 // force-feeds its throttle with it.
 describe('tool-call flush signal', () => {
   it('buildSegments stamps toolsStarted from the round\'s tool_use presence', () => {
     const build = (blocks: ContentBlock[]): Segment[] =>
       buildSegments({ messages: [], isStreaming: true, streamingBlocks: blocks, cached: [], streamingToolAccum: new Map() })
     const textOnly = build([text('narration')])
-    expect(textOnly[textOnly.length - 1]).toMatchObject({ type: 'streaming', toolsStarted: false })
+    expect(textOnly[textOnly.length - 1]).toMatchObject({ type: 'single', live: { toolsStarted: false } })
     const withTool = build([text('narration'), toolUse('tu_1')])
-    const streamingSeg = withTool.find((s) => s.type === 'streaming')
-    expect(streamingSeg).toMatchObject({ type: 'streaming', toolsStarted: true })
-    // thinking + tool, no text: no streaming segment exists to stamp
-    expect(build([thinking('…'), toolUse('tu_2')]).some((s) => s.type === 'streaming')).toBe(false)
+    const streamingSeg = withTool.find((s) => s.type === 'single' && s.live !== undefined)
+    expect(streamingSeg).toMatchObject({ type: 'single', live: { toolsStarted: true } })
+    // thinking + tool, no text: no live tail exists to stamp
+    expect(build([thinking('…'), toolUse('tu_2')]).some((s) => s.type === 'single' && s.live !== undefined)).toBe(false)
   })
 
   it('the tick that mounts the tool card renders the sentence complete, even inside the throttle interval', async () => {
@@ -263,20 +271,24 @@ describe('wiring', () => {
   })
 
   it('the live tail renders through x-markdown streaming mode with the shared caret as its tail', () => {
-    const src = read(R('components', 'chat', 'SegmentView.tsx'))
+    // 2026-11-13 step 2: the streaming config lives in the shared body now —
+    // SegmentView no longer owns a streaming path of its own.
+    const src = read(R('components', 'chat', 'assistant-markdown.tsx'))
     expect(src).toContain('hasNextChunk: true, enableAnimation: true')
     expect(src).toContain('tail: { component: StreamingTail }')
     expect(src).toContain('streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD}')
-    expect(src).toContain('a.shown === b.shown && a.tail === b.tail')
+    expect(src).toContain('a.shown === b.shown && a.streaming === b.streaming')
   })
 
   it('the tool-call flush rides buildSegments into the throttle feed', () => {
     expect(read(R('components', 'chat', 'message-segments.ts'))).toContain('toolsStarted: toolBlocks.length > 0')
-    const view = read(R('components', 'chat', 'SegmentView.tsx'))
-    expect(view).toContain('toolsStarted={seg.toolsStarted === true}')
-    expect(view).toContain('throttle.feed(block.text, performance.now(), toolsStarted === true)')
+    // `live` carries the signal across the boundary (2026-11-13 step 2):
+    // buildSegments → SegmentView → MessageGroup → AssistantMarkdown.
+    expect(read(R('components', 'chat', 'SegmentView.tsx'))).toContain('live={seg.live}')
+    const body = read(R('components', 'chat', 'assistant-markdown.tsx'))
+    expect(body).toContain('throttleRef.current.feed(text, performance.now(), live.toolsStarted === true)')
     // the same signal yields the in-text tail (hasLiveTextTail agrees, so the
     // foot caret takes over in the same render — still one cursor)
-    expect(view).toContain('tail={i === tailIndex && toolsStarted !== true}')
+    expect(read(R('components', 'chat', 'MessageGroup.tsx'))).toContain('lastLiveTextIndex(msg.contentBlocks)')
   })
 })

@@ -49,10 +49,10 @@ const which = window.__HARNESS__ || 'popout'
 if (which === 'popout-seed') applyPopoutSeed('${CONV_ID}', window.__SEED__ || null)
 
 if (which !== 'applayout') {
-  // 会话区落底（2026-10-31 裁定）的诚实断言需要「落底之后内容继续长高」：
-  // 静态内容下一次性 rAF 与落底+bottom-pin 都停在同一处。在 ready 后 150ms
-  // 注入 1500px —— 落在 pin 窗口（500ms 静默 / 3s 帽）内，落底路径会被钉在
-  // 底，无 pin 路径停在半途。
+  // 会话区落底（2026-10-31 裁定）的断言：落底之后内容继续长高，仍应停在底部。
+  // 注意自 tail-follow 起增高由 ResizeObserver 逐帧兜住，这条断言不再区分「跟随
+  // / 不跟随」的实现路径，只剩冒烟含义；要拿回区分力，得在注入前主动释放跟随
+  // （引擎的 release）再断言它不被拽回。
   setTimeout(() => {
     const el = document.querySelector('[data-pm-chat-scroll]')
     if (el) {
@@ -596,7 +596,7 @@ check(
   JSON.stringify(browserPrimary.panePushes),
 )
 
-check('种子组：会话区滚动条在底部（首水合走 switch 落底 + bottom-pin）', seedState.chatAtBottom === true, `atBottom=${seedState.chatAtBottom}`)
+check('种子组：会话区滚动条在底部（首水合走 switch 落底 + 引擎 settle）', seedState.chatAtBottom === true, `atBottom=${seedState.chatAtBottom}`)
 check('对照组：会话区滚动条同样在底部', state.chatAtBottom === true, `atBottom=${state.chatAtBottom}`)
 
 check('对照组：无种子时工作台保持关（默认行为不变）', !state.hasWorkbenchOpen)

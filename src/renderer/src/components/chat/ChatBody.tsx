@@ -41,6 +41,8 @@ import { SelectionToolbar } from './SelectionToolbar'
 import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { NewTaskMode } from '../../stores/newTaskStore'
+import type { TailFollow } from '../../../../shared/ui/useTailFollow'
+import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
 
 // The chat scrollers are inset from the pane's right edge by this much. The
 // 6px global scrollbar paints flush at the container edge, and that edge is a
@@ -76,6 +78,10 @@ interface ChatBodyProps {
   // ── transcript ──
   scrollRef: React.RefObject<HTMLDivElement>
   onScroll: () => void
+  /** The host's tail-follow engine — the single source of truth for "is the
+   *  user still following the tail?". Optional so a host that renders this face
+   *  without one keeps working; the re-pin below then simply does not fire. */
+  tail?: TailFollow
   renderedSegments: Segment[]
   windowTop: number
   turnPlacement: ReturnType<typeof segmentTurnPlacement>
@@ -119,6 +125,9 @@ interface ChatBodyProps {
   onResetProfile?: () => void
   contextUsed?: number
   contextLength?: number
+  /** Forwarded verbatim to InputArea → ContextRing; see that prop for why it is
+   *  optional (a caller without history omits it and the ring drops the line). */
+  cacheHit?: CacheHitRate
   lastCompaction?: CompactionEvent | null
   activeExpertId?: string
   /** 已绑会话的解绑回调（ChatView 的 handleUnbindExpert——参数已捕获）。 */
@@ -144,6 +153,7 @@ export function ChatBody({
   isRequesting,
   scrollRef,
   onScroll,
+  tail,
   renderedSegments,
   windowTop,
   turnPlacement,
@@ -179,6 +189,7 @@ export function ChatBody({
   onResetProfile,
   contextUsed,
   contextLength,
+  cacheHit,
   lastCompaction,
   activeExpertId,
   onUnbindExpert,
@@ -237,18 +248,16 @@ export function ChatBody({
   // the card ~22px per row and the last message slid under both the card and
   // the staged strip above it (user report, same sentence, second round).
   const [composerBand, setComposerBand] = useState(0)
-  // At-tail flag for the re-pin below. Written ONLY by the scroll handler (the
-  // same discipline as ChatView's followRef): measuring after the reserve
-  // changed would always read "away from the tail" — the padding growth IS
-  // what pushed it away — while the question is whether the user was at the
-  // tail BEFORE it grew.
-  const atTailRef = useRef(true)
   const prevPadRef = useRef(0)
+  // No local "at the tail?" read any more: the host's tail-follow engine is the
+  // single source of truth (this was the second of three drifting thresholds —
+  // 100px here, 100px in ChatView, 80px in TranscriptView). Measuring a gap here
+  // after the reserve changed would always read "away from the tail", because the
+  // padding growth IS what pushed it away; the engine remembers the user's intent,
+  // which is the thing the re-pin below actually needs.
   const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (el) atTailRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
     onScroll()
-  }, [onScroll, scrollRef])
+  }, [onScroll])
   // The spacer's total: the measured card band (never less than the 160 band
   // the layout was designed around) plus the above-card slot's persistent
   // content. One number, because the re-pin below must fire on growth from
@@ -264,10 +273,9 @@ export function ChatBody({
     const prev = prevPadRef.current
     prevPadRef.current = composerPad
     if (prev === composerPad) return
-    const el = scrollRef.current
-    if (!el || !atTailRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [composerPad, scrollRef])
+    if (!tail?.isFollowing()) return
+    tail.snap()
+  }, [composerPad, tail])
 
   // ── 紧凑 welcome（侧栏对话的空态；主卡 welcome 在 ChatView 的早退分支）──
   if (welcome) {
@@ -331,6 +339,7 @@ export function ChatBody({
               onResetProfile={onResetProfile}
               contextUsed={contextUsed}
               contextLength={contextLength}
+              cacheHit={cacheHit}
               lastCompaction={lastCompaction}
               approvalMode={approvalMode}
               onChangeApprovalMode={onChangeApprovalMode}
@@ -510,6 +519,7 @@ export function ChatBody({
         onResetProfile={onResetProfile}
         contextUsed={contextUsed}
         contextLength={contextLength}
+        cacheHit={cacheHit}
         lastCompaction={lastCompaction}
         boundExpertId={activeExpertId}
         // The conversation's project keeps coloring the send button after the

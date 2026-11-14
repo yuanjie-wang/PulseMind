@@ -67,17 +67,19 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
   // ChatBody——两个宿主（主卡 / 侧栏 dock）渲染同一份。
   const chatBody = readFileSync(join(ROOT, 'src/renderer/src/components/chat/ChatBody.tsx'), 'utf8')
   const controls = readFileSync(join(ROOT, 'src/renderer/src/components/chat/MessageNavigator.tsx'), 'utf8')
+  // The tail-follow engine the hosts now share; several invariants below used to
+  // live in ChatView's own geometry and moved here with it.
+  const tailFollow = readFileSync(join(ROOT, 'src/shared/tail-follow.ts'), 'utf8')
 
-  it('显隐翻面在 handleScroll 的 landing/suppress 早退之前', () => {
-    const setIdx = chatView.indexOf('setAwayFromBottom(')
-    const nearIdx = chatView.indexOf('isNearBottomRef.current = nearBottom')
-    const earlyReturnIdx = chatView.indexOf('landingRef.current || suppressJumpScrollRef.current')
-    // 顺序不变量：isNearBottomRef 写入 → 显隐翻面 → 早退。早退之后的滚动事
-    // 件（平滑跳转期间被拦）不会带走显隐，跳转结束后不会停在过期状态。
-    expect(nearIdx).toBeGreaterThanOrEqual(0)
-    expect(setIdx).toBeGreaterThan(nearIdx)
-    expect(earlyReturnIdx).toBeGreaterThan(setIdx)
-    expect(chatView).toContain('setAwayFromBottom((prev) => (prev === !nearBottom ? prev : !nearBottom))')
+  it('显隐翻面由引擎的跟随状态驱动（几何读数退役）', () => {
+    // 旧不变量是「isNearBottomRef 写入 → 翻面 → 早退」的顺序。翻面改由
+    // tail-follow 引擎广播意图状态：引擎判定即 setState，不存在「早退之后
+    // 的滚动事件读到过期几何」这一类顺序问题（landing/suppress 仍在引擎之外，
+    // 由 jump 的 hold 窗口表达）。
+    expect(chatView).toContain('onFollowingChange: (f) => setAwayFromBottom(!f)')
+    expect(chatView).toContain('useTailFollow(() => scrollRef.current')
+    // 几何判定的写入点退役——它正是「一次大增高把自己关掉」与「吸附带」的来源
+    expect(chatView).not.toContain('isNearBottomRef.current = nearBottom')
   })
 
   it('统一跳转 effect 同时消费 plan 与 nav 两个跳转源', () => {
@@ -116,8 +118,11 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
     // 置高亮且永不清除
     expect(chatView).toMatch(/if \(isPlan\) \{\s*\n\s*setHighlightedMsgId\(targetId\)/)
     expect(chatView.match(/setHighlightedMsgId\(targetId\)/g)?.length).toBe(1)
-    expect(chatView).toMatch(/const jumpToBottom = useCallback\(\(\) => \{\s*\n\s*isNearBottomRef\.current = true/)
-    expect(chatView).toContain("el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })")
+    // 回到底部走引擎的 jump()：跟随由意图持有，不再手写 isNearBottomRef；
+    // 平滑滚动的落点仍固定在点击瞬间（写点在引擎内）。
+    expect(chatView).toMatch(/const jumpToBottom = useCallback/)
+    expect(chatView).toMatch(/const jumpToBottom = useCallback\(\(\) => \{[\s\S]{0,1200}follow\.jump\(\)/)
+    expect(tailFollow).toContain("el.scrollTo({ top, behavior: 'smooth' })")
   })
 
   it('回到底部图标为实心三角（与步进对的空心长箭头区分）', () => {
@@ -182,13 +187,17 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
     expect(nav).toContain('if (!isUserPromptMessage(msg)) continue')
   })
 
-  it('回到底部落地后复用 bottom-pinner——流式追高不再停在旧底部脱钩跟随（review_20261006 中4）', () => {
-    // 平滑滚动的落点固定于点击瞬间；落地后必须由 pinner 钉回真实底部，
-    // 否则流式追高时最后一次滚动事件把 isNearBottomRef 翻回 false、跟随脱钩。
-    expect(chatView).toContain("el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })")
-    expect(chatView).toContain('jumpPinCancelRef.current = startBottomPin(() => scrollRef.current, {})')
-    // 切会话与卸载都要收掉这枚 pinner（与 landing 的 cancelPinRef 并列）
-    expect(chatView.match(/jumpPinCancelRef\.current\?\.\(\)/g)?.length).toBe(3)
+  it('回到底部落地后由引擎继续钉住尾巴——流式追高不再停在旧底部脱钩跟随（review_20261006 中4）', () => {
+    // 平滑滚动的落点固定于点击瞬间；落地后必须继续跟随真实底部，否则流式追高
+    // 时最后一次滚动事件把跟随翻掉、停在旧底部。现在由引擎负责：jump() 记下
+    // holdUntil，动画期间的中间位置不算用户滚动；hold 到期后 settle 循环接管。
+    expect(chatView).toContain('follow.jump()')
+    expect(tailFollow).toContain('holdUntil = now() + jumpHoldMs')
+    expect(tailFollow).toMatch(/if \(now\(\) < holdUntil\) \{\s*\n\s*frameHandle = schedule\(step\)/)
+    // 动画窗口内的滚动事件不得翻掉跟随
+    expect(tailFollow).toContain('if (held || now() < holdUntil) return')
+    // 旧的二次钉底 pinner 随引擎退役（其清理点也必须一并消失）
+    expect(chatView).not.toContain('jumpPinCancelRef')
     expect(chatView).toContain('review_20261006 中4')
   })
 

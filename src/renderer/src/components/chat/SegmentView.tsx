@@ -2,18 +2,11 @@
  * One transcript segment's body, shared by the main chat and the tool studio so
  * both render messages, execution segments and streaming text identically.
  */
-import React, { useRef } from 'react'
-import { XMarkdown, type XMarkdownProps } from '@ant-design/x-markdown'
-import Latex from '@ant-design/x-markdown/plugins/Latex'
+import React from 'react'
 import { MessageGroup, type MessageActions } from './MessageGroup'
 import { ExecutionSegment } from './ExecutionSegment'
-import { CodeBlock } from './CodeBlock'
-import { StreamingCaret } from './StreamingCaret'
-import { useMarkdownThemeClass } from '../../theme/mode'
-import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle'
 import { ENTER_ANIM } from './motion'
-import type { ContentBlock } from '../../types/agent'
-import { lastLiveTextIndex, type Segment } from './message-segments'
+import type { Segment } from './message-segments'
 
 /** The chat's message-column padding. It is what makes the bubbles line up with
  *  the composer: the column is 1000 wide, the composer card 952, and the 24px
@@ -63,95 +56,6 @@ export interface SegmentViewProps {
   onRespondToTool?: (toolUseId: string, response: string) => void
 }
 
-/** Streaming text is markdown, rendered with the same components as a settled
- *  message so nothing reflows when the stream lands.
- *
- *  The parse is throttled (PLAN-long-task-perf M1-T3, measured in
- *  probe-chat-stream-perf): each tick used to re-parse the WHOLE accumulated
- *  text, a cost that grows with the answer (9.4→15.7ms/tick over a 20KB
- *  answer, ~half the sampled renderer CPU in the markdown pipeline). The
- *  snapshot XMarkdown sees now advances at most every
- *  STREAM_PARSE_MIN_INTERVAL — the same component on both sides of the
- *  streaming/settled boundary is the anti-reflow design and is untouched; only
- *  the snapshot's freshness is quantized, and the settled message always
- *  carries the complete text. */
-function StreamingText({ blocks, toolsStarted }: { blocks: ContentBlock[]; toolsStarted?: boolean }): React.ReactElement {
-  const mdClass = useMarkdownThemeClass()
-  // Per-block throttles (streaming usually carries one text block; a Map keeps
-  // several stable). feed() is O(1) and idempotent for the shown text, so
-  // running it here every tick is nothing — what it gates is the parse below.
-  // toolsStarted force-advances the snapshot: the tick that mounts the tool
-  // card below this segment must render the sentence COMPLETE, not one
-  // interval behind (2026-10-28 report). During the tool-args phase the text
-  // no longer changes, so the forced feed is an idempotent no-op there.
-  const throttlesRef = useRef<Map<number, ReturnType<typeof createTextThrottle>>>(new Map())
-  // The caret rides the last block that has text — the end of what the user is
-  // reading — and yields once the round moves on to its tool call (the text is
-  // finished reading material then; hasLiveTextTail is the same test over the
-  // segment, so the foot caret takes over exactly when this one steps aside).
-  const tailIndex = lastLiveTextIndex(blocks)
-  return (
-    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
-      <div style={{ paddingLeft: 12, width: '100%', fontSize: 14, lineHeight: 1.6 }}>
-        {blocks.map((block, i) => { // eslint-disable-line react-hooks/refs -- per-block throttle cache: a structural-sharing cache, not UI state (same pattern as TranscriptView)
-          if (block.type !== 'text') return null
-          let throttle = throttlesRef.current.get(i)
-          if (!throttle) {
-            throttle = createTextThrottle(STREAM_PARSE_MIN_INTERVAL)
-            throttlesRef.current.set(i, throttle)
-          }
-          // eslint-disable-next-line react-hooks/purity -- the stream throttle's arrival clock: feed() decides how much of the accumulated text may show now
-          const shown = throttle.feed(block.text, performance.now(), toolsStarted === true)
-          return (
-            <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>
-              <StreamingMarkdown shown={shown} tail={i === tailIndex && toolsStarted !== true} />
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-/** x-markdown's streaming mode for the live tail. `hasNextChunk` holds an
- *  unclosed token back until it closes — half a `**` or a `[text](` no longer
- *  flashes as raw syntax between refreshes; `enableAnimation` fades in each
- *  refresh's new text per block (the throttle sets the chunk size, the default
- *  200ms fade overlaps the 150ms interval; motion.tsx's reduced-motion rule
- *  covers the keyframe). The flag is a constant `true`, not `isStreaming`: this
- *  component exists only while the segment is live — the settled message is a
- *  different segment rendering a plain XMarkdown — and the memo below only
- *  watches `shown`/`tail`, so a flipping flag would be swallowed anyway.
- *  Module constants because XMarkdown memoizes on the object's identity. */
-type StreamingOption = NonNullable<XMarkdownProps['streaming']>
-const STREAMING_MD: StreamingOption = { hasNextChunk: true, enableAnimation: true }
-/** The caret at the end of the live text: the transcript's own glyph, which
- *  the foot StreamingCursor stops drawing while this tail exists. x-markdown
- *  injects it after the last text token, so an empty `shown` draws none. */
-function StreamingTail(): React.ReactElement {
-  return <StreamingCaret style={{ marginLeft: 2 }} />
-}
-const STREAMING_MD_TAIL: StreamingOption = { ...STREAMING_MD, tail: { component: StreamingTail } }
-
-/** The parse boundary. Memoized on the FROZEN snapshot: the live text changes
- *  every tick, but `shown` only advances at STREAM_PARSE_MIN_INTERVAL, so
- *  between advances this skips the render entirely — and XMarkdown's parse
- *  with it. That skip is where the throttle's saving lives (a same-content
- *  re-render would re-parse anyway). */
-const StreamingMarkdown = React.memo(
-  function StreamingMarkdown({ shown, tail }: { shown: string; tail: boolean }): React.ReactElement {
-    return (
-      <XMarkdown
-        content={shown}
-        streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD}
-        components={{ code: CodeBlock }}
-        config={{ extensions: Latex() }}
-      />
-    )
-  },
-  (a, b) => a.shown === b.shown && a.tail === b.tail,
-)
-
 /** The open live segment: streaming thinking ('streaming-think') and streaming
  *  tool deltas ('streaming-exec') both mark it as receiving. */
 const isLiveSlice = (m: { id: string }): boolean => m.id === 'streaming-exec' || m.id === 'streaming-think'
@@ -174,8 +78,6 @@ export function SegmentView({
   onPromoteTool,
   onRespondToTool,
 }: SegmentViewProps): React.ReactElement {
-  if (seg.type === 'streaming') return <StreamingText blocks={seg.blocks} toolsStarted={seg.toolsStarted === true} />
-
   if (seg.type === 'execution') {
     return (
       <ExecutionSegment
@@ -195,11 +97,16 @@ export function SegmentView({
     )
   }
 
+  // 流式尾段和它落地后的段落走同一个分支、同一个组件类型（2026-11-13, step 2）。
+  // 提交那一帧变的只有 props：`live` 变 undefined，settled-only 的外壳（动作行、
+  // aboveActions）随之回来。React 因此原地更新，不卸载 markdown 子树 —— 这正是
+  // 最后一段文字落地时不再重排的原因。
   return (
     <MessageGroup
       msg={seg.msg}
-      actions={actions}
-      aboveActions={aboveActions}
+      live={seg.live}
+      actions={seg.live ? 'none' : actions}
+      aboveActions={seg.live ? undefined : aboveActions}
       onApproveTool={onApproveTool}
       onRejectTool={onRejectTool}
       onRespondToTool={onRespondToTool}
@@ -217,7 +124,9 @@ export function SegmentView({
 
 /** The segment's DOM anchor — plan jumps and search hits scroll to it. */
 export function segmentAnchorId(seg: Segment): string | undefined {
-  if (seg.type === 'single') return seg.msg.id.replace(/__\w+$/, '')
+  // A live tail has no anchor to offer (see getSegmentAnchorId in
+  // message-segments): its id is synthetic and changes with the stream.
+  if (seg.type === 'single') return seg.live ? undefined : seg.msg.id.replace(/__\w+$/, '')
   if (seg.type === 'execution') return seg.msgs[0]?.id?.replace(/__\w+$/, '')
   return undefined
 }
@@ -262,7 +171,7 @@ export const SegmentBlock = React.memo(function SegmentBlock({
 }): React.ReactElement {
   const anchorId = segmentAnchorId(seg)
   const highlighted = !!highlightedMsgId && highlightedMsgId === anchorId
-  const actionsVisible = actions !== 'none' && seg.type === 'single' && seg.msg.role === 'assistant' && nextSeg?.type !== 'execution'
+  const actionsVisible = actions !== 'none' && seg.type === 'single' && seg.live === undefined && seg.msg.role === 'assistant' && nextSeg?.type !== 'execution'
   return (
     <div
       id={anchorId ? `chat-msg-${anchorId}` : undefined}

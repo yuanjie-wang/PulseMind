@@ -15,6 +15,7 @@ import {
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
+import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
 import type { SteerOutcome } from '../../types/agent'
 import { Composer, useInputHistory, COMPOSER_MAX_WIDTH, ABOVE_CARD_GAP } from './Composer'
 import type { ComposerHandle } from './Composer'
@@ -80,6 +81,7 @@ function InputAreaImpl({
   onSelectProfile,
   contextUsed,
   contextLength,
+  cacheHit,
   layout,
   placeholder,
   autoFocus,
@@ -128,6 +130,11 @@ function InputAreaImpl({
   onSelectProfile?: (profileId: string) => void
   contextUsed?: number
   contextLength?: number
+  /** The session's prompt-cache hit rate, priced over the whole history — the
+   *  context ring's tooltip carries it beside the fill percentage. Optional on
+   *  purpose: a caller with no history (welcome view) omits it, and the ring
+   *  then shows only the fill line. */
+  cacheHit?: CacheHitRate
   /** The conversation's last compaction pass — renders the 已压缩 chip in the
    *  footer. Compaction is otherwise invisible, which reads to the user as
    *  "the model suddenly got worse and nothing told me why". */
@@ -1429,7 +1436,7 @@ function InputAreaImpl({
             )}
             {hasMessages && contextLength != null && contextLength > 0 && (
               <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} />
+                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} cacheHit={cacheHit} />
               </span>
             )}
             {showModelPicker && (

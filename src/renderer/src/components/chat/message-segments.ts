@@ -9,14 +9,26 @@
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 
 export type Segment =
-  | { type: 'single'; msg: AgentMessage }
+  | {
+      type: 'single'
+      msg: AgentMessage
+      /** Stable key override — see LiveKeys. */
+      key?: string
+      /** 流式尾段 (2026-11-13, step 2): the round is still streaming this text.
+       *  The tail is a `single` segment now, NOT its own `type: 'streaming'`
+       *  union member. That member was what made the two sides different
+       *  component types, so the commit that landed the paragraph unmounted
+       *  the whole markdown subtree and re-laid it out (user report
+       *  2026-11-13: one visible refresh per finished paragraph). One union
+       *  member means the renderer cannot branch on the type — only this flag
+       *  flips, and AssistantMarkdown keeps the subtree alive across it.
+       *  `toolsStarted`: the round's tool call has begun streaming, so the
+       *  parse throttle must flush the sentence complete in the same render
+       *  the tool card mounts (2026-10-28 report — the 150ms interval
+       *  otherwise let the card outrun the frozen tail by up to one tick). */
+      live?: { toolsStarted: boolean }
+    }
   | { type: 'execution'; msgs: AgentMessage[] }
-  | { type: 'streaming'; blocks: ContentBlock[]; /** The round's tool call has
-      * begun streaming: the flush signal StreamingText feeds its parse
-      * throttle, so the sentence a tool card follows is complete in the same
-      * render the card mounts (2026-10-28 report — the 150ms throttle
-      * otherwise let the card outrun the frozen tail by up to one interval). */
-      toolsStarted?: boolean }
 
 /** Split segments rename their message copy (`__text` / `__exec` / `__ask`, the
  *  `groupMessages` breakpoint ids below); the mirror still holds the UNSUFFIXED
@@ -27,20 +39,39 @@ export function stripMessageIdSuffix(id: string): string {
   return id.replace(/__\w+$/, '')
 }
 
+/** Per-view bookkeeping for the live tail's React key (see adoptLiveKeys).
+ *  The keys only ever feed THIS view's own rendering (React keys, the entrance
+ *  set), never another view or the backend — so each view mints its own here
+ *  instead of having the engine hand over the id it is about to commit, which
+ *  would have to cross the session IPC (session-manager's streaming_blocks
+ *  event + its snapshot) to reach the renderer. */
+export interface LiveKeys {
+  /** The key the round in flight is showing. The settled segment adopts it. */
+  pending: string | null
+  /** Settled message id (suffix stripped) → the key it adopted. */
+  bound: Map<string, string>
+  seq: number
+}
+
+export function createLiveKeys(): LiveKeys {
+  return { pending: null, bound: new Map(), seq: 0 }
+}
+
 export function getSegmentKey(seg: Segment): string {
-  if (seg.type === 'single') return 's-' + seg.msg.id
+  if (seg.type === 'single') return seg.key ?? 's-' + seg.msg.id
   // Raw first-msg id, NOT stripped: one message can contribute TWO exec slices
   // (__think before its text, __exec after) landing in different segments —
   // stripping would key both 'e-<id>' and React would see duplicate keys.
-  if (seg.type === 'execution') return 'e-' + (seg.msgs[0]?.id ?? 'empty')
-  return 'streaming'
+  return 'e-' + (seg.msgs[0]?.id ?? 'empty')
 }
 
 export function getSegmentAnchorId(seg: Segment | undefined): string | undefined {
   if (!seg) return undefined
-  if (seg.type === 'single') return stripMessageIdSuffix(seg.msg.id)
-  if (seg.type === 'execution') return seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : undefined
-  return undefined
+  // A live tail has no anchor: 'streaming-text' is synthetic — no plan step or
+  // search hit can name it — and handing it out would put
+  // id="chat-msg-streaming-text" into the DOM on every streamed tick.
+  if (seg.type === 'single') return seg.live ? undefined : stripMessageIdSuffix(seg.msg.id)
+  return seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : undefined
 }
 
 /** Index of the last text block that already carries text, -1 when none. The
@@ -65,7 +96,7 @@ export function lastLiveTextIndex(blocks: readonly ContentBlock[]): number {
  *  the live position is the foot again (2026-10-28 report: the caret used to
  *  stay parked at the completed text while the tool card ran). */
 export function hasLiveTextTail(segs: readonly Segment[]): boolean {
-  return segs.some((s) => s.type === 'streaming' && s.toolsStarted !== true && lastLiveTextIndex(s.blocks) >= 0)
+  return segs.some((s) => s.type === 'single' && s.live !== undefined && s.live.toolsStarted !== true && lastLiveTextIndex(s.msg.contentBlocks) >= 0)
 }
 
 /** Same segment, and unchanged content: reused by the structural-sharing cache
@@ -73,6 +104,10 @@ export function hasLiveTextTail(segs: readonly Segment[]): boolean {
 export function matchSegment(a: Segment, b: Segment): boolean {
   if (a.type !== b.type) return false
   if (a.type === 'single') {
+    // 流式尾段（2026-11-13）: the live single's msg is rebuilt every tick and the
+    // tail must follow it — reusing a cached object would freeze the text one
+    // tick behind, the same in-place-mutation lesson as the exec slices below.
+    if (a.live !== undefined || (b as typeof a).live !== undefined) return false
     if (a.msg.id !== (b as typeof a).msg.id) return false
     // If tool_use block statuses differ, content has changed (e.g. ask_user
     // responded) — don't match, so the new segment isn't replaced with cached.
@@ -211,6 +246,49 @@ export interface BuildSegmentsInput {
   cached: readonly Segment[]
   /** Accumulator for streaming tool_use blocks (see below). */
   streamingToolAccum: Map<string, ToolUseBlock>
+  /** Per-view live-tail key registry. Omit and the tail falls back to the key
+   *  its synthetic id implies ('s-streaming-text') — hosts that predate
+   *  adoptLiveKeys keep the old remounting behaviour. */
+  liveKeys?: LiveKeys
+}
+
+/** Keep ONE React key alive across the streaming→settled boundary.
+ *
+ *  The live tail is a `single` segment carrying `live` (step 2, same day); the
+ *  message it becomes is the `single` segment keyed 's-<msgId>__text'. Same
+ *  component type now, so only the KEY still differs — and a changed key alone
+ *  is enough to unmount the row and replay SegmentBlock's entrance animation,
+ *  one visible refresh per finished paragraph (user report 2026-11-13). Handing
+ *  the settled segment the key the tail was showing turns that remount into a
+ *  plain re-render.
+ *
+ *  Adoption targets the LAST text segment only: messages are append-only, so
+ *  the one a commit appended is the last one. A round that lands no text
+ *  segment (sentinel-stripped, tool-only, cancelled) leaves `pending` set — the
+ *  next round's tail reuses that same key and adopts it on ITS commit, so an
+ *  aborted round cannot strand a key or steal someone else's. */
+function adoptLiveKeys(segs: Segment[], liveTextStreaming: boolean, live: LiveKeys): void {
+  if (live.pending !== null && !liveTextStreaming) {
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const seg = segs[i]
+      if (seg.type !== 'single' || !seg.msg.id.endsWith('__text')) continue
+      const base = stripMessageIdSuffix(seg.msg.id)
+      if (!live.bound.has(base)) {
+        live.bound.set(base, live.pending)
+        live.pending = null
+      }
+      break
+    }
+  }
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]
+    if (seg.type !== 'single' || seg.key !== undefined || !seg.msg.id.endsWith('__text')) continue
+    const adopted = live.bound.get(stripMessageIdSuffix(seg.msg.id))
+    // New object, not a mutation: cached segments are shared with previous
+    // renders and assigning in place would edit one another's history. Only
+    // the pass that adopts a key allocates, so identity stays stable after.
+    if (adopted !== undefined) segs[i] = { ...seg, key: adopted }
+  }
 }
 
 /** Group messages for rendering, then append the live streaming tail: text
@@ -218,7 +296,7 @@ export interface BuildSegmentsInput {
  *  OpenAI's per-delta tool_call chunks don't appear as scattered segments.
  *  Returns the new segment list, which doubles as the next call's `cached`. */
 export function buildSegments(input: BuildSegmentsInput): Segment[] {
-  const { messages, isStreaming, streamingBlocks, cached, streamingToolAccum } = input
+  const { messages, isStreaming, streamingBlocks, cached, streamingToolAccum, liveKeys } = input
   const segs = groupMessages(messages)
 
   // Reuse cached segment objects for the unchanged prefix (by type, msg ID, and length).
@@ -235,6 +313,10 @@ export function buildSegments(input: BuildSegmentsInput): Segment[] {
       break
     }
   }
+
+  // Before the early return: a text-only final round commits with the turn
+  // already over, so isStreaming is false on the very render that must adopt.
+  if (liveKeys) adoptLiveKeys(segs, isStreaming && streamingBlocks.some((b) => b.type === 'text'), liveKeys)
 
   if (!isStreaming) return segs
 
@@ -275,7 +357,20 @@ export function buildSegments(input: BuildSegmentsInput): Segment[] {
     // so once the block exists it is in every tick until commit (the flag
     // never flips back within a round).
     if (textBlocks.length > 0) {
-      segs.push({ type: 'streaming', blocks: textBlocks, toolsStarted: toolBlocks.length > 0 })
+      // The key is minted once per round and outlives the round: the settled
+      // segment adopts this exact string (adoptLiveKeys), so React reconciles
+      // the tail into the finished paragraph instead of remounting it.
+      const liveKey = liveKeys ? (liveKeys.pending ??= `live-${++liveKeys.seq}`) : undefined
+      // 'streaming-text' follows the existing synthetic-id convention
+      // ('streaming-think' / 'streaming-exec'): no host writes it anywhere, and
+      // it never ends in '__text', so adoptLiveKeys cannot mistake it for a
+      // settled paragraph (the guard there says so out loud anyway).
+      segs.push({
+        type: 'single',
+        msg: { role: 'assistant', id: 'streaming-text', createdAt: '', contentBlocks: textBlocks },
+        live: { toolsStarted: toolBlocks.length > 0 },
+        ...(liveKey ? { key: liveKey } : {}),
+      })
     }
     // Tool_use blocks: accumulate across renders and merge into a single synthetic message.
     if (toolBlocks.length > 0) {
