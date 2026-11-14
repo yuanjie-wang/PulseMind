@@ -108,35 +108,94 @@ describe('injectHistorySummaryInto: the dropped region spans light AND hard', ()
 // ── B：lightCompact 按目标拟合，不再清仓 ─────────────────────────────
 
 describe('lightCompact: proportional to the window, not a wipe', () => {
-  it('drops only the oldest cycles needed to fit the trigger line, keeping the rest verbatim', () => {
-    const msgs = makeCycles(80, 5000) // 400K vs 200K → target 140K
+  it('lands BELOW the trigger by the reclaim margin, so one drop covers a stretch of requests', () => {
+    const msgs = makeCycles(80, 5000) // 400K vs 200K → trigger line 140K, land at 116K
     const { compactor } = makeCompactor(msgs)
     const compacted = compactor.lightCompact(msgs, 200_000, 0)
 
     const keptH = estimateMessagesTokens(compacted)
-    expect(keptH).toBeLessThanOrEqual(140_000) // the fit is met…
-    expect(keptH).toBeGreaterThanOrEqual(130_000) // …with minimal loss (one-cycle granularity)
-    // The recent work survives whole — under the old wipe the copy collapsed to
-    // the 8K hot zone (~30K tokens) and the model ran on 11-18% of the window.
-    for (let i = 65; i < 80; i++) {
-      const result = compacted.flatMap((m) => m.contentBlocks)
-        .find((b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
-          b.type === 'tool_result' && (b as { tool_use_id: string }).tool_use_id === `tu${i}`)
-      expect(result?.content).toContain(`result-${i}-`)
-      expect(result!.content.length).toBeGreaterThan(5000)
+    // The walk used to stop at the FIRST fit (140K). In a long tool loop that
+    // means another cycle falls away on essentially EVERY request — and each of
+    // those edits rewrites the prefix, invalidating every cached token behind it.
+    // The reclaim margin spends the same reclaim in ONE drop instead
+    // (PLAN-context-zcode-benchmarks P1). One-cycle granularity, so +5K slack.
+    expect(keptH).toBeLessThanOrEqual(140_000 - 200_000 * 0.12 + 5_000)
+    // …but never a wipe: the 50%-of-window floor still bounds the deep cut.
+    expect(keptH).toBeGreaterThanOrEqual(100_000)
+
+    const survivors = compacted
+      .flatMap((m) => m.contentBlocks)
+      .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result')
+    const byId = new Map(survivors.map((b) => [(b as { tool_use_id: string }).tool_use_id, b] as const))
+    const keptIds = [...byId.keys()].map((id) => Number(id.slice(2))).sort((a, b) => a - b)
+
+    // What must hold is a CONTINUOUS SUFFIX: the cut only ever eats from the old
+    // end, so nothing is missing from the middle and the newest work always
+    // survives. The exact boundary is policy — the reclaim margin deliberately
+    // moved it one cycle older than the old minimal-fit walk — so it is not
+    // hardcoded here.
+    expect(keptIds.at(-1)).toBe(79)
+    expect(keptIds).toEqual(Array.from({ length: keptIds.length }, (_, i) => keptIds[0] + i))
+    expect(keptIds.length).toBeGreaterThanOrEqual(10)
+
+    // …and the retained cycles are WHOLE, not halved by a partial trim — under
+    // the old wipe the copy collapsed to the 8K hot zone (~30K tokens) and the
+    // model ran on 11-18% of the window.
+    for (const id of keptIds) {
+      const block = byId.get(`tu${id}`) as Extract<ContentBlock, { type: 'tool_result' }>
+      expect(block.content).toContain(`result-${id}-`)
+      expect(block.content.length).toBeGreaterThan(5000)
     }
     // The oldest cycles are gone from the copy.
-    const dropped = compacted.flatMap((m) => m.contentBlocks)
-      .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result')
-      .map((b) => (b as { tool_use_id: string }).tool_use_id)
-    expect(dropped).not.toContain('tu0')
-    expect(dropped).not.toContain('tu40')
+    expect(byId.has('tu0')).toBe(false)
+    expect(byId.has('tu40')).toBe(false)
   })
 
   it('is a no-op when the transcript already fits (the anchor-hot case must not wipe)', () => {
     const msgs = makeCycles(10, 5000) // 50K on a 200K window
     const { compactor } = makeCompactor(msgs)
     expect(compactor.lightCompact(msgs, 200_000, 0)).toBe(msgs)
+  })
+
+  // LIGHT_MIN_RECLAIM_RATIO (0.02)：可丢区回收不足窗口 2% 的丢弃是纯缓存抖动
+  // ——前缀被重写，换来的增量下一轮就被吃掉。这类 pass 必须整体回退（原 copy
+  // 原样返回、决策不落账），让普通触发线等值得动手时再开。
+  it('reverts a sub-floor drop: the copy comes back untouched and nothing is recorded', () => {
+    // 形态：一个 ~3K token 的微小工具循环 + 141K 的纯文本巨块（文本消息不是
+    // 任何 (tool_use, tool_result) 循环的一半，永远不会成为候选）——walk 把
+    // 唯一的候选丢完后无路可走，回收 ~3K < 4K 地板（0.02 × 200K）。
+    const giant = (chars: number) => '巨'.repeat(chars)
+    const msgs: AgentMessage[] = [
+      ...cycle(0, 50),
+      { id: 'g-u1', role: 'user', createdAt: AT, contentBlocks: [text(giant(70_000))] },
+      { id: 'g-a1', role: 'assistant', createdAt: AT, contentBlocks: [text(giant(70_000))] },
+      { id: 'g-u2', role: 'user', createdAt: AT, contentBlocks: [text(giant(1_000))] },
+    ]
+    // 前置自证：转写确实越过了触发线（0.7×200K），且可丢区确实低于地板。
+    expect(estimateMessagesTokens(msgs)).toBeGreaterThan(140_000)
+    expect(estimateMessagesTokens(msgs.slice(0, 2))).toBeLessThan(200_000 * 0.02)
+
+    const { compactor } = makeCompactor(msgs)
+    expect(compactor.lightCompact(msgs, 200_000, 0)).toBe(msgs) // 原 copy 引用返回
+    expect(compactor.lastLightDropRounds).toBe(0) // fit-gate 日志读它：回退不是丢弃
+    expect(compactor.applyPersistedDrops(msgs)).toBe(msgs) // 决策没有落进持久前沿
+  })
+
+  it('a forced pass skips the floor — prompt-too-long recovery must land even a tiny cut', () => {
+    const giant = (chars: number) => '巨'.repeat(chars)
+    const msgs: AgentMessage[] = [
+      ...cycle(0, 50),
+      { id: 'g-u1', role: 'user', createdAt: AT, contentBlocks: [text(giant(70_000))] },
+      { id: 'g-a1', role: 'assistant', createdAt: AT, contentBlocks: [text(giant(70_000))] },
+      { id: 'g-u2', role: 'user', createdAt: AT, contentBlocks: [text(giant(1_000))] },
+    ]
+    const { compactor } = makeCompactor(msgs)
+    const compacted = compactor.lightCompact(msgs, 200_000, 0, true)
+
+    expect(compacted).not.toBe(msgs)
+    expect(compacted.length).toBe(msgs.length - 2) // 唯一候选循环被丢
+    expect(compacted.some((m) => m.contentBlocks.some((b) => b.type === 'tool_result'))).toBe(false)
+    expect(compactor.lastLightDropRounds).toBe(1)
   })
 })
 

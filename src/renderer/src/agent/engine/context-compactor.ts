@@ -10,6 +10,19 @@ import type { CompactionEvent } from '../../../../shared/agent-protocol/payloads
 import { contextTokensOf, estimateMessagesTokens, estimateTextTokens } from './context-estimate'
 
 const LIGHT_COMPACT_MIN_REMAINING = 30_000
+// The reclaim margin (PLAN-context-zcode-benchmarks P1): the light walk below
+// stops at the FIRST fit, so a fit-based compactor drops only the minimum that
+// clears the line — and in a long tool loop that means one or two more cycles
+// fall away on essentially EVERY request. Each of those edits rewrites the
+// prefix, and a rewritten prefix invalidates every cached token downstream of
+// the hole, so the cheap-looking minimum is the most expensive shape available.
+// Dropping to a line BELOW the trigger makes one drop cover a stretch of
+// requests: the same total reclaim, a fraction of the cache breaks.
+const LIGHT_RECLAIM_MARGIN_RATIO = 0.12
+// A drop that cannot reclaim a meaningful slice is pure cache churn — it
+// rewrites the prefix for a gain the next round eats. Below this floor the copy
+// is left untouched and the ordinary trigger fires again when acting is worth it.
+const LIGHT_MIN_RECLAIM_RATIO = 0.02
 const SUMMARY_TEXT_CAP = 2000
 const SUMMARY_INPUT_CAP = 40000
 const SUMMARY_RESULT_CAP = 400
@@ -812,6 +825,14 @@ export class ContextCompactor {
    *  otherwise — the request path reads it to tag the compaction event's
    *  strategies without re-derving the composition from array lengths. */
   lastReminderCount = 0
+  /** The memoized compensation block (user replays + dropped-read reminder) and
+   *  the identity that produced it — see injectHistorySummaryInto. Cross-request
+   *  prefix stability does NOT come from this memo (the tail grows every
+   *  request, so the key churns); it comes from the builders being pure, which
+   *  makes re-derivation byte-identical. The memo serves the same-shape
+   *  rebuilds — continuation bounces, failed-request retries — where the whole
+   *  pipeline reruns over an unchanged transcript. */
+  private compensationMemo: { key: string; replays: AgentMessage[]; reminderText: string | null } | null = null
   /** The last nanoCompact decision (W3 observability). Written on every pass —
    *  prewarm's simulation included — and read by the engine IMMEDIATELY after
    *  its own synchronous call, so the two can never interleave. */
@@ -1187,14 +1208,39 @@ export class ContextCompactor {
     // historical `firstKeptId` name; every consumer treats it as an opaque id.)
     const frontierId = dropped[dropped.length - 1].id
 
-    // The dropped region's user words ride the copy verbatim (budget-capped) —
-    // the summary paraphrases, the intent stays quotable.
-    const replays = collectUserReplays(dropped)
+    // The compensation block (user replays + read reminder) is injected as the
+    // copy's PREFIX, so any drift in it shifts every kept message behind it and
+    // invalidates the cached tail — a far larger penalty than the block's own
+    // size. Two facts keep the prefix stable across requests:
+    //   · the builders are PURE functions of (dropped, truncated) — re-deriving
+    //     them for an unchanged dropped region yields byte-identical output, so
+    //     the between-drop requests (the regime LIGHT_RECLAIM_MARGIN_RATIO buys)
+    //     stay prefix-stable WITHOUT this memo;
+    //   · this memo reuses the derived block when the key recurs — which, since
+    //     `truncated.length` grows with every appended message, means only the
+    //     same-shape rebuilds (continuation bounces, request retries).
+    // The truncated terms are staleness-load-bearing, not just shape pins: a
+    // regroup flip can re-carry a dropped read's result into the KEPT tail via
+    // a synthetic carrier (see applyPersistedDrops's block-level closure),
+    // changing the reminder's visibleInTail input without touching the dropped
+    // region's identity — the tail length is what catches that flip.
+    const compensationKey = [frontierId, dropped[0].id, truncated[0]?.id ?? '', dropped.length, truncated.length].join('|')
+    let replays: AgentMessage[]
+    let reminderText: string | null
+    if (this.compensationMemo?.key === compensationKey) {
+      replays = this.compensationMemo.replays
+      reminderText = this.compensationMemo.reminderText
+    } else {
+      // The dropped region's user words ride the copy verbatim (budget-capped) —
+      // the summary paraphrases, the intent stays quotable.
+      replays = collectUserReplays(dropped)
+      // The dropped region's successful reads ride back as pointer lines — the
+      // discovery half of the compensation (the retrieval half is the persisted
+      // tool_results table + tool_result_search).
+      reminderText = buildDroppedReadReminder(dropped, truncated)
+      this.compensationMemo = { key: compensationKey, replays, reminderText }
+    }
     this.lastInjectReplayCount = replays.length
-    // The dropped region's successful reads ride back as pointer lines — the
-    // discovery half of the compensation (the retrieval half is the persisted
-    // tool_results table + tool_result_search).
-    const reminderText = buildDroppedReadReminder(dropped, truncated)
     this.lastReminderCount = reminderText !== null ? 1 : 0
     const withCompensation = (summaryText: string | null, covered?: Set<string>): AgentMessage[] => [
       ...replays,
@@ -1612,8 +1658,12 @@ export class ContextCompactor {
     // walk degenerated back into the wipe-to-hot-zone this target exists to
     // prevent (review_20260929 中2) — and the log printed a negative target.
     // Half the window is the smallest number that still means "fit".
+    // Land BELOW the trigger by the reclaim margin rather than exactly on it —
+    // see LIGHT_RECLAIM_MARGIN_RATIO. A forced pass (prompt-too-long recovery)
+    // takes no margin: there the only goal is to get under the hard line.
+    const reclaimMargin = force ? 0 : contextLength * LIGHT_RECLAIM_MARGIN_RATIO
     const targetTokens = Math.max(
-      force ? contextLength * 0.6 : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING),
+      force ? contextLength * 0.6 : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING) - reclaimMargin,
       contextLength * 0.5,
     )
 
@@ -1705,6 +1755,17 @@ export class ContextCompactor {
     }
 
     if (roundsDeleted === 0) return messages
+
+    // A drop that reclaims less than the floor is pure cache churn: the prefix
+    // gets rewritten for a gain the next round eats. Leave the copy alone and
+    // let the ordinary trigger fire again when acting is actually worth it. A
+    // forced pass skips the test — it is recovering from a real rejection, and
+    // there the tail is already doomed.
+    if (!force && droppedH < contextLength * LIGHT_MIN_RECLAIM_RATIO) {
+      this.lastLightDropRounds = 0
+      return messages
+    }
+
     this.lastLightDropRounds = roundsDeleted
     if (record) {
       for (const id of droppedIds) this.lightDroppedIds.add(id)

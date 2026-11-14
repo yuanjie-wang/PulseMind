@@ -242,6 +242,9 @@ describe('thinking-only rounds are re-issued once, then end loudly', () => {
     // The adapter normalizes OpenAI's `stop` to `end_turn` — either way the
     // reason is now ON the wire log, which is the point.
     expect(cacheLine).toMatch(/stop=(stop|end_turn)/)
+    // The session-level rate rides the same line (2026-11-14): `…/Nreq` until
+    // CACHE_HIT_RATE_MIN_SAMPLES main-turn requests have landed.
+    expect(cacheLine).toMatch(/session=/)
     logSpy.mockRestore()
   })
 })

@@ -31,6 +31,7 @@ import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
+import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import { describeRelativeTimeText } from '../../utils/relative-time'
 import { PANE_ROW_STYLES } from './pane-styles'
 import { stopRunConfirm, stopRoutineRun } from './stop-run'
@@ -512,6 +513,10 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
     () => projectContextUsed(session.messages, session.lastCompaction, contextLength),
     [session.messages, session.lastCompaction, contextLength],
   )
+  // Same session, same ring, same figure as the main chat: a routine run is a
+  // main-turn history too, so its cache rate belongs on the tooltip rather than
+  // being the one composer in the app that shows only the fill percentage.
+  const cacheHit = useMemo(() => sessionCacheHitRate(session.messages), [session.messages])
 
   const emptyHint = session.restoring
     ? ''
@@ -570,6 +575,7 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
               onChangeApprovalMode={session.setApprovalMode}
               contextUsed={contextUsed}
               contextLength={contextLength}
+              cacheHit={cacheHit}
               lastCompaction={session.lastCompaction}
             />
           </div>

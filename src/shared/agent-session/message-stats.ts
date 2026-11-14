@@ -14,6 +14,7 @@
 // message identity change.
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { AgentEventData } from '../agent-protocol'
+import { computeCacheHitRate, type CacheHitRate, type CacheHitSample } from './cache-hit-rate'
 
 /** One message-level stat patch, as carried by the `message_stats` event. */
 export type MessageStatsUpdate = Extract<AgentEventData, { type: 'message_stats' }>['updates'][number]
@@ -54,4 +55,29 @@ export function diffMessageStats(
     })
   }
   return updates
+}
+
+/** One message's cache accounting, in the normalized units cache-hit-rate.ts
+ *  counts (see the denominator invariant stated there). */
+function cacheHitSampleOf(msg: AgentMessage): CacheHitSample {
+  return {
+    inputTokens: msg.inputTokens,
+    cacheReadTokens: msg.promptCacheHitTokens,
+    // A synthesized summary message is compaction sidecar traffic — a one-shot
+    // prompt with no stable prefix, which could never hit. The live engine
+    // path never creates one (the summary call's usage is dropped whole, see
+    // runHistorySummary); the flag rides back on REHYDRATED sessions whose old
+    // rows carry auto_summary=1, and this filter is what keeps those out.
+    sidecar: msg.autoSummary === true,
+  }
+}
+
+/**
+ * The session's token-weighted prompt-cache hit rate over MAIN-turn requests.
+ * The counting rules (sidecar exclusion, token weighting, "no report is not a
+ * miss") are stated once in cache-hit-rate.ts. A message that reported no usage
+ * contributes no sample rather than a zero.
+ */
+export function sessionCacheHitRate(messages: readonly AgentMessage[]): CacheHitRate {
+  return computeCacheHitRate(messages.map(cacheHitSampleOf))
 }

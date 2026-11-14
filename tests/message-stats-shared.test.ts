@@ -40,6 +40,17 @@ describe('shared message-stats formatters (the 2026-11-01 min/k wording)', () =>
     expect(cacheHitRate(0, 100)).toBe('0%')
     expect(cacheHitRate(2, 3)).toBe('67%')
   })
+
+  // The per-message line and the ring's session line must be the same
+  // arithmetic — cacheHitRate routes through computeCacheHitRate's
+  // single-sample path for exactly that reason. These pin the two guards the
+  // shared path adds; without them a gateway reporting more cache reads than
+  // prompt tokens would print "226%" for one message while the session line
+  // over that same message read "100%".
+  it('cache hit rate inherits the aggregator guards: clamp at 100%, never NaN', () => {
+    expect(cacheHitRate(120, 100)).toBe('100%') // cacheRead > prompt clamps instead of printing 120%
+    expect(cacheHitRate(0, 0)).toBe('0%') // empty denominator reads 0% instead of NaN%
+  })
 })
 
 describe('both renderers import the shared source (drift is structural, not disciplinary)', () => {

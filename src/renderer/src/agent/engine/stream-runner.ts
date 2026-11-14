@@ -9,6 +9,7 @@ import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
 import { summarizeToolCall } from './context-compactor'
 import { generateMsgId, safeInvokeObserver } from '../agent-utils'
+import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { EngineCore } from './engine-core'
@@ -173,8 +174,18 @@ export class StreamRunner {
           // (conv_20260927170026 diagnosis cost an afternoon without it).
           if (usage?.inputTokens) {
             const hit = usage.promptCacheHitTokens ?? 0
+            // Session-level rate rides the same line: the per-request figure
+            // says whether THIS request hit, the token-weighted session rate
+            // (sidecar excluded, "no report is not a miss" — see
+            // cache-hit-rate.ts) says whether the cache discipline is working
+            // across the whole conversation. `reliable` gates the figure until
+            // CACHE_HIT_RATE_MIN_SAMPLES main-turn requests have landed.
+            const session = sessionCacheHitRate(this.engine.messages)
+            const sessionPart = session.reliable
+              ? ` session=${(session.hitRate * 100).toFixed(1)}%/${session.requestCount}req`
+              : ` session=…/${session.requestCount}req`
             console.log(
-              `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'} stop=${stopReason ?? '?'}`
+              `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'} stop=${stopReason ?? '?'}${sessionPart}`
             )
           }
 

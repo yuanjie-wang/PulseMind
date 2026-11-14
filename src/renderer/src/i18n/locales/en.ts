@@ -288,6 +288,8 @@ const en: TranslationDict = {
     },
     contextRing: {
       tooltip: '{{percent}}% · {{used}} / {{total}} context used',
+      cacheHit: 'Prompt cache: {{rate}} served from cache ({{count}} requests)',
+      cacheHitTentative: 'Prompt cache: {{rate}} served from cache ({{count}} requests — few, indicative only)',
     },
     compaction: {
       chip: 'Compacted {{dropped}} · ~{{freed}} freed',

@@ -12,6 +12,8 @@
 // from main, renderer and the extension's isolated world alike. If the
 // wording changes again, change it HERE; there is no second copy to chase.
 
+import { computeCacheHitRate } from '../agent-session/cache-hit-rate'
+
 /** `950ms` / `1.4s` / `3.1min` — the 耗时 format. ≥2 minutes switches to
  *  minutes (2026-11-01 user ruling: 「184.6s」reads as no magnitude,
  *  「3.1min」reads as one); the 0.1s precision only matters for short tasks,
@@ -32,7 +34,15 @@ export function formatTokenCount(n: number): string {
 
 /** `83%` — the cache-hit rate off the message's own usage pair: inputTokens
  *  is the cached share's container (both adapters' streaming paths sum cache
- *  reads into it), so the pair alone prices the rate. */
+ *  reads into it), so the pair alone prices the rate.
+ *
+ *  Routed through the session aggregator's single-sample path on purpose: one
+ *  request's rate and the session's rate must be the SAME arithmetic, or the
+ *  per-message line disagrees with the ring's tooltip on the very request they
+ *  both describe. Sharing the path also inherits its guards — a gateway
+ *  reporting cacheRead > prompt is clamped to 100% instead of printing 226%,
+ *  and an empty denominator reads 0% instead of NaN. */
 export function cacheHitRate(hitTokens: number, inputTokens: number): string {
-  return `${Math.round((hitTokens / inputTokens) * 100)}%`
+  const { hitRate } = computeCacheHitRate([{ inputTokens, cacheReadTokens: hitTokens }])
+  return `${Math.round(hitRate * 100)}%`
 }

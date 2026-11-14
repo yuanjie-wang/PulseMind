@@ -3,6 +3,7 @@ import { Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { AgentMessage } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
+import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
 import { estimateAfterNanoTokens } from '../../agent/engine/context-compactor'
 
 // ── Context usage ring ────────────────────────────────────────────────
@@ -16,7 +17,7 @@ const DEFAULT_RING_RADIUS = 9
 // Keeps the stroke's outer edge off the box edge, where it would be antialiased away.
 const RING_INSET = 0.25
 
-export function ContextRing({ used, total, diameter }: { used: number; total: number; diameter?: number }): React.ReactElement | null {
+export function ContextRing({ used, total, diameter, cacheHit }: { used: number; total: number; diameter?: number; cacheHit?: CacheHitRate }): React.ReactElement | null {
   // Leads the body so the hook still runs on the bail-out path below.
   const { t } = useTranslation()
   if (total <= 0) return null
@@ -30,6 +31,20 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
   const percent = Math.round(pct * 100)
   // Both figures read in thousands, the unit the label is written in.
   const inK = (n: number) => `${(n / 1024).toFixed(1)}K`
+  // The ring answers "how full is the window"; the session's cache hit rate
+  // answers "how much of what we ship is already cached" — the two questions a
+  // context panel is read for, so both ride one tooltip.
+  // Omitted rather than shown as 0% when nothing was counted: a sidecar-only
+  // history or a provider that reports no cache fields would otherwise read as
+  // a total miss, which is the opposite of what an absent reading means.
+  const ringLine = t('chatView.contextRing.tooltip', { percent, used: inK(used), total: inK(total) })
+  const cacheLine =
+    cacheHit && cacheHit.requestCount > 0
+      ? t(cacheHit.reliable ? 'chatView.contextRing.cacheHit' : 'chatView.contextRing.cacheHitTentative', {
+          rate: `${Math.round(cacheHit.hitRate * 100)}%`,
+          count: cacheHit.requestCount,
+        })
+      : null
 
   return (
     <>
@@ -39,7 +54,7 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
         .pm-context-ring { display: inline-flex; border-radius: 50%; }
         .pm-context-ring:hover { background-color: var(--pm-hover-faint); }
       `}</style>
-      <Tooltip title={t('chatView.contextRing.tooltip', { percent, used: inK(used), total: inK(total) })}>
+      <Tooltip title={cacheLine === null ? ringLine : <>{ringLine}<br />{cacheLine}</>}>
         <span className="pm-context-ring">
           <svg width={RING_BOX} height={RING_BOX} viewBox={`0 0 ${RING_BOX} ${RING_BOX}`} style={{ display: 'block' }}>
             {/* The two strokes ride `style` rather than the presentation attributes:
