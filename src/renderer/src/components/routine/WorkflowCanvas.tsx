@@ -6,7 +6,7 @@
 // 顶栏/保存/运行设置各段已上收到向导步骤。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App as AntdApp, Button, Input, Modal } from 'antd'
+import { App as AntdApp, Button, Collapse, Input, Modal, Switch } from 'antd'
 import { DeleteOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import {
   Background,
@@ -28,7 +28,9 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { useThemeMode } from '../../theme/mode'
 import { autoWorkflowLayout, isLoopEdge, loopEdgeKeys } from '../../../../shared/workflow/layout'
 import { routeEdges, type RouteEdgeSpec, type RouteRect, type RouteResult, type RouteSide } from '../../../../shared/workflow/route'
-import { STAGE_PLACEHOLDER_GROUPS } from '../../../../shared/workflow/render'
+import { STAGE_PLACEHOLDER_GROUPS, type RenderVars } from '../../../../shared/workflow/render'
+import { composeStagePrompt, type EnvelopeContext, type EnvelopeUpstream } from '../../../../shared/workflow/envelope'
+import { resolveWorkflowHandoff } from '../../../../shared/workflow/handoff'
 import { WORKFLOW_RESERVED_TARGETS, type WorkflowDefinition, type WorkflowNode } from '../../../../shared/workflow/types'
 import {
   workflowNodeTypes,
@@ -603,6 +605,68 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     [selectedNode, patchNode],
   )
 
+  // ── 上下文 · 自动注入（PLAN-workflow-context）──
+  // 信封默认全开（整个 context 字段缺席 = 全开，存量工作流零迁移）；面板里只
+  // 放逃生舱（按节点关闭某个块）+「精确控制」插变量 + 预览，且默认收起——
+  // 隐式上下文的主路径不该逼用户读它。三个开关全开时把字段剥回 undefined，
+  // 落盘 JSON 与存量工作流同形。
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null)
+
+  const patchContext = useCallback(
+    (key: 'objective' | 'upstream' | 'inputs', value: boolean) => {
+      if (!selectedNode) return
+      const next = { ...(selectedNode.context ?? {}), [key]: value }
+      if (next.objective !== false && next.upstream !== false && next.inputs !== false) {
+        patchNode(selectedNode.id, { context: undefined })
+      } else {
+        patchNode(selectedNode.id, { context: next })
+      }
+    },
+    [selectedNode, patchNode],
+  )
+
+  // 「预览完整提示词」：与主进程的 runStage 共用 composeStagePrompt（同一份
+  // 拼装代码，预览不可能是假的）。预览没有 live run——用真实连线合成示例
+  // 上游（verdict 取边自己的 when：「如果上游报这个状态就会走到这」）、输入
+  // 取声明里的 default 值，并明确标注「示例」。
+  const previewPrompt = useMemo(() => {
+    if (!selectedNode) return ''
+    const handoff = resolveWorkflowHandoff('（工作区）', 'run_preview')
+    const idx = Math.max(0, def.nodes.findIndex((n) => n.id === selectedNode.id))
+    const upstreams: EnvelopeUpstream[] = []
+    const seenSrc = new Set<string>()
+    for (const e of def.edges) {
+      if (e.to !== selectedNode.id || seenSrc.has(e.from)) continue
+      const src = def.nodes.find((n) => n.id === e.from)
+      if (!src) continue
+      seenSrc.add(e.from)
+      upstreams.push({
+        title: src.title || e.from,
+        verdict: e.when,
+        verdictDef: src.verdictDefs?.[e.when],
+        handoffRel: handoff.relative(e.from),
+      })
+    }
+    const vars: RenderVars = {
+      workflowObjective: def.objective,
+      visit: 1,
+      workspace: '（工作区）',
+      vars: Object.fromEntries((def.inputs ?? []).map((i) => [i.key, i.default ?? ''])),
+    }
+    const ctx: EnvelopeContext = {
+      workflowName: def.name || '（未命名工作流）',
+      stageIndex: idx + 1,
+      stageTotal: def.nodes.length,
+      inputs: def.inputs,
+      upstreams: upstreams.length > 0 ? upstreams : undefined,
+      handoff,
+      envelopeCapChars: def.params?.envelopeCapChars,
+    }
+    return composeStagePrompt(selectedNode, vars, ctx)
+  }, [selectedNode, def])
+
+  const previewOpen = previewNodeId !== null && previewNodeId === selectedNode?.id
+
   // ── 结果状态（user 2026-11-09：「让用户自定义成功、失败等结果状态，因为这会
   //    涉及到流程调度」）──
   // 状态名 = 出边的 when（调度键），所以**改名字必须级联到连线**，否则线还指
@@ -828,14 +892,7 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
               <Input value={selectedNode.title} onChange={(e) => patchNode(selectedNode.id, { title: e.target.value })} />
             </label>
             <div style={LABEL_STYLES} data-workflow-field="prompt">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span>{t('workflow.canvasPromptLabel')}</span>
-                {/* 插入变量是动作不是状态（value 恒 null）：与任务式对话的
-                    提示词编辑器同一个控件、同一份 caret 实现。 */}
-                <span data-workflow-var-insert>
-                  <InsertVariableSelect placeholder={t('workflow.insertVariable')} groups={promptVarGroups} onInsert={insertPromptVar} />
-                </span>
-              </div>
+              <span>{t('workflow.canvasPromptLabel')}</span>
               <Input.TextArea
                 ref={promptAreaRef}
                 aria-label={t('workflow.canvasPromptLabel')}
@@ -843,6 +900,86 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
                 onChange={(e) => patchNode(selectedNode.id, { prompt: e.target.value })}
                 autoSize={{ minRows: 6, maxRows: 14 }}
                 style={{ fontFamily: 'monospace', fontSize: 12 }}
+              />
+            </div>
+            {/* 上下文 · 自动注入（PLAN-workflow-context）：信封默认全开——你在
+                工作流里的位置 / 全局目标 / 运行输入 / 上游交接由引擎拼到每个阶段
+                prompt 开头，这里只放逃生舱（按节点关块）+「精确控制」（手动引用
+                占位符，被引用的块不再自动注入）+ 预览。默认收起：隐式上下文的
+                主路径不该逼用户读它。插入变量是动作不是状态（value 恒 null），
+                与任务式对话同一个控件、同一份 caret 实现。 */}
+            <div data-workflow-context-section>
+              <Collapse
+                ghost
+                size="small"
+                items={[
+                  {
+                    key: 'context',
+                    label: <span data-workflow-context-label>{t('workflow.canvasContextSection')}</span>,
+                    children: (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <span style={{ fontSize: 11.5, color: 'var(--pm-text-muted)', lineHeight: 1.5 }}>
+                          {t('workflow.canvasContextHint')}
+                        </span>
+                        {(['objective', 'upstream', 'inputs'] as const).map((k) => (
+                          <div
+                            key={k}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                            data-workflow-context-toggle={k}
+                          >
+                            <span>{t(`workflow.canvasContext${capFirst(k)}`)}</span>
+                            <Switch size="small" checked={selectedNode.context?.[k] !== false} onChange={(checked) => patchContext(k, checked)} />
+                          </div>
+                        ))}
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+                          data-workflow-precise-row
+                        >
+                          <span style={{ fontSize: 11.5, color: 'var(--pm-text-muted)', lineHeight: 1.5 }}>
+                            {t('workflow.canvasPreciseHint')}
+                          </span>
+                          <span data-workflow-var-insert style={{ flexShrink: 0 }}>
+                            <InsertVariableSelect placeholder={t('workflow.insertVariable')} groups={promptVarGroups} onInsert={insertPromptVar} />
+                          </span>
+                        </div>
+                        <div>
+                          <Button
+                            size="small"
+                            data-workflow-preview-toggle
+                            onClick={() => setPreviewNodeId(previewOpen ? null : selectedNode.id)}
+                          >
+                            {t('workflow.canvasPreview')}
+                          </Button>
+                          {previewOpen ? (
+                            <>
+                              <pre
+                                data-workflow-preview
+                                style={{
+                                  marginTop: 8,
+                                  padding: 10,
+                                  maxHeight: 260,
+                                  overflow: 'auto',
+                                  fontSize: 11.5,
+                                  lineHeight: 1.6,
+                                  background: 'var(--pm-fill, rgba(127,127,127,0.08))',
+                                  borderRadius: 8,
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  fontFamily: 'monospace',
+                                }}
+                              >
+                                {previewPrompt}
+                              </pre>
+                              <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginTop: 4 }}>
+                                {t('workflow.canvasPreviewNote')}
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+                    ),
+                  },
+                ]}
               />
             </div>
             {/* 结果状态 = 卡片下缘的出口数（一状态一根线头），也是出边的

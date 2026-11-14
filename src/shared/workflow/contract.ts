@@ -12,6 +12,10 @@ export interface PipelineContract {
   verdict: string
   summary: string
   artifacts: string[]
+  /** 关键决定 / 踩过的坑 / 下游须知（可选；缺席不渲染 handoff 的「下游须知」
+   *  节、不进 formatPipelineResult 的 JSON——必填一定推高早停激发率，而 notes
+   *  的价值本来就只在「有坑要说」的时候）。 */
+  notes?: string
 }
 
 /** 契约行前缀（模板教学段与 formatPipelineResult 的同一真源）。 */
@@ -44,10 +48,13 @@ function parseContractLine(line: string): PipelineContract | null {
   const obj = parsed as Record<string, unknown>
   if (typeof obj.verdict !== 'string' || !obj.verdict.trim()) return null
   const artifacts = Array.isArray(obj.artifacts) ? obj.artifacts.filter((a): a is string => typeof a === 'string') : []
+  // notes 透传（文本兜底通道）：format 发、parse 不收会把 notes 静默丢掉。
+  const notes = typeof obj.notes === 'string' && obj.notes.trim() ? obj.notes.trim() : undefined
   return {
     verdict: obj.verdict.trim(),
     summary: typeof obj.summary === 'string' ? obj.summary : '',
     artifacts,
+    ...(notes ? { notes } : {}),
   }
 }
 
@@ -61,7 +68,13 @@ export function parsePipelineResult(text: string): PipelineContract | null {
   return found
 }
 
-/** 渲染契约行（模板 prompt 的教学段与助手 few-shot 用同一份形态）。 */
+/** 渲染契约行（模板 prompt 的教学段与助手 few-shot 用同一份形态）。
+ *  notes 缺席/空串不写键（缺席不写空串——旧行为逐字节不变）。 */
 export function formatPipelineResult(contract: PipelineContract): string {
-  return `${PREFIX} ${JSON.stringify({ verdict: contract.verdict, summary: contract.summary, artifacts: contract.artifacts })}`
+  return `${PREFIX} ${JSON.stringify({
+    verdict: contract.verdict,
+    summary: contract.summary,
+    artifacts: contract.artifacts,
+    ...(contract.notes?.trim() ? { notes: contract.notes.trim() } : {}),
+  })}`
 }

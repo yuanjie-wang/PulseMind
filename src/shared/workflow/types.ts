@@ -29,6 +29,18 @@ export interface WorkflowNode {
   verdictDefs?: Record<string, string>
   /** 预留画布坐标（v1 原样透传）。 */
   layout?: WorkflowNodeLayout
+  /** 隐式上下文开关（PLAN-workflow-context）：整个字段缺席 = 全开——存量工作流
+   *  不加任何字段即获得信封行为。显式引用占位符（{{objective}}/{{prev*}}）的
+   *  去重规则独立于这里的开关（见 envelope.ts）。 */
+  context?: {
+    /** 缺省 true；false = 不注入「全局目标」块（{{objective}} 显式引用仍可用）。 */
+    objective?: boolean
+    /** 缺省 true；false = 不注入「上游交接」块（{{prev*}} 显式引用仍可用）。
+     *  只关进向的上游块——本节点自己的 handoff 仍照常写。 */
+    upstream?: boolean
+    /** 缺省 true；false = 不注入「本次运行的输入」块。 */
+    inputs?: boolean
+  }
 }
 
 export interface WorkflowEdge {
@@ -64,6 +76,9 @@ export interface WorkflowParams {
   defaultMaxVisits?: number
   /** 缺省 true；非 git 仓库启动即报错。 */
   gitCheckpoint?: boolean
+  /** 信封字符预算（防护性上限，PLAN-workflow-context）；缺省 32k——只防
+   *  objective / inputs 异常长，「本阶段任务」与「完成方式」永不裁剪。 */
+  envelopeCapChars?: number
 }
 
 export interface WorkflowDefinition {
@@ -153,7 +168,16 @@ export interface PipelineStageRun {
   artifacts?: string[]
 }
 
-/** 阶段执行的最终结算形态（runStage 的返回，引擎与测试的接缝）。 */
+/** 阶段执行的最终结算形态（runStage 的返回，引擎与测试的接缝）。
+ *  notes 随 finish_stage/契约行透传（handoff 兜底回填的「下游须知」来源）。 */
 export type StageOutcome =
-  | { kind: 'settled'; verdict: string; summary: string; artifacts: string[]; conversationId: string; continues: number }
+  | {
+      kind: 'settled'
+      verdict: string
+      summary: string
+      artifacts: string[]
+      notes?: string
+      conversationId: string
+      continues: number
+    }
   | { kind: 'failed'; reason: string; conversationId?: string; continues: number }

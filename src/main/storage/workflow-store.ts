@@ -106,29 +106,25 @@ export const WORKFLOW_TEMPLATES: WorkflowDefinition[] = [
         title: '编码',
         verdicts: ['pass', 'fail', 'blocked'],
         // 状态定义是必填的（user 2026-11-09）：模板本身必须过保存门，否则
-        // 用户打开模板、改一个字就再也存不下去。文案与下面 prompt 里的
-        // 「- pass = … ; fail = … ; blocked = …」逐条同义。
+        // 用户打开模板、改一个字就再也存不下去。定义会由引擎注进阶段 prompt
+        // 的出口说明（envelope 的「完成方式」段），prompt 里不再重复。
         verdictDefs: {
           pass: '计划条目已实现且自检通过',
           fail: '实现受阻于具体错误（编译/运行/逻辑）',
           blocked: '缺外部条件（凭据/环境），需写明缺什么',
         },
-        prompt: `你是编码阶段的执行者。全局目标：{{objective}}
-
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
-
-任务：读取 {{planPath}} 中的计划，把其中的条目落地为代码改动。计划内容如下：
+        // 示范写法（PLAN-workflow-context）：prompt 只写本阶段任务 + 完成标准。
+        // 全局目标 / 工作区 / 上游交接由引擎的信封自动注入；{{planContent}} 是
+        // 本阶段的真实任务输入，属于显式引用（引擎不注入 plan）。
+        prompt: `任务：把 plan 中的条目落地为代码改动。计划内容：
 
 {{planContent}}
-
-上一阶段结论：{{prevVerdict}} / {{prevSummary}}
 
 要求：
 1. 只做计划内的事；每个文件改动前必须先 read。
 2. 完成后自检一遍改动面（编译器/lint 能查出的低级错误不留到测试阶段）。
-3. 结束时在最后一条消息输出且仅输出一行契约（verdict 只能是 pass/fail/blocked 之一）：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}
-- pass = 计划条目已实现且自检通过；fail = 实现受阻于具体错误；blocked = 缺外部条件（凭据/环境），写明缺什么。`,
+
+完成标准：计划条目全部实现，自检没有留下编译器/lint 能查出的低级错误。`,
       },
       {
         id: 'test',
@@ -138,24 +134,13 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}
           pass: '测试/验证命令全部通过',
           fail: '存在失败项，失败清单已写入交付物',
         },
-        prompt: `你是测试阶段的执行者。全局目标：{{objective}}
-
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
-
-任务：在工作区运行项目的测试/验证命令，判定上一阶段（{{prevVerdict}}）的改动是否真的可用——「编辑成功 ≠ 改动生效」，必须以真实命令输出为准。计划上下文：
-
-{{planContent}}
-
-上一阶段交付物：
-
-{{prevArtifacts}}
+        prompt: `任务：在本工作区运行项目的测试/验证命令，判定上一阶段的改动是否真的可用——「编辑成功 ≠ 改动生效」，必须以真实命令输出为准。上一阶段做了什么、交了哪些文件，见自动注入的上游交接。
 
 要求：
 1. 优先项目自带的 test/build/verify 命令；没有就写最小可运行验证脚本（放 pipeline/ 目录下）。
 2. 失败时把失败清单逐条写入 pipeline/test-failures.md（含期望/实际/相关文件行号），作为交付物传给修复阶段。
-3. 结束时输出契约行（verdict 只能是 pass/fail）：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<命令与结果>","artifacts":["pipeline/test-failures.md"]}
-- 失败清单文件即使没有失败也可以不列；有失败必须列。`,
+
+完成标准：验证命令真实跑过；有失败时 pipeline/test-failures.md 已逐条写明。`,
       },
       {
         id: 'review',
@@ -165,19 +150,13 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<命令与结果>","artifacts":["p
           pass: '评审未发现问题',
           fail: '评审发现问题，清单已写入交付物',
         },
-        prompt: `你是评审阶段的执行者。全局目标：{{objective}}
-
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
-
-任务：对照计划评审本次全部改动（git diff 可用）：正确性、边界、与既有约定的冲突。计划：
+        prompt: `任务：对照计划评审本次全部改动（git diff 可用）：正确性、边界、与既有约定的冲突。计划：
 
 {{planContent}}
 
-要求：
-1. 发现的问题逐条写入 pipeline/review-findings.md（严重级/文件/建议）。
-2. 无问题 = pass；有问题 = fail（修复阶段会拿你的清单）。
-3. 结束时输出契约行：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<评审结论>","artifacts":["pipeline/review-findings.md"]}`,
+要求：发现的问题逐条写入 pipeline/review-findings.md（严重级/文件/建议）。
+
+完成标准：评审覆盖全部改动；发现的问题已逐条落盘，无遗漏。`,
       },
       {
         id: 'fix',
@@ -187,20 +166,11 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<评审结论>","artifacts":["pipe
           pass: '清单上的问题全部修复并自验通过',
           fail: '仍有问题未修复或自验未通过',
         },
-        prompt: `你是修复阶段的执行者。全局目标：{{objective}}
+        prompt: `任务：修复上游交接（评审/测试的问题清单）里指出的问题，不扩大改动面。清单细节在上游交接文件与它列出的交付物里。
 
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
+要求：只修清单上的问题；修完逐条自验（能跑命令的必须跑）。
 
-任务：根据上一阶段（{{prevVerdict}}）的清单修复问题，不扩大改动面。清单与上下文：
-
-{{prevArtifacts}}
-
-{{planContent}}
-
-要求：
-1. 只修清单上的问题；修完逐条自验（能跑命令的必须跑）。
-2. 结束时输出契约行（verdict 只能是 pass/fail）：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<修了什么>","artifacts":[]}`,
+完成标准：清单上的问题全部修复，自验通过。`,
       },
     ],
     edges: [
@@ -229,18 +199,17 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<修了什么>","artifacts":[]}`,
           pass: '源文档已完整翻译并写入译文文件',
           fail: '翻译未完成，或存在漏段/术语错误',
         },
-        prompt: `你是翻译阶段的执行者。全局目标：{{objective}}
-
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
-
-任务：把 {{planPath}} 指定的源文档完整翻译为目标语言（计划文件里写明目标语言与术语表）。计划：
+        // 示范写法（PLAN-workflow-context）：{{planContent}} 是本阶段的真实任务
+        // 输入（计划里写明目标语言与术语表），属于显式引用；其余上下文由信封注入。
+        prompt: `任务：把 plan 指定的源文档完整翻译为目标语言。计划（含目标语言与术语表）：
 
 {{planContent}}
 
 要求：
 1. 译文写入源文件同目录的 <原名>.translated.md；术语表优先。
-2. 结束时输出契约行（verdict 只能是 pass/fail）：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<翻译了什么>","artifacts":["<译文相对路径>"]}`,
+2. 覆盖全文，不漏段。
+
+完成标准：译文文件已写盘且覆盖源文档全部段落，术语与术语表一致。`,
       },
       {
         id: 'proofread',
@@ -250,16 +219,11 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<翻译了什么>","artifacts":["<
           pass: '未发现漏段、术语或保真问题',
           fail: '发现问题并已写入校对记录',
         },
-        prompt: `你是校对阶段的执行者。全局目标：{{objective}}
+        prompt: `任务：对照源文档校对译文：漏段、术语不一致、数字/代码块/链接保真。译文路径见自动注入的上游交接。
 
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
+要求：发现的问题逐条写入 pipeline/proof-notes.md。
 
-任务：对照源文档校对译文：漏段、术语不一致、数字/代码块/链接保真。上一阶段交付物：
-
-{{prevArtifacts}}
-
-发现的问题逐条写入 pipeline/proof-notes.md。结束时输出契约行：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<校对结论>","artifacts":["pipeline/proof-notes.md"]}`,
+完成标准：全文校对完成；发现的问题已逐条落盘，无遗漏。`,
       },
       {
         id: 'finalize',
@@ -269,16 +233,11 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<校对结论>","artifacts":["pipe
           pass: '终稿已按校对意见修订并覆盖写回译文文件',
           fail: '终稿未能完成修订',
         },
-        prompt: `你是终审阶段的执行者。全局目标：{{objective}}
+        prompt: `任务：按上游交接里的校对意见修订译文终稿，覆盖写回译文文件。
 
-工作区：{{workspace}}（第 {{visit}} 次进入本阶段）
+要求：逐条核对校对意见；修订后通读一遍确认没有引入新问题。
 
-任务：按校对意见（{{prevSummary}}）修订译文终稿，覆盖写回译文文件。上一阶段交付物：
-
-{{prevArtifacts}}
-
-结束时输出契约行：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<终稿位置>","artifacts":["<译文相对路径>"]}`,
+完成标准：终稿已覆盖写回译文文件，校对意见全部处理。`,
       },
     ],
     edges: [

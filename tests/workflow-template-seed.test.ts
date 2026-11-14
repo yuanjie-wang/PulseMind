@@ -40,12 +40,21 @@ describe('WORKFLOW_TEMPLATES', () => {
     }
   })
 
-  it('模板契约行形态与 formatPipelineResult 同源（教学段一字不差）', async () => {
+  it('模板 prompt 是示范写法：信封覆盖的占位符与契约教学段一个都不出现（PLAN-workflow-context）', async () => {
     const { WORKFLOW_TEMPLATES } = await freshStore()
-    const { PREFIX } = await import('../src/shared/workflow/contract')
     for (const tpl of WORKFLOW_TEMPLATES) {
       for (const node of tpl.nodes) {
-        expect(node.prompt, `${tpl.id}/${node.id}`).toContain(PREFIX)
+        // 全局目标/工作区/上游交接由引擎信封自动注入——模板再抄一遍就是
+        // 「同一份资料出现两次」，也让示范写法失去示范意义。
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{objective}}')
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{workspace}}')
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{visit}}')
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{prevVerdict}}')
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{prevSummary}}')
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('{{prevArtifacts}}')
+        // 完成协议（finish_stage 词汇表 + 文本契约兜底）由引擎注进「完成方式」
+        // 段——prompt 里手写契约教学段的旧写法已退役。
+        expect(node.prompt, `${tpl.id}/${node.id}`).not.toContain('PIPELINE_RESULT')
       }
     }
   })

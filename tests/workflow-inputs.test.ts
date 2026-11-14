@@ -122,12 +122,15 @@ describe('run path wiring', () => {
 
   it('助手 schema 声明 inputs + 阶段提示词不依赖上下文的硬规范（渲染端 spec）', () => {
     // 一次性管道助手已撤（2026-11-08）：口径搬到渲染端 workflow-assist.ts，
-    // 与 routine 共用 form-assist 协议。inputs 变量表与「提示词脱离当前对话
-    // 也能跑」仍是对助手的硬要求（旧的 plan 非默认假设随管道形态一起退场）。
+    // 与 routine 共用 form-assist 协议。inputs 变量表仍是硬要求；「独立可执行」
+    // 的旧口径随 PLAN-workflow-context 退役（信封自动注入上下文），换成
+    // 「只写本阶段任务 + 完成标准、别重复信封内容」的新口径。
     const assist = read('src/renderer/src/components/routine/workflow-assist.ts')
     expect(assist).toContain("key: 'inputs'")
     expect(assist).toContain('{{key}}')
-    expect(assist).toContain('独立可执行的指令')
+    expect(assist).toContain('只写「本阶段任务 + 完成标准」')
+    expect(assist).toContain('不再自动注入对应的块')
+    expect(assist).not.toContain('独立可执行')
   })
 })
 

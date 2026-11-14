@@ -446,10 +446,11 @@ window.__stepContent = () => {
 window.__ready = true
 `
 
-/** 0.5.1 的展示门（src/shared/feature-flags.ts 的 WORKFLOW_TASKS_UI=false）把工作流
- *  的界面面收起来了，但画布/面板/向导本体必须原样完好——探针在 bundle 期把该常量
- *  钉成 true，测的是「翻转开关后一切照旧」。隐藏面本身（卡片/类型选项/编辑路由/
- *  时间线/分享预览）由 tests/workflow-hidden.test.ts 钉。 */
+/** 工作流展示门（src/shared/feature-flags.ts 的 WORKFLOW_TASKS_UI）0.5.1 曾关闭、
+ *  0.5.2 已放开。这里的 stub 现在是 no-op（真值已经是 true），但**不许删**：门哪天
+ *  翻回 false，少了它这个探针会在工作流不可见的一态里跑，选择器全部静默落空。留着
+ *  它，测的就永远是「门开着时画布/面板/向导本体一切照旧」。门本身（五处入口、分享
+ *  导入的二次拒收）由 tests/workflow-hidden.test.ts 钉。 */
 const forceWorkflowUi = {
   name: 'force-workflow-ui',
   setup(b) {
@@ -1296,6 +1297,15 @@ check(
   (await page.evaluate(() => getComputedStyle(document.querySelector('.ant-modal-wrap')).position)) === 'fixed',
 )
 
+// PLAN-workflow-context：面板新增「上下文 · 自动注入」折叠区（默认收起）——
+// 插变量 / 开关 / 预览都搬进去了，凡是要碰到它们的段落先展开。antd Collapse
+// 的 children 惰性挂载，展开前 [data-workflow-var-insert] 根本不存在。
+const expandCtx = async () => {
+  await page.locator('[data-workflow-context-section] .ant-collapse-header').click()
+  await page.waitForSelector('[data-workflow-context-section] [data-workflow-var-insert]')
+}
+await expandCtx()
+
 // antd 的 autoSize TextArea 还渲染一个测量用的隐藏 textarea，其 textContent 就是
 // 指令正文——扫「提示行已撤」必须把 textarea/input 摘掉，否则正文自己被当成提示。
 const panelText = await page.evaluate(() => {
@@ -1305,7 +1315,7 @@ const panelText = await page.evaluate(() => {
   clone.querySelectorAll('textarea, input').forEach((el) => el.remove())
   return clone.textContent ?? ''
 })
-check('模态框里是环节指令编辑态（标题 + 指令）', (panelText ?? '').includes('环节指令'), (panelText ?? '').slice(0, 60))
+check('模态框里是本阶段任务编辑态（PLAN-workflow-context 改题）', (panelText ?? '').includes('本阶段任务'), (panelText ?? '').slice(0, 60))
 check(
   '静态提示行已撤：面板上不再罗列 {{token}}',
   panelText !== null && !panelText.includes('{{'),
@@ -1313,7 +1323,10 @@ check(
 )
 check('旧的「可用占位符」文案也一并撤掉（不是换措辞）', !(panelText ?? '').includes('可用占位符'))
 check('删除环节落在模态框脚注（不是面板外的裸按钮）', (await page.locator('.ant-modal-footer button').first().innerText()).includes('删除环节'))
-check('「插入变量」控件挂在指令标题行上', (await page.locator('[data-workflow-var-insert] .ant-select').count()) === 1)
+check(
+  '「插入变量」收进上下文折叠面板（精确控制，不再是主路径）',
+  (await page.locator('[data-workflow-context-section] [data-workflow-var-insert] .ant-select').count()) === 1,
+)
 
 const promptText = () => page.locator('[data-workflow-field="prompt"] textarea').inputValue()
 const openVarMenu = async () => {
@@ -1391,6 +1404,7 @@ await openNodePanel('node:code')
 const codePrompt = await promptText()
 await closePanel()
 await openNodePanel('node:plan')
+await expandCtx()
 check('改动落在工作流数据里（切走再切回仍在）', codePrompt !== afterPick && (await promptText()) === afterPick, `code=${codePrompt}`)
 
 // 任务变量组在列表底部（虚拟滚动），滚到底再收一遍——菜单是唯一入口，漏项=用户插不进。

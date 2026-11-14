@@ -16,7 +16,7 @@
 // 实例 FAILED 回滚基线（只在实例结算时做一次——阶段级失败不回滚，fix
 // 循环依赖前序阶段的落盘交付物）。
 
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { shortUuid } from '../utils/id'
 import { agentSessionManager } from '../agent/session-manager'
@@ -24,8 +24,10 @@ import { auditStore } from '../storage/audit-store'
 import { saveConversation } from '../storage/conversation.db'
 import { resolveTaskRunContext } from '../task/run-context'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
-import { parsePipelineResult, artifactPathError, PREFIX } from '../../shared/workflow/contract'
-import { renderStagePrompt, resolveObjective } from '../../shared/workflow/render'
+import { parsePipelineResult, artifactPathError } from '../../shared/workflow/contract'
+import { resolveObjective } from '../../shared/workflow/render'
+import { composeStagePrompt } from '../../shared/workflow/envelope'
+import { resolveWorkflowHandoff } from '../../shared/workflow/handoff'
 import { builtinRoutineVars } from '../../shared/routine/params'
 import { validateWorkflow } from '../../shared/workflow/validate'
 import { depthOf, isLoopEdge, loopEdgeKeys } from '../../shared/workflow/layout'
@@ -154,6 +156,7 @@ function settleStage(
         verdict: contract.verdict,
         summary: contract.summary,
         artifacts: contract.artifacts,
+        ...(contract.notes?.trim() ? { notes: contract.notes.trim() } : {}),
         conversationId: convId,
         continues: continuesRef.count,
       })
@@ -192,36 +195,68 @@ PIPELINE_RESULT: {"verdict":"<…>","summary":"<一句话总结>","artifacts":["
   })()
 }
 
-/** 出口状态词汇表注入（user 2026-11-09 自定义结果状态）。
- *  默认单出口 ['pass'] 的工作流**一个字节都不加**——内置模板的 prompt 里本来
- *  就写着 pass，再补一段说明只是噪音，也让老会话的 prompt 保持逐字不变。
- *  自定义了词汇表时把合法状态与契约行模板补在指令末尾：阶段 prompt 是模型
- *  唯一的规格来源，词汇表只出现在早停修复消息里（settleStage）等于让模型先
- *  猜错一轮再被纠正，白烧一个 continue 名额。
- *  状态**定义**（`verdictDefs`）一起带上（user 2026-11-09「定义结果状态时还需要
- *  明确状态定义」）：只给名字的话 success / failed 的分界线全靠模型猜，而这条
- *  出口是调度键——猜错就走错分支。没有定义的状态只列名字。 */
-function stageContractNote(node: WorkflowNode): string {
-  if (node.verdicts.length <= 1 && (node.verdicts[0] ?? 'pass') === 'pass') return ''
-  const example = node.verdicts[0] ?? 'pass'
-  const defined = node.verdicts.some((v) => (node.verdictDefs?.[v] ?? '').trim().length > 0)
-  const list = defined
-    ? [
-        '本阶段的结果状态只能取下面这些，按定义判断该报哪一个：',
-        ...node.verdicts.map((v) => {
-          const def = (node.verdictDefs?.[v] ?? '').trim()
-          return def ? `- ${v}：${def}` : `- ${v}`
-        }),
-      ].join('\n')
-    : `本阶段的结果状态只能取：${node.verdicts.join(' / ')}。`
-  return [
+/** 交接兜底回填（plan §3.2）：模型没写 handoff 文件时，用 finish_stage 已收到
+ *  的结算回填一份最小交接——「下游永远有路径可读」，而不是判失败。与
+ *  plan-exchange 的取舍故意不同：plan 的节点报告缺失算 violation；工作流的
+ *  finish_stage 一旦校验通过就已经结算了，事后翻案会让一次成功的运行无故变红。
+ *  回填保证「有」，不保证「好」——所以上游交接块的提示语写明「若交接过于
+ *  简略，用 read 自行核查产物」。模型写了就一个字节都不碰。 */
+export async function backfillHandoff(
+  workspaceDir: string,
+  runId: string,
+  node: WorkflowNode,
+  outcome: { verdict: string; summary: string; artifacts: string[]; notes?: string },
+): Promise<void> {
+  const handoff = resolveWorkflowHandoff(workspaceDir, runId)
+  const path = handoff.handoffPath(node.id)
+  try {
+    await readFile(path, 'utf-8')
+    return
+  } catch {
+    /* 不存在 → 回填 */
+  }
+  const lines = [
+    `# ${node.title || node.id} 交接`,
     '',
-    '---',
-    list,
-    '完成本阶段时调用 `finish_stage` 工具声明结果，verdict 必须逐字取自上面的状态名（大小写照抄）；调用成功后本阶段立即结算，不要再用普通文本声明完成。',
-    '如果工具不可用（或网关不转发工具调用），才在最后一条消息末尾单独输出一行契约作为兜底：',
-    `${PREFIX} {"verdict":"${example}","summary":"<一句话总结>","artifacts":["<交付物相对路径>"]}`,
-  ].join('\n')
+    '## 状态',
+    outcome.verdict,
+    '',
+    '## 结论',
+    outcome.summary?.trim() || '（无）',
+    '',
+    '## 关键数据',
+    '（本阶段未写交接文件，此为引擎回填的最小交接——细节请用文件工具核查下方产物）',
+    '',
+    '## 产物清单',
+    outcome.artifacts.length > 0 ? outcome.artifacts.join('\n') : '无',
+    '',
+    '## 下游须知',
+    outcome.notes?.trim() || '无',
+    '',
+  ]
+  try {
+    await mkdir(handoff.dir, { recursive: true })
+    await writeFile(path, lines.join('\n'), 'utf-8')
+  } catch (err) {
+    console.warn('[pipeline] handoff backfill failed:', err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** handoff 生命周期（plan §P2）：只留最近 HANDOFF_KEEP_RUNS 次运行的交接目录。
+ *  按 run 行（startedAt 倒序）枚举，超出保留数且**同一工作区**的 run 目录删掉
+ *  ——别的 workspace 碰不得（那是它们自己的 run）。随实例结算（success/failed）
+ *  触发；尽力而为，清理失败只 warn 不影响运行结果。 */
+const HANDOFF_KEEP_RUNS = 20
+export async function pruneHandoffDirs(workspaceDir: string): Promise<void> {
+  try {
+    const runs = pipelineRunStore.listRuns(200)
+    const stale = runs.slice(HANDOFF_KEEP_RUNS).filter((r) => r.workspaceDir === workspaceDir)
+    for (const run of stale) {
+      await rm(resolveWorkflowHandoff(workspaceDir, run.id).dir, { recursive: true, force: true })
+    }
+  } catch (err) {
+    console.warn('[pipeline] handoff prune failed:', err instanceof Error ? err.message : String(err))
+  }
 }
 
 /** 一条上游的结算声明（artifacts 是相对路径，尚未读盘）。 */
@@ -319,10 +354,25 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
     resolveOutcome = resolve
   })
 
-  // 占位符渲染（{{prevArtifacts}} 在入口读盘——调用侧已按上游逐个读完）。
+  // 占位符渲染（{{prevArtifacts}} 在入口读盘——调用侧已按上游逐个读完）+ 信封
+  // 拼装（位置/全局目标/运行输入/上游交接/完成方式）走 composeStagePrompt——
+  // 与渲染端「预览完整提示词」同一份代码（plan §3.1），预览与实际注入不可能是
+  // 两套逻辑。显式 {{prev*}} 引用仍走 renderNodePrompt 的全文语义（mergePrev
+  // 的 AND-join 汇总不变）；隐式上游只给 handoff 路径 + verdict 释义。
   const prevRender = mergePrevForPrompt(opts.prev)
-  const prompt =
-    renderStagePrompt(node, {
+  const handoff = resolveWorkflowHandoff(opts.workspaceDir, opts.runId)
+  const upstreams = (opts.prev ?? []).map((u) => ({
+    title: u.title,
+    verdict: u.verdict,
+    // 上游状态定义跟着上游节点走：释义帮下游判断「这个 verdict 意味着什么」。
+    verdictDef: workflow.nodes.find((n) => n.id === u.id)?.verdictDefs?.[u.verdict],
+    handoffRel: handoff.relative(u.id),
+    // RETRY 重入：上游就是本节点上一次的运行（块头改「上次交接」）。
+    self: u.id === node.id,
+  }))
+  const prompt = composeStagePrompt(
+    node,
+    {
       runObjective: opts.runObjective,
       workflowObjective: workflow.objective,
       planPath: opts.planPath,
@@ -334,7 +384,17 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
       visit: opts.visit,
       vars: opts.vars,
       builtins: builtinRoutineVars({ workspaceDir: opts.workspaceDir, row: opts.row }),
-    }) + stageContractNote(node)
+    },
+    {
+      workflowName: workflow.name,
+      stageIndex: Math.max(1, workflow.nodes.findIndex((n) => n.id === node.id) + 1),
+      stageTotal: workflow.nodes.length,
+      inputs: workflow.inputs,
+      upstreams,
+      handoff,
+      envelopeCapChars: workflow.params?.envelopeCapChars,
+    },
+  )
 
   const finish = (o: StageOutcome): void => {
     if (settled) return
@@ -355,8 +415,14 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
     // git checkpoint：阶段结算（success/fail 都落 commit——fix 循环要靠
     // 前序阶段的落盘状态）。gitCheckpoint: false 全跳过。**commit 落定后才
     // resolve**——实例层的 FAILED 回滚（git reset --hard）与本阶段提交是
-    // 同仓并发，提交若在 reset 之后落地会把回滚冲掉。
+    // 同仓并发，提交若在 reset 之后落地会把回滚冲掉。handoff 兜底回填排在
+    // 最前：必须先于 resolveOutcome（下游阶段在 outcome 落地后立即开跑，
+    // 交接文件要已经在盘上）；与 git 无并发序问题（.pulsemind 被 pathspec
+    // 排除在 add/clean 之外）。
     void (async () => {
+      if (o.kind === 'settled') {
+        await backfillHandoff(opts.workspaceDir, opts.runId, node, o)
+      }
       if ((workflow.params?.gitCheckpoint ?? true) && o.conversationId) {
         await gitStageCommit(opts.workspaceDir, opts.runId, node.id, o.kind === 'settled' ? o.verdict : 'failed')
       }
@@ -522,6 +588,8 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
   const failRun = async (error: string, currentNode: string): Promise<RunInstanceResult> => {
     pipelineRunStore.updateRun(opts.runId, { status: 'failed', currentNode, finishedAt: new Date().toISOString(), error })
     if (baseline) await gitResetToBaseline(workspaceDir, baseline)
+    // 失败实例的 handoff 保留（排查证据，回滚不清），但生命周期照常结算。
+    await pruneHandoffDirs(workspaceDir)
     return { status: 'failed', error }
   }
 
@@ -671,6 +739,11 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
         continue
       }
       if (target === 'RETRY') {
+        // RETRY 重入的上游 = 上一次自己的结算（plan §3.7）：不喂的话 visit≥2
+        // 的 prev=[]，渲染「（无——本阶段是入口）」是误导；信封据此把块头标成
+        // 「本节点第 N 次运行 · 上次交接」。set 而不是 push：RETRY 的语义就是
+        // 「以上一次自己为准」，覆盖同节点残留的任何旧 arrival。
+        arrivals.set(node.id, [upstreamRef])
         forceEnqueue(node.id)
         continue
       }
@@ -710,6 +783,8 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
   }
 
   pipelineRunStore.updateRun(opts.runId, { status: 'success', currentNode: lastNodeId, finishedAt: new Date().toISOString() })
+  // handoff 生命周期：随实例结算触发（plan §P2）——只留最近 20 次运行的目录。
+  await pruneHandoffDirs(workspaceDir)
   return { status: 'success' }
 }
 

@@ -198,6 +198,10 @@ export function validateWorkflow(def: unknown, opts: WorkflowValidateOptions = {
     if (p?.gitCheckpoint !== undefined && typeof p.gitCheckpoint !== 'boolean') {
       errors.push('params.gitCheckpoint 必须是布尔值')
     }
+    const envelopeCap = p?.envelopeCapChars
+    if (envelopeCap !== undefined && (!Number.isFinite(envelopeCap) || (envelopeCap as number) <= 0)) {
+      errors.push('params.envelopeCapChars 必须是正数')
+    }
   }
 
   // inputs 形态（宁窄勿严：workflow-store.readWorkflow 对不过门的工作流整只

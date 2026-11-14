@@ -57,11 +57,13 @@ function verdictVocabulary(config: StageFinishConfig): string[] {
 }
 
 /** 校验一次 finish_stage 调用。verdict 必须逐字在词汇表内；summary 必填；
- *  artifacts 可省略（= []），但给了就必须每一项都是工作区相对路径。 */
+ *  artifacts 可省略（= []），但给了就必须每一项都是工作区相对路径；
+ *  notes 可选（关键决定/坑/下游须知——缺席不渲染，绝不设为必填：必填一定
+ *  推高早停激发率）。 */
 export function validateStageFinishArgs(input: unknown, config: StageFinishConfig): StageFinishValidation {
   const verdicts = verdictVocabulary(config)
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return { ok: false, error: '参数必须是对象：{ verdict, summary, artifacts }' }
+    return { ok: false, error: '参数必须是对象：{ verdict, summary, artifacts, notes? }' }
   }
   const obj = input as Record<string, unknown>
 
@@ -96,7 +98,16 @@ export function validateStageFinishArgs(input: unknown, config: StageFinishConfi
     artifacts.push(path)
   }
 
-  return { ok: true, contract: { verdict, summary, artifacts } }
+  let notes: string | undefined
+  if (obj.notes !== undefined) {
+    if (typeof obj.notes !== 'string') {
+      return { ok: false, error: 'notes 必须是字符串（关键决定/踩过的坑/未决问题；没有就省略）' }
+    }
+    const trimmed = obj.notes.trim()
+    if (trimmed) notes = trimmed
+  }
+
+  return { ok: true, contract: { verdict, summary, artifacts, ...(notes ? { notes } : {}) } }
 }
 
 /** 阶段工具定义。description 是模型在工具列表里看到的短约束；instructions
@@ -134,6 +145,10 @@ export function buildStageFinishTool(config: StageFinishConfig): StageFinishTool
           description: '本阶段交付物的工作区相对路径（如 pipeline/review.md）；没有就传 []。不能是绝对路径，不能含 .. 或反斜杠。',
           items: { type: 'string' },
         },
+        notes: {
+          type: 'string',
+          description: '可选：本阶段的关键决定、踩过的坑、未决问题（下游会读到的「下游须知」）；没有就省略这个参数。',
+        },
       },
       required: ['verdict', 'summary'],
     },
@@ -145,6 +160,7 @@ export function buildStageFinishTool(config: StageFinishConfig): StageFinishTool
       verdictLines,
       '- summary：一句话说明本阶段做了什么、结论是什么；不能为空。',
       '- artifacts：交付物的**工作区相对路径**（如 `pipeline/review.md`）；没有交付物就传 `[]`。',
+      '- notes：可选。有关键决定、踩过的坑、未决问题要交代给下游时给；没有就省略。',
       '',
       '调用成功后本阶段立即结算、本回合结束：不要再用其它工具继续工作，也不要把待办步骤留给用户。',
       '本阶段还没完成时不要调用它——继续用工具推进工作。',

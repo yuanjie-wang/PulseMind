@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { execSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,10 +26,10 @@ const sessionState = {
   script: [] as Array<
     'none' | 'hang'
     | { verdict: string; summary: string; artifacts?: string[] }
-    | { finish: { verdict: string; summary: string; artifacts?: string[] }; text?: string }
+    | { finish: { verdict: string; summary: string; artifacts?: string[]; notes?: string }; text?: string }
   >,
   /** 阶段会话的 finish_stage 记录（sessionId → 契约），getStageFinishRecord 的读面。 */
-  stageFinishRecords: new Map<string, { verdict: string; summary: string; artifacts?: string[] }>(),
+  stageFinishRecords: new Map<string, { verdict: string; summary: string; artifacts?: string[]; notes?: string }>(),
   /** 阶段会话的落盘面（git checkpoint 用例）：ask 时往这里写文件，模拟
    *  「agent 改了工作区」——否则仓库无改动，commit 是 no-op，提交链断言测空。 */
   stageTouchDir: '' as string,
@@ -133,6 +133,8 @@ vi.mock('../src/main/storage/pipeline-run-store', () => ({
 }))
 
 import { pipelineEngine, runWorkflowInstance } from '../src/main/pipeline/pipeline-engine'
+import { pipelineRunStore } from '../src/main/storage/pipeline-run-store'
+import { resolveWorkflowHandoff } from '../src/shared/workflow/handoff'
 
 // ── fixtures ──
 
@@ -603,7 +605,11 @@ describe('runWorkflowInstance', () => {
     // 完成协议进阶段 prompt：主通道是 finish_stage 工具，文本契约只作兜底。
     expect(sessionState.asks[0].content).toContain('finish_stage')
     expect(sessionState.asks[0].content).toContain('如果工具不可用')
-    expect(sessionState.asks[1].content).not.toContain('finish_stage')
+    // 默认单出口的节点没有完成协议噪音（词汇表注记），但 handoff 契约照常注入
+    // （PLAN-workflow-context：它提到 finish_stage 只是「先写交接再 finish」的
+    // 顺序承诺，不是词汇表噪音）。
+    expect(sessionState.asks[1].content).toContain('finish_stage` 之前')
+    expect(sessionState.asks[1].content).toContain('交接文件')
     // 阶段会话的 createSession 带着本节点的出口词汇表（工具 schema 的 enum 源）。
     expect(sessionState.created[0].opts.stageFinish).toEqual({ verdicts: ['成功', '需修订'] })
     expect(sessionState.created[1].opts.stageFinish).toEqual({ verdicts: ['pass'] })
@@ -796,4 +802,148 @@ describe('pipelineEngine.stop', () => {
     // 已结算/未知 run 的 stop 是 no-op
     expect(pipelineEngine.stop('prun_unknown')).toBe(false)
   }, 15_000)
+})
+
+// ── PLAN-workflow-context：信封 + handoff 接线 ──
+
+describe('信封接线（composeStagePrompt 替换 renderStagePrompt + stageContractNote）', () => {
+  const envelopeWorkflow = {
+    id: 'env-flow',
+    name: '竞品监控流水线',
+    objective: '每周汇总三家竞品的官网价格',
+    entry: 'fetch',
+    params: { gitCheckpoint: false },
+    inputs: [
+      { key: 'siteA', label: '竞品A官网', default: 'https://a.com' },
+      { key: 'siteB', label: '竞品B官网' },
+    ],
+    nodes: [
+      { id: 'fetch', title: '列出竞品清单', prompt: '抓取清单写入 list.md。', verdicts: ['pass'] },
+      { id: 'prices', title: '抓取竞品价格', prompt: '抓取三家价格页写入 prices.csv。', verdicts: ['pass'] },
+    ],
+    edges: [
+      { from: 'fetch', when: 'pass', to: 'prices' },
+      { from: 'prices', when: 'pass', to: 'DONE' },
+    ],
+  }
+
+  beforeEach(() => freshState([]))
+
+  it('信封默认全开：位置声明 / 全局目标 / 运行输入 / 完成方式交接契约全部进 prompt', async () => {
+    freshState([{ verdict: 'pass', summary: '清单完成' }, { verdict: 'pass', summary: '价格完成' }])
+    const dir = makeWorkspace()
+    await runWorkflowInstance({
+      runId: 'prun_env',
+      workflow: envelopeWorkflow,
+      workspaceDir: dir,
+      runObjective: '运行级目标',
+      vars: { siteA: 'https://a.com', siteB: '' },
+    })
+    const p1 = sessionState.asks[0].content
+    // 位置块 = 承重墙：分工声明 + 阶段序号
+    expect(p1).toContain('── 你在这个工作流里的位置 ──')
+    expect(p1).toContain('第 1/2 阶段「列出竞品清单」')
+    expect(p1).toContain('不要代做')
+    expect(p1).toContain('── 全局目标 ──\n运行级目标')
+    // 输入块：default 预填 + 缺值标「（未填）」
+    expect(p1).toContain('竞品A官网：https://a.com')
+    expect(p1).toContain('竞品B官网：（未填）')
+    expect(p1).toContain('── 本阶段任务（你只负责这一部分） ──\n抓取清单写入 list.md。')
+    expect(p1).toContain('── 完成方式 ──')
+    // 交接契约：绝对路径 + 骨架 + 顺序承诺
+    expect(p1).toContain(join(dir, '.pulsemind', 'workflows', 'prun_env', 'fetch-handoff.md'))
+    expect(p1).toContain('# 列出竞品清单 交接')
+    expect(p1).toContain('finish_stage` 之前')
+    // 入口节点：上游块整体不渲染（而不是「（无）」）
+    expect(p1).not.toContain('上游交接')
+    const p2 = sessionState.asks[1].content
+    // 隐式上游 = 只给路径 + verdict 释义，不注入 summary 正文
+    expect(p2).toContain('── 上游交接 · 来自「列出竞品清单」 ──')
+    expect(p2).toContain('verdict：pass')
+    expect(p2).toContain('.pulsemind/workflows/prun_env/fetch-handoff.md')
+    expect(p2).not.toContain('清单完成')
+  })
+
+  it('去重与开关：{{objective}} 省略目标块；context.upstream:false 省略上游块；{{prevSummary}} 仍是全文语义', async () => {
+    const custom = {
+      ...envelopeWorkflow,
+      nodes: [
+        { id: 'fetch', title: '列出竞品清单', prompt: '抓取清单。目标：{{objective}}', verdicts: ['pass'] },
+        { id: 'prices', title: '抓取竞品价格', prompt: '上游说：{{prevSummary}}', verdicts: ['pass'], context: { upstream: false } },
+      ],
+    }
+    freshState([{ verdict: 'pass', summary: '清单完成' }, { verdict: 'pass', summary: '价格完成' }])
+    await runWorkflowInstance({ runId: 'prun_dedup', workflow: custom, workspaceDir: makeWorkspace(), runObjective: '运行级目标' })
+    const p1 = sessionState.asks[0].content
+    expect(p1).not.toContain('── 全局目标 ──')
+    expect(p1).toContain('目标：运行级目标') // 显式占位符替换语义逐字不变
+    const p2 = sessionState.asks[1].content
+    expect(p2).not.toContain('── 上游交接')
+    expect(p2).toContain('上游说：清单完成') // {{prevSummary}} 全文注入语义不变
+  })
+
+  it('handoff 兜底回填：模型没写 → 结算回填最小交接（verdict/summary/artifacts/notes）；写了 → 一个字节不碰', async () => {
+    const dir = makeWorkspace()
+    freshState([{ finish: { verdict: 'pass', summary: '编码完成', artifacts: ['src/a.ts'], notes: '注意：B 接口限速' } }])
+    await runWorkflowInstance({ runId: 'prun_bf', workflow: envelopeWorkflow, workspaceDir: dir, runObjective: '目标' })
+    const hp = join(dir, '.pulsemind', 'workflows', 'prun_bf', 'fetch-handoff.md')
+    expect(existsSync(hp)).toBe(true)
+    const text = readFileSync(hp, 'utf-8')
+    expect(text).toContain('# 列出竞品清单 交接')
+    expect(text).toContain('## 状态\npass')
+    expect(text).toContain('编码完成')
+    expect(text).toContain('src/a.ts')
+    expect(text).toContain('注意：B 接口限速')
+    // 模型写了就一个字节都不碰（存在即返回）
+    freshState([{ finish: { verdict: 'pass', summary: '第二次运行' } }])
+    const dir2 = makeWorkspace()
+    const hp2 = join(dir2, '.pulsemind', 'workflows', 'prun_bf2', 'fetch-handoff.md')
+    mkdirSync(join(dir2, '.pulsemind', 'workflows', 'prun_bf2'), { recursive: true })
+    writeFileSync(hp2, '模型自己写的交接', 'utf-8')
+    await runWorkflowInstance({ runId: 'prun_bf2', workflow: envelopeWorkflow, workspaceDir: dir2, runObjective: '目标' })
+    expect(readFileSync(hp2, 'utf-8')).toBe('模型自己写的交接')
+  })
+
+  it('RETRY 重入：上游 = 上一次自己的交接（块头「本节点第 2 次运行 · 上次交接」）', async () => {
+    const retryFlow = {
+      id: 'retry-flow',
+      name: '重试流',
+      entry: 'n1',
+      params: { gitCheckpoint: false, defaultMaxVisits: 3 },
+      nodes: [{ id: 'n1', title: '试着跑', prompt: '跑一下。', verdicts: ['pass', 'fail'] }],
+      edges: [
+        { from: 'n1', when: 'pass', to: 'DONE' },
+        { from: 'n1', when: 'fail', to: 'RETRY' },
+      ],
+    }
+    freshState([{ verdict: 'fail', summary: '第一次失败' }, { verdict: 'pass', summary: '第二次成功' }])
+    await runWorkflowInstance({ runId: 'prun_retry', workflow: retryFlow, workspaceDir: makeWorkspace() })
+    const p2 = sessionState.asks[1].content
+    expect(p2).toContain('── 上游交接 · 本节点第 2 次运行 · 上次交接 ──')
+    expect(p2).toContain('verdict：fail')
+    expect(p2).toContain('n1-handoff.md')
+  })
+
+  it('handoff 生命周期：超出最近 20 次的 run 目录被清掉，别的工作区的不碰', async () => {
+    const dir = makeWorkspace()
+    const rows = Array.from({ length: 22 }, (_, i) => ({
+      id: `run_old${i}`,
+      workspaceDir: dir,
+      startedAt: new Date(Date.now() - i * 1000).toISOString(),
+    }))
+    // 超出保留线但属于**别的工作区**：路径过滤必须挡住它
+    rows.push({ id: 'run_elsewhere', workspaceDir: '/elsewhere', startedAt: new Date(Date.now() - 99_000).toISOString() })
+    for (const id of ['run_old20', 'run_old21', 'run_elsewhere']) {
+      mkdirSync(resolveWorkflowHandoff(dir, id).dir, { recursive: true })
+      writeFileSync(join(resolveWorkflowHandoff(dir, id).dir, 'n1-handoff.md'), 'x')
+    }
+    vi.mocked(pipelineRunStore.listRuns).mockReturnValueOnce(rows as never)
+    freshState([{ verdict: 'pass', summary: 'ok' }])
+    await runWorkflowInstance({ runId: 'prun_prune', workflow: envelopeWorkflow, workspaceDir: dir, runObjective: '目标' })
+    expect(existsSync(resolveWorkflowHandoff(dir, 'run_old20').dir)).toBe(false)
+    expect(existsSync(resolveWorkflowHandoff(dir, 'run_old21').dir)).toBe(false)
+    expect(existsSync(resolveWorkflowHandoff(dir, 'run_elsewhere').dir)).toBe(true)
+    // 本 run 自己是最新一条，在保留线内
+    expect(existsSync(resolveWorkflowHandoff(dir, 'prun_prune').dir)).toBe(true)
+  })
 })
