@@ -575,7 +575,9 @@ describe('anthropicAdapter.buildRequest', () => {
   it('assembles url/version headers/system field; trailing slash stripped', () => {
     const req = anthropicAdapter.buildRequest('https://api.anthropic.com/', 'sk-ant', {
       model: 'claude-x', maxTokens: 500, messages: [msg('user', [text('hi')])],
-      tools: [TOOL], systemPrompt: 'SYS', stream: true,
+      // promptCache off: this case asserts the plain wire shape; the markers
+      // have their own block below.
+      tools: [TOOL], systemPrompt: 'SYS', stream: true, promptCache: false,
     })
     expect(req.url).toBe('https://api.anthropic.com/v1/messages')
     expect(req.headers).toEqual({
@@ -595,7 +597,7 @@ describe('anthropicAdapter.buildRequest', () => {
       msg('user', [text('next')], 'm2'),
     ]
     const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
-      model: 'c', maxTokens: 10, messages, tools: [], systemPrompt: '', stream: true,
+      model: 'c', maxTokens: 10, messages, tools: [], systemPrompt: '', stream: true, promptCache: false,
     })
     expect(messages).toHaveLength(3)          // the defensive pass wrote back
     expect(req.body.tools).toEqual([])        // anthropic keeps the key, empty
@@ -610,6 +612,97 @@ describe('anthropicAdapter.buildRequest', () => {
       }],
     })
     expect(apiMessages[2]).toEqual({ role: 'user', content: 'next' })
+  })
+})
+
+// ── Anthropic prompt-caching breakpoints ───────────────────────────────
+// The Messages API does no implicit caching: without a marker the whole prefix
+// is re-billed every round. These cases pin the three breakpoints the adapter
+// now emits (tools / system / sliding tail) and the escape hatch that a strict
+// Anthropic-compatible gateway needs.
+describe('anthropicAdapter.buildRequest — cache breakpoints', () => {
+  const cacheControl = { type: 'ephemeral' }
+
+  it('marks the last tool, the system block and the final message block by default', () => {
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10,
+      messages: [msg('user', [text('hi')], 'm1'), msg('assistant', [text('ok')], 'm2')],
+      tools: [TOOL, { ...TOOL, name: 'write_file' }],
+      systemPrompt: 'SYS', stream: true,
+    })
+    // system is promoted from a bare string to the block form that can carry one
+    expect(req.body.system).toEqual([{ type: 'text', text: 'SYS', cache_control: cacheControl }])
+    // only the LAST tool: the prefix through there is the whole schema list
+    const tools = req.body.tools as Array<Record<string, unknown>>
+    expect(tools[0].cache_control).toBeUndefined()
+    expect(tools[1].cache_control).toEqual(cacheControl)
+    // sliding tail: only the final message's last block
+    const apiMessages = req.body.messages as Array<{ role: string; content: unknown }>
+    expect(apiMessages[0].content).toBe('hi')
+    expect(apiMessages[1].content).toEqual([{ type: 'text', text: 'ok', cache_control: cacheControl }])
+  })
+
+  it('promotes a bare-string final content into a markable block array', () => {
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10, messages: [msg('user', [text('only')])], tools: [], systemPrompt: '', stream: true,
+    })
+    expect(req.body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'only', cache_control: cacheControl }] }])
+  })
+
+  it('skips thinking blocks when marking the tail — the API rejects cache_control on them', () => {
+    // A request that ends on an assistant message whose last block is thinking
+    // (max_tokens continuation shape): the marker must land on the newest
+    // markable block, not the thinking block, or the real endpoint 400s.
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10,
+      messages: [msg('assistant', [thinking('hmm'), text('answer')], 'm1'),
+                 msg('assistant', [text('part'), thinking('still pondering')], 'm2')],
+      tools: [], systemPrompt: 'S', stream: true,
+    })
+    const apiMessages = req.body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    // last message: thinking is final — the marker walks back to the text block
+    expect(apiMessages[1].content[1].cache_control).toBeUndefined()
+    expect(apiMessages[1].content[0].cache_control).toEqual(cacheControl)
+    // the message before it is untouched
+    expect(apiMessages[0].content[0].cache_control).toBeUndefined()
+    expect(apiMessages[0].content[1].cache_control).toBeUndefined()
+  })
+
+  it('marks nothing when the final message is all-thinking (no markable block exists)', () => {
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10,
+      messages: [msg('assistant', [thinking('only pondering')], 'm1')],
+      tools: [], systemPrompt: 'S', stream: true,
+    })
+    const apiMessages = req.body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    expect(apiMessages[0].content[0].cache_control).toBeUndefined()
+  })
+
+  it('emits no marker at all when promptCache is false — the gateway escape hatch', () => {
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10, messages: [msg('user', [text('hi')])],
+      tools: [TOOL], systemPrompt: 'SYS', stream: true, promptCache: false,
+    })
+    expect(req.body.system).toBe('SYS')
+    expect((req.body.tools as Array<Record<string, unknown>>)[0].cache_control).toBeUndefined()
+    expect(req.body.messages).toEqual([{ role: 'user', content: 'hi' }])
+  })
+
+  it('never writes a marker back into params.messages — engine state stays clean', () => {
+    const messages = [msg('user', [text('hi')], 'm1')]
+    anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10, messages, tools: [], systemPrompt: 'S', stream: true,
+    })
+    // The compactor's copy shares block objects with the engine's history; the
+    // marker rides a shallow copy of the OUTGOING payload only.
+    expect(messages[0].contentBlocks).toEqual([{ type: 'text', text: 'hi' }])
+  })
+
+  it('leaves an absent system field absent', () => {
+    const req = anthropicAdapter.buildRequest('https://api.anthropic.com', 'k', {
+      model: 'c', maxTokens: 10, messages: [msg('user', [text('hi')])], tools: [], systemPrompt: '', stream: true,
+    })
+    expect(req.body.system).toBeUndefined()
   })
 })
 

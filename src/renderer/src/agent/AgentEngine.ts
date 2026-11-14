@@ -101,6 +101,12 @@ export interface AgentEngineOptions {
    *  means the guard is fully inert — the dispatch below never runs. */
   earlyStopGuard?: boolean
   profileId?: string
+  /** Anthropic-format explicit prefix-cache switch (2026-11-14, connection-layer
+   *  flag materialized from LlmProviderConfig.promptCache). Absent/undefined =
+   *  the adapter emits cache_control breakpoints (default on); explicit false =
+   *  escape hatch for strict gateways that reject unknown fields. OpenAI-format
+   *  adapters never consume it (their prefix caching is automatic). */
+  promptCache?: boolean
   myName: string
   soul: string
   yourName: string
@@ -1733,6 +1739,9 @@ export class AgentEngine implements EngineCore {
       messages: requestMessages,
       tools: enabledTools,
       systemPrompt,
+      // Anthropic path only: undefined = default-on breakpoints, false = the
+      // provider-level escape hatch. OpenAI adapters ignore the field.
+      promptCache: opts.promptCache,
       stream: true
     })
 

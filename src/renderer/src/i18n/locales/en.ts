@@ -484,6 +484,9 @@ const en: TranslationDict = {
     llmHookHint:
       'When on, each LLM request for this model first runs ~/.pulsemind/hooks/llm-request.js (may rewrite URL/headers/body); takes effect after saving. Off = the script is ignored',
     apiKey: 'API Key',
+    promptCache: 'Prompt Caching',
+    promptCacheHint:
+      'On by default for Anthropic-format providers: attaches cache breakpoints so long sessions read back their prefix at ~10x lower input cost. Only turn off if a gateway rejects the unknown fields',
     saveProfile: 'Save Configuration',
     saved: 'Saved',
     unsavedHint: 'Unsaved changes',

@@ -184,6 +184,86 @@ function reconcileToolResults(messages: AgentMessage[]): void {
   }
 }
 
+// ── Prompt-caching breakpoints ─────────────────────────────────────────
+/**
+ * Anthropic's Messages API does no implicit prompt caching: a request carrying
+ * no `cache_control` marker re-bills its ENTIRE prefix at the full input rate.
+ * We already read `cache_read_input_tokens` back into usage
+ * (promptCacheHitTokens), but never SET a marker — so the hit rate we recorded
+ * was whatever an upstream gateway happened to arrange for us.
+ *
+ * Three of the four breakpoints the API allows, each covering a region that is
+ * genuinely stable across a tool loop:
+ *   1. the last tool definition — the schema list is fixed for the session;
+ *   2. the last system block — system prompt + appendices, stable per turn;
+ *   3. the last markable content block of the final message — the SLIDING tail.
+ *      Prefix caching is cumulative, so marker 3 alone lets the next request
+ *      read back everything above it, including tool traffic that just landed.
+ *      "Markable": the API rejects cache_control on thinking blocks, so the
+ *      marker lands on the newest text/tool_use/tool_result block instead.
+ *
+ * Only the current turn's own tail below marker 3 is re-billed — the protocol's
+ * minimum. The other half of the bargain is the compactor's: history bytes must
+ * not churn between requests (see LIGHT_RECLAIM_MARGIN_RATIO in
+ * context-compactor).
+ */
+const CACHE_CONTROL = { type: 'ephemeral' } as const
+
+/** The API rejects a `cache_control` marker on a thinking block ("Thinking
+ *  blocks cannot be cached directly with cache_control"), so the tail marker
+ *  walks back to the newest MARKABLE block instead of blindly marking the
+ *  last one — requests that end on an assistant thinking block (max_tokens
+ *  continuations) would otherwise hard-400 on the real endpoint. */
+const UNMARKABLE_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking'])
+
+/** Attach the marker to a message's last markable block. Bare-string content
+ *  has no block to mark, so it is promoted to the single-text-block form the
+ *  API also accepts; an empty array is left alone (marking it would be
+ *  meaningless, and the API rejects an empty content array anyway). */
+function markLastContentBlock(content: unknown): unknown {
+  if (typeof content === 'string') {
+    return [{ type: 'text', text: content, cache_control: CACHE_CONTROL }]
+  }
+  if (!Array.isArray(content) || content.length === 0) return content
+  const out = content.slice()
+  let i = out.length - 1
+  while (i >= 0 && UNMARKABLE_BLOCK_TYPES.has((out[i] as { type?: string })?.type ?? '')) i--
+  if (i < 0) return content // every block is thinking — nothing markable
+  out[i] = { ...(out[i] as Record<string, unknown>), cache_control: CACHE_CONTROL }
+  return out
+}
+
+/** Add the three breakpoints to an already-built request body, in place. Every
+ *  touched container is shallow-copied FIRST: `apiMessages` shares its block
+ *  objects with the copy the compactor handed us, and a marker must never leak
+ *  back into engine state (it would then ride the persisted history). */
+function applyCacheBreakpoints(body: Record<string, unknown>): void {
+  // 1. system — the API accepts either a string or a block array, but only the
+  // array form can carry a marker.
+  if (typeof body.system === 'string' && body.system.length > 0) {
+    body.system = [{ type: 'text', text: body.system, cache_control: CACHE_CONTROL }]
+  }
+
+  // 2. tools — one marker on the last definition caches the whole prefix ending
+  // there, i.e. every schema.
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    const tools = body.tools.slice()
+    tools[tools.length - 1] = { ...(tools[tools.length - 1] as Record<string, unknown>), cache_control: CACHE_CONTROL }
+    body.tools = tools
+  }
+
+  // 3. messages — the sliding tail marker.
+  if (Array.isArray(body.messages) && body.messages.length > 0) {
+    const messages = body.messages.slice()
+    const last = messages[messages.length - 1] as Record<string, unknown>
+    const marked = markLastContentBlock(last.content)
+    if (marked !== last.content) {
+      messages[messages.length - 1] = { ...last, content: marked }
+      body.messages = messages
+    }
+  }
+}
+
 // ── Adapter ────────────────────────────────────────────────────────────
 
 export const anthropicAdapter: LlmAdapter = {
@@ -209,6 +289,10 @@ export const anthropicAdapter: LlmAdapter = {
       tools: this.buildTools(tools),
       messages: apiMessages
     }
+    // Explicit cache breakpoints — see applyCacheBreakpoints. An
+    // Anthropic-compatible gateway that rejects unknown fields can opt out
+    // through `promptCache: false`; nothing else changes.
+    if (params.promptCache !== false) applyCacheBreakpoints(body)
 
     return {
       url: apiUrl,
@@ -381,10 +465,15 @@ export const anthropicAdapter: LlmAdapter = {
 
       const parsed = JSON.parse(responseText)
       if (onUsage) {
+        // Same normalization as the SSE dispatcher (message_start): inputTokens
+        // is the FULL billed prompt — raw input_tokens excludes cache
+        // creation/read, and cache-hit-rate.ts's denominator premise relies on
+        // every adapter reporting the sum.
+        const u = parsed?.usage ?? {}
         onUsage({
-          inputTokens: parsed?.usage?.input_tokens,
-          outputTokens: parsed?.usage?.output_tokens,
-          promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
+          inputTokens: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) || undefined,
+          outputTokens: u.output_tokens,
+          promptCacheHitTokens: u.cache_read_input_tokens ?? undefined
         })
       }
       if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)

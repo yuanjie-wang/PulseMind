@@ -448,6 +448,23 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
                 />
               </Field>
 
+              {/* Anthropic 系缓存断点开关（连接层）：Anthropic 无隐式缓存，缺省打
+                  标记；严格网关拒绝未知字段时用显式 false 关掉。openai 规范是自动
+                  前缀缓存，开关无意义，不渲染。 */}
+              {draftProvider.apiFormat === 'anthropic' && (
+                <Field label={t('settingsDrawer.promptCache')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Switch
+                      size="small"
+                      checked={draftProvider.promptCache !== false}
+                      onChange={(v) => updateDraftProvider(draftProvider.id, { promptCache: v ? undefined : false })}
+                      aria-label={t('settingsDrawer.promptCache')}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('settingsDrawer.promptCacheHint')}</Text>
+                  </div>
+                </Field>
+              )}
+
               {/* Custom headers — advanced (default collapsed) */}
               <Collapse
                 ghost

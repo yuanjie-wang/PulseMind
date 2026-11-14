@@ -43,6 +43,12 @@ export interface LlmProviderConfig {
   baseURL: string
   apiKey?: string
   headers?: Record<string, string>
+  /** Anthropic 系显式前缀缓存开关（2026-11-14）：适配器给请求体打
+   *  cache_control 断点（tools/system/末块），没有标记 Anthropic 不做任何
+   *  隐式缓存。缺省/undefined = 打（缺省开）；显式 false = 不打 —— 逃生舱，
+   *  给拒绝未知字段的严格 Anthropic 兼容网关。只在 anthropic 规范下有意义
+   *  （OpenAI 系是自动前缀缓存，适配器本就不消费该参数）。 */
+  promptCache?: boolean
   models: LlmModelConfig[]
 }
 
@@ -68,6 +74,8 @@ export interface LlmProfile {
   earlyStopGuard?: boolean
   /** 物化自所属供应商名下模型条目的 llmHookEnabled（缺席 = 执行 llm-request 钩子）。 */
   llmHookEnabled?: boolean
+  /** 物化自所属供应商的 promptCache（连接层字段；缺席 = Anthropic 系打缓存断点）。 */
+  promptCache?: boolean
   apiKey?: string
   headers?: Record<string, string>
 }

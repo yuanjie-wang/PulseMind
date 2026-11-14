@@ -89,6 +89,9 @@ function normalizeProviders(raw: unknown): LlmProviderConfig[] {
       headers: p.headers && typeof p.headers === 'object' && !Array.isArray(p.headers)
         ? (p.headers as Record<string, string>)
         : undefined,
+      // Anthropic 系缓存断点开关（连接层字段）：缺席 = 开，只有显式 false 才关；
+      // 显式 true 归一为缺席（与 llmHookEnabled 同款「true 与 undefined 同义」）。
+      promptCache: p.promptCache === false ? false : undefined,
       models: normalizeModels(p.models),
     } as LlmProviderConfig)
   }
@@ -124,7 +127,7 @@ function normalizeModels(raw: unknown): LlmModelConfig[] {
 
 /** 模型条目上误带的连接/派生字段（渲染端快照脏数据）在写盘前剥掉：
  *  连接字段只属于供应商层，模型条目带了也永远不会被读。 */
-const MODEL_DISK_STRIP_KEYS = new Set(['providerId', 'providerName', 'provider', 'baseURL', 'apiKey', 'headers'])
+const MODEL_DISK_STRIP_KEYS = new Set(['providerId', 'providerName', 'provider', 'baseURL', 'apiKey', 'headers', 'promptCache'])
 
 function providersForDisk(settings: Pick<AppSettings, 'providers' | 'profiles'>): LlmProviderConfig[] {
   const providers = Array.isArray((settings as { providers?: unknown }).providers)
@@ -197,6 +200,7 @@ function materializeProfiles(providers: LlmProviderConfig[]): LlmProfile[] {
         baseURL: provider.baseURL,
         apiKey: provider.apiKey,
         headers: provider.headers,
+        promptCache: provider.promptCache,
         model: m.model,
         maxTokens: m.maxTokens,
         contextLength: m.contextLength,

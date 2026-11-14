@@ -472,6 +472,8 @@ const zh = {
     llmHook: 'Hooks 脚本',
     llmHookHint: '开启后该模型的每次 LLM 请求前执行 ~/.pulsemind/hooks/llm-request.js（可改写请求地址/请求头/请求体），保存配置后生效；关闭则忽略该脚本',
     apiKey: 'API 密钥',
+    promptCache: '提示词缓存',
+    promptCacheHint: 'Anthropic 系默认开启：给请求打缓存断点，长会话命中后输入费用约降一个数量级；仅当网关拒绝未知字段报错时才需要关闭',
     saveProfile: '保存配置',
     saved: '已保存',
     unsavedHint: '有未保存的更改',

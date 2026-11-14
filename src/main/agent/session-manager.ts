@@ -954,6 +954,9 @@ export class AgentSessionManagerImpl {
       earlyStopGuard: profile.earlyStopGuard === true && !opts.systemPromptOverride,
       profileId: profile.id,
       adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
+      // 连接层缓存开关（2026-11-14）：缺席 = Anthropic 系打 cache_control 断点，
+      // 显式 false = 逃生舱（严格网关拒绝未知字段）。openai 规范不消费该参数。
+      promptCache: profile.promptCache,
       myName: settings.myName,
       soul: settings.soul,
       yourName: settings.yourName,
@@ -1439,6 +1442,8 @@ export class AgentSessionManagerImpl {
       earlyStopGuard: profile.earlyStopGuard === true && !entry.pinned.systemPromptOverride,
       profileId: profile.id,
       adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
+      // Same connection-layer cache switch as the constructor path above.
+      promptCache: profile.promptCache,
       myName: settings.myName,
       soul: settings.soul,
       yourName: settings.yourName,
