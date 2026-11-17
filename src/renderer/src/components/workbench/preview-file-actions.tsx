@@ -6,7 +6,7 @@
 
 import { message } from 'antd'
 import type { MenuProps } from 'antd'
-import { Check, Eye, FileDiff, PenLine, RotateCw, Save, Search } from 'lucide-react'
+import { Check, Eye, FileDiff, FolderOpen, PenLine, RotateCw, Save, Search } from 'lucide-react'
 import { detectFileKind } from '../../../../shared/preview/file-kind'
 import { isDirty } from '../../stores/preview-edit'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from '../../stores/previewPaneStore'
@@ -81,6 +81,18 @@ export function usePreviewFileActions(conversationId: string | undefined): MenuP
     openPreviewSearchPanel()
   }
 
+  // 打开所在文件夹（2026-11-15 用户裁定收进 ⋯ 菜单）：showItemInFolder 让
+  // Finder/资源管理器打开父目录并选中该文件——比 openPath（文件会被默认
+  // 应用接管）更贴近「去文件所在位置看看」的意图。树行的 hover 动作
+  // 「在系统中打开」(WorkspaceTree) 与地址栏的「打开」按钮各说各的语义，
+  // 这里只补「定位文件所在目录」这一条。失败路径走主进程 stat 门的报错。
+  const revealInFolder = () => {
+    if (!activePath) return
+    window.electronAPI.revealItem(activePath).catch((err: unknown) => {
+      void message.error(err instanceof Error ? err.message : t('previewPane.openInOsFailed'))
+    })
+  }
+
   return [
     {
       key: 'edit',
@@ -127,6 +139,14 @@ export function usePreviewFileActions(conversationId: string | undefined): MenuP
       label: t('previewPane.refresh'),
       disabled: !activePath,
       onClick: () => activePath && usePreviewPaneStore.getState().bumpReload(activePath),
+    },
+    { type: 'divider' as const },
+    {
+      key: 'revealInFolder',
+      icon: <FolderOpen size={13} />,
+      label: t('previewPane.revealInFolder'),
+      disabled: !activePath,
+      onClick: revealInFolder,
     },
   ]
 }

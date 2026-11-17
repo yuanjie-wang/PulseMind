@@ -100,6 +100,18 @@ export function safeOpenPath(raw: string): string | null {
   return raw
 }
 
+/** Validate a path destined for `shell.showItemInFolder` (reveal-only, 预览
+ *  ⋯ 菜单的「打开所在文件夹」): unlike `shell.openPath` this NEVER launches
+ *  the item — Finder/Explorer just opens the parent and selects it — so the
+ *  executable deny-list of `safeOpenPath` is deliberately absent (revealing a
+ *  downloaded .app/.exe is legitimate). Only the form checks remain. Returns
+ *  the path or null (deny). */
+export function safeRevealPath(raw: string): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  if (raw.includes('\0')) return null
+  return raw
+}
+
 /**
  * Validate a URL destined for `shell.openExternal`.
  * Returns the (possibly normalized) URL, or null when it must not be opened.

@@ -148,6 +148,8 @@ const zh = {
   previewPane: {
     refresh: '刷新',
     openInOs: '在系统中打开',
+    revealInFolder: '在系统中打开所在文件夹',
+    openInOsFailed: '无法在系统中打开',
     saveAs: '另存为',
     closeTab: '关闭标签',
     tabEmptyHint: '未打开文件',

@@ -338,6 +338,9 @@ const electronAPI = {
   getPlatformInfo: (): Promise<PlatformInfo> => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_PLATFORM_INFO),
   getDataPaths: (): Promise<DataPaths> => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_DATA_PATHS),
   openFolder: (folderPath: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_FOLDER, folderPath),
+  // Reveal an item in the file manager (selects it in its parent folder) —
+  // the preview ⋯ menu's 「打开所在文件夹」.
+  revealItem: (itemPath: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_REVEAL_ITEM, itemPath),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, url),
   getFileStat: (filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.FILE_STAT, filePath),

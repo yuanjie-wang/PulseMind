@@ -480,6 +480,10 @@ export interface ElectronAPI {
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) => Promise<unknown>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>
+  /** Reveal an item in the file manager (`shell.showItemInFolder` — opens the
+   *  parent folder and selects the item); the preview ⋯ menu's 「打开所在
+   *  文件夹」. Throws when the item is gone (main stat-gates). */
+  revealItem: (itemPath: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
   getFileStat: (filePath: string) => Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null>
   /** Disk path behind a pasted/dropped `File` — sync, no IPC. Electron 33

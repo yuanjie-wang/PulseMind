@@ -5,7 +5,7 @@ import { stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOLS_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
-import { safeExternalUrl, safeOpenPath } from '../utils/external-url'
+import { safeExternalUrl, safeOpenPath, safeRevealPath } from '../utils/external-url'
 import { setTitleBarMaskAlpha } from '../window-chrome'
 
 export interface PlatformInfo {
@@ -114,6 +114,24 @@ export function registerAppHandlers(): void {
     // a silent no-op; the renderer's catch has a toast waiting for it.
     const failure = await shell.openPath(safe)
     if (failure) throw new Error(failure)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SHELL_REVEAL_ITEM, async (_event, itemPath: string): Promise<void> => {
+    // 「打开所在文件夹」(预览 ⋯ 菜单)：showItemInFolder 在文件管理器里定位
+    // 该项、绝不启动它，因此不走 openPath 那条可执行扩展名黑名单（reveal
+    // 一个 .app 只是让 Finder 选中它），只保留 safeRevealPath 的形态校验。
+    // stat 门承重：showItemInFolder 对缺失路径是全平台静默 no-op（macOS
+    // NSWorkspace.selectFile 返回 false 且无人消费）——点击一个已被删除的
+    // 文件必须给出可行动报错，而不是什么都不发生（与上面 openPath 的同一
+    // 条纪律：静默失败 = 用户以为点了没按到）。
+    const safe = safeRevealPath(itemPath)
+    if (!safe) throw new Error(`blocked revealItem (malformed path): ${String(itemPath).slice(0, 120)}`)
+    try {
+      await stat(safe)
+    } catch {
+      throw new Error(`文件不存在或已被移动：${safe}`)
+    }
+    shell.showItemInFolder(safe)
   })
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, async (_event, url: string): Promise<void> => {

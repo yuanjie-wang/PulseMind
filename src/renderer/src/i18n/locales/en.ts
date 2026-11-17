@@ -151,6 +151,8 @@ const en: TranslationDict = {
   previewPane: {
     refresh: 'Refresh',
     openInOs: 'Open in system',
+    revealInFolder: 'Open Containing Folder',
+    openInOsFailed: 'Could not open in system',
     saveAs: 'Save as',
     closeTab: 'Close tab',
     tabEmptyHint: 'No open files',

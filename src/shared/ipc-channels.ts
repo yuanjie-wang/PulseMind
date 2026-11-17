@@ -116,6 +116,9 @@ export const IPC_CHANNELS = {
   // ── Shell ──
   SHELL_OPEN_FOLDER: 'shell:open-folder',
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
+  // 在文件管理器里定位并选中一项（shell.showItemInFolder）——预览 ⋯ 菜单的
+  // 「打开所在文件夹」：目标是屏幕上的活动文件，Finder 打开其父目录并选中。
+  SHELL_REVEAL_ITEM: 'shell:reveal-item',
 
   // ── Skills ──
   SKILLS_GET_PREFERENCES: 'skills:get-preferences',
