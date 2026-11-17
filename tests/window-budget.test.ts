@@ -52,7 +52,12 @@ describe('effectiveInputWindow', () => {
 
   it('falls back to the default reserve when the ask is unknown', () => {
     const expected = 200_000 - DEFAULT_OUTPUT_RESERVE
-    expect(DEFAULT_OUTPUT_RESERVE).toBe(32_000)
+    // 32_768 mirrors the main process's assembly default (`profile.maxTokens
+    // ?? 32768`, session-manager.ts) — NOT ZCode's 32_000. The two defaults
+    // must be one number: the ring's tick falls back here while the engine
+    // gets the assembled value, and a split shifts the tick off the real
+    // boundary by exactly the difference (the 768-token review find).
+    expect(DEFAULT_OUTPUT_RESERVE).toBe(32_768)
     expect(effectiveInputWindow(200_000)).toBe(expected)
     // 0 and NaN both mean "the caller cannot say", never "reserve nothing".
     expect(effectiveInputWindow(200_000, 0)).toBe(expected)

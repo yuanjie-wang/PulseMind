@@ -20,8 +20,13 @@
  */
 
 /** Assumed output ask when the caller cannot say what the model's limit is.
- *  Matches ZCode's `maxOutputTokens ?? 32_000` fallback. */
-export const DEFAULT_OUTPUT_RESERVE = 32_000
+ *  Mirrors the main process's options assembly — `profile.maxTokens ?? 32768`
+ *  (session-manager.ts, both call sites) — NOT ZCode's 32_000: a profile-backed
+ *  session never hands the engine "unknown", so callers that read profiles on
+ *  their own (the context ring's resolveMaxTokens) must fall back to the SAME
+ *  number or the tick drifts off the engine's real boundary by the difference
+ *  (768 tokens was a real review finding, 2026-11-17). */
+export const DEFAULT_OUTPUT_RESERVE = 32_768
 
 /**
  * The input-side budget for a total window of `contextLength`.

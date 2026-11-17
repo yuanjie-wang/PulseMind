@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveContextWindow, resolveMaxTokens } from '../src/renderer/src/utils/context-window'
-import { effectiveInputWindow } from '../src/renderer/src/agent/engine/window-budget'
+import { DEFAULT_OUTPUT_RESERVE, effectiveInputWindow } from '../src/renderer/src/agent/engine/window-budget'
 
 /**
  * 输入预算刻度（方案 A，user 2026-11-17 拍板）。
@@ -41,7 +41,8 @@ describe('resolveMaxTokens — 解析链镜像主进程', () => {
   })
 
   it('never borrows another model’s reserve when the hit entry has none', () => {
-    // 红线：命中的条目没设 maxTokens 时给 undefined（下游按默认 32K 算），
+    // 红线：命中的条目没设 maxTokens 时给 undefined（下游按缺省预留算：
+    // DEFAULT_OUTPUT_RESERVE = 32_768，镜像主进程装配缺省，见下方钉子），
     // 不顺延到 profiles[0]。这里 profiles[0] 恰好有 32_000，若实现写成
     // `?.maxTokens ?? profiles[0]?.maxTokens` 就会静默通过 —— 所以另配一组
     // 让「别人有、它有」的差异可见。
@@ -54,6 +55,17 @@ describe('resolveMaxTokens — 解析链镜像主进程', () => {
     // 0 是显式值，这里只保证不被解析链吞掉；0 在下游被当成「无法表述」
     // 而回落默认预留，那是 window-budget 的口径，已有单测覆盖。
     expect(resolveMaxTokens([{ id: 'A', maxTokens: 0 }], 'A', undefined)).toBe(0)
+  })
+
+  it('缺省预留镜像主进程装配缺省（session-manager 的 ?? 32768）', () => {
+    // 渲染端刻度对「profile 没设 maxTokens」的回落值，必须与主进程喂给引擎
+    // 的装配缺省是同一个数——两边各说各话时，刻度与引擎真实边界差 768
+    // tokens（32_000 vs 32_768，2026-11-17 评审钉死）。扫装配处的字面量：
+    // 将来改主进程缺省而忘了改 DEFAULT_OUTPUT_RESERVE（或反之），这里先红。
+    const sessions = src('src/main/agent/session-manager.ts')
+    const defaults = [...sessions.matchAll(/maxTokens: profile\.maxTokens \?\? (\d+)/g)].map((m) => m[1])
+    expect(defaults.length, 'main process assembles maxTokens in at least one place').toBeGreaterThan(0)
+    expect(new Set(defaults)).toEqual(new Set([String(DEFAULT_OUTPUT_RESERVE)]))
   })
 
   it('reads window and reserve off the SAME entry', () => {
@@ -87,9 +99,12 @@ describe('刻度位置 == 引擎压缩的边界', () => {
   })
 
   it('ask 未知时按默认预留画，与引擎同一回落', () => {
+    // 缺省预留 = 32_768（镜像主进程装配缺省），不再是 ZCode 的 32_000：
+    // 200_000 - 32_768 = 167_232，环上取整仍显示 84%，与显式 32K ask 的
+    // 那条刻度肉眼无差，但数值上与引擎边界严格同值。
     const total = 200_000
-    expect(effectiveInputWindow(total, undefined)).toBe(168_000)
-    expect(effectiveInputWindow(total, 0)).toBe(168_000)
+    expect(effectiveInputWindow(total, undefined)).toBe(167_232)
+    expect(effectiveInputWindow(total, 0)).toBe(167_232)
   })
 })
 
