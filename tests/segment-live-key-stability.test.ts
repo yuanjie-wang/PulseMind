@@ -137,3 +137,58 @@ describe('live tail key across the streaming→settled boundary', () => {
     expect(legacyTail.key).toBeUndefined()
   })
 })
+
+// The structural-sharing cache (buildSegments' prefix reuse via matchSegment)
+// must treat a stats-only message change as a change. The terminal stamp
+// (shared/agent-session/message-stats.ts) patches the answer message's stats
+// IN PLACE after append — the turn total replacing that round's own stream
+// time — and the mirror fold delivers it as a NEW message object. A cache
+// keyed only by (id, tool_use statuses) reused the old segment object, so
+// React.memo skipped the stats row forever: an 17.8min turn read as its last
+// round's 16.4s on screen while the DB already held the total
+// (conv_20261116210413, 用户反馈 2026-11-16「显示的处理时间才16.4s」).
+describe('segment cache vs the terminal stats stamp', () => {
+  const stats = (processingMs?: number, inputTokens?: number, outputTokens?: number, promptCacheHitTokens?: number) =>
+    ({ processingMs, inputTokens, outputTokens, promptCacheHitTokens })
+
+  it('the stamp reaches the segment MessageGroup renders', () => {
+    const final = msg('m_final', 'assistant', textBlock('答案'))
+    Object.assign(final, stats(16_400, 65_237, 980, 62_592))
+    const prev = msg('m_prev', 'assistant', textBlock('上一轮'))
+    Object.assign(prev, stats(28_553))
+
+    const first = buildSegments({
+      messages: [prev, final], isStreaming: false, streamingBlocks: [],
+      cached: [], streamingToolAccum: new Map(),
+    })
+    const idx = first.findIndex((s) => s.type === 'single' && s.msg.id === 'm_final__text')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(first[idx].msg.processingMs).toBe(16_400) // the per-round value painted live
+
+    // Turn closes: the mirror fold replaces the message object (new array).
+    const patched = { ...final, ...stats(1_069_290) }
+    const second = buildSegments({
+      messages: [prev, patched], isStreaming: false, streamingBlocks: [],
+      cached: first, streamingToolAccum: new Map(),
+    })
+    expect(second[idx].msg.processingMs).toBe(1_069_290) // ❌ was 16400 before the fix
+  })
+
+  it('genuinely unchanged messages still reuse the cache', () => {
+    const prev = msg('m_prev', 'assistant', textBlock('上一轮'))
+    Object.assign(prev, stats(28_553, 60_000, 1_200, 58_000))
+    const final = msg('m_final', 'assistant', textBlock('答案'))
+    Object.assign(final, stats(16_400))
+
+    const first = buildSegments({
+      messages: [prev, final], isStreaming: false, streamingBlocks: [],
+      cached: [], streamingToolAccum: new Map(),
+    })
+    const second = buildSegments({
+      messages: [prev, final], isStreaming: false, streamingBlocks: [],
+      cached: first, streamingToolAccum: new Map(),
+    })
+    // Same objects, same stats → the prefix cache still hits (React.memo can skip).
+    expect(second[0]).toBe(first[0])
+  })
+})

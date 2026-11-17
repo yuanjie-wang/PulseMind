@@ -7,6 +7,7 @@
  * gives a flat layout with tools collapsible and text/ask_user always visible.
  */
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
+import { messageStatsSignature } from '../../../../shared/agent-session/message-stats'
 
 export type Segment =
   | {
@@ -109,6 +110,14 @@ export function matchSegment(a: Segment, b: Segment): boolean {
     // tick behind, the same in-place-mutation lesson as the exec slices below.
     if (a.live !== undefined || (b as typeof a).live !== undefined) return false
     if (a.msg.id !== (b as typeof a).msg.id) return false
+    // The terminal stamp (shared/agent-session/message-stats.ts) patches the
+    // answer message's stats IN PLACE after it was appended — the turn total
+    // replacing that round's own stream time is exactly the change this cache
+    // must not swallow, or the 耗时 row freezes on the per-round value until
+    // remount (conv_20261116210413: an 17.8min turn read as its last round's
+    // 16.4s on screen while the DB already held the total). Same signature the
+    // transport diffs by, so both layers call a stats change a change.
+    if (messageStatsSignature(a.msg) !== messageStatsSignature((b as typeof a).msg)) return false
     // If tool_use block statuses differ, content has changed (e.g. ask_user
     // responded) — don't match, so the new segment isn't replaced with cached.
     const bSeg = b as typeof a
