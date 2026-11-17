@@ -9,6 +9,11 @@ dist/
 out/
 release/
 
+# CI build artifacts downloaded to the repo root for local inspection
+# (2026-11-15, ~1.7GB across linux-/mac-arm64-/mac-x64-/win-* subdirs) —
+# never part of the repo; `git add -A` must not stage them (review_20261117 中3).
+/dist-artifacts/
+
 # OS / system
 .DS_Store
 *.tsbuildinfo
