@@ -1537,7 +1537,16 @@ export class AgentSessionManagerImpl {
         // P1-B: persist before emitting — a live client renders from the event,
         // but only the DB can tell a cold-started engine that this history was
         // compacted, and what the post-compaction baseline was.
-        setLastCompaction(sessionId, event)
+        // The write is best-effort and must never gate the emit: a busy / full /
+        // read-only DB would otherwise swallow the LIVE event as well (no ring
+        // update, no 已压缩 chip) and throw into the compaction call chain.
+        // Losing the restart copy costs a stale watermark; losing the emit costs
+        // the user the whole feature.
+        try {
+          setLastCompaction(sessionId, event)
+        } catch (err) {
+          console.warn(`[AgentSession] compaction persist failed (${sessionId}):`, err)
+        }
         this.emit(sessionId, { type: 'compaction', event })
       },
     }

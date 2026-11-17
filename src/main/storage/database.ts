@@ -396,6 +396,11 @@ function createTables(): void {
   // exec 每次启动都跑，存量库里这一列要到上面那行才存在，放进前面的索引块会 SQLITE_ERROR
   // 而整个 init 被当成损坏。SQLite 视 NULL 互不相等，所以存量行（全 NULL）共存不冲突。
   try { database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_message_id ON messages(conversation_id, client_message_id)') } catch {}
+  // 往这一列写值之前必读：upsertMsg（conversation.db.ts，共两处）只写 ON CONFLICT(id)，
+  // 列清单里也没有 client_message_id。今天全写 NULL，所以这条索引形同虚设；一旦有人开始
+  // 填值，主键不同而该列相同的两行会撞索引，而 ON CONFLICT(id) 接不住 → SQLITE_CONSTRAINT
+  // 冒到 transaction 外 → 整批回滚、该会话永久存不进。要写值必须同一批把 upsertMsg 的
+  // conflict target 一起改（加 DO NOTHING / 改复合键），或降级为普通索引 + 应用层去重。
   // Ensure tool_results has the is_error column
   try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch {}

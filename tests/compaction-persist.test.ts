@@ -48,13 +48,33 @@ describe('P1-B lastCompaction 冷恢复接线', () => {
     expect(SESSIONS.slice(at, at + 600)).toMatch(/engine\.lastCompaction = getLastCompaction\(sessionId\)/)
   })
 
+  // 按花括号配对切出 handler 体：字符窗口（曾经的 at + 500）会随注释行数漂移——
+  // 2026-11-17 给 onCompaction 加 try/catch 和说明，就把这条断言自己撑破了。配对提取
+  // 对注释、缩进、try/catch 都免疫，钉的仍是「同一个 handler 内」。这一段里字符串中的
+  // ${…} 与 { type: … } 都成对出现，净深度不变。
+  function handlerBody(source: string, from: number): string {
+    const open = source.indexOf('{', from)
+    expect(open, 'handler must have a body').toBeGreaterThan(-1)
+    let depth = 0
+    for (let i = open; i < source.length; i++) {
+      if (source[i] === '{') depth++
+      else if (source[i] === '}' && --depth === 0) return source.slice(open, i + 1)
+    }
+    throw new Error('unbalanced handler body')
+  }
+
   it('onCompaction 先写库再 emit，且不得退回单行 emit 形式', () => {
     const at = SESSIONS.indexOf('onCompaction:')
     expect(at).toBeGreaterThan(-1)
-    const body = SESSIONS.slice(at, at + 500)
+    const body = handlerBody(SESSIONS, at)
     expect(body).toMatch(/setLastCompaction\(sessionId, event\)/)
     // 若 emit 缺席则 indexOf 为 -1，这句会失败——正是想要的
     expect(body.indexOf('setLastCompaction')).toBeLessThan(body.indexOf('this.emit('))
     expect(body).not.toMatch(/onCompaction: \(event: CompactionEvent\) => this\.emit/)
+    // 本次修复的核心不变量：写库被 try 包住时，emit 必须落在 catch 之后（即不在 try 内）。
+    // 反过来写就是把 UI 事件关进 try——写库一抛，catch 连它一起吃，用户看不到压缩发生。
+    const catchAt = body.indexOf('} catch')
+    expect(catchAt, 'persist must be guarded by try/catch').toBeGreaterThan(-1)
+    expect(body.indexOf('this.emit('), 'emit must sit outside the guarded block').toBeGreaterThan(catchAt)
   })
 })

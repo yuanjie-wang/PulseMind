@@ -20,6 +20,23 @@ function expectLines(source: string, pattern: RegExp, file: string, min = 1): Re
   return matches!
 }
 
+/** Slice a handler body out by brace pairing from `from`. A character window
+ *  ({0,400} / at + 500) is hostage to comment length — the 2026-11-17 try/catch
+ *  and its explanation pushed onCompaction past every such budget and broke the
+ *  very assertion that guarded it. Pairing is immune to comments and nesting, so
+ *  it keeps pinning "same handler" without a brittle span. `${…}` and
+ *  `{ type: … }` inside strings are balanced, so the depth stays net-zero here. */
+function handlerBody(source: string, from: number): string {
+  const open = source.indexOf('{', from)
+  expect(open, 'handler must have a body').toBeGreaterThan(-1)
+  let depth = 0
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth++
+    else if (source[i] === '}' && --depth === 0) return source.slice(open, i + 1)
+  }
+  throw new Error('unbalanced handler body')
+}
+
 describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
   const payloads = src('src/shared/agent-protocol/payloads.ts')
   const mirror = src('src/shared/agent-session/mirror.ts')
@@ -47,16 +64,17 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
 
   it('session-manager forwards onCompaction and whitelists compactNow', () => {
     // P1-B (2026-11-17) made this handler two steps — persist, then emit — so the
-    // single-line form is gone by design. The {0,400} span keeps the scan inside
-    // the handler: an unbounded lazy wildcard could hop to a later emit and pass
-    // even after the forward here was deleted. compaction-persist.test.ts owns
-    // the strict "write before emit" index assertion; this one only pins that
-    // both hops still live in the same handler.
-    expectLines(
-      sessionManager,
-      /onCompaction: \(event: CompactionEvent\) => \{[\s\S]{0,400}?setLastCompaction\(sessionId, event\)[\s\S]{0,400}?this\.emit\(sessionId, \{ type: 'compaction', event \}\)/,
-      'session-manager.ts'
-    )
+    // single-line form is gone by design. The scan is anchored by brace pairing
+    // rather than a character span: the later try/catch and its comments pushed
+    // onCompaction past every {0,400} budget and broke this very assertion.
+    // compaction-persist.test.ts owns the strict order ("write before emit, emit
+    // outside the guarded block"); this one only pins that both hops still live
+    // in the same handler, with expectLines' non-vacuity guard on each.
+    const at = sessionManager.indexOf('onCompaction:')
+    expect(at, 'session-manager must forward onCompaction').toBeGreaterThan(-1)
+    const body = handlerBody(sessionManager, at)
+    expectLines(body, /setLastCompaction\(sessionId, event\)/, 'session-manager.ts onCompaction')
+    expectLines(body, /this\.emit\(sessionId, \{ type: 'compaction', event \}\)/, 'session-manager.ts onCompaction')
     expectLines(sessionManager, /case 'compactNow': return engine\.compactNow\(args\[0\] as string \| undefined\)/, 'session-manager.ts')
   })
 
