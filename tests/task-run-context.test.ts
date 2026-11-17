@@ -151,6 +151,26 @@ describe('task kernel wiring', () => {
     expect(wizard).toMatch(/schedule: cron \? \{ cron, catchUp: next\.catchUp \} : undefined/)
   })
 
+  it('运行设置步的最长执行时长：两种 kind 各绑各的超时（2026-11-17 提升刀）', () => {
+    const wizard = read('src/renderer/src/components/routine/TaskWizardPage.tsx')
+    // 对话式任务绑任务级 timeoutMinutes（约束单笔运行与批量行）。
+    expect(wizard).toMatch(/draft\.timeoutMinutes \?\? 15/)
+    expect(wizard).toMatch(/editDraft\(\{ \.\.\.draft, timeoutMinutes \}\)/)
+    // 工作流绑单环节超时 params.stageTimeoutMinutes（引擎逐环节计时器），
+    // 带「永不超时」选项（user 2026-11-17：0 = 不武装计时器）；routine 臂
+    // 刻意没有它——无人值守运行必须保有硬上限。
+    expect(wizard).toMatch(/def\.params\?\.stageTimeoutMinutes \?\? 30/)
+    expect(wizard).toMatch(/mutateWf\(\(d\) => \(\{ \.\.\.d, params: \{ \.\.\.d\.params, stageTimeoutMinutes \} \}\)\)/)
+    expect(wizard).toContain('neverLabel="永不超时"')
+    expect(wizard.match(/neverLabel=/g)?.length).toBe(1)
+    // 单一编辑面：runctx 步的两个臂共用 TimeoutMinutesSection，批量块里
+    // 不再有第二颗超时选择器（两处编辑同一语义必然漂移）。
+    expect(wizard.match(/<TimeoutMinutesSection/g)?.length).toBe(2)
+    const form = read('src/renderer/src/components/routine/RoutineForm.tsx')
+    expect(form).toContain('export function TimeoutMinutesSection')
+    expect(form).not.toContain('data-batch-timeout')
+  })
+
   // 卡片统一（user 2026-11-09）：两类任务共用同一颗启用开关，所以工作流的
   // `enabled` 必须是真开关——类型里有、调度器读、事件触发读、IPC 有 toggle op。
   // 任一处漏掉，「关掉」就只是卡片上的一个视觉状态。

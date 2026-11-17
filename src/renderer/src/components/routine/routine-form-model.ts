@@ -30,6 +30,9 @@ export interface RoutineDraftState {
   workspaceDir?: string
   approvalMode?: SandboxApprovalMode
   profileId?: string
+  /** 任务最长执行时长（分钟，2026-11-17 从 batch.timeoutMinutes 提升为任务级）；
+   *  absent = batch 寄居旧值兼容回落，再缺 = 默认 15。 */
+  timeoutMinutes?: number
   /** Batch mode over a CSV (PLAN-routine-batch); absent = a single-run task.
    *  Like the run context, the assistant never touches it, and its patches
    *  never blank it (applyAssistantPatch spreads the current draft). */
@@ -75,6 +78,7 @@ export function routineToDraft(routine: Routine): RoutineDraftState {
     workspaceDir: routine.workspaceDir,
     approvalMode: routine.approvalMode,
     profileId: routine.profileId,
+    timeoutMinutes: routine.timeoutMinutes,
     batch: routine.batch,
     triggers: routine.triggers,
   }
@@ -109,6 +113,8 @@ export function draftToRoutineInput(draft: RoutineDraftState): Partial<Routine> 
     workspaceDir: draft.workspaceDir?.trim() || undefined,
     approvalMode: draft.approvalMode,
     profileId: draft.profileId?.trim() || undefined,
+    // Undefined = "use the default" — the main-side normalizeInput drops absent.
+    timeoutMinutes: draft.timeoutMinutes,
     // csvPath is trimmed/blank-dropped main-side (normalizeBatchConfig); an
     // empty path here simply saves as "not configured".
     batch: draft.batch?.csvPath?.trim() ? draft.batch : undefined,

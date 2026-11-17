@@ -21,7 +21,7 @@ import { notify, executeUnattended } from './routine-runner'
 import { postSettlementEvent } from './webhook-out'
 import { BatchQueue } from './batch-queue'
 import { loadBatchSource } from './batch-source'
-import { rowParamsAt, planResumeRows, progressFromAttempts, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes } from '../../shared/routine/batch'
+import { rowParamsAt, planResumeRows, progressFromAttempts, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveRunTimeoutMinutes } from '../../shared/routine/batch'
 import { assertRunnableParams } from '../../shared/routine/params'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
@@ -101,7 +101,7 @@ class BatchRunner {
       ?? normalizeBatchConcurrency(routine.batch?.concurrency)
       ?? DEFAULT_BATCH_CONCURRENCY
     const timeoutMinutes = normalizeBatchTimeoutMinutes(overrides?.timeoutMinutes)
-      ?? effectiveTimeoutMinutes(routine.batch)
+      ?? effectiveRunTimeoutMinutes(routine)
     const parentRun = routineStore.startBatchRun(routine.id, trigger, {
       csvName: source.csvName,
       totalRows: source.rows.length,
@@ -165,7 +165,7 @@ class BatchRunner {
       ?? normalizeBatchConcurrency(routine.batch?.concurrency)
       ?? DEFAULT_BATCH_CONCURRENCY
     const timeoutMinutes = normalizeBatchTimeoutMinutes(parent.batch?.timeoutMinutes)
-      ?? effectiveTimeoutMinutes(routine.batch)
+      ?? effectiveRunTimeoutMinutes(routine)
     routineStore.reopenBatchRun(parentRunId)
     auditStore.record({ scope: 'routine', actor: routine.id, action: 'batch.resume', target: parentRunId, decision: 'allowed' })
     this.spawn({ ...parent, status: 'running', finishedAt: undefined, error: undefined }, routine, total, (i) => paramsByIndex.get(i) ?? {}, concurrency, timeoutMinutes, plan.indices)

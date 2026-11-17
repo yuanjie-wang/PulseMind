@@ -115,10 +115,13 @@ describe('the renderer routes each shape to its own transport', () => {
   })
 })
 
-describe('the configured 单次超时 reaches a single run', () => {
-  it('routine-runner resolves its ceiling through the shared chain', () => {
+describe('the configured 最长执行时长 reaches a single run', () => {
+  it('routine-runner resolves its ceiling through the task-level chain', () => {
     const src = source('src/main/routine/routine-runner.ts')
-    expect(src).toContain('effectiveTimeoutMinutes(routine.batch)')
+    // 2026-11-17：超时从 routine.batch 提升为任务级字段——解析走
+    // effectiveRunTimeoutMinutes（顶层 → batch 寄居旧值 → 默认）。
+    expect(src).toContain('effectiveRunTimeoutMinutes(routine)')
+    expect(src).not.toContain('effectiveTimeoutMinutes(routine.batch)')
     // …and passes it into the primitive — a resolved value that never reaches
     // executeUnattended is the bug all over again.
     expect(src).toMatch(/executeUnattended\(\{[\s\S]{0,400}timeoutMs,/)
@@ -126,7 +129,7 @@ describe('the configured 单次超时 reaches a single run', () => {
 
   it('batch-runner resolves the same chain (one config, two shapes of run)', () => {
     const src = source('src/main/routine/batch-runner.ts')
-    expect(src.match(/effectiveTimeoutMinutes\(routine\.batch\)/g)?.length).toBe(2)
+    expect(src.match(/effectiveRunTimeoutMinutes\(routine\)/g)?.length).toBe(2)
     // The old inline tail is gone — two copies of the chain is how they drift.
     expect(src).not.toContain('?? DEFAULT_BATCH_TIMEOUT_MINUTES')
   })

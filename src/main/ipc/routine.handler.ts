@@ -9,6 +9,7 @@ import { previewCsv } from '../routine/batch-source'
 import { routineRunHistory } from '../routine/routine-run-history'
 import { checkCron } from '../../shared/schedule/cron'
 import { checkWorkspacePathFormat } from '../../shared/workspace-path'
+import { normalizeBatchTimeoutMinutes } from '../../shared/routine/batch'
 import { normalizeBatchConfig } from '../storage/task-config-normalize'
 import { taskTriggerManager } from '../task/task-triggers'
 import type { Routine, RoutineParam } from '../../shared/types/routine'
@@ -182,6 +183,10 @@ function normalizeInput(input: Partial<Routine>): Omit<Routine, 'id' | 'createdA
     approvalMode: input.approvalMode,
     profileId: input.profileId?.trim() || undefined,
     sourceConversationId: input.sourceConversationId,
+    // 任务最长执行时长（2026-11-17 从 batch.timeoutMinutes 提升为任务级）：
+    // normalizeBatchTimeoutMinutes throws on present-but-invalid, so a garbage
+    // value refuses the save instead of silently moving the ceiling.
+    timeoutMinutes: normalizeBatchTimeoutMinutes(input.timeoutMinutes),
     batch: normalizeBatchConfig(input.batch),
     triggers: input.triggers,
   }

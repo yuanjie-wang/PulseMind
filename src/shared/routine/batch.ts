@@ -144,16 +144,26 @@ export function normalizeBatchTimeoutMinutes(value: unknown): number | undefined
   return value
 }
 
-/** The ceiling a run of this routine executes under, in minutes: its configured
- *  单次超时, else the default. ONE chain for a single run and a batch row — the
- *  value lives on `routine.batch` because that is where the editor writes it
- *  (storing it needs a CSV), but it bounds the TASK's runs, not the file's
- *  (user 2026-09-26: 「设置批量参数后，再使用单笔运行，无法享受到超时时间等配置」).
- *  A batch's per-run override layers on top at the start door, so only the
- *  config half lives here; an invalid stored value throws (refuse the start,
- *  don't fire late). */
+/** The batch-shaped resolver (frozen parent meta / run rows): its configured
+ *  单次超时, else the default. The TASK's config now lives on the top-level
+ *  `routine.timeoutMinutes` — resolve through effectiveRunTimeoutMinutes; a
+ *  batch's per-run override still layers on top at the start door. An invalid
+ *  stored value throws (refuse the start, don't fire late). */
 export function effectiveTimeoutMinutes(batch: { timeoutMinutes?: number } | undefined): number {
   return normalizeBatchTimeoutMinutes(batch?.timeoutMinutes) ?? DEFAULT_BATCH_TIMEOUT_MINUTES
+}
+
+/** The task-level resolver (2026-11-17：超时从 routine.batch 提升为任务级字段)：
+ *  top-level `routine.timeoutMinutes` first, the batch-resident legacy value
+ *  second (existing installs keep working without migration), else the default.
+ *  Same throwing contract as effectiveTimeoutMinutes — an invalid stored value
+ *  refuses the start rather than firing late. The batch-shaped
+ *  effectiveTimeoutMinutes stays for surfaces that read a FROZEN parent meta
+ *  (run rows), not the task's config. */
+export function effectiveRunTimeoutMinutes(routine: { timeoutMinutes?: number; batch?: { timeoutMinutes?: number } } | undefined): number {
+  return normalizeBatchTimeoutMinutes(routine?.timeoutMinutes)
+    ?? normalizeBatchTimeoutMinutes(routine?.batch?.timeoutMinutes)
+    ?? DEFAULT_BATCH_TIMEOUT_MINUTES
 }
 
 // ── Resume after an interruption (停止 / 应用退出) ──

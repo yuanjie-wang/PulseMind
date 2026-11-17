@@ -31,7 +31,7 @@ import { EDITOR_CARD_SURFACE } from '../layout/editor-layout'
 import { clampWizardAssistWidth, COLUMN_DRAG_HANDLE_WIDTH, WIZARD_ASSIST_DEFAULT_WIDTH } from '../../../../shared/ui/layout-widths'
 import { useColumnDrag } from '../../hooks/useColumnDrag'
 import { configToCron } from '../../utils/schedule-builder'
-import { ParamsSection, PromptContentSection, ScheduleSection, BatchSection, TriggersSection, TaskRunContextFields, VariableSection } from './RoutineForm'
+import { ParamsSection, PromptContentSection, ScheduleSection, BatchSection, TriggersSection, TaskRunContextFields, TimeoutMinutesSection, VariableSection } from './RoutineForm'
 import type { VariableRow } from './RoutineForm'
 import { WorkflowCanvas, blankWorkflow } from './WorkflowCanvas'
 import { ROUTINE_ASSIST_SPEC, ROUTINE_ASSIST_ALLOWED_TOOLS, ROUTINE_ASSISTANT_PROFILE } from './routine-assist'
@@ -732,15 +732,39 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
             )}
 
             {step === 'runctx' && (
-              <TaskRunContextFields
-                value={kind === 'routine' ? draft : { workspaceDir: def.workspaceDir, approvalMode: def.approvalMode, profileId: def.profileId }}
-                onChange={(patch) => {
-                  if (kind === 'routine') editDraft({ ...draft, ...patch })
-                  else mutateWf((d) => ({ ...d, ...patch }))
-                }}
-                models={models}
-                activeModelId={activeModelId}
-              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                <TaskRunContextFields
+                  value={kind === 'routine' ? draft : { workspaceDir: def.workspaceDir, approvalMode: def.approvalMode, profileId: def.profileId }}
+                  onChange={(patch) => {
+                    if (kind === 'routine') editDraft({ ...draft, ...patch })
+                    else mutateWf((d) => ({ ...d, ...patch }))
+                  }}
+                  models={models}
+                  activeModelId={activeModelId}
+                />
+                {/* 任务最长执行时长（2026-11-17 从批量数据块提升为任务级）：
+                    两种 kind 各绑各的超时语义——routine 是整笔运行的天花板，
+                    workflow 是单环节的天花板（引擎逐环节重设计时器），所以
+                    label/caption/缺省值不分叉组件、只分叉绑定。 */}
+                {kind === 'routine' ? (
+                  <TimeoutMinutesSection
+                    value={draft.timeoutMinutes ?? 15}
+                    fallback={15}
+                    label="最长执行时长"
+                    caption="单笔运行与批量的每一行，超过该时长未结束都会被停止并记为失败；默认 15 分钟。"
+                    onChange={(timeoutMinutes) => editDraft({ ...draft, timeoutMinutes })}
+                  />
+                ) : (
+                  <TimeoutMinutesSection
+                    value={def.params?.stageTimeoutMinutes ?? 30}
+                    fallback={30}
+                    label="单环节超时"
+                    caption="工作流的每个环节超过该时长未结束都会被停止并记为失败，整个流程可以长于该时长；默认 30 分钟，选「永不超时」则环节不限时长。"
+                    neverLabel="永不超时"
+                    onChange={(stageTimeoutMinutes) => mutateWf((d) => ({ ...d, params: { ...d.params, stageTimeoutMinutes } }))}
+                  />
+                )}
+              </div>
             )}
 
             {step === 'trigger' && kind === 'routine' && (

@@ -13,6 +13,7 @@ import { Input, Modal } from 'antd'
 import { notify } from '../../utils/notify'
 import { useTranslation } from '../../i18n/useTranslation'
 import { missingRequiredParamKeys } from '../../../../shared/routine/params'
+import { effectiveRunTimeoutMinutes } from '../../../../shared/routine/batch'
 import type { Routine } from '../../../../shared/types/routine'
 
 export interface RoutineRunModalProps {
@@ -55,12 +56,13 @@ export function RoutineRunModal({ routine, open, onClose, onRun }: RoutineRunMod
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}>
         <div style={{ fontSize: 12, color: '#999' }}>{t('routine.runModalHint')}</div>
-        {/* The configured 单次超时 now bounds a single run too (it used to be
-            batch-only), so say so where the run is started — a task whose
-            ceiling is 60 minutes should not read as the built-in 15. */}
-        {routine?.batch?.timeoutMinutes != null && (
+        {/* The task's 最长执行时长 bounds a single run (resolved top-level
+            config → batch-resident legacy → default), so say so where the run
+            is started — a task whose ceiling is 60 minutes should not read as
+            the built-in 15, and a task on the default should still say so. */}
+        {routine != null && (
           <div style={{ fontSize: 12, color: '#999' }} data-run-timeout>
-            {t('routine.runModalTimeout', { minutes: routine.batch.timeoutMinutes })}
+            {t('routine.runModalTimeout', { minutes: effectiveRunTimeoutMinutes(routine) })}
           </div>
         )}
         {(routine?.params ?? []).map((p) => {

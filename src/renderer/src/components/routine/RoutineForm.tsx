@@ -20,7 +20,7 @@ import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
-import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, MAX_BATCH_ROWS, MAX_BATCH_CONCURRENCY, mergeHeaderParams } from '../../../../shared/routine/batch'
+import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, MAX_BATCH_ROWS, MAX_BATCH_CONCURRENCY, mergeHeaderParams } from '../../../../shared/routine/batch'
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import { useTranslation } from '../../i18n/useTranslation'
 import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
@@ -498,17 +498,6 @@ export function BatchSection({ draft, onChange, concurrency }: {
             </div>
           </div>
           <div style={{ marginTop: 12 }}>
-            <FieldLabel text="单次超时" />
-            <Select
-              style={{ width: 200 }}
-              value={draft.batch.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES}
-              onChange={(timeoutMinutes) => onChange({ ...draft, batch: { ...draft.batch!, timeoutMinutes } })}
-              options={BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `${m} 分钟` }))}
-              data-batch-timeout
-            />
-            <div style={CAPTION}>批量的每一行、以及该任务的单笔运行，超过该时长未结束都会被停止并记为失败；默认 15 分钟。</div>
-          </div>
-          <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Switch
                 size="small"
@@ -633,6 +622,44 @@ export function RunContextSection({ draft, onChange, models, activeModelId }: {
       models={models}
       activeModelId={activeModelId}
     />
+  )
+}
+
+/** The 最长执行时长 block (2026-11-17：从批量数据块提升为任务级配置，挂在
+ *  向导「运行设置」步——不再要求选了批量文件才可见)。Kind-agnostic minutes
+ *  select：routine 臂绑任务级 `timeoutMinutes`（约束单笔运行与批量的每一行），
+ *  workflow 臂绑 `params.stageTimeoutMinutes`（单环节硬超时）——label/caption/
+ *  缺省值随绑定走，两种语义各自如实陈述。值恒存显式数字（存 15 = 默认值的
+ *  显式形态，行为一致）。 */
+export function TimeoutMinutesSection({ value, onChange, fallback, label, caption, neverLabel }: {
+  /** Already-resolved minutes (caller applies its own default — routine 15,
+   *  workflow 30, the two semantics do not share a fallback). */
+  value: number
+  onChange: (minutes: number) => void
+  label: string
+  caption: string
+  fallback: number
+  /** Present = prepend a 「0 = 永不超时」 option（user 2026-11-17，工作流
+   *  单环节语义专属——routine 的最长执行时长没有它：无人值守运行必须保有
+   *  硬上限，挂死的运行不能永远占着槽位）。 */
+  neverLabel?: string
+}): React.ReactElement {
+  const options = [
+    ...(neverLabel != null ? [{ value: 0, label: neverLabel }] : []),
+    ...BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `${m} 分钟` })),
+  ]
+  return (
+    <div style={{ marginTop: 14 }} data-routine-field="timeout">
+      <FieldLabel text={label} />
+      <Select
+        style={{ width: 220 }}
+        value={value ?? fallback}
+        onChange={onChange}
+        options={options}
+        data-run-timeout
+      />
+      <div style={CAPTION}>{caption}</div>
+    </div>
   )
 }
 

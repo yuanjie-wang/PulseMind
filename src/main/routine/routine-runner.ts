@@ -29,7 +29,7 @@ import { saveConversation } from '../storage/conversation.db'
 import { resolveTaskRunContext } from '../task/run-context'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
-import { DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveTimeoutMinutes } from '../../shared/routine/batch'
+import { DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveRunTimeoutMinutes } from '../../shared/routine/batch'
 import { postSettlementEvent } from './webhook-out'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
@@ -38,7 +38,7 @@ import type { Routine, RoutineRun } from '../../shared/types/routine'
 /** Hard ceiling for one routine run (a hung run must not hold the slot forever).
  *  Derived from the shared batch default so the single-run ceiling and a batch
  *  row's default cannot drift apart — and only a routine WITHOUT a configured
- *  单次超时 lands here; with one, `effectiveTimeoutMinutes` is the ceiling. */
+ *  最长执行时长 lands here; with one, `effectiveRunTimeoutMinutes` is the ceiling. */
 const RUN_TIMEOUT_MS = DEFAULT_BATCH_TIMEOUT_MINUTES * 60_000
 
 /** After a stop is requested: how long the engine gets to report its terminal
@@ -339,14 +339,14 @@ export const routineRunner = {
     // (「检查  仓库的漏洞」) with nothing warning — refuse here instead. A manual
     // run throws so the click surfaces the reason; a scheduled fire has nobody
     // to tell, so it lands in run history as a failed run carrying it. The
-    // 单次超时 rides the same door for the same reason (a hand-edited routine
-    // whose timeout is out of range refuses the run rather than running under a
-    // ceiling the user did not choose), and it is the task's config — a single
-    // run inherits it exactly like a batch row does.
+    // 最长执行时长 rides the same door for the same reason (a hand-edited
+    // routine whose timeout is out of range refuses the run rather than running
+    // under a ceiling the user did not choose), and it is the task's config — a
+    // single run inherits it exactly like a batch row does.
     let timeoutMs: number
     try {
       assertRunnableParams(routine, params)
-      timeoutMs = effectiveTimeoutMinutes(routine.batch) * 60_000
+      timeoutMs = effectiveRunTimeoutMinutes(routine) * 60_000
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       if (trigger === 'manual') throw err

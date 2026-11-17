@@ -10,7 +10,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Modal, Select, Tag } from 'antd'
 import { FileTextOutlined } from '@ant-design/icons'
 import { notify } from '../../utils/notify'
-import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, MAX_BATCH_CONCURRENCY, MAX_BATCH_ROWS } from '../../../../shared/routine/batch'
+import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveRunTimeoutMinutes, MAX_BATCH_CONCURRENCY, MAX_BATCH_ROWS } from '../../../../shared/routine/batch'
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import type { Routine } from '../../../../shared/types/routine'
 
@@ -40,7 +40,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
     setPreview(null)
     setError(null)
     setConcurrency(routine.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY)
-    setTimeoutMinutes(routine.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES)
+    setTimeoutMinutes(effectiveRunTimeoutMinutes(routine))
     void window.electronAPI.routineCsvPreview(routine.batch!.csvPath, routine.params)
       .then((res) => {
         if (fetchNonceRef.current !== nonce) return

@@ -292,8 +292,10 @@ describe('batch per-row timeout (单次超时)', () => {
   it('the start dialog owns a per-run timeout state, reset from the saved config', () => {
     const src = source('src/renderer/src/components/routine/BatchRunModal.tsx')
     expect(src).toContain('useState(DEFAULT_BATCH_TIMEOUT_MINUTES)')
-    // Reset to the SAVED config on every open, same contract as concurrency.
-    expect(src).toContain('setTimeoutMinutes(routine.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES)')
+    // Reset to the SAVED config on every open, same contract as concurrency —
+    // resolved through the task-level chain (2026-11-17：顶层 timeoutMinutes
+    // → batch 寄居旧值 → 默认).
+    expect(src).toContain('setTimeoutMinutes(effectiveRunTimeoutMinutes(routine))')
     // Options derive from the shared pick list — a hand-written list could
     // offer values the runner's normalize rejects at the last step.
     expect(src).toContain('BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `单次超时 ${m} 分钟` }))')
@@ -306,14 +308,16 @@ describe('batch per-row timeout (单次超时)', () => {
     expect(src).toContain('timeoutMinutes: normalizeBatchTimeoutMinutes(input?.timeoutMinutes)')
   })
 
-  it('the runner resolves override → saved config → default, and records it on the parent', () => {
+  it('the runner resolves override → task config → default, and records it on the parent', () => {
     const src = source('src/main/routine/batch-runner.ts')
     expect(src).toContain('normalizeBatchTimeoutMinutes(overrides?.timeoutMinutes)')
     // The config → default half is SHARED now (routine-runner resolves the
     // very same function for a single run — see tests/routine-run-stop.test.ts);
     // two inline copies of that tail is exactly how the two shapes drift.
-    expect(src).toContain('?? effectiveTimeoutMinutes(routine.batch)')
+    // 2026-11-17：任务级链 effectiveRunTimeoutMinutes（顶层 → batch 旧值 → 默认）。
+    expect(src).toContain('?? effectiveRunTimeoutMinutes(routine)')
     expect(src).not.toContain('?? DEFAULT_BATCH_TIMEOUT_MINUTES')
+    expect(src).not.toContain('effectiveTimeoutMinutes(routine.batch)')
     // The parent's meta is where 续跑 waves and the workspace header read it.
     expect(src).toContain('timeoutMinutes,')
     // resume re-resolves from the routine config (same as concurrency).
@@ -321,7 +325,7 @@ describe('batch per-row timeout (单次超时)', () => {
     const spawnIdx = src.indexOf('private spawn(', resumeIdx)
     expect(resumeIdx).toBeGreaterThan(-1)
     expect(spawnIdx).toBeGreaterThan(resumeIdx)
-    expect(src.slice(resumeIdx, spawnIdx)).toContain('effectiveTimeoutMinutes(routine.batch)')
+    expect(src.slice(resumeIdx, spawnIdx)).toContain('effectiveRunTimeoutMinutes(routine)')
   })
 
   it('each row executes under the recorded ceiling (executeUnattended timeoutMs)', () => {
@@ -336,11 +340,16 @@ describe('batch per-row timeout (单次超时)', () => {
     expect(runner).toContain('`运行超时（${timeoutMs / 60000} 分钟）`')
   })
 
-  it('the editor exposes 单次超时 beside 并发执行', () => {
+  it('the editor exposes 最长执行时长 in the run-settings step, not the batch block (2026-11-17)', () => {
     const src = source('src/renderer/src/components/routine/RoutineForm.tsx')
-    expect(src).toContain('FieldLabel text="单次超时"')
-    expect(src).toContain('draft.batch.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES')
+    // The batch block no longer carries the timeout — the config is task-level
+    // and lives in the kind-agnostic TimeoutMinutesSection; a duplicate field
+    // inside BatchSection would be two editors for one semantics.
+    expect(src).not.toContain('FieldLabel text="单次超时"')
+    expect(src).not.toContain('draft.batch.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES')
+    expect(src).toContain('export function TimeoutMinutesSection')
     expect(src).toContain('BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `${m} 分钟` }))')
+    expect(src).toContain('data-routine-field="timeout"')
   })
 })
 

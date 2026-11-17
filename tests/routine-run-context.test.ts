@@ -113,6 +113,13 @@ describe('wiring: the IPC whitelist carries the run context', () => {
     expect(HANDLER).toContain('profileId: input.profileId?.trim() || undefined')
   })
 
+  it('normalizeInput carries the task-level timeoutMinutes (2026-11-17)', () => {
+    // The whitelist is explicit — a field the editor sends but normalizeInput
+    // does not pick is silently dropped on EVERY save (the exact bug this
+    // test exists to catch: 最长执行时长 set in the wizard vanishing).
+    expect(HANDLER).toContain('timeoutMinutes: normalizeBatchTimeoutMinutes(input.timeoutMinutes)')
+  })
+
   it('validates on BOTH create and update, at the one door every save passes', () => {
     expect(HANDLER).toContain('assertRunContext(input)')
     expect(HANDLER).toContain('assertRunContext(patch)')

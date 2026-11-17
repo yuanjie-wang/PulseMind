@@ -57,6 +57,10 @@ export interface Routine {
   profileId?: string
   /** Where this routine came from ("extract from conversation"). */
   sourceConversationId?: string
+  /** 任务最长执行时长（分钟，1–120；2026-11-17 从 batch.timeoutMinutes 提升
+   *  为任务级字段）：单笔运行与批量的每一行都受它约束，超时停止并记失败。
+   *  Absent = batch.timeoutMinutes（旧数据寄居形态）兼容回落，再缺 = 15。 */
+  timeoutMinutes?: number
   /** Batch mode over a CSV; absent = single-run routine. */
   batch?: RoutineBatchConfig
   /** Event triggers (PLAN-routine-triggers M1): local sources that start the

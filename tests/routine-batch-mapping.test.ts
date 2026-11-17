@@ -7,7 +7,7 @@
  * injected by batch runs, absent (token stays visible) in single runs. */
 
 import { describe, expect, it } from 'vitest'
-import { analyzeCsvBatch, mergeHeaderParams, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
+import { analyzeCsvBatch, mergeHeaderParams, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes, effectiveRunTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
 import { builtinRoutineVars, renderRoutinePrompt, resolveParamValues, assertRunnableParams as assertRunnableParamsRow } from '../src/shared/routine/params'
 import { parseCsv } from '../src/shared/routine/csv'
 import type { Routine, RoutineParam } from '../src/shared/types/routine'
@@ -194,6 +194,32 @@ describe('effectiveTimeoutMinutes — the one config→ceiling chain', () => {
     expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 0 })).toThrow(/无效的单次超时/)
     expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 900 })).toThrow(/无效的单次超时/)
     expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 2.5 })).toThrow(/无效的单次超时/)
+  })
+})
+
+describe('effectiveRunTimeoutMinutes — the task-level chain (2026-11-17 提升刀)', () => {
+  // The timeout left the batch block: a task WITHOUT batch data must be able
+  // to carry its own ceiling, so the resolver reads the top-level field first
+  // and only then the batch-resident legacy value.
+  it('the task-level value wins over the batch-resident legacy one', () => {
+    expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 60, batch: { timeoutMinutes: 15 } })).toBe(60)
+    expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 5 })).toBe(5)
+  })
+
+  it('absent top-level → batch legacy value (existing installs, no migration)', () => {
+    expect(effectiveRunTimeoutMinutes({ batch: { timeoutMinutes: 45 } })).toBe(45)
+  })
+
+  it('no config anywhere → the shared default', () => {
+    expect(effectiveRunTimeoutMinutes(undefined)).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
+    expect(effectiveRunTimeoutMinutes({})).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
+    expect(effectiveRunTimeoutMinutes({ batch: {} })).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
+  })
+
+  it('an invalid value at either level refuses rather than falling back', () => {
+    expect(() => effectiveRunTimeoutMinutes({ timeoutMinutes: 900 })).toThrow(/无效的单次超时/)
+    // The legacy leg keeps the same throwing contract.
+    expect(() => effectiveRunTimeoutMinutes({ batch: { timeoutMinutes: 2.5 } })).toThrow(/无效的单次超时/)
   })
 })
 
