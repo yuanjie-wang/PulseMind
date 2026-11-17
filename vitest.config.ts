@@ -18,6 +18,11 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text-summary', 'html', 'json-summary'],
       reportsDirectory: 'coverage',
+      // 有测试失败时也要出报告。vitest 默认 reportOnFailure=false，失败时走
+      // coverage.js 的 onTestFailure → 只 cleanAfterRun 删掉 .tmp 原始数据、
+      // 不调 generateReports：全量跑只要挂一个 flaky，就既无报告也无数字。
+      // 注意这与「阈值不达标」是两回事——阈值检查在 generateReports 内部，照常产出。
+      reportOnFailure: true,
       include: ['src/**/*.ts', 'src/**/*.tsx'],
       // 单测排除清单——结构上不可能被 vitest（node 环境、无 Electron、无布局引擎）测到
       // 的面，理由与完整纪律见 AGENTS.md「单测纪律」；数字只反映可单测面，
