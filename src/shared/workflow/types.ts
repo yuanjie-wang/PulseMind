@@ -15,6 +15,14 @@ export interface WorkflowNodeLayout {
   y: number
 }
 
+/** 结果状态的**语义**（user 2026-11-17「你是不是写死了把 pass 作为成功态」）：
+ *  只决定运行视图的上色（success 绿 / failure 红 / neutral 中性），**不参与
+ *  调度**——调度键永远是状态名本身。状态名是用户自定义词表（成功/失败/需修订
+ *  …），词面不携带任何语义，所以颜色只能来自显式声明或拓扑推导（run-view.ts
+ *  的 verdictKindOf：未声明的状态按出边终点推——→DONE 成功、→FAILED 或没有
+ *  出边失败、其余中性）。 */
+export type WorkflowVerdictKind = 'success' | 'failure' | 'neutral'
+
 export interface WorkflowNode {
   id: string
   title: string
@@ -27,6 +35,10 @@ export interface WorkflowNode {
    *  只能猜 success/failed 的边界，调度键就形同虚设。键必须是 verdicts 里的
    *  一项（simplify 裁掉孤儿键）；缺席/空串 = 该状态没有额外说明。 */
   verdictDefs?: Record<string, string>
+  /** 每个结果状态的语义（状态名 → 成功/失败/中性），只影响运行视图配色。
+   *  键必须是 verdicts 里的一项（simplify 裁掉孤儿键）；缺席的状态按拓扑
+   *  推导（见 WorkflowVerdictKind 注释）——旧定义零迁移、落盘形态不变。 */
+  verdictKinds?: Record<string, WorkflowVerdictKind>
   /** 预留画布坐标（v1 原样透传）。 */
   layout?: WorkflowNodeLayout
   /** 隐式上下文开关（PLAN-workflow-context）：整个字段缺席 = 全开——存量工作流
@@ -68,7 +80,7 @@ export interface WorkflowInputDef {
 }
 
 export interface WorkflowParams {
-  /** 单阶段硬超时（分钟）。 */
+  /** 单阶段硬超时（分钟）；0 = 永不超时（不武装计时器，2026-11-17）。 */
   stageTimeoutMinutes?: number
   /** 早停后同一会话的激发次数上限。 */
   maxStageContinues?: number
@@ -149,6 +161,9 @@ export interface PipelineRun {
   startedAt: string
   finishedAt?: string
   error?: string
+  /** 运行级最终结论（到达 DONE 时引擎写入 = 最后完成阶段的摘要）——面板
+   *  「最终结果」的一等数据面，不再是借用最后阶段摘要的近似。 */
+  conclusion?: string
 }
 
 export interface PipelineStageRun {
@@ -166,6 +181,9 @@ export interface PipelineStageRun {
   error?: string
   /** 契约声明的交付物（工作区相对路径）。 */
   artifacts?: string[]
+  /** 结算摘要（finish_stage/契约行的 summary）——运行视图「节点做了什么/
+   *  最终结果」的数据面；旧行/早停缺席。 */
+  summary?: string
 }
 
 /** 阶段执行的最终结算形态（runStage 的返回，引擎与测试的接缝）。

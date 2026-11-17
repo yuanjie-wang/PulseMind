@@ -385,6 +385,12 @@ function createTables(): void {
   // task left only its last 60 dumps, and its true 83% hit rate had to be
   // reconstructed by hand from those.
   try { database.exec('ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0') } catch {}
+  // summary (2026-11-15): 阶段结算的 summary 落库——运行视图的「每个节点做了什么/
+  // 最终结果」需要它；此前只有 verdict/artifacts，摘要只活在转写里。
+  try { database.exec('ALTER TABLE pipeline_stage_runs ADD COLUMN summary TEXT') } catch {}
+  // conclusion (2026-11-16): 运行级最终结论（到达 DONE 时引擎写入）——运行
+  // 视图「最终结果」的一等数据面。
+  try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN conclusion TEXT') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN auto_summary INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN compressed_ids TEXT') } catch {}
   // B1-a（2026-11-17）：提交侧的客户端消息 id，为「同一条已提交输入只落一行」留一个
@@ -474,7 +480,8 @@ function createTables(): void {
       started_at      TEXT NOT NULL,
       finished_at     TEXT,
       error           TEXT,
-      inputs_json     TEXT
+      inputs_json     TEXT,
+      conclusion      TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
@@ -489,7 +496,8 @@ function createTables(): void {
       started_at      TEXT NOT NULL,
       finished_at     TEXT,
       error           TEXT,
-      artifacts_json  TEXT
+      artifacts_json  TEXT,
+      summary         TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_pipeline_stage_runs_run ON pipeline_stage_runs(run_id, started_at);

@@ -20,6 +20,7 @@ interface PipelineRunRow {
   finished_at: string | null
   error: string | null
   inputs_json: string | null
+  conclusion: string | null
 }
 
 interface PipelineStageRow {
@@ -33,6 +34,7 @@ interface PipelineStageRow {
   finished_at: string | null
   error: string | null
   artifacts_json: string | null
+  summary: string | null
 }
 
 function rowToRun(r: PipelineRunRow): PipelineRun {
@@ -56,6 +58,7 @@ function rowToRun(r: PipelineRunRow): PipelineRun {
     objective: r.objective ?? '',
     ...(r.baseline_commit ? { baselineCommit: r.baseline_commit } : {}),
     workspaceDir: r.workspace_dir ?? '',
+    ...(r.conclusion ? { conclusion: r.conclusion } : {}),
     status: r.status as PipelineRunStatus,
     ...(r.trigger === 'manual' || r.trigger === 'schedule' ? { trigger: r.trigger } : {}),
     ...(r.batch_id ? { batchId: r.batch_id } : {}),
@@ -80,6 +83,7 @@ function rowToStage(r: PipelineStageRow): PipelineStageRun {
     runId: r.run_id,
     nodeId: r.node_id,
     ...(r.verdict ? { verdict: r.verdict } : {}),
+    ...(r.summary ? { summary: r.summary } : {}),
     continues: r.continues,
     ...(r.conversation_id ? { conversationId: r.conversation_id } : {}),
     startedAt: r.started_at,
@@ -113,7 +117,7 @@ export const pipelineRunStore = {
     return run
   },
 
-  updateRun(id: string, patch: Partial<Pick<PipelineRun, 'status' | 'currentNode' | 'finishedAt' | 'error' | 'baselineCommit' | 'workspaceDir'>>): void {
+  updateRun(id: string, patch: Partial<Pick<PipelineRun, 'status' | 'currentNode' | 'finishedAt' | 'error' | 'baselineCommit' | 'workspaceDir' | 'conclusion'>>): void {
     getDb()
       .prepare(
         `UPDATE pipeline_runs SET
@@ -122,15 +126,33 @@ export const pipelineRunStore = {
            finished_at = COALESCE(?, finished_at),
            error = COALESCE(?, error),
            baseline_commit = COALESCE(?, baseline_commit),
-           workspace_dir = COALESCE(?, workspace_dir)
+           workspace_dir = COALESCE(?, workspace_dir),
+           conclusion = COALESCE(?, conclusion)
          WHERE id = ?`,
       )
-      .run(patch.status ?? null, patch.currentNode ?? null, patch.finishedAt ?? null, patch.error ?? null, patch.baselineCommit ?? null, patch.workspaceDir ?? null, id)
+      .run(patch.status ?? null, patch.currentNode ?? null, patch.finishedAt ?? null, patch.error ?? null, patch.baselineCommit ?? null, patch.workspaceDir ?? null, patch.conclusion ?? null, id)
   },
 
   getRun(id: string): PipelineRun | null {
     const row = getDb().prepare('SELECT * FROM pipeline_runs WHERE id = ?').get(id) as PipelineRunRow | undefined
     return row ? rowToRun(row) : null
+  },
+
+  /** 启动恢复（user 2026-11-15 实测踩坑）：应用重启后，上一进程遗留的
+   *  running 行是**孤儿**——FIFO 队列/停止钩子/3s 轮询全部随进程消失，
+   *  没人再把它们结算，行就永远挂在 running（本次实测：git 启动门挂住 +
+   *  用户重启，行在 running 停了 9 小时）。启动时全部落为 failed，错误
+   *  文案如实说「应用重启，运行中断」。
+   *  只动 running：success/failed 是终态，恢复不改写历史。 */
+  failStaleRunning(reason: string): number {
+    const res = getDb()
+      .prepare(
+        `UPDATE pipeline_runs
+         SET status = 'failed', finished_at = COALESCE(finished_at, ?), error = COALESCE(error, ?)
+         WHERE status = 'running'`,
+      )
+      .run(new Date().toISOString(), reason)
+    return res.changes
   },
 
   /** 运行记录列表（RoutineCenter 3s 轮询）：行 = plan 实例，展开 = 节点行。 */
@@ -157,7 +179,7 @@ export const pipelineRunStore = {
       .run(stage.id, stage.runId, stage.nodeId, stage.continues, stage.conversationId ?? null, stage.startedAt)
   },
 
-  finishStage(id: string, patch: { verdict?: string; conversationId?: string; finishedAt: string; error?: string; artifacts?: string[] }): void {
+  finishStage(id: string, patch: { verdict?: string; conversationId?: string; finishedAt: string; error?: string; artifacts?: string[]; summary?: string }): void {
     getDb()
       .prepare(
         `UPDATE pipeline_stage_runs SET
@@ -165,7 +187,8 @@ export const pipelineRunStore = {
            conversation_id = COALESCE(?, conversation_id),
            finished_at = ?,
            error = COALESCE(?, error),
-           artifacts_json = COALESCE(?, artifacts_json)
+           artifacts_json = COALESCE(?, artifacts_json),
+           summary = COALESCE(?, summary)
          WHERE id = ?`,
       )
       .run(
@@ -174,6 +197,7 @@ export const pipelineRunStore = {
         patch.finishedAt,
         patch.error ?? null,
         patch.artifacts ? JSON.stringify(patch.artifacts) : null,
+        patch.summary ?? null,
         id,
       )
   },

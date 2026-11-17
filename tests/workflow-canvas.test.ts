@@ -206,6 +206,30 @@ describe('normalizeSimpleWorkflow（三类节点归一）', () => {
     expect('verdictDefs' in out.nodes[1]).toBe(false)
     expect('verdictDefs' in out.nodes[2]).toBe(false)
   })
+
+  it('状态语义归一：只留词汇表里还在的键、值必须是三档、表空整个字段不写（user 2026-11-17）', () => {
+    // verdictKinds 与 verdictDefs 同一条规矩：状态名是键，名字没了语义就没有
+    // 主语。垃圾值（手改 JSON 写了个 'ok'）当场丢掉——配色只认三档。
+    const out = normalizeSimpleWorkflow(
+      def({
+        nodes: [
+          {
+            id: 'a',
+            title: 'a',
+            prompt: 'p',
+            verdicts: ['成功', '失败'],
+            verdictKinds: { ' 成功 ': 'success', 失败: 'failure', ghost: 'neutral', 成功2: 'ok' } as never,
+          },
+          { id: 'b', title: 'b', prompt: 'p', verdicts: ['pass'], verdictKinds: { ghost: 'success' } },
+          { id: 'c', title: 'c', prompt: 'p', verdicts: ['pass'], verdictKinds: { pass: 'ok' } as never },
+        ],
+      }),
+    )
+    expect(out.nodes[0].verdictKinds).toEqual({ 成功: 'success', 失败: 'failure' })
+    // 整表没有一条可用 → 字段整个不写（旧定义落盘形态逐字节不变）。
+    expect('verdictKinds' in out.nodes[1]).toBe(false)
+    expect('verdictKinds' in out.nodes[2]).toBe(false)
+  })
 })
 
 describe('inputSideOf（入线落点几何）', () => {
@@ -658,7 +682,8 @@ describe('canvas toolbox & simple model', () => {
     // 盒**，所以文字中心与线头差几像素；纵向 text 底边距卡边 6+14=20px，圆点却
     // 正好压在那条边上。现在每个状态名绝对定位、left 用与 Handle 完全同一个
     // 表达式，行用负横向边距撑到 padding 盒，卡的 padding-bottom 收到 8px。
-    expect(card).toMatch(/className=\{multi \? 'wf-stage-card has-verdicts' : 'wf-stage-card'\}/)
+    // 运行视图叠加（PLAN-workflow-run-view）：卡类允许追加 run 状态类，基础类不变。
+    expect(card).toMatch(/className=\{\(multi \? 'wf-stage-card has-verdicts' : 'wf-stage-card'\) \+ cardClass\}/)
     // 同一个 (i+0.5)/n 表达式必须出现两次（状态名 + 出口 Handle）——两处各写
     // 一份必然漂移，那正是这个 bug 的形态。
     const alignExpr = '((i + 0.5) / verdicts.length) * 100'
@@ -684,7 +709,9 @@ describe('canvas toolbox & simple model', () => {
     expect(read('src/renderer/src/i18n/locales/zh.ts')).not.toContain('canvasEntryBadge')
     expect(read('src/renderer/src/i18n/locales/en.ts')).not.toContain('canvasEntryBadge')
     // ② 点节点本体不再开面板；只有卡片内右上角的钮能开（悬停才露，CSS 管视觉）。
-    expect(canvas).not.toMatch(/onNodeClick=/)
+    // onNodeClick 仅运行查看态可带（user 2026-11-17「点谁看谁」），且必须被
+    // runMode 门住——编辑态「点卡片只选中、不开面板」的裁定不变。
+    expect(canvas).toMatch(/if \(!runMode \|\| !onRunNodeClick\) return/)
     expect(card).toContain('data-workflow-node-edit')
     expect(card).toMatch(/className="wf-node-edit nodrag nopan"/)
     expect(card).toMatch(/onEdit\(node\.id\)/)
@@ -743,8 +770,11 @@ describe('canvas toolbox & simple model', () => {
     expect(canvas).toMatch(/if \(next\.trim\(\)\.length === 0\) delete defs\[name\]/)
     expect(canvas).toMatch(/Object\.keys\(defs\)\.length > 0 \? defs : undefined/)
     // 改名：定义跟着键搬到新名字下，否则保存时被 simplify 当孤儿键裁掉。
-    expect(canvas).toMatch(/const moveVerdictDef = /)
-    expect(canvas).toMatch(/defs && defs\[prev\] !== undefined \? moveVerdictDef\(defs, prev, next\) : defs/)
+    // 2026-11-17 起 verdictDefs 与 verdictKinds 两张表共用同一个搬家器
+    // （moveRecordKey），改名一次搬两张表——语义留在旧名下等于配色跟着错。
+    expect(canvas).toMatch(/const moveRecordKey = /)
+    expect(canvas).toMatch(/defs && defs\[prev\] !== undefined \? moveRecordKey\(defs, prev, next\) : defs/)
+    expect(canvas).toMatch(/kinds && kinds\[prev\] !== undefined \? moveRecordKey\(kinds, prev, next\) : kinds/)
     // 删状态：连同它的定义一起删，表空就 delete 掉整个字段。
     expect(canvas).toMatch(/delete defs\[verdict\]/)
     expect(canvas).toMatch(/if \(Object\.keys\(defs\)\.length > 0\) next\.verdictDefs = defs/)
@@ -786,6 +816,71 @@ describe('canvas toolbox & simple model', () => {
     }
     // 名字字段的占位表自带一句（旧文案复用了定义那一行）。
     expect(zhLocale).toContain("canvasVerdictNamePlaceholder: '状态名'")
+  })
+
+  it('状态语义只影响配色、不参与调度，且配色不认词面（user 2026-11-17）', () => {
+    // 「你是不是写死了把 pass 作为成功态，failed 为失败态？」——结果状态是用户
+    // 自定义词表（成功/失败/需修订…），配色只能来自显式声明 verdictKinds 或
+    // 拓扑推导（run-view.ts 的 verdictKindOf）。四张消费面（画布卡片/画布边/
+    // 卡面徽标/详情页结论）都必须走同一个判词。
+    expect(canvas).toContain("import { runNodeStates, runTakenEdges, verdictKindOf } from")
+    expect(canvas).toMatch(/const kind = s\.verdict === undefined \? 'neutral' : verdictKindOf\(def, nodeId, s\.verdict\)/)
+    expect(canvas).toMatch(/const kind = verdictKindOf\(def, e\.from, e\.when\)/)
+    // 徽标颜色跟着画布下发的语义类走，不再自己判词面。
+    expect(card).toContain("runClass === 'run-pass' ? ' wf-run-badge--pass'")
+    expect(card).toContain("runClass === 'run-fail' ? ' wf-run-badge--fail'")
+    const detail = read('src/renderer/src/components/routine/WorkflowRunViewPage.tsx')
+    expect(detail).toContain("verdictKindOf(def, sel.nodeId, activeStage.verdict) === 'success'")
+    // 反向扫描（去掉注释再扫）：源码里不许再出现「verdict 是不是 pass/fail」。
+    const codeOnly = canvas.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(codeOnly).not.toMatch(/verdict\s*===\s*'pass'/)
+    expect(codeOnly).not.toMatch(/verdict\s*===\s*'fail'/)
+    // 面板里的语义选择器：锚点 + 四档；「自动」= 撤掉声明（undefined 不落空表）。
+    expect(canvas).toContain('data-workflow-verdict-kind')
+    expect(canvas).toMatch(/const setVerdictKind = useCallback\(/)
+    expect(canvas).toMatch(/if \(kind\) kinds\[name\] = kind\n\s*else delete kinds\[name\]/)
+    expect(canvas).toMatch(/Object\.keys\(kinds\)\.length > 0 \? kinds : undefined/)
+    // 删状态时语义表跟着裁（残留孤儿键保存时也会被 simplify 裁掉，但当场删干净）。
+    expect(canvas).toMatch(/delete kinds\[verdict\]/)
+    expect(canvas).toMatch(/if \(Object\.keys\(kinds\)\.length > 0\) next\.verdictKinds = kinds/)
+    // 语义选择器只占一窄列，定义输入框优先吃宽。
+    expect(canvas).toContain("const VERDICT_KIND_STYLES: React.CSSProperties = { flex: '0 0 82px', width: 82 }")
+    // i18n：两 locale 五键齐全，且提示里说清「只影响配色、不参与调度」。
+    const zhLocale = read('src/renderer/src/i18n/locales/zh.ts')
+    const enLocale = read('src/renderer/src/i18n/locales/en.ts')
+    for (const key of [
+      'canvasVerdictKindLabel',
+      'canvasVerdictKindHint',
+      'canvasVerdictKindAuto',
+      'canvasVerdictKindSuccess',
+      'canvasVerdictKindFailure',
+      'canvasVerdictKindNeutral',
+    ]) {
+      expect(zhLocale).toContain(`${key}:`)
+      expect(enLocale).toContain(`${key}:`)
+    }
+    expect(zhLocale).toContain('不参与调度')
+    expect(enLocale).toContain('never scheduling')
+  })
+
+  it('运行徽标钉在卡右上角，未自定义状态显示「成功」而不是内部词 pass（user 2026-11-17）', () => {
+    // ① 位置：徽标绝对定位在卡右上角（与编辑态两颗悬停钮同一个角落，两套
+    //    互斥模式不会同屏）；标题在运行态让出 72px（6 + 60 + 6），不再被徽标
+    //    压住。徽标本身 max-width 60px + 省略号：自定义状态名可长到 24 字。
+    expect(canvas).toContain('position: absolute; top: 6px; right: 6px; z-index: 2; max-width: 60px')
+    expect(canvas).toContain('.wf-stage-card--runview .wf-stage-title { padding-right: 72px; }')
+    expect(card).toContain('wf-stage-card--runview wf-stage-card--')
+    // ② 文案：未声明词表（normalize 补的缺省单状态 pass）→ i18n「成功」；
+    //    自定义词表一律原词。判据只看「有没有声明过」，不看 verdict 字面。
+    expect(canvas).toMatch(/const badge = isDefaultVerdict \? t\('workflow\.runBadgeSuccess'\) : \(s\.verdict \?\? ''\)/)
+    expect(canvas).toMatch(/const isDefaultVerdict =\s*!declared \|\| declared\.length === 0 \|\| \(declared\.length === 1 && declared\[0\] === 'pass'\)/)
+    const zhLocale = read('src/renderer/src/i18n/locales/zh.ts')
+    const enLocale = read('src/renderer/src/i18n/locales/en.ts')
+    expect(zhLocale).toContain("runBadgeSuccess: '成功'")
+    expect(enLocale).toContain("runBadgeSuccess: 'Success'")
+    // 词面反扫仍成立（配色/徽标语义不认字面）。
+    const codeOnly = canvas.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(codeOnly).not.toMatch(/verdict\s*===\s*'pass'/)
   })
 
   it('保存门要求状态定义必填，助手侧只回显不拒（user 2026-11-09）', () => {
@@ -868,7 +963,9 @@ describe('canvas toolbox & simple model', () => {
     //    （不是 def.layout，否则拖卡时线原地不动）。
     expect(canvas).toMatch(/x: node\.position\.x/)
     expect(canvas).toContain('node.measured?.width')
-    expect(canvas).toMatch(/routeEdges\(nodes\.map\(flowRectOf\), routeSpecs, \{ fast: dragging \}\)/)
+    expect(canvas).toMatch(/routeEdges\(nodes\.map\(flowRectOf\), routeSpecs, \{/)
+    // 运行视图 tailGap:0（端口圆点已隐藏，箭头尖贴节点边框）。
+    expect(canvas).toMatch(/tailGap: runMode \? 0 : undefined/)
     // ② 端口与线头逐像素同源：出口 at = (i+0.5)/n（卡片 CSS 的 left:% 同一公式），
     //    入口按 inputSideOf 选边、DONE 只有顶入。
     expect(canvas).toMatch(/at: index >= 0 \? \(index \+ 0\.5\) \/ verdicts\.length : undefined/)
@@ -909,6 +1006,45 @@ describe('canvas toolbox & simple model', () => {
     expect(start).toBeGreaterThan(-1)
     expect(loop).toBeGreaterThan(start)
     expect(canvas.slice(start, loop)).not.toContain('altSides')
+  })
+
+  it('运行视图的「没走过的边」必须读得到（user 2026-11-17「在执行过程中，连接线没了」）', () => {
+    // 刚开跑时几乎所有边都还没走过，而 idle 是整张图的主体——它一淡就等于
+    // 「连线没了」。第一版 #cccccc@0.7 在白底上合成为 ~#dbdbdb，1.5px 的线在
+    // 屏幕上没有存在感；现行口径 = muted 灰 @0.8（合成 ~#adadad，与 RF 默认灰
+    // #b1b1b7 同档）。判据写死这两个数：改回 disabled 灰或加回更低的透明度
+    // 都会让这条钉子红。
+    expect(canvas).toContain('.react-flow__edge.wf-edge-idle { --xy-edge-stroke: var(--pm-text-muted, #999999); opacity: 0.8; }')
+    // 前缀 .react-flow__edge 承重：wf-edge-done/failed 是 (0,2,0)，单类选择器
+    // 压不过它，未走到的 DONE 边会顶着成功色冒充「已走过」。
+    expect(canvas.indexOf('.react-flow__edge.wf-edge-idle')).toBeGreaterThan(canvas.indexOf('.react-flow__edge.wf-edge-done'))
+  })
+
+  it('运行视图自己补齐定义 + 挂载期必测一次线头（user 2026-11-17「连接线又没了」）', () => {
+    // ① 运行视图喂的是**盘上原样定义**：`layout` 缺席的节点在 buildFlowNodes
+    //    里全落 (0,0)，三张卡叠成一摞、连线被压在卡下面——实锤
+    //    doc-translate-pipeline（三个节点 layout 全 null）。定义落地必须与
+    //    向导同一条链：normalizeSimpleWorkflow（补 verdicts / 退役 FAILED 边）
+    //    + autoWorkflowLayout（补布局），且只在内存里做（mutate 是 no-op）。
+    const runView = read('src/renderer/src/components/routine/WorkflowRunViewPage.tsx')
+    expect(runView).toContain('setDef(autoWorkflowLayout(normalizeSimpleWorkflow(loaded)))')
+    expect(runView).not.toMatch(/if \(loaded && !Array\.isArray\(loaded\) && typeof loaded !== 'boolean'\) setDef\(loaded\)/)
+    // ② 挂载期必须补一次 updateNodeInternals：RF 的 handleBounds 只在节点尺寸
+    //    变化时重测，首帧量在 Handle 子元素落地之前的话，旧 bounds 里没有
+    //    `out:<verdict>`，引用它的边整条不渲染（DOM 里零 `.react-flow__edge`）。
+    //    指纹 ref 初值 null（= 不等于任何指纹）是这条保证的承重件；改回
+    //    `useRef(handlesKey)` 等于首挂载永不重测。
+    expect(canvas).toContain('const measuredHandlesKey = useRef<string | null>(null)')
+    expect(canvas).not.toContain('useRef(handlesKey)')
+    //    记账必须发生在 rAF 跑过之后（写在 requestAnimationFrame 之前的话，
+    //    StrictMode 的 run→cleanup→run 会取消第一次的 rAF 又让第二次早退，
+    //    挂载期重测正好丢掉——dev 下的「连接线又没了」就是这一形态）。
+    expect(canvas).toMatch(/requestAnimationFrame\(\(\) => \{\s*measuredHandlesKey\.current = handlesKey/)
+    // 运行态换的是另一套卡片 DOM（编辑钮退场/徽标/单列出口），切态要重测。
+    expect(canvas).toContain("`${runMode ? 'run' : 'edit'}|`")
+    // ③ 盘上手写定义可以没有 verdicts：裸解引用会整张卡抛错（画布白屏）。
+    expect(canvas).toContain('(n.verdicts ?? []).join')
+    expect(card).toContain('node.verdicts && node.verdicts.length > 0 ? node.verdicts : [')
   })
 
   it('变量编辑：向导「基本信息」步可管理 inputs 声明（P3 由内容步迁入；与 routine 共用 VariableSection）', () => {
@@ -989,7 +1125,8 @@ describe('canvas toolbox & simple model', () => {
     //    addSelectedEdges，所以撤掉 onEdgeClick 之后「点一下线就选中」照旧成立，
     //    高亮全靠 .react-flow__edge.selected 这个类。
     expect(canvas).not.toContain('onEdgeClick')
-    expect(canvas).toContain('open={!!selectedNode}')
+    // 运行查看态不开属性面板（编辑面全体退场）。
+    expect(canvas).toContain('open={!!selectedNode && !runMode}')
     expect(canvas).not.toContain('selectedEdge')
     expect(canvas).not.toContain('edgeNodeName')
     // 连线专用的两个文案键随连线面板一起退场（留着就是邀请下一个人把它接回来）。
@@ -1024,6 +1161,26 @@ describe('canvas toolbox & simple model', () => {
     expect(canvas).toContain('e.preventDefault()')
   })
 
+  it('运行查看态首屏取景：不放大 + 居中，用户接管视口后不再自动取景（user 2026-11-17）', () => {
+    // 取景口径只属于运行查看态：padding 20% / maxZoom 1。RF 默认 fitView 没有
+    // 放大上限（少节点图会被放大到 1.3 倍并贴边），而用户要的是「适当缩小」。
+    expect(canvas).toMatch(/const runFitOptions = useMemo\(\(\) => \(\{ padding: 0\.2, maxZoom: 1 \}\), \[\]\)/)
+    expect(canvas).toContain('fitViewOptions={runMode ? runFitOptions : undefined}')
+    // 高图要缩得下去：默认 minZoom 0.5 会把 fit 夹在半路（编辑态不动）。
+    expect(canvas).toContain('minZoom={runMode ? 0.25 : undefined}')
+    // 容器尺寸变化后重新取景：运行页的面板宽度是 mount 后才按 60% 落位的，RF
+    // 挂载时那次 fitView 量到的是旧尺寸——不补这一次，图就偏在一角。防抖 250ms
+    // （拖分隔条的每一帧不重算）。
+    expect(canvas).toContain('new ResizeObserver(')
+    expect(canvas).toMatch(/setTimeout\(fitRunView, 250\)/)
+    // 节点测量完成那一帧补一次（挂载时那次可能早于测量，包围盒还是空的）。
+    expect(canvas).toContain('nodesMeasured')
+    // 用户自己拖/滚过之后永不再自动取景（「只刷新内容，不要改变位置和比例」在
+    // resize 时同样成立）。程序性变换的 sourceEvent 是 null，正好用来区分。
+    expect(canvas).toContain('if (event) userMovedViewport.current = true')
+    expect(canvas).toContain('if (!runMode || userMovedViewport.current) return')
+  })
+
   it('读图语言：聚焦淡化 + 终态配色 + 状态标签悬停才显（user 2026-11-09「交叉太多」）', () => {
     // ① 聚焦淡化：生成一条**跟随选中态**的样式串，不重建边对象——edges 的重建
     //    只在 [def, routes] 变时发生（那正是 selected 得以保留的机制），把淡化
@@ -1043,7 +1200,8 @@ describe('canvas toolbox & simple model', () => {
     // ② 终态配色：结果状态是用户自定义字符串，没有语义可上色；唯一有语义的是
     //    保留目标。颜色走 --xy-edge-stroke 变量（在 <g> 上覆盖），选中态的蓝
     //    因此仍由 RF 自己的 .selected 规则赢——不许用 !important 打架。
-    expect(canvas).toMatch(/className: e\.to === 'DONE' \? 'wf-edge-done' : e\.to === 'FAILED' \? 'wf-edge-failed' : undefined/)
+    // 运行视图叠加：定义态的终态配色保留，run 类缀在后面（CSS 声明顺序定胜负）。
+    expect(canvas).toMatch(/\[e\.to === 'DONE' \? 'wf-edge-done' : e\.to === 'FAILED' \? 'wf-edge-failed' : undefined, runClassOf\(e, id\)\]/)
     expect(canvas).toContain('.react-flow__edge.wf-edge-done { --xy-edge-stroke: var(--pm-success')
     expect(canvas).toContain('.react-flow__edge.wf-edge-failed { --xy-edge-stroke: var(--pm-error)')
     expect(canvas).not.toMatch(/!\s*important\s*;/)
@@ -1085,5 +1243,27 @@ describe('STAGE_PLACEHOLDER_GROUPS（插入变量菜单的单一真源）', () =
       }
       expect(src).toContain('insertVariable:')
     }
+  })
+})
+
+describe('空白脚手架是示范写法（PLAN-workflow-context）', () => {
+  const read = (p: string): string => readFileSync(p, 'utf-8')
+
+  it('canvasNewPrompt 只写任务+完成标准占位：信封覆盖的占位符与契约教学段一个不出现', () => {
+    for (const locale of ['src/renderer/src/i18n/locales/zh.ts', 'src/renderer/src/i18n/locales/en.ts']) {
+      const m = read(locale).match(/canvasNewPrompt: `([\s\S]*?)`/)
+      expect(m, locale).not.toBeNull()
+      const prompt = m![1]
+      // 全局目标/工作区/上游交接由引擎信封自动注入——脚手架再手抄一遍就是
+      // 「教用户 + 教助手」都用旧写法（任务助手每轮快照的第一份样本就是它）。
+      for (const token of ['{{objective}}', '{{workspace}}', '{{visit}}', '{{prevVerdict}}', '{{prevSummary}}', '{{prevArtifacts}}', 'PIPELINE_RESULT']) {
+        expect(prompt, `${locale} → ${token}`).not.toContain(token)
+      }
+    }
+  })
+
+  it('助手栏 intro 用「节点图」词汇（阶段链已随旧抽象退役）', () => {
+    expect(read('src/renderer/src/i18n/locales/zh.ts')).not.toContain('阶段链')
+    expect(read('src/renderer/src/i18n/locales/en.ts')).not.toMatch(/stage chain/i)
   })
 })

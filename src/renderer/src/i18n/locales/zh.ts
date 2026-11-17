@@ -987,6 +987,13 @@ const zh = {
     canvasVerdictNamePlaceholder: '状态名',
     canvasVerdictDefPlaceholder: '状态定义（必填）：什么情况下报这个状态',
     canvasVerdictDefLabel: '状态「{{name}}」的定义',
+    canvasVerdictKindLabel: '状态语义',
+    canvasVerdictKindHint:
+      '语义只影响运行图的配色（成功绿 / 失败红 / 中性灰），不参与调度。自动 = 按连线推导：连到「结束」算成功，一条线都没有算失败（引擎会判实例失败），其余中性。',
+    canvasVerdictKindAuto: '自动',
+    canvasVerdictKindSuccess: '成功',
+    canvasVerdictKindFailure: '失败',
+    canvasVerdictKindNeutral: '中性',
     canvasDeleteNode: '删除环节',
     canvasDeleteNodeConfirm: '删除环节「{{name}}」？其所有连线一并删除。',
     canvasPanelClose: '关闭',
@@ -1050,16 +1057,9 @@ const zh = {
     varRow: '批量行号',
     runInputsSection: '变量',
     edgeLoopSuffix: '循环',
-    canvasNewPrompt: `你是本环节的执行者。全局目标：{{objective}}
+    canvasNewPrompt: `任务：<在此描述本阶段要做的事>
 
-工作区：{{workspace}}（第 {{visit}} 次进入本环节）
-
-任务：<在此描述本环节要做的事>
-
-上一阶段结论：{{prevVerdict}} / {{prevSummary}}
-
-结束时在最后一条消息输出且仅输出一行契约：
-PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}`,
+完成标准：<怎样才算做完>`,
     edit: '编辑',
     run: '运行',
     delete: '删除',
@@ -1068,7 +1068,27 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}
     edgesCount: '{{count}} 条边',
     runs: '运行记录',
     noRuns: '暂无运行记录',
-    noStages: '尚未开始任何阶段',
+    runViewOpenTranscript: '查看对话',
+    runViewBackToStages: '返回阶段列表',
+    runViewBackToTasks: '返回任务列表',
+    runViewRunMissing: '运行记录不存在或已被删除。',
+    runViewTranscriptEmpty: '该阶段没有保存对话内容。',
+    runViewMissingDef: '工作流定义已删除，无法显示运行图（运行记录仍在）。',
+    runViewFinalResult: '最终结果',
+    runViewPendingResult: '还没有完成的阶段',
+    runPanelPickHint: '点击左侧画布上的节点查看它的处理过程；点「开始」看任务要求，点「结束」看最终结果。',
+    runPanelStartTitle: '任务初始要求',
+    runViewObjectiveLabel: '运行目标',
+    runPanelNoObjective: '（未填写运行目标）',
+    runPanelRunningHint: '该阶段仍在执行，结束后可在这里查看对话。',
+    runPanelExecPick: '该节点执行了 {{count}} 次，选择查看：',
+    runPanelNoRecord: '该阶段没有可查看的执行记录。',
+    runViewCompletedNoSummary: '全部阶段已完成（本次运行未记录阶段摘要，详情见下方阶段卡与「查看对话」）。',
+    runViewNoSummary: '（未记录摘要）',
+    runViewArtifacts: '交付物',
+    runBadgeRunning: '运行中',
+    runBadgeSuccess: '成功',
+    runBadgeFailed: '失败',
     statusRunning: '进行中',
     statusSuccess: '成功',
     statusFailed: '失败',
@@ -1240,7 +1260,7 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<一句话总结>","artifacts":[]}
     routineExample2: '每周五下午整理本周的工作记录，生成周报',
     workflowColumnTitle: '任务助手',
     workflowPlaceholder: '描述你想交给 AI 跑完的一件事…',
-    workflowIntro: '描述一件想交给 AI 跑完的事，助手会把它拆成阶段链并直接填进画布；不满意可一键撤销。',
+    workflowIntro: '描述一件想交给 AI 跑完的事，助手会把它拆成节点图并直接填进画布；不满意可一键撤销。',
     workflowExample1: '读一份需求文档，先出技术方案，再按方案改代码，最后写一份变更说明',
     workflowExample2: '收集本周的竞品更新，逐条整理成简报，再润色成对外周报',
     newSession: '新会话',

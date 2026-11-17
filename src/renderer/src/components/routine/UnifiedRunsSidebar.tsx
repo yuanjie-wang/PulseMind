@@ -4,8 +4,9 @@
 // 的轮询档）。行 = 状态图标（RUN_STATUS_TAG 词汇表，pipeline 状态子集映射进
 // 同表）+ 名称 + 触发文案 + 相对时间 + running 停止钮（按 kind 路由：
 // routine 走 stop-run.ts，workflow 走 pipelineStop）。
-// 点击：routine 行 → openHistory（RoutineWorkspace deep-link 语义不变）；
-// workflow 行 → 行内展开（stage 行 + inputs，原 WorkflowSection 展开面迁入）。
+// 点击：两类行都直达详情（user 2026-11-17「工作流模式的执行任务不用展开，直接
+// 进详情页」）——routine 行 → openHistory（RoutineWorkspace deep-link 语义不变）；
+// workflow 行 → 运行详情页（workflowRunViewId，行内展开面整块退场）。
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { Button, Tooltip } from 'antd'
@@ -15,12 +16,23 @@ import { WORKFLOW_TASKS_UI } from '../../feature-flags'
 import { App as AntdApp } from 'antd'
 import { RunStatusIcon, RUN_STATUS_TAG } from './RoutineWorkspace'
 import { stopRunConfirm, stopRoutineRun } from './stop-run'
+import { useNavigationStore } from '../../stores/navigationStore'
 import { describeRelativeTimeText, bucketRunByDate, type DateBucket } from '../../utils/relative-time'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
-import type { PipelineRun, PipelineStageRun } from '../../../../shared/workflow/types'
+import type { PipelineRun } from '../../../../shared/workflow/types'
 
 const RUNS_POLL_MS = 3_000
 const MAX_ROWS = 50
+
+// 行悬停 = pane-row 同一款惯例（pane-styles.ts）：可点行的 hover 背景 +
+// pointer；停止钮是行动作，hover 才显形（.pane-row-action 同款语义）。
+// 之前 className 挂了名却没有样式——悬停零反馈，点得动也看不出来。
+const SIDEBAR_STYLES = `
+  .routine-run-row { cursor: pointer; transition: background 0.15s; }
+  .routine-run-row:hover { background: var(--pm-hover-faint); }
+  .routine-run-stop { opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+  .routine-run-row:hover .routine-run-stop { opacity: 1; pointer-events: auto; }
+`
 
 const BUCKET_ORDER: DateBucket[] = ['today', 'yesterday', 'thisWeek', 'earlier']
 
@@ -35,9 +47,6 @@ interface UnifiedRunRow {
   triggerText: string
   startedAt: string
   running: boolean
-  // workflow 行内展开面
-  inputs?: Record<string, string>
-  objective?: string
 }
 
 
@@ -54,21 +63,19 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
   const { modal } = AntdApp.useApp()
   const [routineRuns, setRoutineRuns] = useState<RoutineRun[]>([])
   const [pipelineRuns, setPipelineRuns] = useState<PipelineRun[]>([])
-  const [pipelineStages, setPipelineStages] = useState<PipelineStageRun[]>([])
-  const [expanded, setExpanded] = useState<string | null>(null)
   const [fetchedAt, setFetchedAt] = useState(0)
+  const navigate = useNavigationStore((s) => s.navigate)
 
   const routineNameById = new Map(routines.map((r) => [r.id, r.name]))
 
   const reload = useCallback(async (): Promise<void> => {
-    // WORKFLOW_TASKS_UI=false：workflow 行整族退场（行内展开、停止路由都只在
+    // WORKFLOW_TASKS_UI=false：workflow 行整族退场（详情路由、停止路由都只在
     // kind='workflow' 的行上），pipeline 那份 feed 也就不必拉——隐藏的功能不该
     // 在时间线上留下可点开的尾巴。
     if (WORKFLOW_TASKS_UI) {
       try {
-        const res = (await window.electronAPI.pipelineRuns(undefined, 50)) as { runs?: PipelineRun[]; stages?: PipelineStageRun[] }
+        const res = (await window.electronAPI.pipelineRuns(undefined, 50)) as { runs?: PipelineRun[] }
         setPipelineRuns(res.runs ?? [])
-        setPipelineStages(res.stages ?? [])
       } catch { /* 轮询失败静默，下一拍再来 */ }
     }
     try {
@@ -116,8 +123,6 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
       triggerText: run.trigger === 'schedule' ? t('routine.triggerSchedule') : t('routine.triggerManual'),
       startedAt: run.startedAt,
       running: run.status === 'running',
-      inputs: run.inputs,
-      objective: run.objective,
     })
   }
   rows.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
@@ -137,8 +142,6 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
     await window.electronAPI.pipelineStop(runId).catch(() => {})
   }
 
-  const stagesOf = (runId: string): PipelineStageRun[] => pipelineStages.filter((s) => s.runId === runId)
-
   return (
     <aside
       data-section="runs"
@@ -147,6 +150,7 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
         borderLeft: '1px solid var(--pm-border-hairline)', padding: '24px 16px',
       }}
     >
+      <style>{SIDEBAR_STYLES}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 32 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{t('routine.recentRuns')}</span>
       </div>
@@ -174,7 +178,7 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
                           style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderRadius: 8 }}
                           onClick={() => {
                             if (row.kind === 'routine') onOpenRoutineRun(row.entityId, row.id)
-                            else setExpanded(expanded === row.key ? null : row.key)
+                            else navigate({ kind: 'routines', workflowRunViewId: row.id })
                           }}
                         >
                           <RunStatusIcon status={row.status} />
@@ -196,6 +200,7 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
                               <Button
                                 type="text"
                                 size="small"
+                                className="routine-run-stop"
                                 icon={<PauseCircleOutlined />}
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -208,26 +213,6 @@ export function UnifiedRunsSidebar({ routines, onOpenRoutineRun, onRoutineChange
                             </Tooltip>
                           )}
                         </div>
-                        {/* workflow 行内展开（stage 行 + inputs） */}
-                        {row.kind === 'workflow' && expanded === row.key && (
-                          <div style={{ margin: '4px 0 6px 24px', display: 'grid', gap: 4, fontSize: 12 }}>
-                            {row.inputs && Object.keys(row.inputs).length > 0 && (
-                              <div style={{ color: 'var(--pm-text-quiet)' }}>
-                                {t('workflow.runInputsSection')}：{Object.entries(row.inputs).map(([k, v]) => `${k}=${v}`).join(' · ')}
-                              </div>
-                            )}
-                            {stagesOf(row.id).map((s) => (
-                              <div key={s.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                <span style={{ color: 'var(--pm-text-secondary)' }}>{s.nodeId}</span>
-                                {s.verdict && <span style={{ color: s.verdict === 'pass' ? 'var(--pm-success, #52c41a)' : 'var(--pm-warn, #faad14)' }}>{s.verdict}</span>}
-                                {s.error && <span style={{ color: 'var(--pm-error, #cf1322)' }}>{s.error}</span>}
-                              </div>
-                            ))}
-                            {stagesOf(row.id).length === 0 && (
-                              <span style={{ color: 'var(--pm-text-quiet)' }}>{t('workflow.noStages')}</span>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )
                   })}

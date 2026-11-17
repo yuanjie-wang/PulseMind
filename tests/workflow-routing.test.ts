@@ -454,3 +454,153 @@ describe('routeEdges —— 确定性与退化输入', () => {
     for (const r of routes.values()) assertOrthogonalPath(r.path)
   })
 })
+
+describe('routeEdges —— 平行间距 ≥10px（user 2026-11-15「预留至少10px的间距」）', () => {
+  /** 两条折线之间，所有「投影重叠 > 30px 的平行段对」的最小错开距离。
+   *  垂直相交（ crossings ）不算——那是交叉，不是贴线。 */
+  function minParallelDistance(a: Array<{ x: number; y: number }>, b: Array<{ x: number; y: number }>): number {
+    let min = Number.POSITIVE_INFINITY
+    for (let i = 1; i < a.length; i += 1) {
+      for (let j = 1; j < b.length; j += 1) {
+        const h1 = Math.abs(a[i - 1].y - a[i].y) < 0.01
+        const h2 = Math.abs(b[j - 1].y - b[j].y) < 0.01
+        if (h1 !== h2) continue
+        const l1 = h1 ? a[i - 1].y : a[i - 1].x
+        const l2 = h2 ? b[j - 1].y : b[j - 1].x
+        const lo1 = h1 ? Math.min(a[i - 1].x, a[i].x) : Math.min(a[i - 1].y, a[i].y)
+        const hi1 = h1 ? Math.max(a[i - 1].x, a[i].x) : Math.max(a[i - 1].y, a[i].y)
+        const lo2 = h2 ? Math.min(b[j - 1].x, b[j].x) : Math.min(b[j - 1].y, b[j].y)
+        const hi2 = h2 ? Math.max(b[j - 1].x, b[j].x) : Math.max(b[j - 1].y, b[j].y)
+        const overlap = Math.min(hi1, hi2) - Math.max(lo1, lo2)
+        if (overlap > 30) min = Math.min(min, Math.abs(l1 - l2))
+      }
+    }
+    return min
+  }
+
+  // E1 从 a 直落 b，竖线在 x=120（a/b 的中线）。c 紧贴 a 右侧 4px，E2 从 c 直落
+  // 同一个 b——它的自然车道 x=124 与 E1 只差 4px，贴线就是它的**最短路**。网格的
+  // 自然候选里没有任何 ≥10px 的替身（120/124 都来自卡片），让路车道 110/130 只能
+  // 来自 laneOffsets（既有线坐标 ±10）——这条夹具同时钉住「贴线罚分」与「让路
+  // 车道」两件事。
+  const rects: RouteRect[] = [rect('a', 0, 0, 240, 80), rect('b', 0, 320, 240, 80), rect('c', 4, 0, 240, 80)]
+  const edges: RouteEdgeSpec[] = [
+    { id: 'e1', from: { nodeId: 'a', side: 'bottom' }, to: { nodeId: 'b', side: 'top' } },
+    { id: 'e2', from: { nodeId: 'c', side: 'bottom' }, to: { nodeId: 'b', side: 'top' } },
+  ]
+
+  it('默认参数：E2 避到既有线 ±10px 的让路车道（贴线罚分 + 让路车道缺一不可）', () => {
+    const routes = routeEdges(rects, edges)
+    const e1 = routes.get('e1')!.points
+    const e2 = routes.get('e2')!.points
+    for (const [id, pts] of [
+      ['e1', e1],
+      ['e2', e2],
+    ] as const) {
+      expect(crossesInterior(pts, rects[0]), `${id} vs a`).toBe(false)
+      expect(crossesInterior(pts, rects[1]), `${id} vs b`).toBe(false)
+      assertOrthogonalPath(routes.get(id)!.path)
+    }
+    expect(minParallelDistance(e1, e2)).toBeGreaterThanOrEqual(10)
+    // 让路车道恰好落在既有线 ±10（E1 竖线 x=120）：E2 的长竖线应在 110 或 130
+    const e2VertXs = [...new Set(e2.slice(0, -1).map((p) => p.x))]
+    expect(e2VertXs.some((x) => x === 110 || x === 130)).toBe(true)
+  })
+
+  it('对照：parallelGap 关掉（0）后同一夹具贴到 <10px——钉住测试测的确实是这段代码', () => {
+    const routes = routeEdges(rects, edges, { parallelGap: 0 })
+    const min = minParallelDistance(routes.get('e1')!.points, routes.get('e2')!.points)
+    expect(min).toBeLessThan(10)
+  })
+
+  it('走廊塞不下 10px 时允许贴近（软罚分不破坏可行性），且结果确定', () => {
+    // 两张卡相距 28px：净距走廊只有 4px（92 与 96 两行），任何横穿线都躲不开 10px
+    const tightRects: RouteRect[] = [rect('a', 0, 0, 240, 80), rect('b', 300, 0, 240, 80), rect('c', 0, 108, 240, 80), rect('d', 300, 108, 240, 80)]
+    const tightEdges: RouteEdgeSpec[] = [
+      { id: 'e1', from: { nodeId: 'a', side: 'right' }, to: { nodeId: 'c', side: 'left' } },
+      { id: 'e2', from: { nodeId: 'b', side: 'left' }, to: { nodeId: 'd', side: 'right' } },
+    ]
+    const routes = routeEdges(tightRects, tightEdges)
+    expect(routes.size).toBe(2)
+    for (const r of routes.values()) assertOrthogonalPath(r.path)
+    // 确定性：两遍逐字节一致
+    const again = routeEdges(tightRects, tightEdges)
+    expect(JSON.stringify([...routes.values()].map((r) => r.points))).toBe(JSON.stringify([...again.values()].map((r) => r.points)))
+  })
+})
+
+describe('routeEdges —— 真实图回归：coding-pipeline 几何（RF transform 实测）', () => {
+  // 2026-11-15「水平线还是有重合」的原始现场：卡 266×101、层距 160、回边
+  // fix→test 贴着 DONE 入场排 4px 走全程。夹具直接用真实坐标，钉三处修复
+  // 不回退：近排罚分（d<10）必须把回边横线挤出走廊、513 同排交叠拆开、
+  // 384/388 近排错开。
+  const rects: RouteRect[] = [
+    { id: 'START', x: 148, y: -10, width: 142, height: 39 },
+    rect('code', 80, 80, 266, 101),
+    rect('test', 80, 240, 266, 101),
+    rect('review', 80, 400, 266, 101),
+    rect('fix', 433, 400, 266, 101),
+    { id: 'DONE', x: 148, y: 540, width: 142, height: 39 },
+  ]
+  const edges: RouteEdgeSpec[] = [
+    { id: 'start-entry', from: { nodeId: 'START', side: 'bottom' }, to: { nodeId: 'code', side: 'top' } },
+    { id: 'code|pass|test', from: { nodeId: 'code', side: 'bottom', at: 1 / 6 }, to: { nodeId: 'test', side: 'top' } },
+    { id: 'code|fail|fix', from: { nodeId: 'code', side: 'bottom', at: 0.5 }, to: { nodeId: 'fix', side: 'left' } },
+    { id: 'code|blocked|DONE', from: { nodeId: 'code', side: 'bottom', at: 5 / 6 }, to: { nodeId: 'DONE', side: 'top' } },
+    { id: 'test|pass|review', from: { nodeId: 'test', side: 'bottom', at: 0.25 }, to: { nodeId: 'review', side: 'top' } },
+    { id: 'test|fail|fix', from: { nodeId: 'test', side: 'bottom', at: 0.75 }, to: { nodeId: 'fix', side: 'left' } },
+    { id: 'review|pass|DONE', from: { nodeId: 'review', side: 'bottom', at: 0.25 }, to: { nodeId: 'DONE', side: 'top' } },
+    { id: 'review|fail|fix', from: { nodeId: 'review', side: 'bottom', at: 0.75 }, to: { nodeId: 'fix', side: 'left' } },
+    { id: 'fix|pass|test', from: { nodeId: 'fix', side: 'bottom', at: 0.25 }, to: { nodeId: 'test', side: 'right' } },
+    { id: 'fix|fail|test', from: { nodeId: 'fix', side: 'bottom', at: 0.75 }, to: { nodeId: 'test', side: 'left' } },
+  ]
+
+  /** 跨边水平段对里「投影重叠 > 30px」的最小错开距离：共享端口 stub 的合法
+   *  收敛（十几 px 重叠）放过，走廊级别的长距离贴线（百余 px）拦下。 */
+  function minHorizontalOverlapDistance(routes: Map<string, { points: Array<{ x: number; y: number }> }>): number {
+    let min = Number.POSITIVE_INFINITY
+    const ids = [...routes.keys()]
+    for (let i = 0; i < ids.length; i += 1) {
+      for (let j = i + 1; j < ids.length; j += 1) {
+        const A = routes.get(ids[i])!.points
+        const B = routes.get(ids[j])!.points
+        for (let p = 1; p < A.length; p += 1) {
+          for (let q = 1; q < B.length; q += 1) {
+            const hA = Math.abs(A[p - 1].y - A[p].y) < 0.01
+            const hB = Math.abs(B[q - 1].y - B[q].y) < 0.01
+            if (!hA || !hB) continue
+            const overlap = Math.min(A[p].x, B[q].x) - Math.max(A[p - 1].x, B[q - 1].x)
+            if (overlap <= 30) continue
+            min = Math.min(min, Math.abs(A[p - 1].y - B[q - 1].y))
+          }
+        }
+      }
+    }
+    return min
+  }
+
+  it('所有跨边水平长重叠（>30px）的行距 ≥ 10px', () => {
+    const routes = routeEdges(rects, edges)
+    expect(routes.size).toBe(edges.length)
+    const min = minHorizontalOverlapDistance(routes)
+    expect(min).toBeGreaterThanOrEqual(10)
+  })
+
+  it('三处原始病灶各自钉住', () => {
+    const routes = routeEdges(rects, edges)
+    const horizontalRows = (id: string): number[] => {
+      const pts = routes.get(id)!.points
+      const rows: number[] = []
+      for (let i = 1; i < pts.length; i += 1) {
+        if (Math.abs(pts[i - 1].y - pts[i].y) < 0.01 && Math.abs(pts[i].x - pts[i - 1].x) > 30) rows.push(pts[i].y)
+      }
+      return rows
+    }
+    // 回边 fix→test 不再贴着 DONE 入场排（524）走全程——要么绕到走廊外（591）
+    for (const row of horizontalRows('fix|fail|test')) expect(Math.abs(row - 524)).toBeGreaterThanOrEqual(10)
+    // 513 同排交叠拆开：fix→test 的长横线与 review→fix 的 513 排错开
+    for (const row of horizontalRows('fix|pass|test')) expect(row === 513 && horizontalRows('review|fail|fix').includes(513)).toBe(false)
+    // 384/388 近排：test→fix 的转排行与 review 入场排（384）错开 ≥10
+    for (const row of horizontalRows('test|fail|fix')) expect(Math.abs(row - 384)).toBeGreaterThanOrEqual(10)
+  })
+})

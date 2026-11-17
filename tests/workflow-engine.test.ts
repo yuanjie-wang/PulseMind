@@ -725,7 +725,9 @@ describe('runWorkflowInstance', () => {
     expect(result.error).toContain('出口连一条线')
   })
 
-  it('git checkpoint：脏仓库拒跑；FAILED 回滚基线（提交链消失）；DONE 保留提交', async () => {
+  it('git checkpoint 自动降级（user 2026-11-15「有 git 就用，没有不强制」）：脏仓/非 git 照常运行、baseline 留空；干净仓 FAILED 回滚、DONE 保留提交', async () => {
+    // 脏仓：不再拒跑——降级为无快照运行（成功跑完、baseline_commit 留空、
+    // 没有任何流水线提交）。
     const dirty = mkdtempSync(join(tmpdir(), 'pm-pipeline-dirty-'))
     writeFileSync(join(dirty, 'PLAN.md'), '计划条目 1：实现 X')
     gitRepo(dirty, true)
@@ -733,21 +735,30 @@ describe('runWorkflowInstance', () => {
       { verdict: 'pass', summary: 'ok' },
       { verdict: 'pass', summary: 'ok' },
     ])
-    const gate = await runWorkflowInstance({
-      runId: 'prun_dirty',
-      workflow: linearWorkflow, // gitCheckpoint false——先换 true 的副本测门
-      planPath,
-      workspaceDir: dirty,
-    })
-    expect(gate.status).toBe('success') // gitCheckpoint false 不设门
     const gated = await runWorkflowInstance({
       runId: 'prun_dirty2',
       workflow: { ...linearWorkflow, params: { ...linearWorkflow.params, gitCheckpoint: true } },
       planPath,
       workspaceDir: dirty,
     })
-    expect(gated.status).toBe('failed')
-    expect(gated.error).toContain('不干净')
+    expect(gated.status).toBe('success')
+    expect(runRows.get('prun_dirty2')?.baselineCommit ?? null).toBeNull()
+    expect(execSync('git log --oneline', { cwd: dirty }).toString()).not.toContain('pipeline(')
+
+    // 非 git 目录：同样照常运行（探测的 spawn 失败路径）
+    const notRepo = mkdtempSync(join(tmpdir(), 'pm-pipeline-nonrepo-'))
+    writeFileSync(join(notRepo, 'PLAN.md'), '计划条目 1：实现 X')
+    freshState([
+      { verdict: 'pass', summary: 'ok' },
+      { verdict: 'pass', summary: 'ok' },
+    ])
+    const nonRepo = await runWorkflowInstance({
+      runId: 'prun_nonrepo',
+      workflow: { ...linearWorkflow, params: { ...linearWorkflow.params, gitCheckpoint: true } },
+      planPath,
+      workspaceDir: notRepo,
+    })
+    expect(nonRepo.status).toBe('success')
 
     // FAILED 回滚：base 提交之后没有流水线提交留下
     const base = makeWorkspace()

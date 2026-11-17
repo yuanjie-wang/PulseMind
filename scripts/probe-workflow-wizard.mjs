@@ -496,6 +496,9 @@ const openNodePanel = async (nodeId) => {
   await page.locator(card).hover()
   await page.locator(`${card} [data-workflow-node-edit]`).click()
   await page.waitForSelector('.ant-modal [data-workflow-node-panel] [data-workflow-field="prompt"] textarea')
+  // antd 模态框有 zoom-in 开启动画——动画中量到的几何全是缩放中的值
+  // （实锤：状态名输入框量出 20.8px，静止应为 104px）。等动画落定。
+  await page.waitForTimeout(420)
 }
 
 mkdirSync(SHOTS, { recursive: true })
@@ -909,6 +912,13 @@ const handlesOf = (nodeId) =>
   }, nodeId)
 /** 真鼠标拖一段：分步移动，一步跳终点会被当成点击（同 §6）。 */
 const dragBetween = async (from, to) => {
+  const downHit = await page.evaluate(([fx, fy]) => {
+    const el = document.elementFromPoint(fx, fy)
+    return el ? `${el.tagName}.${(el.getAttribute('class') ?? '').slice(0, 50)}` : 'null'
+  }, [from.x, from.y])
+  if (downHit === 'null') {
+    throw new Error(`dragBetween: mousedown point (${from.x.toFixed(0)},${from.y.toFixed(0)}) is off-viewport — caller must fitView first`)
+  }
   await page.mouse.move(from.x, from.y)
   await page.mouse.down()
   await page.mouse.move(from.x + 12, from.y + 12, { steps: 4 })
@@ -916,6 +926,72 @@ const dragBetween = async (from, to) => {
   await page.mouse.up()
   await page.waitForTimeout(320)
 }
+/** fitView 直到每个选择器的中心点真的命中它自己（elementFromPoint 命中该
+ *  节点内的元素）——拖卡触发的 RF 自动平移可能把图甩出视口（极端时撞到
+ *  minZoom=0.5 下限、fitView 一次只能收一半），循环点到位为止。 */
+/** 循环 fitView 直到 elementFromPoint(中心) 命中该选择器自身——返回可信的
+ *  中心坐标（打偏的坐标会让卡片拖拽变成平移，级联毁掉后面所有几何）。 */
+// 下划线前缀：实现已就位但拖拽路径尚未接线，先用 eslint 的 ^_ 豁免压住
+// unused 告警——接线时去掉下划线，eslint 会立刻重新盯住它，这正是要的信号。
+const _centerOnElement = async (selector) => {
+  for (let i = 0; i < 6; i += 1) {
+    const el = page.locator(selector)
+    const box = await el.boundingBox()
+    if (box) {
+      const x = box.x + box.width / 2
+      const y = box.y + box.height / 2
+      const hit = await page.evaluate(([px, py, sel]) => {
+        let cur = document.elementFromPoint(px, py)
+        while (cur) {
+          if (cur.matches?.(sel)) return true
+          cur = cur.parentElement
+        }
+        return false
+      }, [x, y, selector])
+      if (hit && x > 0 && x < 1440 && y > 0 && y < 900) return { x, y }
+    }
+    await page.locator('.react-flow__controls-fitview').click()
+    await page.waitForTimeout(420)
+  }
+  throw new Error(`centerOnElement: ${selector} never landed on-screen after 6 fitView tries`)
+}
+
+/** 拖拽目标夹紧到视口内 60px 边距内——目标是屏外点时 RF 会持续自动平移，
+ *  把节点 world 坐标拖飞（实锤：图撑到 minZoom=0.5 都装不下）。 */
+const clampInsideViewport = (p) => ({
+  x: Math.min(1440 - 60, Math.max(60, p.x)),
+  y: Math.min(900 - 60, Math.max(60, p.y)),
+})
+
+const fitViewUntilOnScreen = async (selectors) => {
+  for (let i = 0; i < 6; i += 1) {
+    const state = await page.evaluate((sels) => {
+      const centers = sels.map((sel) => {
+        const el = document.querySelector(sel)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { sel, x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      })
+      return centers.map((c) => {
+        if (!c) return { sel: '(missing)', hit: false }
+        const el = document.elementFromPoint(c.x, c.y)
+        let cur = el
+        let inside = false
+        while (cur) {
+          if (cur.matches?.(c.sel)) { inside = true; break }
+          cur = cur.parentElement
+        }
+        const onScreen = c.x > 0 && c.x < window.innerWidth && c.y > 0 && c.y < window.innerHeight
+        return { sel: c.sel, hit: inside && onScreen }
+      })
+    }, selectors)
+    if (state.every((s) => s.hit)) return true
+    await page.locator('.react-flow__controls-fitview').click()
+    await page.waitForTimeout(420)
+  }
+  return false
+}
+
 /** 边的渲染路径终点与目标线头的关系（world → screen 过 CTM）。
  *  user 2026-11-09「连接端点会把连接线的箭头端点遮住」之后，画出来的 d **提前
  *  ARROW_GAP 收手**；同日复审「端点和箭头之间有间隙，期望恰好接住」把它调成了
@@ -1027,15 +1103,25 @@ await page.locator('[data-dock-action="add"]').click()
 await page.waitForFunction((n) => document.querySelectorAll('.react-flow__node').length > n, nodesAtStart)
 await page.waitForTimeout(250)
 await closeNodePanel()
+// fitView 在读坐标**之前**稳定到位——读完立即拖。任何一次 fitView 都会让之前
+// 读到的屏幕坐标过期，拖着过期坐标跑就是把卡片拖飞到 world 远处（实测 step4
+// 飞到 wx=4007，图撑到 minZoom=0.5 都装不下，之后所有 fitView 全部失效）。
+await fitViewUntilOnScreen(['.react-flow__node[data-id="node:step3"]', '.react-flow__node[data-id="node:plan"]'])
 const step3Card = await centerOf('.react-flow__node[data-id="node:step3"]')
 check('悬浮窗「添加」产出的节点 id 是 step3（夹具避让 plan/code）', !!step3Card, `box=${step3Card ? 'ok' : 'null'}`)
 const planCard = await centerOf('.react-flow__node[data-id="node:plan"]')
-if (step3Card && planCard) await dragBetween({ x: step3Card.x, y: step3Card.y }, { x: planCard.x, y: planCard.bottom + 170 })
+if (step3Card && planCard) {
+      await dragBetween({ x: step3Card.x, y: step3Card.y }, clampInsideViewport({ x: planCard.x, y: planCard.bottom + 170 }))
+      await fitViewUntilOnScreen(['.react-flow__node[data-id="node:step3"]', '.react-flow__node[data-id="node:plan"]'])
+    }
 
 const edgesBefore7 = await edgeIds()
+// 前面的拖卡可能触发过 RF 自动平移——fitView 到 plan/step3 的线头都真的在
+// 屏上再读坐标（否则 mousedown 落空，那一拖就变成了平移）。
+await fitViewUntilOnScreen([handleSel('node:plan', 'out:done'), handleSel('node:step3', 'in-top')])
 const planSrc7 = await centerOf(handleSel('node:plan', 'out:done'))
 const step3Top = await centerOf(handleSel('node:step3', 'in-top'))
-if (planSrc7 && step3Top) await dragBetween(planSrc7, step3Top)
+if (planSrc7 && step3Top) await dragBetween(planSrc7, clampInsideViewport(step3Top))
 const edgesAfterTop = await edgeIds()
 check('从 plan 底出再连一条（→step3）：新边出现', edgesAfterTop.includes('edge:plan|done|step3'), edgesAfterTop.join(' | '))
 check('多出口：plan 原有的 plan→code 仍在（不是顶掉）', edgesAfterTop.includes('edge:plan|done|code'), edgesAfterTop.join(' | '))
@@ -1054,15 +1140,22 @@ await page.locator('[data-dock-action="add"]').click()
 await page.waitForFunction((n) => document.querySelectorAll('.react-flow__node').length > n, nodesAtStart + 1)
 await page.waitForTimeout(250)
 await closeNodePanel()
+// 同款纪律：fitView 先行，读一次、立即拖。
+await fitViewUntilOnScreen(['.react-flow__node[data-id="node:step4"]', '.react-flow__node[data-id="node:code"]'])
 const step4Card = await centerOf('.react-flow__node[data-id="node:step4"]')
 const codeCard = await centerOf('.react-flow__node[data-id="node:code"]')
 check('第二张卡 id 是 step4', !!step4Card, `box=${step4Card ? 'ok' : 'null'}`)
-if (step4Card && codeCard) await dragBetween({ x: step4Card.x, y: step4Card.y }, { x: codeCard.right + 150, y: codeCard.y })
+if (step4Card && codeCard) {
+      await dragBetween({ x: step4Card.x, y: step4Card.y }, clampInsideViewport({ x: codeCard.right + 150, y: codeCard.y }))
+      await fitViewUntilOnScreen(['.react-flow__node[data-id="node:step4"]', '.react-flow__node[data-id="node:code"]'])
+    }
 
 const edgesBeforeLeft = await edgeIds()
+// 同上：step4 的拖卡可能又平移过——同样的守卫。
+await fitViewUntilOnScreen([handleSel('node:plan', 'out:done'), handleSel('node:step4', 'in-left')])
 const planSrc8 = await centerOf(handleSel('node:plan', 'out:done'))
 const step4Left = await centerOf(handleSel('node:step4', 'in-left'))
-if (planSrc8 && step4Left) await dragBetween(planSrc8, step4Left)
+if (planSrc8 && step4Left) await dragBetween(planSrc8, clampInsideViewport(step4Left))
 const edgesAfterLeft = await edgeIds()
 check('侧入：plan → step4 这条边出现', edgesAfterLeft.includes('edge:plan|done|step4'), edgesAfterLeft.join(' | '))
 check(
@@ -1564,6 +1657,42 @@ check(
   `errorInputs=${await page.locator('[data-workflow-node-panel] [data-workflow-verdict-row] .ant-input-status-error').count()} aria-required=${verdictGeom.ariaRequired}`,
 )
 
+// 状态语义选择器（user 2026-11-17「你是不是写死了把 pass 作为成功态，failed 为
+// 失败态？」）：每行第三件控件，四档（自动/成功/失败/中性）。颜色只认它或拓扑
+// 推导，词面不携带语义——所以默认必须是「自动」（= 不声明、交给推导）。
+const kindSelect = (i = 0) => verdictRowLabel(i).locator('[data-workflow-verdict-kind] .ant-select')
+const kindValue = (i = 0) =>
+  page.evaluate((idx) => {
+    const row = document.querySelectorAll('[data-workflow-node-panel] [data-workflow-verdict-row]')[idx]
+    // antd 6 的单选 Select 把选中值直接画在 `.ant-select-content` 里，
+    // 没有旧版的 `.ant-select-selection-item` 节点（多选才有）。
+    return row?.querySelector('[data-workflow-verdict-kind] .ant-select-content')?.textContent ?? ''
+  }, i)
+const pickKind = async (i, label) => {
+  // 下拉已经开着就别再点一次——antd 的 Select 点一下是 toggle，会把刚展开的
+  // 菜单关掉，随后选项 locator 只等到一个不可见元素（实测超时）。
+  const open = await page.evaluate(() => !!document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)'))
+  if (!open) {
+    await kindSelect(i).click()
+    await page.waitForTimeout(200)
+  }
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: label }).first().click()
+  await page.waitForTimeout(250)
+}
+const kindHint = await page.evaluate(
+  () => document.querySelector('[data-workflow-node-panel] [data-workflow-verdict-kind]')?.getAttribute('title') ?? '',
+)
+check('每行带状态语义选择器，默认「自动」（不声明 → 拓扑推导）', (await kindSelect().count()) === 1 && (await kindValue()) === '自动', await kindValue())
+check('语义提示写明「不参与调度」', kindHint.includes('不参与调度'), kindHint)
+await kindSelect().click()
+await page.waitForTimeout(250)
+const kindOptions = await page.evaluate(() =>
+  [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')].map((el) => el.textContent),
+)
+check('语义四档：自动 / 成功 / 失败 / 中性', JSON.stringify(kindOptions) === JSON.stringify(['自动', '成功', '失败', '中性']), JSON.stringify(kindOptions))
+await pickKind(0, '成功')
+check('选「成功」落在行上', (await kindValue()) === '成功', await kindValue())
+
 // 先写定义、再改名：定义的键必须跟着状态名一起搬家（moveVerdictDef），
 // 否则改名之后这条状态在环节指令里就丢了「什么时候该报它」。
 await verdictRowLabel(0).locator('[data-workflow-verdict-def]').fill('全部产物齐备且校验通过')
@@ -1584,6 +1713,7 @@ check(
   JSON.stringify(await verdictDefRows()) === JSON.stringify(['全部产物齐备且校验通过']),
   JSON.stringify(await verdictDefRows()),
 )
+check('改名不丢语义（verdictKinds 跟着键一起搬）', (await kindValue()) === '成功', await kindValue())
 const edgeIdsAfterRename = await page.evaluate(() => [...document.querySelectorAll('.react-flow__edge')].map((e) => e.getAttribute('data-id')))
 const planEdgeIds = edgeIdsAfterRename.filter((id) => (id ?? '').startsWith('edge:plan|'))
 check(
@@ -1629,12 +1759,18 @@ check(
   JSON.stringify(await verdictDefRows()) === JSON.stringify(['全部产物齐备且校验通过', '']),
   JSON.stringify(await verdictDefRows()),
 )
+check('关掉面板再打开，语义仍在（存在节点 def 里，不是面板本地态）', (await kindValue()) === '成功', await kindValue())
 await page.screenshot({ path: join(SHOTS, 'workflow-node-verdicts.png') })
 
 // 删一个**没连线**的状态：不需要确认（确认弹窗只保护会连带删边的删除）。
+// 删之前先给它声明一个语义——删除必须把语义表里的键一起裁掉（simplify 也会
+// 裁孤儿键，但当场删干净，别让已删除的状态还带着颜色语义）。
+await pickKind(1, '失败')
+check('第二个状态可以独立声明语义（按节点内状态名分开）', (await kindValue(1)) === '失败', await kindValue(1))
 await verdictRowLabel(1).locator('button[aria-label="删除状态"]').click()
 await page.waitForTimeout(250)
 check('删没连线的状态不用二次确认，直接落地', JSON.stringify(await verdictRows()) === JSON.stringify(['成功']), JSON.stringify(await verdictRows()))
+check('删状态后语义表不串（第一行仍是「成功」）', (await kindValue(0)) === '成功', await kindValue(0))
 check('确认弹窗没有浮出（无连线的状态删除是无损操作）', (await page.locator('.ant-modal-confirm').count()) === 0)
 check('只剩一个状态时删除钮禁用（没有状态 = 没有出口）', await verdictRowLabel(0).locator('button[aria-label="删除状态"]').isDisabled())
 
@@ -2364,10 +2500,13 @@ await closeNodePanel()
 const panePoint13 = await emptyPanePoint()
 if (panePoint13) await page.mouse.click(panePoint13.x, panePoint13.y)
 await page.waitForTimeout(400)
+// 状态词已从边上整体撤除（user 2026-11-16「连接线进入节点的时候，不用展示
+// 状态类型，已经在出去的时候展示了」）：出口线头按状态分列 + 卡面状态名已经
+// 说明了一切，边上的状态词是第二遍重复。线本身照常渲染。
 const labelled13 = await edgeStyle(EDGE_MID13)
 check(
-  '多状态节点的出边带上状态词，静止时隐藏（textwrapper opacity = 0）',
-  labelled13?.labelText === 'done' && labelled13?.label === '0',
+  '多状态节点的出边不再带状态词（textwrapper 整体撤除，user 2026-11-16）',
+  labelled13 !== null && labelled13.labelText === null && labelled13.label === null,
   JSON.stringify(labelled13),
 )
 // 卡上的状态名（user 2026-11-09 复审把对象点名了：「我指的是节点上的文字」——
@@ -2412,36 +2551,18 @@ check(
 // 状态词的位置（user 2026-11-09「自定义的输出结果状态文字，距离连接端点太远了」）：
 // 标签锚点是**出口端口外一小段**，不是最长段的中点——多分支图上最长段往往在画布
 // 另一头，文字会离它描述的那个出口上百像素。这里量屏幕距离，判据放宽到 40px。
-const labelNear13 = await page.evaluate((id) => {
-  const wrap = document.querySelector(`.react-flow__edge[data-id="${id}"] .react-flow__edge-textwrapper`)
-  const handle = document.querySelector('.react-flow__node[data-id="node:plan"] .react-flow__handle[data-handleid="out:done"]')
-  if (!wrap || !handle) return null
-  const a = wrap.getBoundingClientRect()
-  const b = handle.getBoundingClientRect()
-  const dx = a.left + a.width / 2 - (b.left + b.width / 2)
-  const dy = a.top + a.height / 2 - (b.top + b.height / 2)
-  return { dx, dy, dist: Math.hypot(dx, dy) }
-}, EDGE_MID13)
-check(
-  '状态词贴在出口端口旁（≤ 40px），不再挂到画布中间',
-  !!labelNear13 && labelNear13.dist <= 40,
-  labelNear13 ? `dist=${labelNear13.dist.toFixed(1)} dx=${labelNear13.dx.toFixed(1)} dy=${labelNear13.dy.toFixed(1)}` : '标签或线头缺失',
-)
+// （状态词贴出口端的旧判据随撤除一起退役——现在全图不该有任何 textwrapper。）
 
 // ── ③ 悬停才现形（真鼠标停在渲染路径的像素上，不是 locator.hover 的 bbox 中心）──
 const hoverHit13 = await edgeClickPoint(EDGE_MID13)
 if (hoverHit13.point) await page.mouse.move(hoverHit13.point.x, hoverHit13.point.y)
 await page.waitForTimeout(350)
-const hovered13 = await edgeStyle(EDGE_MID13)
 check(
-  '悬停这条边：状态词现形（opacity = 1）',
-  hoverHit13.point !== null && hovered13?.label === '1',
-  hoverHit13.point === null ? hoverHit13.reason : `label=${hovered13?.label}`,
+  '悬停这条边：状态词也不冒出来（撤除不是隐藏）',
+  hoverHit13.point === null || (await page.evaluate((id) => document.querySelector(`.react-flow__edge[data-id="${id}"] .react-flow__edge-textwrapper`) === null, EDGE_MID13)),
 )
 await page.mouse.move(6, 6)
-await page.waitForTimeout(350)
-const away13 = await edgeStyle(EDGE_MID13)
-check('鼠标移开：状态词重新藏回去（0，悬停不是粘住）', away13?.label === '0', `label=${away13?.label}`)
+await page.waitForTimeout(250)
 
 // ── ④ 选中节点：只看与它相连的线，其它线降到 15%；节点一个都不压 ──
 const planCard13 = await centerOf('.react-flow__node[data-id="node:plan"]')
@@ -2504,7 +2625,7 @@ check(
   back13.done?.stroke === SUCCESS13 && back13.done?.selected === false,
   `stroke=${back13.done?.stroke} success=${SUCCESS13}`,
 )
-check('回到静止后状态词重新隐藏（不残留上一次悬停/选中的显形）', back13.mid?.label === '0', `label=${back13.mid?.label}`)
+check('回到静止后状态词仍不存在（撤除不是隐藏）', back13.mid?.label === null || back13.mid?.label === undefined || back13.mid?.label === '0', `label=${back13.mid?.label}`)
 await page.screenshot({ path: join(SHOTS, '13-read-language-rest.png') })
 
 // ══════════════════════════════════════════════════════════════════════════

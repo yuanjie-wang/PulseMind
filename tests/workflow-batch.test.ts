@@ -116,7 +116,7 @@ describe('batch feeder & engine wiring', () => {
   it('引擎渲染：builtins 来自 builtinRoutineVars（workspace + row）', () => {
     expect(engine).toContain('builtinRoutineVars')
     expect(engine).toMatch(/builtins: builtinRoutineVars\(\{ workspaceDir: opts\.workspaceDir, row: opts\.row \}\)/)
-    expect(engine).toMatch(/row: opts\.row,\n\s+runObjective,/)
+    expect(engine).toMatch(/row: opts\.row,\n\s+checkpointOn,\n\s+runObjective,/)
   })
 })
 

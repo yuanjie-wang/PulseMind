@@ -192,8 +192,9 @@ export function validateWorkflow(def: unknown, opts: WorkflowValidateOptions = {
       }
     }
     const timeout = p?.stageTimeoutMinutes
-    if (timeout !== undefined && (!Number.isFinite(timeout) || (timeout as number) <= 0)) {
-      errors.push('params.stageTimeoutMinutes 必须是正数')
+    // 0 = 永不超时（2026-11-17）：放行，只有负数/非数值拒绝。
+    if (timeout !== undefined && (!Number.isFinite(timeout) || (timeout as number) < 0)) {
+      errors.push('params.stageTimeoutMinutes 必须是非负数（0 = 永不超时）')
     }
     if (p?.gitCheckpoint !== undefined && typeof p.gitCheckpoint !== 'boolean') {
       errors.push('params.gitCheckpoint 必须是布尔值')

@@ -34,8 +34,9 @@ import { depthOf, isLoopEdge, loopEdgeKeys } from '../../shared/workflow/layout'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { StageOutcome, WorkflowDefinition, WorkflowNode } from '../../shared/workflow/types'
-import { gitBaseline, gitCheckpointGate, gitResetToBaseline, gitStageCommit } from './git-checkpoint'
+import { gitBaseline, gitCheckpointProbe, gitResetToBaseline, gitStageCommit } from './git-checkpoint'
 import { pipelineRunStore } from '../storage/pipeline-run-store'
+import { logMain } from '../main-log'
 
 const DEFAULT_STAGE_TIMEOUT_MINUTES = 30
 const DEFAULT_MAX_STAGE_CONTINUES = 2
@@ -48,6 +49,8 @@ const ARTIFACT_READ_BYTES = 64_000
  *  登记、结算时摘除。 */
 const activeStageConvs = new Map<string, string>()
 
+/** 0（显式写入的 stageTimeoutMinutes: 0）= 永不超时：返回 0，武装计时器的
+ *  地方据此跳过；缺席仍是 30 分钟缺省。 */
 function stageTimeoutMs(workflow: WorkflowDefinition): number {
   return (workflow.params?.stageTimeoutMinutes ?? DEFAULT_STAGE_TIMEOUT_MINUTES) * 60_000
 }
@@ -327,6 +330,10 @@ export interface RunStageOptions {
   vars?: Record<string, string>
   /** 批量实例的 1-based 行号（内置 {{row}}；单次运行缺席 = token 保持可见）。 */
   row?: string
+  /** git 快照是否实际生效（probe 可用 + 基线铸出）——只有 true 才做 per-stage
+   *  commit。降级运行（非 git/脏树/空仓库）没有基线，commit 会往用户仓库里
+   *  塞 pipeline 提交而没有任何回滚能力。 */
+  checkpointOn?: boolean
   /** 上游结算（入口节点/无入边 = 缺席）。多分支汇入时是数组：AND-join
    *  在全部前向上游结算后一次交给本阶段。 */
   prev?: StageUpstream[]
@@ -405,6 +412,9 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
     pipelineRunStore.finishStage(opts.stageRowId, {
       finishedAt: new Date().toISOString(),
       ...(o.kind === 'settled' ? { verdict: o.verdict, conversationId: o.conversationId, artifacts: o.artifacts } : { error: o.reason }),
+      // summary 落库（PLAN-workflow-run-view）：运行视图「节点做了什么/最终结果」
+      // 的数据面——此前摘要只活在转写里，运行记录与运行图都看不到。
+      ...(o.kind === 'settled' && o.summary ? { summary: o.summary } : {}),
       ...(o.conversationId ? { conversationId: o.conversationId } : {}),
     })
     if (o.conversationId) {
@@ -423,7 +433,9 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
       if (o.kind === 'settled') {
         await backfillHandoff(opts.workspaceDir, opts.runId, node, o)
       }
-      if ((workflow.params?.gitCheckpoint ?? true) && o.conversationId) {
+      // per-stage commit 只在快照真正生效时做（基线铸出）——降级运行没有基线，
+      // 提交只会污染用户仓库而没有任何回滚能力。
+      if (opts.checkpointOn && o.conversationId) {
         await gitStageCommit(opts.workspaceDir, opts.runId, node.id, o.kind === 'settled' ? o.verdict : 'failed')
       }
       resolveOutcome?.(o)
@@ -431,10 +443,15 @@ export async function runStage(opts: RunStageOptions): Promise<StageOutcome> {
   }
 
   const timeoutMs = stageTimeoutMs(workflow)
-  const timeout = setTimeout(() => {
-    void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
-    finish({ kind: 'failed', reason: `阶段超时（${timeoutMs / 60000} 分钟）`, conversationId: convId, continues: continuesRef.count })
-  }, timeoutMs)
+  // stageTimeoutMinutes: 0 = 永不超时（user 2026-11-17）：不武装计时器——
+  // 环节多长都等它跑完，仍受 maxVisits / continue 预算约束。clearTimeout 对
+  // undefined 是无害 no-op，finish 的清理路径不用分叉。
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => {
+      void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
+      finish({ kind: 'failed', reason: `阶段超时（${timeoutMs / 60000} 分钟）`, conversationId: convId, continues: continuesRef.count })
+    }, timeoutMs)
+    : undefined
 
   const onEvent = (sessionId: string, data: AgentEventData): void => {
     if (sessionId !== convId || settled) return
@@ -576,13 +593,23 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
   }
   const planContent = opts.planPath ? await readPlanContent(opts.planPath, workspaceDir) : undefined
 
-  // git checkpoint 启动门：非 git 仓库或工作树脏 → 报错拒跑。
+  // git checkpoint：**从门槛降级为增强**（user 2026-11-15「已经有 git 的就可以
+  //  用，没有 git 也不强制」）——git 仓库在且工作树干净 ⇒ 基线快照 + 每阶段
+  //  commit + 失败回滚；否则照常运行、如实留痕（baseline_commit 留空 + 日志），
+  //  失败不回滚。params.gitCheckpoint: false 仍是硬关（doc-translate 这类模板）。
   let baseline: string | null = null
-  if (workflow.params?.gitCheckpoint ?? true) {
-    const gateError = await gitCheckpointGate(workspaceDir)
-    if (gateError) return { status: 'failed', error: gateError }
-    baseline = await gitBaseline(workspaceDir)
-    if (baseline) pipelineRunStore.updateRun(opts.runId, { baselineCommit: baseline })
+  let checkpointOn = false
+  if (workflow.params?.gitCheckpoint !== false) {
+    const probe = await gitCheckpointProbe(workspaceDir)
+    if (probe.usable) {
+      baseline = await gitBaseline(workspaceDir)
+      // 基线铸不出（空仓库没有任何提交）⇒ 回滚同样无从谈起，按降级算。
+      checkpointOn = baseline !== null
+      if (baseline) pipelineRunStore.updateRun(opts.runId, { baselineCommit: baseline })
+    } else {
+      // 落盘而非 console（打包 GUI 无终端，「失败为什么没回滚」只有 main.log 能归因）
+      logMain('WARN', 'pipeline', `${opts.runId}: git 快照未启用 — ${probe.reason}（失败将不会回滚）`)
+    }
   }
 
   const failRun = async (error: string, currentNode: string): Promise<RunInstanceResult> => {
@@ -660,6 +687,8 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
   let stageSeq = 0
   let reachedDone = false
   let lastNodeId = workflow.entry
+  /** 最后一个完成阶段的摘要（运行级最终结论的来源）。 */
+  let lastConclusion: string | undefined
   enqueue(workflow.entry)
 
   for (;;) {
@@ -698,6 +727,7 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
       approvalMode: opts.approvalMode,
       profileId: opts.profileId,
       row: opts.row,
+      checkpointOn,
       runObjective,
       planPath: opts.planPath,
       planContent,
@@ -709,6 +739,7 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
       return await failRun(`阶段 ${node.id} 失败：${outcome.reason}`, node.id)
     }
 
+    if (outcome.summary?.trim()) lastConclusion = outcome.summary.trim()
     done.add(node.id)
     const upstreamRef: StageUpstreamRef = {
       id: node.id,
@@ -782,6 +813,12 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
     return await failRun(`实例走完边表但没有分支到达 DONE（最后执行：${lastNodeId}）`, lastNodeId)
   }
 
+  // 运行级最终结论（user 2026-11-16「缺少最终结论的输出」）：到达 DONE 时把
+  // 最后一个完成阶段的摘要落成 run 行的 conclusion——「最终结果」从借用最后
+  // 阶段摘要的近似，升级为一等数据面。
+  if (lastConclusion) {
+    pipelineRunStore.updateRun(opts.runId, { conclusion: lastConclusion })
+  }
   pipelineRunStore.updateRun(opts.runId, { status: 'success', currentNode: lastNodeId, finishedAt: new Date().toISOString() })
   // handoff 生命周期：随实例结算触发（plan §P2）——只留最近 20 次运行的目录。
   await pruneHandoffDirs(workspaceDir)
@@ -852,8 +889,21 @@ class PipelineEngine {
     try {
       while (this.queue.length > 0) {
         const next = this.queue.shift()!
-        // 失败不挡后续（run 行记 error，队列继续下一条 plan）。
-        const result = await this.runOne(next)
+        // 单实例的意外异常不杀死整个 FIFO（后续实例照常）——runWorkflowInstance
+        // 的正常失败路径都在内部结算，这里兜的是它不该有的同步 throw。
+        let result: RunInstanceResult
+        try {
+          result = await this.runOne(next)
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          logMain('ERROR', 'pipeline', `instance ${next.runId} crashed: ${error}`)
+          pipelineRunStore.updateRun(next.runId, {
+            status: 'failed',
+            finishedAt: new Date().toISOString(),
+            error: `引擎异常：${error}`,
+          })
+          continue
+        }
         if (result.status === 'failed') {
           console.warn(`[Pipeline] instance ${next.runId} failed: ${result.error ?? ''}`)
         }

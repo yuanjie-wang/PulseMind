@@ -8,6 +8,7 @@
 // ```form-patch 围栏 + 校验门，主进程侧不需要第二个入口。
 
 import { ipcMain } from 'electron'
+import { logMain } from '../main-log'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { workflowStore, seedWorkflowTemplates } from '../storage/workflow-store'
 import { pipelineRunStore } from '../storage/pipeline-run-store'
@@ -20,6 +21,13 @@ import type { WorkflowDefinition } from '../../shared/workflow/types'
 
 export function registerPipelineHandlers(): void {
   seedWorkflowTemplates()
+  // 启动恢复（user 2026-11-15 实测：git 启动门挂住 + 应用重启，运行行孤儿在
+  // running 停了 9 小时）。上一进程的 FIFO/停止钩子已随进程消失，遗留的
+  // running 行没人结算——启动时统一落为 failed，用户在运行记录里能看到
+  // 「应用重启，运行中断」而不是一条永远转圈的假运行。
+  const stale = pipelineRunStore.failStaleRunning('应用重启，运行中断')
+  // 打包 GUI 无终端，事后归因只能靠 logs/main.log（[Hooks] 2026-11-05 教训）
+  if (stale > 0) logMain('WARN', 'pipeline', `startup recovery: settled ${stale} orphaned running run(s) as failed`)
 
   ipcMain.handle(IPC_CHANNELS.PIPELINE_WORKFLOWS, (_e, op: string, arg?: unknown) => {
     switch (op) {

@@ -200,8 +200,9 @@ describe('validateWorkflow', () => {
     expect(validateWorkflow({ id: 'x' }).errors.length).toBeGreaterThan(0)
   })
 
-  it('params 形态：非正数/非布尔拒绝', () => {
-    expect(validateWorkflow({ ...baseWorkflow, params: { stageTimeoutMinutes: 0 } }).ok).toBe(false)
+  it('params 形态：负数/非布尔拒绝，0 = 永不超时放行（2026-11-17）', () => {
+    expect(validateWorkflow({ ...baseWorkflow, params: { stageTimeoutMinutes: -1 } }).ok).toBe(false)
+    expect(validateWorkflow({ ...baseWorkflow, params: { stageTimeoutMinutes: 0 } }).ok).toBe(true)
     expect(validateWorkflow({ ...baseWorkflow, params: { gitCheckpoint: 'yes' } as never }).ok).toBe(false)
     expect(validateWorkflow({ ...baseWorkflow, params: { stageTimeoutMinutes: 30, maxStageContinues: 2 } }).ok).toBe(true)
   })

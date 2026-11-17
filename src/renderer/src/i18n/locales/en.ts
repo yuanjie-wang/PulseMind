@@ -1008,6 +1008,13 @@ const en: TranslationDict = {
     canvasVerdictNamePlaceholder: 'State name',
     canvasVerdictDefPlaceholder: 'Definition (required): when is this state reported?',
     canvasVerdictDefLabel: 'Definition of state "{{name}}"',
+    canvasVerdictKindLabel: 'Semantics',
+    canvasVerdictKindHint:
+      'Semantics only affect run-view colors (success green / failure red / neutral grey), never scheduling. Auto = inferred from wires: wired to "End" is success, no wire at all is failure (the engine fails the run), anything else is neutral.',
+    canvasVerdictKindAuto: 'Auto',
+    canvasVerdictKindSuccess: 'Success',
+    canvasVerdictKindFailure: 'Failure',
+    canvasVerdictKindNeutral: 'Neutral',
     canvasDeleteNode: 'Delete stage',
     canvasDeleteNodeConfirm: 'Delete stage "{{name}}"? Its edges are removed with it.',
     canvasPanelClose: 'Close',
@@ -1071,16 +1078,9 @@ const en: TranslationDict = {
     varRow: 'Batch row number',
     runInputsSection: 'Variables',
     edgeLoopSuffix: 'loop',
-    canvasNewPrompt: `You are the executor of this stage. Global objective: {{objective}}
+    canvasNewPrompt: `Task: <describe what this stage should do>
 
-Workspace: {{workspace}} (visit {{visit}})
-
-Task: <describe what this stage should do>
-
-Previous stage verdict: {{prevVerdict}} / {{prevSummary}}
-
-At the end, output exactly one contract line as the last message:
-PIPELINE_RESULT: {"verdict":"pass","summary":"<one-line summary>","artifacts":[]}`,
+Definition of done: <when is it complete>`,
     edit: 'Edit',
     run: 'Run',
     delete: 'Delete',
@@ -1089,7 +1089,27 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<one-line summary>","artifacts":[]
     edgesCount: '{{count}} edges',
     runs: 'Run history',
     noRuns: 'No runs yet',
-    noStages: 'No stage started yet',
+    runViewOpenTranscript: 'View transcript',
+    runViewBackToStages: 'Back to stages',
+    runViewBackToTasks: 'Back to tasks',
+    runViewRunMissing: 'The run record does not exist or was deleted.',
+    runViewTranscriptEmpty: 'No conversation content saved for this stage.',
+    runViewMissingDef: 'The workflow definition was deleted; the run graph is unavailable (run history is kept).',
+    runViewFinalResult: 'Final result',
+    runViewPendingResult: 'No stage has finished yet',
+    runPanelPickHint: 'Click a node on the canvas to see how it went; click Start for the brief, End for the final result.',
+    runPanelStartTitle: 'Initial brief',
+    runViewObjectiveLabel: 'Objective',
+    runPanelNoObjective: '(no run objective)',
+    runPanelRunningHint: 'This stage is still running — its transcript will appear here once it settles.',
+    runPanelExecPick: 'This node ran {{count}} times — pick one:',
+    runPanelNoRecord: 'No inspectable execution recorded for this stage.',
+    runViewCompletedNoSummary: 'All stages completed (no per-stage summary recorded for this run — see the stage cards and transcripts below).',
+    runViewNoSummary: '(no summary recorded)',
+    runViewArtifacts: 'Artifacts',
+    runBadgeRunning: 'Running',
+    runBadgeSuccess: 'Success',
+    runBadgeFailed: 'Failed',
     statusRunning: 'Running',
     statusSuccess: 'Success',
     statusFailed: 'Failed',
@@ -1263,7 +1283,7 @@ PIPELINE_RESULT: {"verdict":"pass","summary":"<one-line summary>","artifacts":[]
     workflowColumnTitle: 'Task Assistant',
     workflowPlaceholder: 'Describe one thing you want AI to finish end to end…',
     workflowIntro:
-      'Describe something you want AI to finish; the assistant splits it into a stage chain and writes it straight onto the canvas — undo is one click away.',
+      'Describe something you want AI to finish; the assistant splits it into a node graph and writes it straight onto the canvas — undo is one click away.',
     workflowExample1: 'Read a spec, draft a technical plan, change the code accordingly, then write a change note',
     workflowExample2: "Collect this week's competitor updates, brief each one, then polish it into a weekly report",
     newSession: 'New session',

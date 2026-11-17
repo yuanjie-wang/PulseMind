@@ -1,7 +1,8 @@
 // PLAN-workflow-engine：git checkpoint（评审缺口①，spawn git CLI，无新依赖）。
 //
-// - 实例启动检查 workspaceDir：非 git 仓库或工作树脏 → 报错拒跑（不把用户
-//   未提交内容混进流水线快照，fail-safe）。
+// - 实例启动探测 workspaceDir（PLAN-git-auto，user 2026-11-15「有 git 就用，
+//   没有 git 也不强制」）：git 仓库在且工作树干净 ⇒ 快照/回滚/审计生效；否则
+//   ⇒ 运行照常、baseline_commit 留空、日志留痕——git 是增强，不是门槛。
 // - 记录基线 commit；每阶段结算（success/fail）后 `git add -A && git commit`。
 // - 实例 FAILED → `git reset --hard <baseline>` 回滚；DONE → 保留提交链。
 // - 回滚只在实例结算时做一次；阶段级失败不回滚（fix 循环依赖前序阶段的
@@ -24,32 +25,52 @@
 
 import { spawn } from 'node:child_process'
 
+/** git 调用的看门狗（user 2026-11-15 实测：启动门/基线的 git 挂死 → 运行行
+ *  孤儿在 running 停了 9 小时——门在 runStage 之前，它一卡整个 FIFO 都停）。
+ *  超时杀掉子进程并按失败结算，调用方各自走 fail-safe（门拒跑 / baseline
+ *  视为 null）。30s 对「大仓库 git add -A」足够宽裕，对「等一个永远不来的
+ *  锁/凭据」是及时止损。 */
+const GIT_TIMEOUT_MS = 30_000
+
 function runGit(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('git', args, { cwd, windowsHide: true })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    const done = (r: { ok: boolean; stdout: string; stderr: string }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(r)
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      done({ ok: false, stdout, stderr: `git ${args[0]} 超时（${GIT_TIMEOUT_MS / 1000}s）— 可能被锁或凭据提示卡住` })
+    }, GIT_TIMEOUT_MS)
     child.stdout?.on('data', (d) => {
       stdout += String(d)
     })
     child.stderr?.on('data', (d) => {
       stderr += String(d)
     })
-    child.on('error', (err) => resolve({ ok: false, stdout, stderr: stderr + String(err) }))
-    child.on('close', (code) => resolve({ ok: code === 0, stdout, stderr }))
+    child.on('error', (err) => done({ ok: false, stdout, stderr: stderr + String(err) }))
+    child.on('close', (code) => done({ ok: code === 0, stdout, stderr }))
   })
 }
 
-/** git 仓库检测 + 工作树干净检测（启动门）。返回拒绝原因或 null。
+/** git 可用性探测（启动门 → 探测，user 2026-11-15「已经有 git 的就可以用，
+ *  没有 git 也不强制」）：git 仓库在**且工作树干净** ⇒ 快照与回滚可用；否则
+ *  ⇒ 运行照常、如实留痕（运行行 baseline_commit 空 + 日志），不再拒跑。
  *  status 带与 add/clean 同款的 pathspec 排除：untracked 的 .pulsemind/ 不判脏
- *  ——否则第一次运行留下的 handoff 会让同一 workspace 的第二次运行永久拒跑。 */
-export async function gitCheckpointGate(workspaceDir: string): Promise<string | null> {
+ *  ——第一次运行留下的 handoff 不能让探测误判「脏」。 */
+export async function gitCheckpointProbe(workspaceDir: string): Promise<{ usable: boolean; reason?: string }> {
   const repo = await runGit(workspaceDir, ['rev-parse', '--is-inside-work-tree'])
-  if (!repo.ok || repo.stdout.trim() !== 'true') return '工作区不是 git 仓库（gitCheckpoint 缺省开启，把 params.gitCheckpoint 设为 false 可跳过）'
+  if (!repo.ok || repo.stdout.trim() !== 'true') return { usable: false, reason: '工作区不是 git 仓库' }
   const status = await runGit(workspaceDir, ['status', '--porcelain', '--', '.', ':!.pulsemind'])
-  if (!status.ok) return `git status 执行失败：${status.stderr.slice(0, 200)}`
-  if (status.stdout.trim().length > 0) return '工作树不干净：请先提交或暂存当前改动，流水线不会把它们混进快照'
-  return null
+  if (!status.ok) return { usable: false, reason: `git status 执行失败：${status.stderr.slice(0, 200)}` }
+  if (status.stdout.trim().length > 0) return { usable: false, reason: '工作树有未提交改动（快照会把它们混进基线）' }
+  return { usable: true }
 }
 
 /** 基线 commit（启动门通过后调用）。 */

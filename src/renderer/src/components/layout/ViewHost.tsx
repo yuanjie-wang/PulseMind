@@ -24,6 +24,7 @@ import type { ToolState } from '../../tools/types'
 const LazyCentersPage = lazy(() => import('../centers/CentersPage'))
 const LazyRoutineCenter = lazy(() => import('../routine/RoutineCenter'))
 const LazyTaskWizardPage = lazy(() => import('../routine/TaskWizardPage'))
+const LazyWorkflowRunViewPage = lazy(() => import('../routine/WorkflowRunViewPage'))
 const LazySearchView = lazy(() => import('../search/SearchView'))
 const LazySettingsPage = lazy(() => import('../settings/SettingsPage'))
 const LazyStatisticsPage = lazy(() => import('./StatisticsPage'))
@@ -72,11 +73,15 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
       // workflowEditing = workflow 分支；页面分支渲染混排卡片网格。
       // WORKFLOW_TASKS_UI=false 时 workflow 分支不接客：陈旧导航态（页面内
       // state，跨重启不存活）落到列表，而不是把一个隐藏功能的编辑器打开。
-      content = view.routineEditing
-        ? <LazyTaskWizardPage kind="routine" routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
-        : view.workflowEditing && WORKFLOW_TASKS_UI
-          ? <LazyTaskWizardPage kind="workflow" workflowId={view.workflowId} />
-          : <LazyRoutineCenter runHistoryOf={view.runHistoryOf} />
+      content = view.workflowRunViewId && WORKFLOW_TASKS_UI
+        // 工作流运行的整页运行视图（user 2026-11-16：模态框太小 → 页面）：
+        // 左流程图 + 右阶段执行面板，返回键回任务中心列表。
+        ? <LazyWorkflowRunViewPage runId={view.workflowRunViewId} />
+        : view.routineEditing
+          ? <LazyTaskWizardPage kind="routine" routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
+          : view.workflowEditing && WORKFLOW_TASKS_UI
+            ? <LazyTaskWizardPage kind="workflow" workflowId={view.workflowId} />
+            : <LazyRoutineCenter runHistoryOf={view.runHistoryOf} />
       break
     case 'capability':
     case 'knowledge':

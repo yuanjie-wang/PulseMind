@@ -44,62 +44,96 @@ export interface WorkflowStageNodeData extends Record<string, unknown> {
   /** 删除按钮的落点：画布负责二次确认（会连带删掉该节点的所有连线）。 */
   onDelete: (id: string) => void
   deleteLabel: string
+  /** 运行视图（PLAN-workflow-run-view）：runMode = 画布处于运行查看态——
+   *  编辑/删除钮退场、卡片按运行状态着色。run = 该节点最新一次 stage 的
+   *  状态（run-view.ts 的推导；缺席 = 还没跑到，画布画成弱化底稿）。
+   *  runClass 由画布按 verdict 给出（pass 绿 / fail 红 / 其余中性）。 */
+  runMode?: boolean
+  run?: { status: 'running' | 'settled' | 'failed'; verdict?: string; error?: string; badge: string }
+  runClass?: string
 }
 
 export interface WorkflowTerminalNodeData extends Record<string, unknown> {
   kind: WorkflowTerminalKind
   label: string
+  /** 运行视图：DONE 芯片反映实例终态（缺席 = 定义视图，不着色）。 */
+  runStatus?: 'running' | 'success' | 'failed'
 }
 
 export type WorkflowStageFlowNode = Node<WorkflowStageNodeData, typeof STAGE_NODE_TYPE>
 export type WorkflowTerminalFlowNode = Node<WorkflowTerminalNodeData, typeof TERMINAL_NODE_TYPE>
 
 export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): React.ReactElement {
-  const { node, onEdit, editLabel, onDelete, deleteLabel } = data
-  const verdicts = node.verdicts.length > 0 ? node.verdicts : ['pass']
+  const { node, onEdit, editLabel, onDelete, deleteLabel, runMode, run, runClass } = data
+  // `verdicts` 缺席兜底（2026-11-17）：盘上手写/旧版定义可以没有这个字段，
+  // 裸解引用会整张卡抛错（画布白屏、连带所有连线消失）。运行视图已过
+  // normalizeSimpleWorkflow 补齐，这里是第二道门（编辑器加载路径同吃）。
+  const verdicts = node.verdicts && node.verdicts.length > 0 ? node.verdicts : ['pass']
   const multi = verdicts.length > 1
+  // 运行视图的卡面状态类由画布下发（verdict 感知：pass 绿 / fail 红 / 其余
+  // 中性），缺席（还没跑到）= idle 弱化——底稿一眼可辨「哪些还没发生」。
+  // `--runview` 是运行态的总开关（与具体状态无关）：徽标绝对定位到卡右上角、
+  // 标题让出右侧空间（user 2026-11-17「节点执行状态的标签放在节点的右上角」）。
+  const cardClass = runMode ? ` wf-stage-card--runview wf-stage-card--${runClass ?? 'run-idle'}` : ''
   return (
-    <div className={multi ? 'wf-stage-card has-verdicts' : 'wf-stage-card'}>
+    <div className={(multi ? 'wf-stage-card has-verdicts' : 'wf-stage-card') + cardClass}>
       {/* 三个入线头各带唯一 id：React Flow 的 handle 身份是 (nodeId, type, id)，
           同节点挂三个不带 id 的 target Handle 会被当成同一个、落点判不出来。 */}
       <Handle id="in-top" type="target" position={Position.Top} className="wf-handle-target" />
       <Handle id="in-left" type="target" position={Position.Left} className="wf-handle-target" />
       <Handle id="in-right" type="target" position={Position.Right} className="wf-handle-target" />
       {/* 悬停才露的编辑钮：nodrag/nopan 是 React Flow 的拖拽/平移豁免类（少了
-          它们，按下这颗钮会被当成拖节点），stopPropagation 挡住画布的选中。 */}
-      <button
-        type="button"
-        className="wf-node-edit nodrag nopan"
-        data-workflow-node-edit
-        aria-label={editLabel}
-        title={editLabel}
-        onClick={(e) => {
-          e.stopPropagation()
-          onEdit(node.id)
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <EditOutlined />
-      </button>
+          它们，按下这颗钮会被当成拖节点），stopPropagation 挡住画布的选中。
+          运行视图没有「编辑」这回事（定义在运行期是死的），两颗钮整体退场。 */}
+      {!runMode && (
+        <button
+          type="button"
+          className="wf-node-edit nodrag nopan"
+          data-workflow-node-edit
+          aria-label={editLabel}
+          title={editLabel}
+          onClick={(e) => {
+            e.stopPropagation()
+            onEdit(node.id)
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <EditOutlined />
+        </button>
+      )}
       {/* 删除钮紧挨编辑钮（在其左侧 4px）：同一组悬停显形规则、同样 nodrag/nopan
           与 stopPropagation。二次确认归画布（`onDelete` 里先弹 confirm）——这里
-          只管把 id 交回去，节点被删时它自己所在的卡片也会随之消失。 */}
-      <button
-        type="button"
-        className="wf-node-delete nodrag nopan"
-        data-workflow-node-delete
-        aria-label={deleteLabel}
-        title={deleteLabel}
-        onClick={(e) => {
-          e.stopPropagation()
-          onDelete(node.id)
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <DeleteOutlined />
-      </button>
+          只管把 id 交回去，节点被删时它自己所在的卡片也会随之消失。
+          运行视图与编辑钮一起退场（定义在运行期是死的）。 */}
+      {!runMode && (
+        <button
+          type="button"
+          className="wf-node-delete nodrag nopan"
+          data-workflow-node-delete
+          aria-label={deleteLabel}
+          title={deleteLabel}
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete(node.id)
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <DeleteOutlined />
+        </button>
+      )}
       <div className="wf-stage-head">
         <span className="wf-stage-title">{node.title || node.id}</span>
+        {/* 运行视图的状态徽标：运行中（呼吸）/ 结算出的 verdict 原词 / 失败。
+            verdict 是用户自定义词表，徽标只做展示不做语义翻译；**颜色**跟着
+            画布给出的语义类走（runClass），不认词面（user 2026-11-17）。 */}
+        {run && (
+          <span
+            className={`wf-run-badge wf-run-badge--${run.status}${runClass === 'run-pass' ? ' wf-run-badge--pass' : runClass === 'run-fail' ? ' wf-run-badge--fail' : ''}`}
+            title={run.error ?? run.verdict ?? undefined}
+          >
+            {run.badge}
+          </span>
+        )}
       </div>
       <div className="wf-stage-prompt">{node.prompt}</div>
       {multi && (
@@ -152,7 +186,13 @@ export function WorkflowTerminalCard({ data }: NodeProps<WorkflowTerminalFlowNod
   // 已经挡住了从芯片起拖，再给 Handle 加一个 isConnectable 关掉连通性，只会把唯一的
   // 落点判死——任务卡的流出口拖过来会被 React Flow 当非法连接静默丢弃，结束永远连不上。
   return (
-    <div className={TERMINAL_CLASS[data.kind] ?? 'wf-terminal'}>
+    <div
+      className={
+        (TERMINAL_CLASS[data.kind] ?? 'wf-terminal') +
+        // 运行视图：DONE 芯片反映实例终态（user 2026-11-15 运行视图）。
+        (data.runStatus ? ` wf-terminal--run-${data.runStatus}` : '')
+      }
+    >
       {data.kind === 'START' ? (
         <Handle type="source" position={Position.Bottom} className="wf-handle-source" />
       ) : (

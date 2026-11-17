@@ -6,14 +6,13 @@
 // 顶栏/保存/运行设置各段已上收到向导步骤。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App as AntdApp, Button, Collapse, Input, Modal, Switch } from 'antd'
+import { App as AntdApp, Button, Collapse, Input, Modal, Select, Switch } from 'antd'
 import { DeleteOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import {
   Background,
   BackgroundVariant,
   Controls,
   MarkerType,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -31,7 +30,8 @@ import { routeEdges, type RouteEdgeSpec, type RouteRect, type RouteResult, type 
 import { STAGE_PLACEHOLDER_GROUPS, type RenderVars } from '../../../../shared/workflow/render'
 import { composeStagePrompt, type EnvelopeContext, type EnvelopeUpstream } from '../../../../shared/workflow/envelope'
 import { resolveWorkflowHandoff } from '../../../../shared/workflow/handoff'
-import { WORKFLOW_RESERVED_TARGETS, type WorkflowDefinition, type WorkflowNode } from '../../../../shared/workflow/types'
+import { runNodeStates, runTakenEdges, verdictKindOf } from '../../../../shared/workflow/run-view'
+import { WORKFLOW_RESERVED_TARGETS, type WorkflowDefinition, type WorkflowEdge, type WorkflowNode, type WorkflowVerdictKind, type PipelineStageRun } from '../../../../shared/workflow/types'
 import {
   workflowNodeTypes,
   STAGE_NODE_TYPE,
@@ -40,6 +40,8 @@ import {
   verdictOfOutHandle,
   type WorkflowStageFlowNode,
   type WorkflowTerminalFlowNode,
+  type WorkflowStageNodeData,
+  type WorkflowTerminalNodeData,
 } from './WorkflowNodeCard'
 import { WORKFLOW_EDGE_TYPE, workflowEdgeTypes, type WorkflowEdgeData, type WorkflowFlowEdge } from './WorkflowEdge'
 import { WorkflowCanvasDock } from './WorkflowCanvasDock'
@@ -59,11 +61,11 @@ const parseEdgeId = (id: string): { from: string; when: string; to: string } | n
 
 const stripStage = (flowId: string): string | null => (flowId.startsWith('node:') ? flowId.slice('node:'.length) : null)
 
-/** 状态定义表跟着状态名搬家（改名的唯一级联点）：定义表的键就是状态名，改名时
- *  不搬它，那句说明立刻变成孤儿键、保存时被 simplify 裁掉。名字被清空的中间态
- *  先原样挂到空键上（不要丢），归一在保存侧做。 */
-const moveVerdictDef = (defs: Record<string, string>, prev: string, next: string): Record<string, string> => {
-  const out = { ...defs }
+/** 状态名是 verdictDefs / verdictKinds 两张表的键：改名时值要跟着搬（改名的
+ *  唯一级联点），否则那句说明/那个语义会变成孤儿键、保存时被 simplify 裁掉。
+ *  名字被清空的中间态先原样挂到空键上（不要丢），归一在保存侧做。 */
+const moveRecordKey = <T,>(table: Record<string, T>, prev: string, next: string): Record<string, T> => {
+  const out = { ...table }
   const value = out[prev]
   delete out[prev]
   if (value !== undefined) out[next] = value
@@ -175,7 +177,32 @@ function buildFlowNodes(
   t: (k: string, p?: Record<string, string | number>) => string,
   onEdit: (id: string) => void,
   onDelete: (id: string) => void,
+  runView?: { status: 'running' | 'success' | 'failed'; stages: PipelineStageRun[] },
 ): FlowNode[] {
+  // 运行视图（PLAN-workflow-run-view）：节点按最新 stage 着色，没跑到的弱化；
+  // 编辑/删除钮整体退场（运行期的定义是死的）。
+  const runStates = runView ? runNodeStates(runView.stages) : undefined
+  const badgeOf = (nodeId: string): { status: 'running' | 'settled' | 'failed'; verdict?: string; error?: string; badge: string; cls: string } | undefined => {
+    const s = runStates?.get(nodeId)
+    if (!s) return undefined
+    if (s.status === 'running') return { ...s, badge: t('workflow.runBadgeRunning'), cls: 'run-running' }
+    if (s.status === 'failed') return { ...s, badge: t('workflow.runBadgeFailed'), cls: 'run-fail' }
+    // settled 的描边跟着 verdict 的**语义**走（success 绿 / failure 红 / neutral
+    // 中性）——结果状态是用户自定义词表，颜色不认词面（user 2026-11-17），
+    // 语义来自声明或拓扑推导，见 verdictKindOf。
+    const kind = s.verdict === undefined ? 'neutral' : verdictKindOf(def, nodeId, s.verdict)
+    const cls = kind === 'success' ? 'run-pass' : kind === 'failure' ? 'run-fail' : 'run-settled'
+    // 未自定义结果状态的节点（normalize 补的缺省单状态 `pass`）不展示内部词
+    // ——用户从没写过「pass」，徽标读「成功」（user 2026-11-17「如果未自定义
+    // 状态的，默认为成功」）。自定义词表一律展示原词，哪怕它就叫 pass。
+    // 判据只问「有没有声明过词表」，不认 verdict 的字面（词面判断归
+    // verdictKindOf，见上面的配色注释）。
+    const declared = def.nodes.find((n) => n.id === nodeId)?.verdicts
+    const isDefaultVerdict =
+      !declared || declared.length === 0 || (declared.length === 1 && declared[0] === 'pass')
+    const badge = isDefaultVerdict ? t('workflow.runBadgeSuccess') : (s.verdict ?? '')
+    return { ...s, badge, cls }
+  }
   const stageNodes: FlowNode[] = def.nodes.map((n) => ({
     id: stageNodeId(n.id),
     type: STAGE_NODE_TYPE,
@@ -186,6 +213,7 @@ function buildFlowNodes(
       editLabel: t('workflow.canvasEditNode'),
       onDelete,
       deleteLabel: t('workflow.canvasDeleteNode'),
+      ...(runView ? { runMode: true, run: badgeOf(n.id), runClass: badgeOf(n.id)?.cls } : {}),
     },
   }))
   // 终态芯片可拖动（user 2026-11-08）：落点持久在 def.terminalLayout，缺席
@@ -205,7 +233,7 @@ function buildFlowNodes(
       type: TERMINAL_NODE_TYPE,
       position: terminals.done,
       selectable: false,
-      data: { kind: 'DONE', label: t('workflow.canvasEnd') },
+      data: { kind: 'DONE', label: t('workflow.canvasEnd'), ...(runView ? { runStatus: runView.status } : {}) },
     },
   ]
   return [...stageNodes, ...terminalNodes]
@@ -236,14 +264,32 @@ const handleOfSide = (side: RouteSide | undefined, fallback: string): string =>
  *  锚点（user 2026-11-09：最短 / 不穿卡 / 横平竖直 / 好看），由 WorkflowEdge
  *  渲染。端点矩形还没测量到位的边这一帧没有 data —— 那条边不画，也不退回到
  *  smoothstep 画一条穿卡的假线。 */
-function buildFlowEdges(def: WorkflowDefinition, t: (k: string, p?: Record<string, string | number>) => string, routes: Map<string, RouteResult>): FlowEdge[] {
+function buildFlowEdges(
+  def: WorkflowDefinition,
+  t: (k: string, p?: Record<string, string | number>) => string,
+  routes: Map<string, RouteResult>,
+  runView?: { status: 'running' | 'success' | 'failed'; stages: PipelineStageRun[] },
+): FlowEdge[] {
   const loopKeys = loopEdgeKeys(def)
-  const verdictCountOf = new Map(def.nodes.map((n) => [n.id, n.verdicts.length]))
+  // 运行视图：走过的边按结算状态的**语义**上色（success 绿 / failure 红 /
+  // neutral 原色但全亮），没走过的弱化——「过程」在读图语言里就是哪些边亮了。
+  // 语义同样不认词面（user 2026-11-17），见 verdictKindOf。
+  const taken = runView ? runTakenEdges(def.edges, runView.stages) : undefined
+  const runClassOf = (e: WorkflowEdge, id: string): string | undefined => {
+    if (!taken) return undefined
+    if (!taken.has(id)) return 'wf-edge-idle'
+    const kind = verdictKindOf(def, e.from, e.when)
+    if (kind === 'success') return 'wf-edge-taken wf-edge-taken--pass'
+    if (kind === 'failure') return 'wf-edge-taken wf-edge-taken--fail'
+    return 'wf-edge-taken'
+  }
   const nodeEdges: FlowEdge[] = def.edges.map((e) => {
     const id = edgeIdOf(e)
     const loop = isLoopEdge(loopKeys, e)
-    const multi = (verdictCountOf.get(e.from) ?? 0) > 1
-    const labels = [...(multi ? [e.when] : []), ...(loop ? [t('workflow.edgeLoopSuffix')] : [])]
+    // 状态词不再上边（user 2026-11-16「连接线进入节点的时候，不用展示状态
+    // 类型，已经在出去的时候展示了」）：出口线头本来就按状态分列、卡面也画
+    // 了状态名，边上的状态词是第二遍重复。只保留回边的「循环」标记。
+    const labels = loop ? [t('workflow.edgeLoopSuffix')] : []
     return {
       id,
       source: stageNodeId(e.from),
@@ -258,7 +304,11 @@ function buildFlowEdges(def: WorkflowDefinition, t: (k: string, p?: Record<strin
       // 结果状态是用户自定义字符串，没有语义可上色，唯一有语义的是保留目标——
       // DONE 绿、FAILED 红。类落在 edge 的 <g> 上，颜色由 CANVAS_STYLES 用
       // --xy-edge-stroke 变量覆盖（选中态的蓝仍归 RF 自己的 .selected 规则）。
-      className: e.to === 'DONE' ? 'wf-edge-done' : e.to === 'FAILED' ? 'wf-edge-failed' : undefined,
+      // 运行视图的 taken/idle 类缀在后面：同类特异性下声明顺序定胜负（CSS 里
+      // run 规则在 wf-edge-done 之后）。
+      className: [e.to === 'DONE' ? 'wf-edge-done' : e.to === 'FAILED' ? 'wf-edge-failed' : undefined, runClassOf(e, id)]
+        .filter(Boolean)
+        .join(' ') || undefined,
       label: labels.length > 0 ? labels.join(' · ') : undefined,
       // 线宽/颜色一律交给 CSS（CANVAS_STYLES 里的 --xy-edge-stroke-* 变量），
       // 这里只留虚线。内联 style 会落在 <path> 上、盖过样式表，写死 strokeWidth
@@ -281,6 +331,8 @@ function buildFlowEdges(def: WorkflowDefinition, t: (k: string, p?: Record<strin
     type: WORKFLOW_EDGE_TYPE,
     data: edgeRouteData(routes.get('start-entry')),
     selectable: false,
+    // 运行视图：入口启动过（有任何 stage 行）= 派生边亮起，否则弱化。
+    className: runView ? (runNodeStates(runView.stages).has(def.entry) ? 'wf-edge-taken' : 'wf-edge-idle') : undefined,
     markerEnd: { type: MarkerType.ArrowClosed, color: 'context-stroke' },
   }
   return [startEdge, ...nodeEdges]
@@ -345,7 +397,9 @@ function flowRectOf(node: FlowNode): RouteRect {
 /** 新建工作流的空白底稿：单入口节点，名称留空（保存门会拦）。
  *  objective 字段保留（类型 / render 解析 / 运行级覆盖都不动），但向导不再
  *  提供编辑面（user 2026-11-09：「去掉【全局目标（可空）】栏位」）——运行级
- *  目标在启动表单里填，节点 prompt 的 {{objective}} 照常解析。 */
+ *  目标在启动表单里填。脚手架 prompt 是**示范写法**（PLAN-workflow-context）：
+ *  只写本阶段任务 + 完成标准的占位，全局目标/上游交接由引擎的信封注入——
+ *  它同时是任务助手每轮快照里的第一份样本，旧写法会教坏助手。 */
 export function blankWorkflow(t: (k: string) => string): WorkflowDefinition {
   return {
     id: `flow-${Date.now()}`,
@@ -369,13 +423,21 @@ export interface WorkflowCanvasProps {
   def: WorkflowDefinition
   /** 画布写回调（向导传入；dirty 记账在向导）。 */
   mutate: (fn: (d: WorkflowDefinition) => WorkflowDefinition) => void
+  /** 运行视图（PLAN-workflow-run-view，user 2026-11-15「执行过程预览」）：在场
+   *  = 画布切到**运行查看态**——节点按 stage 着色、走过的边高亮、编辑面全体
+   *  退场（dock/悬停钮/键删/连线/属性面板）；缺席 = 定义编辑态，行为逐字节不变。 */
+  runView?: { status: 'running' | 'success' | 'failed'; stages: PipelineStageRun[] }
+  /** 运行查看态的节点点击（user 2026-11-17「点谁看谁」）：点任务节点看它的
+   *  处理详情，点开始/结束芯片看初始要求/最终结果。编辑态不触发。 */
+  onRunNodeClick?: (target: { kind: 'stage'; nodeId: string } | { kind: 'start' } | { kind: 'done' }) => void
 }
 
-const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
+const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate, runView, onRunNodeClick }) => {
+  const runMode = runView !== undefined
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
   const mode = useThemeMode()
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, fitView: rfFitView } = useReactFlow()
 
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([])
@@ -385,6 +447,47 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
+
+  /** 运行查看态的首屏取景（user 2026-11-17「进入页面后流程图未居中，另外可适当
+   *  缩小，现在有点大」）。默认 fitView 的 padding 只有 0.1 且**没有放大上限**，
+   *  少节点图会被放大到 ~1.3 倍并贴着边；这里统一口径：四周留 20%、最多 100%
+   *  （只缩小不放大）。 */
+  const runFitOptions = useMemo(() => ({ padding: 0.2, maxZoom: 1 }), [])
+  /** 用户一旦自己平移/缩放过，就永不再自动取景——「只刷新内容，不要改变位置和
+   *  比例」（2026-11-15 裁定）在容器 resize（拖分隔条）时同样成立。 */
+  const userMovedViewport = useRef(false)
+  const fitRunView = useCallback(() => {
+    if (!runMode || userMovedViewport.current) return
+    void rfFitView(runFitOptions)
+  }, [runMode, rfFitView, runFitOptions])
+
+  // 首屏取景。两个触发面缺一不可：
+  // ① 节点测量完成——RF 挂载时的 fitView 可能早于这一帧，量到的包围盒是空的；
+  // ② 容器尺寸变化——运行页的面板宽度是 mount 后才按 60% 落位的，画布先窄后
+  //    宽，RF 那次一次性 fitView 量到的是旧尺寸，图于是偏在一角。resize 防抖
+  //    250ms 再取景（拖分隔条的每一帧不重算）。
+  // 用户自己平移/缩放过之后两条都跳过（见 userMovedViewport）。
+  const nodesMeasured = nodes.length > 0 && nodes.every((n) => !!n.measured?.width)
+  useEffect(() => {
+    if (!runMode || !nodesMeasured) return
+    const raf = requestAnimationFrame(fitRunView)
+    return () => cancelAnimationFrame(raf)
+  }, [runMode, nodesMeasured, fitRunView])
+  useEffect(() => {
+    if (!runMode) return
+    const el = wrapperRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const ro = new ResizeObserver(() => {
+      clearTimeout(timer)
+      timer = setTimeout(fitRunView, 250)
+    })
+    ro.observe(el)
+    return () => {
+      clearTimeout(timer)
+      ro.disconnect()
+    }
+  }, [runMode, fitRunView])
 
   /** 卡片右上角编辑钮的回调（user 2026-11-09：点节点本体不再开面板，只有这颗
    *  钮能开）。setEditingNodeId 是稳定引用，给 buildFlowNodes 传下去不引起重排。 */
@@ -433,9 +536,15 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     [nodes],
   )
   const routes = useMemo(
-    () => routeEdges(nodes.map(flowRectOf), routeSpecs, { fast: dragging }),
+    () =>
+      routeEdges(nodes.map(flowRectOf), routeSpecs, {
+        fast: dragging,
+        // 运行视图不画端口圆点：末段不回缩，箭头尖直接落在节点边框上
+        // （user 2026-11-16「箭头需要能够连接上节点边框」）。
+        tailGap: runMode ? 0 : undefined,
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- geometryKey 就是节点的几何指纹
-    [geometryKey, routeSpecs, dragging],
+    [geometryKey, routeSpecs, dragging, runMode],
   )
 
   // def → flow 的单向同步（节点）。selected 的壳由 RF 的 selected 标志驱动，
@@ -445,13 +554,13 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     setNodes((prev) => {
       const selectedIds = new Set(prev.filter((n) => n.selected).map((n) => n.id))
       const measured = new Map(prev.map((n) => [n.id, n.measured]))
-      return buildFlowNodes(def, t, openNode, requestDeleteNode).map((n) => {
+      return buildFlowNodes(def, t, openNode, requestDeleteNode, runView).map((n) => {
         const sized = measured.has(n.id) ? { ...n, measured: measured.get(n.id) } : n
         return selectedIds.has(n.id) ? { ...sized, selected: true } : sized
       })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只在 def 重建时取用
-  }, [def, setNodes, openNode, requestDeleteNode])
+  }, [def, setNodes, openNode, requestDeleteNode, runView])
 
   // 线头 id 的指纹（节点 id + 结果状态名）。改名会换掉出口线头的 id
   // （`out:<verdict>`），而 RF 的 handleBounds **只在节点尺寸变化时重测**——Handle
@@ -460,15 +569,36 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
   // plan 的 done→成功 之后 plan 的那条出边不见了，节点与 def 都是对的）。所以
   // 指纹一变就强制重测一次；只看 id+verdicts，编辑指令不会触发（那是每键一次
   // 全量重测）。
-  const handlesKey = useMemo(() => def.nodes.map((n) => `${n.id}:${n.verdicts.join(',')}`).join('|'), [def])
+  //
+  // `runMode` 进指纹：运行态换的是节点卡的另一套 DOM（编辑钮退场、状态徽标、
+  // 单列出口），同尺寸下 handleBounds 也可能与编辑态不同，切态后必须重测。
+  //
+  // `measuredHandlesKey` 初值是 **null 而不是当前指纹**（2026-11-17）：等于指纹
+  // 时首挂载那个 effect 直接早退，于是挂载期一次重测都没有——RF 只在节点尺寸
+  // 变化的提交里量线头，首帧量在 Handle 子元素落地之前就量出空 bounds 的话，
+  // 之后没有任何东西再触发重测，**全部边永久不渲染**（用户「连接线又没了」
+  // 的一次实锤形态：节点、def、路由全对，DOM 里一条 `.react-flow__edge` 都
+  // 没有）。初值 null 让每次挂载（含运行视图挂载）都补一次 rAF 重测，代价是
+  // 一次 rAF。
+  const handlesKey = useMemo(
+    () =>
+      `${runMode ? 'run' : 'edit'}|` +
+      def.nodes.map((n) => `${n.id}:${(n.verdicts ?? []).join(',')}`).join('|'),
+    [def, runMode],
+  )
   const handleNodeIds = useMemo(() => def.nodes.map((n) => stageNodeId(n.id)), [def])
   const updateNodeInternals = useUpdateNodeInternals()
-  const measuredHandlesKey = useRef(handlesKey)
+  const measuredHandlesKey = useRef<string | null>(null)
   useEffect(() => {
     if (measuredHandlesKey.current === handlesKey) return
-    measuredHandlesKey.current = handlesKey
     // 等 setNodes 那次提交把新线头 id 写进 DOM 之后再测；同一帧测会量到旧 id。
-    const raf = requestAnimationFrame(() => updateNodeInternals(handleNodeIds))
+    // 记账必须发生在 rAF **跑过之后**：StrictMode 的挂载是 run→cleanup→run，
+    // 若在这里先写 ref，cleanup 取消掉第一次的 rAF 后第二次就早退了，挂载期
+    // 那一次重测正好丢掉（dev 下用户看到的正是「连接线又没了」）。
+    const raf = requestAnimationFrame(() => {
+      measuredHandlesKey.current = handlesKey
+      updateNodeInternals(handleNodeIds)
+    })
     return () => cancelAnimationFrame(raf)
   }, [handlesKey, handleNodeIds, updateNodeInternals])
 
@@ -478,10 +608,10 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     if (routes.size === 0) return
     setEdges((prev) => {
       const selectedIds = new Set(prev.filter((e) => e.selected).map((e) => e.id))
-      return buildFlowEdges(def, t, routes).map((e) => (selectedIds.has(e.id) ? { ...e, selected: true } : e))
+      return buildFlowEdges(def, t, routes, runView).map((e) => (selectedIds.has(e.id) ? { ...e, selected: true } : e))
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只在 def 重建时取用
-  }, [def, routes, setEdges])
+  }, [def, routes, setEdges, runView])
 
   // ── 聚焦淡化（user 2026-11-09：「连接线交叉太多」）──
   // 选中节点 → 只看与它相连的线；选中连线 → 只看那一条（并把两个端点留下）。
@@ -686,13 +816,15 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
       if (prev === undefined || prev === next) return
       const nodeId = selectedNode.id
       const verdicts = selectedNode.verdicts.map((v, i) => (i === index ? next : v))
-      // 定义跟着名字搬家（定义表的键是状态名）：只改词表不改定义表的话，改个
-      // 名字就会让那句说明变成孤儿键、被 simplify 在保存时裁掉。
+      // 定义与语义跟着名字搬家（两张表的键都是状态名）：只改词表不改它们的话，
+      // 改个名字就会让那句说明/那个语义变成孤儿键、被 simplify 在保存时裁掉。
       const defs = selectedNode.verdictDefs
-      const moved = defs && defs[prev] !== undefined ? moveVerdictDef(defs, prev, next) : defs
+      const movedDefs = defs && defs[prev] !== undefined ? moveRecordKey(defs, prev, next) : defs
+      const kinds = selectedNode.verdictKinds
+      const movedKinds = kinds && kinds[prev] !== undefined ? moveRecordKey(kinds, prev, next) : kinds
       mutate((d) => ({
         ...d,
-        nodes: d.nodes.map((n) => (n.id === nodeId ? { ...n, verdicts, verdictDefs: moved } : n)),
+        nodes: d.nodes.map((n) => (n.id === nodeId ? { ...n, verdicts, verdictDefs: movedDefs, verdictKinds: movedKinds } : n)),
         edges: d.edges.map((e) => (e.from === nodeId && e.when === prev ? { ...e, when: next } : e)),
       }))
     },
@@ -715,6 +847,21 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     [selectedNode, patchNode],
   )
 
+  /** 状态语义（user 2026-11-17「你是不是写死了把 pass 作为成功态」）：只影响
+   *  运行视图配色，不参与调度。undefined = 撤掉声明、回到拓扑推导（自动）。 */
+  const setVerdictKind = useCallback(
+    (index: number, kind: WorkflowVerdictKind | undefined) => {
+      if (!selectedNode) return
+      const name = selectedNode.verdicts[index]
+      if (name === undefined) return
+      const kinds = { ...(selectedNode.verdictKinds ?? {}) }
+      if (kind) kinds[name] = kind
+      else delete kinds[name]
+      patchNode(selectedNode.id, { verdictKinds: Object.keys(kinds).length > 0 ? kinds : undefined })
+    },
+    [selectedNode, patchNode],
+  )
+
   const removeVerdict = useCallback(
     (index: number) => {
       if (!selectedNode || selectedNode.verdicts.length <= 1) return
@@ -725,13 +872,19 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
         nodes: d.nodes.map((n) => {
           if (n.id !== nodeId) return n
           const next: WorkflowNode = { ...n, verdicts: n.verdicts.filter((_, i) => i !== index) }
-          // 状态没了，它的定义也没有主语（simplify 本来也会在保存时裁掉，
+          // 状态没了，它的定义与语义也没有主语（simplify 本来也会在保存时裁掉，
           // 这里当场删干净，避免面板上残留一条无主的说明）。
           if (n.verdictDefs && verdict !== undefined) {
             const defs = { ...n.verdictDefs }
             delete defs[verdict]
             if (Object.keys(defs).length > 0) next.verdictDefs = defs
             else delete next.verdictDefs
+          }
+          if (n.verdictKinds && verdict !== undefined) {
+            const kinds = { ...n.verdictKinds }
+            delete kinds[verdict]
+            if (Object.keys(kinds).length > 0) next.verdictKinds = kinds
+            else delete next.verdictKinds
           }
           return next
         }),
@@ -803,6 +956,7 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
    *  三道门：焦点在输入框里（改指令时 Backspace 只该删字）、有可见的 antd 模态
    *  框（在属性面板里敲删除不该动画布）、带 ⌘/Ctrl/Alt 的组合键。 */
   useEffect(() => {
+    if (runMode) return // 运行查看态没有「删」这回事（定义是死的）
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return
@@ -820,7 +974,7 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [deleteNode, deleteEdge])
+  }, [deleteNode, deleteEdge, runMode])
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)', overflow: 'hidden' }}>
@@ -832,20 +986,46 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
       {/* ── 主体：画布吃满整行（左缘浮着添加/整理图标窗）──
           属性面板已改成模态框（user 2026-11-09：不固定占用工作区面积），
           原来的 320px 常驻 aside 会永久从画布里切掉一条。 */}
-      <div ref={wrapperRef} data-workflow-canvas style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        <WorkflowCanvasDock onAddNode={() => addNode()} onTidy={tidyLayout} />
+      <div ref={wrapperRef} data-workflow-canvas className={runMode ? 'wf-runmode' : undefined} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        {/* 运行查看态没有「添加/整理」——dock 是编辑面的东西 */}
+        {!runMode && <WorkflowCanvasDock onAddNode={() => addNode()} onTidy={tidyLayout} />}
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          // 运行查看态：图是死的——不可拖、不可连、不可选（pan/zoom 保留，看图要平移缩放）；
+          // 节点点击仍触发（onNodeClick 与 selectable 分离）→ 右栏「点谁看谁」。
+          nodesDraggable={!runMode}
+          nodesConnectable={!runMode}
+          elementsSelectable={!runMode}
+          onNodeClick={(_, node) => {
+            if (!runMode || !onRunNodeClick) return
+            if (node.type === TERMINAL_NODE_TYPE) {
+              const kind = (node.data as WorkflowTerminalNodeData).kind
+              onRunNodeClick(kind === 'START' ? { kind: 'start' } : { kind: 'done' })
+              return
+            }
+            onRunNodeClick({ kind: 'stage', nodeId: (node.data as WorkflowStageNodeData).node.id })
+          }}
           onNodeDragStart={() => setDragging(true)}
           onNodeDragStop={onNodeDragStop}
           nodeTypes={workflowNodeTypes}
           edgeTypes={workflowEdgeTypes}
           colorMode={mode}
           fitView
+          // 运行查看态统一取景口径（padding 20% / 不放大）；编辑态维持 RF 默认。
+          fitViewOptions={runMode ? runFitOptions : undefined}
+          // 高图要缩得下去：RF 默认 minZoom 0.5 会把「fit 到底」夹在半路，图依旧
+          // 装不下（user 2026-11-17「可适当缩小」）。运行态放宽到 0.25，编辑态
+          // 不动。
+          minZoom={runMode ? 0.25 : undefined}
+          // 只有用户真的拖/滚过才记「用户接管了视口」——程序性变换的 sourceEvent
+          // 是 null（RF 把 d3-zoom 的 event.sourceEvent 原样传出）。
+          onMoveStart={(event) => {
+            if (event) userMovedViewport.current = true
+          }}
           proOptions={{ hideAttribution: true }}
           // RF 自己的删除键必须关着：它删的是 RF 内部的 nodes/edges，而 def 是
           // 唯一真源（所有权在向导）——两边一岔，保存出去就是另一张图。键删由
@@ -854,7 +1034,6 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
         >
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
         </ReactFlow>
       </div>
 
@@ -865,7 +1044,7 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
           destroyOnHidden 是承重的：antd 默认把关闭后的弹窗 DOM 留在原处（只把外层
           wrap 设成 display:none），不销毁会让「面板已经没了」在 DOM 上常年判成假。 */}
       <Modal
-        open={!!selectedNode}
+        open={!!selectedNode && !runMode}
         onCancel={() => setEditingNodeId(null)}
         title={selectedNode ? selectedNode.title || selectedNode.id : ''}
         width={620}
@@ -1023,6 +1202,28 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate }) => {
                         style={VERDICT_DEF_STYLES}
                         onChange={(e) => setVerdictDef(i, e.target.value)}
                       />
+                      {/* 状态语义（user 2026-11-17「你是不是写死了把 pass 作为
+                          成功态」）：颜色不认词面，认这里。自动 = 撤掉声明、回到
+                          拓扑推导（见 verdictKindOf），旧定义零迁移。 */}
+                      <span data-workflow-verdict-kind style={VERDICT_KIND_STYLES} title={t('workflow.canvasVerdictKindHint')}>
+                        <Select
+                          size="small"
+                          // 空串在 rc-select 里等于「没选值」，会退回 placeholder、
+                          // 读不到「自动」这一档，所以用 'auto' 当哨兵值。
+                          value={selectedNode.verdictKinds?.[v] ?? 'auto'}
+                          aria-label={t('workflow.canvasVerdictKindLabel')}
+                          style={{ width: '100%' }}
+                          onChange={(next) =>
+                            setVerdictKind(i, next === 'auto' ? undefined : (next as WorkflowVerdictKind))
+                          }
+                          options={[
+                            { value: 'auto', label: t('workflow.canvasVerdictKindAuto') },
+                            { value: 'success', label: t('workflow.canvasVerdictKindSuccess') },
+                            { value: 'failure', label: t('workflow.canvasVerdictKindFailure') },
+                            { value: 'neutral', label: t('workflow.canvasVerdictKindNeutral') },
+                          ]}
+                        />
+                      </span>
                       <Button
                         type="text"
                         size="small"
@@ -1058,6 +1259,8 @@ const LABEL_STYLES: React.CSSProperties = { display: 'flex', flexDirection: 'col
 const VERDICT_ROW_STYLES: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 }
 const VERDICT_NAME_STYLES: React.CSSProperties = { flex: '0 0 104px', width: 104 }
 const VERDICT_DEF_STYLES: React.CSSProperties = { flex: '1 1 auto', minWidth: 0 }
+// 语义选择器（自动/成功/失败/中性）：只占一窄列，定义输入框优先吃宽。
+const VERDICT_KIND_STYLES: React.CSSProperties = { flex: '0 0 82px', width: 82 }
 
 const CANVAS_STYLES = `
   .wf-stage-card {
@@ -1194,11 +1397,66 @@ const CANVAS_STYLES = `
   .wf-terminal.done { border-color: var(--pm-success, #52c41a); color: var(--pm-success, #52c41a); }
   .wf-terminal.start { border-color: var(--pm-link); color: var(--pm-link); }
   .wf-terminal-label { font-size: 12px; font-weight: 600; }
-  /* minimap/controls 配色跟随 --pm 变量（colorMode 只翻 RF 自带的底色） */
-  .react-flow__minimap { border-radius: 8px; overflow: hidden; }
+  /* controls 配色跟随 --pm 变量（colorMode 只翻 RF 自带的底色）；
+      minimap 已按 user 2026-11-15 整体撤除（画布让位给连线） */
   .react-flow__controls { box-shadow: var(--pm-shadow-soft); border-radius: 8px; overflow: hidden; }
   .react-flow__controls-button { background: var(--pm-elevated); border-bottom: 1px solid var(--pm-border-hairline); }
   .react-flow__controls-button svg { fill: var(--pm-text-strong); }
+  /* ── 运行视图（PLAN-workflow-run-view）──
+     节点描边跟着 stage 状态走（running 主题色呼吸、pass 绿、fail 红、其余中性、
+     未到达弱化）；走过的边按结算的 when 上色（与节点同一语义），没走的弱化。
+     run 类全部排在 wf-edge-done/failed 之后——同类特异性下声明顺序定胜负，
+     运行视图的着色要赢过定义视图的终态配色。 */
+  .wf-edge-taken { --xy-edge-stroke: var(--pm-text-secondary); }
+  .wf-edge-taken--pass { --xy-edge-stroke: var(--pm-success, #52c41a); }
+  .wf-edge-taken--fail { --xy-edge-stroke: var(--pm-error); }
+  /* 未走的边要「弱化」而不是「消失」（user 2026-11-17「连接线看不到了」→ 同日
+     「在执行过程中，连接线没了」）。第一版改到 disabled 灰 + 0.7 还不够：刚开跑
+     时几乎所有边都还没走过，而 #cccccc 打 0.7 在白底上合成为 ~#dbdbdb，1.5px 的
+     线在屏幕上等于没有。现行口径 = muted 灰（#999）打 0.8（合成 ~#adadad，与 RF
+     默认灰 #b1b1b7 同档）：既读得出「这条还没走过」，又任何一屏上都看得到线。
+     选择器前缀 .react-flow__edge 是承重的——wf-edge-done/failed 是 (0,2,0)，单类
+     的 idle 压不过它，未走到的 DONE 边会一直顶着成功色（绿线冒充「已走过」）。 */
+  .react-flow__edge.wf-edge-idle { --xy-edge-stroke: var(--pm-text-muted, #999999); opacity: 0.8; }
+  .wf-stage-card--run-running { border-color: var(--pm-link); box-shadow: 0 0 0 2px var(--pm-link); }
+  .wf-stage-card--run-pass { border-color: var(--pm-success, #52c41a); }
+  .wf-stage-card--run-fail { border-color: var(--pm-error); }
+  .wf-stage-card--run-settled { border-color: var(--pm-border); }
+  .wf-stage-card--run-idle { opacity: 0.45; }
+  /* 执行状态徽标钉在卡右上角（user 2026-11-17「节点执行状态的标签放在节点的
+     右上角」）：绝对定位、脱离 head 的 flex 流——标题再长也不会把徽标挤到第二
+     行。编辑态的编辑/删除钮占的是同一个角落（top/right 6px），但两套钮与徽标
+     分属编辑/运行两个互斥模式，不会同屏。max-width 60px + 省略号：自定义状态
+     名可长到 24 字，不封顶会把徽标撑出卡外；4 个汉字（10.5px 字号 + 14px
+     内边距 ≈ 56px）以内完整显示，更长走省略号、原文在 title 里。 */
+  .wf-run-badge {
+    position: absolute; top: 6px; right: 6px; z-index: 2; max-width: 60px;
+    overflow: hidden; text-overflow: ellipsis;
+    font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+    background: var(--pm-hover-weak); color: var(--pm-text-secondary);
+    white-space: nowrap;
+  }
+  /* 运行态的标题给右上角徽标让位（72 > 6 + 60 + 6）：编辑态那句 44px 是给
+     两颗悬停钮留的，运行态没有钮，唯一占角的是徽标。 */
+  .wf-stage-card--runview .wf-stage-title { padding-right: 72px; }
+  .wf-run-badge--running { color: var(--pm-link); animation: wf-run-pulse 1.4s ease-in-out infinite; }
+  .wf-run-badge--pass { color: var(--pm-success, #52c41a); }
+  .wf-run-badge--failed { color: var(--pm-error); }
+  /* settled 但语义是 failure（「失败」这个词表名不叫 fail）：徽标同样红。 */
+  .wf-run-badge--fail { color: var(--pm-error); }
+  .wf-terminal--run-success { border-color: var(--pm-success, #52c41a); color: var(--pm-success, #52c41a); }
+  .wf-terminal--run-failed { border-color: var(--pm-error); color: var(--pm-error); }
+  .wf-terminal--run-running { border-color: var(--pm-link); color: var(--pm-link); }
+  @keyframes wf-run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* 运行查看态不画端口圆点（user 2026-11-16「不用展示连接端点的灰色圆圈」，
+     路由的 tailGap:0 让箭头尖直接贴到节点边框）。**opacity 0 而不是
+     display:none**——display 会把 handleBounds 从 RF 的测量里抽掉，
+     getEdgePosition 查不到线头，整条边直接不渲染。 */
+  .wf-runmode .wf-handle-source, .wf-runmode .wf-handle-target { opacity: 0; pointer-events: none; }
+  /* 运行查看态节点/芯片可点（user 2026-11-17「点谁看谁」）：光标给 pointer
+     提示可点，芯片悬停描边微亮。 */
+  .wf-runmode .wf-stage-card, .wf-runmode .wf-terminal { cursor: pointer; }
+  .wf-runmode .wf-terminal:hover { border-color: var(--pm-link); }
 `
 
 /** 外层 Provider：useReactFlow 需要（组件自包含，向导无需再包）。 */

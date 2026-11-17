@@ -8,7 +8,7 @@ import { execSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gitBaseline, gitCheckpointGate, gitResetToBaseline, gitStageCommit } from '../src/main/pipeline/git-checkpoint'
+import { gitBaseline, gitCheckpointProbe, gitResetToBaseline, gitStageCommit } from '../src/main/pipeline/git-checkpoint'
 
 let dir = ''
 
@@ -33,13 +33,15 @@ afterEach(() => {
 })
 
 describe('git checkpoint 三条 pathspec（PLAN-workflow-context §3.5）', () => {
-  it('启动门放过 untracked 的 .pulsemind/——第二次运行不再永久拒跑；真脏树照旧拒', async () => {
-    expect(await gitCheckpointGate(dir)).toBeNull()
+  it('探测放过 untracked 的 .pulsemind/——pathspec 排除对 status 同样生效；真脏树不可用', async () => {
+    expect(await gitCheckpointProbe(dir)).toEqual({ usable: true })
     seedHandoff()
-    // 修复前：这里报「工作树不干净」，同一 workspace 自第二次运行起永久拒跑
-    expect(await gitCheckpointGate(dir)).toBeNull()
+    // handoff 在场不影响可用性（pathspec 排除）；真脏树 → 不可用（降级为无快照）
+    expect(await gitCheckpointProbe(dir)).toEqual({ usable: true })
     writeFileSync(join(dir, 'app.txt'), 'v2\n')
-    expect(await gitCheckpointGate(dir)).toContain('工作树不干净')
+    const probe = await gitCheckpointProbe(dir)
+    expect(probe.usable).toBe(false)
+    expect(probe.reason).toContain('未提交改动')
   })
 
   it('阶段快照：用户的改动进 commit，handoff 不进历史、保持 untracked', async () => {

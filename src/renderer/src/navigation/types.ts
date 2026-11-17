@@ -30,6 +30,9 @@ export interface AppView {
   /** `routines` wizard: true = open the workflow branch of the task wizard
    *  (P3 任务中心：编辑器统一为分步向导，workflow 分支)。 */
   workflowEditing?: boolean
+  /** `routines` detail: 打开一个工作流运行的整页运行视图（左流程图 + 右阶段
+   *  执行面板，user 2026-11-16「模态框太小，改成页面」）。缺席 = 列表/工作区。 */
+  workflowRunViewId?: string
   /** `routines` wizard: which workflow is loaded. Absent (with
    *  `workflowEditing`) = the create-new flow. */
   workflowId?: string

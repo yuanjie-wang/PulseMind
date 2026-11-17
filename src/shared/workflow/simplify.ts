@@ -17,9 +17,11 @@
 //  - 每个状态的**定义**（`verdictDefs`）只留还在词表里的键——状态改名/删除后
 //    的孤儿说明会随旧名字一起消失，不会继续注进阶段 prompt。
 
-import type { WorkflowDefinition, WorkflowNode } from './types'
+import type { WorkflowDefinition, WorkflowNode, WorkflowVerdictKind } from './types'
 
 export const DEFAULT_VERDICTS: readonly string[] = ['pass']
+
+const VERDICT_KIND_VALUES: readonly string[] = ['success', 'failure', 'neutral']
 
 /** 节点出口词汇表：去空去重，空表回落 ['pass']。 */
 export function nodeVerdicts(node: { verdicts?: string[] }): string[] {
@@ -49,13 +51,39 @@ export function nodeVerdictDefs(node: { verdictDefs?: Record<string, string> }, 
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+/** 结果状态的语义表归一（user 2026-11-17）：与 verdictDefs 同一条规矩——只留
+ *  **当前词汇表里还在**的键、值必须是三档之一（手改 JSON 的垃圾值丢掉），全空
+ *  返回 undefined（不写空对象，旧定义落盘形态逐字节不变）。 */
+export function nodeVerdictKinds(
+  node: { verdictKinds?: Record<string, WorkflowVerdictKind> },
+  verdicts: string[],
+): Record<string, WorkflowVerdictKind> | undefined {
+  const source = node.verdictKinds
+  if (!source || typeof source !== 'object') return undefined
+  const byName = new Map<string, WorkflowVerdictKind>()
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = rawKey.trim()
+    if (key.length === 0 || !VERDICT_KIND_VALUES.includes(rawValue)) continue
+    if (!byName.has(key)) byName.set(key, rawValue)
+  }
+  const out: Record<string, WorkflowVerdictKind> = {}
+  for (const verdict of verdicts) {
+    const kind = byName.get(verdict)
+    if (kind !== undefined) out[verdict] = kind
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 export function normalizeSimpleWorkflow(def: WorkflowDefinition): WorkflowDefinition {
   const nodes: WorkflowNode[] = def.nodes.map((n) => {
     const verdicts = nodeVerdicts(n)
     const verdictDefs = nodeVerdictDefs(n, verdicts)
+    const verdictKinds = nodeVerdictKinds(n, verdicts)
     const next: WorkflowNode = { ...n, verdicts }
     if (verdictDefs) next.verdictDefs = verdictDefs
     else delete next.verdictDefs
+    if (verdictKinds) next.verdictKinds = verdictKinds
+    else delete next.verdictKinds
     return next
   })
   const ids = new Set(nodes.map((n) => n.id))

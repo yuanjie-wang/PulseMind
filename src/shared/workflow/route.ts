@@ -15,9 +15,15 @@
 //    边按输入序路由，后路由的线主动避让先路由的线，分叉出去的三条线因此不会叠成
 //    一根（按长度计费是承重的：定额罚分下「叠 200px」与「叠 40px」同价，A* 会选
 //    前者，画面上两条线重合、看起来只剩一条）；
-//    ③ 出口/入口的外法线方向是一等约束（先沿法线走 stub，再从 stub 端点开始
+//    ③ **平行间距 ≥10px**（user 2026-11-15「在选择连接线拐点位置的时候，考虑下
+//    其它的连接线，预留至少10px的间距」）：错开 1~10px 的平行贴线在屏幕上几乎
+//    压线，与重叠同价计费——网格里有 ≥10px 的替身车道就躲开；同时给候选网格
+//    补「既有线坐标 ± parallelGap」的让路车道，拥挤图里最近的可走车道本身就在
+//    10px 以内时，罚分才不至于变成单纯交税。走廊塞不下 10px 时允许贴近（与
+//    交叉的「宁绕有预算」同一取舍哲学）；
+//    ④ 出口/入口的外法线方向是一等约束（先沿法线走 stub，再从 stub 端点开始
 //    找路），不会出现「从卡片下缘出来立刻贴着卡片横走」的怪相；
-//    ④ 拐角一律圆角（默认 r=6，且不超过相邻段长的一半）。
+//    ⑤ 拐角一律圆角（默认 r=6，且不超过相邻段长的一半）。
 // 4. **横平竖直**：所有中间段都落在候选坐标上，只在两个候选坐标之间移动，
 //    输出路径由 `L`（轴对齐）与 `Q`（圆角）两种指令组成，没有斜线。
 //
@@ -90,6 +96,9 @@ export interface RouteOptions {
   crossCost?: number
   /** 与已路由线共线重叠的罚分（px）。 */
   overlapCost?: number
+  /** 与已路由线的最小平行间距（px）：贴线（< 此值）按重叠同价计费，并为网格
+   *  补「既有线坐标 ± 此值」的让路车道。 */
+  parallelGap?: number
   /** 拐角圆角半径（px，0 = 尖角）。 */
   radius?: number
   /** 换侧预算（px）：交叉更少的备选侧最多允许多走这么长的等效距离，超了仍
@@ -99,6 +108,9 @@ export interface RouteOptions {
   sideBias?: number
   /** 快速档：只算长度+拐弯（拖动重排时每帧重算，交叠罚分留给松手后的稳定态）。 */
   fast?: boolean
+  /** 画出的路径末段回缩量（px）：缺省 = ARROW_GAP（给端口圆点让位）。运行
+   *  视图不画圆点（user 2026-11-16），传 0 让箭头尖直接落在节点边框上。 */
+  tailGap?: number
 }
 
 const DEFAULTS = {
@@ -107,6 +119,9 @@ const DEFAULTS = {
   bendCost: 24,
   crossCost: 40,
   overlapCost: 20,
+  /** 平行贴线的判近阈值：两条线错开不足此值时按重叠计费（user 2026-11-15
+   *  「预留至少10px的间距」）。 */
+  parallelGap: 10,
   radius: 6,
   detourBudget: 600,
   sideBias: 24,
@@ -114,6 +129,12 @@ const DEFAULTS = {
 
 /** 候选坐标去重的容差（px）：小于半像素的两条候选线在视觉上是同一条。 */
 const SAME = 0.5
+
+/** 近排「影响区」半径（px）：投影不重叠、但横向距离落在对方延长线这么近的
+ *  两段平行线，读图上就是一根断成两截、还错开几像素的线（user 2026-11-15
+ *  「水平线还是有重合」——coding-pipeline 里 y=384/388 相距 4px、横向隔 72px
+ *  的两段就是这个样子）。 */
+const NEAR_ZONE = 100
 
 /** 画出来的路径尾巴回缩量（px）= **入口线头圆点的外半径**：React Flow 的
  *  ArrowClosed 标记画在路径**终点**上（`refX="0"` 让符号顶点正好落在终点，
@@ -208,8 +229,15 @@ function vBlocked(x: number, ya: number, yb: number, obstacles: Inflated[]): boo
   return false
 }
 
-/** 与已路由线段的交叉/重叠罚分（美观层：后路由的线让路）。 */
-function conflictCost(a: RoutePoint, b: RoutePoint, routed: Segment[], crossCost: number, overlapCost: number): number {
+/** 与已路由线段的交叉/重叠/贴线罚分（美观层：后路由的线让路）。 */
+function conflictCost(
+  a: RoutePoint,
+  b: RoutePoint,
+  routed: Segment[],
+  crossCost: number,
+  overlapCost: number,
+  parallelGap: number,
+): number {
   if (routed.length === 0) return 0
   const horizontal = Math.abs(a.y - b.y) < SAME
   const alo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y)
@@ -222,14 +250,28 @@ function conflictCost(a: RoutePoint, b: RoutePoint, routed: Segment[], crossCost
     const shi = sHorizontal ? Math.max(s.a.x, s.b.x) : Math.max(s.a.y, s.b.y)
     const sline = sHorizontal ? s.a.y : s.a.x
     if (sHorizontal === horizontal) {
-      // 同向：共线且区间有重叠 → 叠成一条；错开 1px 以内也算（视觉上分不开）。
-      // **按重叠长度计费**：两条线叠 200px 是「看起来只剩一条线」的读图事故，
-      // 叠 40px（同一出口刚分叉那几像素）无关痛痒——定额罚分会让两种情形同价，
-      // A* 于是安心把两条线叠在一起（实测踩过：同源三分叉里有两条在卡片正下方
-      // 的同一根竖线上重合了 208px）。
-      if (Math.abs(sline - aline) >= 1) continue
+      // 同向三档（user 2026-11-15「预留至少10px的间距」+「水平线还是有重合」）：
+      // ① 同一行（d < 1px）且投影重叠 = 两线画在彼此身上——分叉叠线的老问题，
+      //    **定额 + 按重叠长度计费**（定额承重：同出口分叉 unavoidable 的 stub
+      //    重叠只有十几 px，让它恒小于escape收益即可）；投影不重叠（同排相接/
+      //    错开）= 共入口/共出口的收敛本来就该同排，免罚。
+      // ② 贴线（1 ~ parallelGap px）：屏幕上几乎压线，重叠部分照长计费。
+      // ③ 近排（d < parallelGap 但横向隔得近）：候选段落进对方延长线 ±NEAR_ZONE
+      //    的部分照长计费——y=384/388 这种「同一根线断成两截还错开 4px」的样子
+      //    就是这里治的；横向离得远的两条线互不相干，不罚。
+      const d = Math.abs(sline - aline)
       const overlap = Math.min(ahi, shi) - Math.max(alo, slo)
-      if (overlap > 2) cost += overlapCost * (overlap / 50)
+      if (d < 1) {
+        if (overlap > 2) cost += overlapCost + (overlapCost * overlap) / 50
+        continue
+      }
+      if (d < parallelGap) {
+        if (overlap > 2) cost += (overlapCost * overlap) / 50
+        const nearLo = Math.max(alo, slo - NEAR_ZONE)
+        const nearHi = Math.min(ahi, shi + NEAR_ZONE)
+        const near = nearHi - nearLo
+        if (near > 2) cost += (overlapCost * near) / 50
+      }
       continue
     }
     // 交叉：水平段与竖直段在两者内部相交。
@@ -299,9 +341,10 @@ function trimTail(points: RoutePoint[], gap: number): RoutePoint[] {
 }
 
 /** 折线 → SVG d（拐角圆角） + 标签落点。圆角半径受相邻段长一半限制，短段
- *  直接尖角——否则 6px 的圆角会把两段吃成一个。 */
-function buildPath(points: RoutePoint[], radius: number): { path: string; label: RoutePoint; length: number } {
-  const drawn = trimTail(points, ARROW_GAP)
+ *  直接尖角——否则 6px 的圆角会把两段吃成一个。tailGap = 末段回缩量（缺省
+ *  ARROW_GAP：给端口圆点让位；运行视图不画圆点传 0，箭头尖贴节点边框）。 */
+function buildPath(points: RoutePoint[], radius: number, tailGap: number): { path: string; label: RoutePoint; length: number } {
+  const drawn = trimTail(points, tailGap)
   let path = `M ${round1(drawn[0].x)} ${round1(drawn[0].y)}`
   let length = 0
   for (let i = 1; i < points.length; i += 1) {
@@ -396,13 +439,14 @@ interface AStarInput {
   bendCost: number
   crossCost: number
   overlapCost: number
+  parallelGap: number
   fast: boolean
 }
 
 /** 在候选网格上跑 A*（状态 = 网格点 × 进入方向）。返回网格点序列（含首尾），
  *  无解返回 null（正常情况下外圈车道保证连通）。 */
 function solveGrid(input: AStarInput): RoutePoint[] | null {
-  const { xs, ys, start, end, startDir, endDir, obstacles, routed, bendCost, crossCost, overlapCost, fast } = input
+  const { xs, ys, start, end, startDir, endDir, obstacles, routed, bendCost, crossCost, overlapCost, parallelGap, fast } = input
   const nx = xs.length
   const ny = ys.length
   if (nx < 2 || ny < 2) return null
@@ -489,7 +533,7 @@ function solveGrid(input: AStarInput): RoutePoint[] | null {
       if (closed[ns]) continue
       const segLen = Math.abs(m.nx - x) + Math.abs(m.ny - y)
       let cost = segLen + (dir === m.dir ? 0 : bendCost)
-      if (!fast) cost += conflictCost({ x, y }, { x: m.nx, y: m.ny }, routed, crossCost, overlapCost)
+      if (!fast) cost += conflictCost({ x, y }, { x: m.nx, y: m.ny }, routed, crossCost, overlapCost, parallelGap)
       const next = g[k] + cost
       if (next < g[ns] - 1e-6) {
         g[ns] = next
@@ -539,6 +583,7 @@ export function routeEdges(rects: RouteRect[], edges: RouteEdgeSpec[], options?:
   const bendCost = options?.bendCost ?? DEFAULTS.bendCost
   const crossCost = options?.crossCost ?? DEFAULTS.crossCost
   const overlapCost = options?.overlapCost ?? DEFAULTS.overlapCost
+  const parallelGap = options?.parallelGap ?? DEFAULTS.parallelGap
   const radius = options?.radius ?? DEFAULTS.radius
   const detourBudget = options?.detourBudget ?? DEFAULTS.detourBudget
   const sideBias = options?.sideBias ?? DEFAULTS.sideBias
@@ -604,8 +649,57 @@ export function routeEdges(rects: RouteRect[], edges: RouteEdgeSpec[], options?:
    *  `cross=1, overlap=0` 时它的值就是**交叉数**（整数，逐对相加不会漂）。 */
   const conflictOf = (points: RoutePoint[], cross: number, overlap: number): number => {
     let sum = 0
-    for (const seg of segmentsOf(points)) sum += conflictCost(seg.a, seg.b, routed, cross, overlap)
+    for (const seg of segmentsOf(points)) sum += conflictCost(seg.a, seg.b, routed, cross, overlap, parallelGap)
     return sum
+  }
+
+  /** 已路由线的车道坐标 ± parallelGap：A* 的「让路车道」。没有这层候选，贴线
+   *  罚分只能在网格现成的车道里挑替身——拥挤图里最近的可走车道可能本身就在
+   *  10px 以内，罚分成了单纯交税；偏移车道给「正好留出间距」的落点。随已路由
+   *  线增长是确定的（边序路由），结果仍然可回归。 */
+  const laneOffsets = (axis: 'x' | 'y'): number[] => {
+    const out: number[] = []
+    for (const s of routed) {
+      const horizontal = Math.abs(s.a.y - s.b.y) < SAME
+      if (axis === 'y' && !horizontal) continue
+      if (axis === 'x' && horizontal) continue
+      const line = axis === 'y' ? s.a.y : s.a.x
+      out.push(line - parallelGap, line + parallelGap)
+    }
+    return out
+  }
+
+  /** 出/入 stub 的几何夹取：层距小于 stub 时，固定 16px 的端点会**戳进邻居卡
+   *  内部**——A* 的起/终点落在障碍里，所有出发段全被判死、两档全无解，整条边
+   *  退到兜底 Z 形线；而多条兜底线共用同一中点行，正是「水平线重合」的根源
+   *  （user 2026-11-15「水平线还是有重合」，实测卡高 150 时层距只剩 10px）。
+   *  夹取 = 端点沿法线最多走到刚好不进任何**卡片实体**为止（自身卡跳过；净距
+   *  环的余量交给 strict→tight 重试梯）。只影响 A* 的起终点——画出来的线仍从
+   *  真实端口出发（points 的首尾是端口，stub 段只是变短）。 */
+  const clampStub = (own: RouteRect, port: RoutePoint, normal: RoutePoint): number => {
+    let limit = stub
+    const horizontal = normal.x !== 0
+    const fixed = horizontal ? port.y : port.x
+    const moving = horizontal ? port.x : port.y
+    const dir = horizontal ? normal.x : normal.y
+    for (const r of rects) {
+      if (r === own) continue
+      const rLo = horizontal ? r.y : r.x
+      const rHi = horizontal ? r.y + r.height : r.x + r.width
+      // 射线的固定坐标不落在该卡的横向范围内 ⇒ 不会穿它的内部
+      if (fixed <= rLo + 0.01 || fixed >= rHi - 0.01) continue
+      const mLo = horizontal ? r.x : r.y
+      const mHi = horizontal ? r.x + r.width : r.y + r.height
+      // ray(t) = port + t·normal 落进该卡内部的区间是 [tEnter, tExit]
+      const tEnter = dir > 0 ? (mLo - moving) / dir : (mHi - moving) / dir
+      const tExit = dir > 0 ? (mHi - moving) / dir : (mLo - moving) / dir
+      if (tExit <= 0.01) continue // 卡在射线反方向
+      // tEnter ≤ 0 = 邻居卡与自身卡**贴脸**（层距 0）：端点退无可退，夹到 0
+      // （start=port，首段沿卡片边缘的边界走——边界在 vBlocked/hBlocked 里有
+      // 0.01 容差，是可走面）
+      if (tEnter < limit) limit = Math.max(0, tEnter - 0.01)
+    }
+    return limit
   }
 
   for (const spec of edges) {
@@ -613,17 +707,19 @@ export function routeEdges(rects: RouteRect[], edges: RouteEdgeSpec[], options?:
     const toRect = byId.get(spec.to.nodeId)
     if (!fromRect || !toRect) continue
     const fromPort = portGeometry(fromRect, spec.from.side, spec.from.at)
-    const start = { x: fromPort.point.x + fromPort.normal.x * stub, y: fromPort.point.y + fromPort.normal.y * stub }
+    const startLimit = clampStub(fromRect, fromPort.point, fromPort.normal)
+    const start = { x: fromPort.point.x + fromPort.normal.x * startLimit, y: fromPort.point.y + fromPort.normal.y * startLimit }
     const startDir = dirOf(fromPort.normal)
 
     const attempt = (side: RouteSide): Attempt => {
       const toPort = portGeometry(toRect, side, spec.to.at)
-      const end = { x: toPort.point.x + toPort.normal.x * stub, y: toPort.point.y + toPort.normal.y * stub }
+      const endLimit = clampStub(toRect, toPort.point, toPort.normal)
+      const end = { x: toPort.point.x + toPort.normal.x * endLimit, y: toPort.point.y + toPort.normal.y * endLimit }
       const endDir = dirOf(toPort.normal)
       const solveIn = (frame: GridFrame): RoutePoint[] | null =>
         solveGrid({
-          xs: normalizeCandidates([...frame.xs, fromPort.point.x, toPort.point.x, start.x, end.x]),
-          ys: normalizeCandidates([...frame.ys, fromPort.point.y, toPort.point.y, start.y, end.y]),
+          xs: normalizeCandidates([...frame.xs, fromPort.point.x, toPort.point.x, start.x, end.x, ...laneOffsets('x')]),
+          ys: normalizeCandidates([...frame.ys, fromPort.point.y, toPort.point.y, start.y, end.y, ...laneOffsets('y')]),
           start,
           end,
           startDir,
@@ -633,13 +729,14 @@ export function routeEdges(rects: RouteRect[], edges: RouteEdgeSpec[], options?:
           bendCost,
           crossCost,
           overlapCost,
+          parallelGap,
           fast,
         })
       // 重试梯：正常净距 → 净距 0（端点卡片真有重叠、端口被邻居卡埋住时才会
       // 无解）。无解即 `mid === null`，兜底折线由这里给、由调用方决定要不要用。
       const mid = solveIn(strict) ?? (tight === strict ? null : solveIn(tight))
       const points = simplify([fromPort.point, ...(mid ?? fallbackPoints(start, end, startDir)), toPort.point])
-      const { path, label, length } = buildPath(points, radius)
+      const { path, label, length } = buildPath(points, radius, options?.tailGap ?? ARROW_GAP)
       return { side, points, path, label, length, bends: Math.max(0, points.length - 2), fallback: mid === null }
     }
 
