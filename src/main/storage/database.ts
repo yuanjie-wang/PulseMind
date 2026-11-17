@@ -107,6 +107,7 @@ function createTables(): void {
       cached_tokens   INTEGER,
       auto_summary    INTEGER NOT NULL DEFAULT 0,
       compressed_ids  TEXT,
+      client_message_id TEXT,
       created_at      TEXT NOT NULL,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
     );
@@ -386,6 +387,15 @@ function createTables(): void {
   try { database.exec('ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN auto_summary INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN compressed_ids TEXT') } catch {}
+  // B1-a（2026-11-17）：提交侧的客户端消息 id，为「同一条已提交输入只落一行」留一个
+  // 数据库级锚点。id 现由 renderer 在 prepareTurn 生成（msg_<ts>_<rand>）并作为主键
+  // upsert，幂等已由 PRIMARY KEY 提供；这一列是防御性的第二道锁——等 B1-b 把 uuid
+  // 从 UI 点击一路透传下来，它才成为真正的不变量。
+  try { database.exec('ALTER TABLE messages ADD COLUMN client_message_id TEXT') } catch {}
+  // 与 idx_memories_content_hash 同理：索引必须在本条 ALTER 之后建。createTables 的整体
+  // exec 每次启动都跑，存量库里这一列要到上面那行才存在，放进前面的索引块会 SQLITE_ERROR
+  // 而整个 init 被当成损坏。SQLite 视 NULL 互不相等，所以存量行（全 NULL）共存不冲突。
+  try { database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_message_id ON messages(conversation_id, client_message_id)') } catch {}
   // Ensure tool_results has the is_error column
   try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch {}
