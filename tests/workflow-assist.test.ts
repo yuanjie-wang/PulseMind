@@ -553,4 +553,13 @@ describe('spec / 内部专家包', () => {
     // 快照是现取的（每轮都带上最新图），不是初始化时算一次。
     expect(wizard).toMatch(/assist\.send\(text, kind === 'routine' \? formSnapshot\(\) : workflowFormSnapshot\(def\)\)/)
   })
+
+  it('两模式对称认知：单阶段诉求可建议切回对话式（以用户选择为准）', () => {
+    const source = read('src/renderer/src/components/routine/workflow-assist.ts')
+    // user 2026-11-15：助手要知道两种模式——工作流翼发现单阶段诉求时可以
+    // 建议切回对话式，但不擅自改、以用户选择为准。
+    expect(source).toContain('切到「对话式任务」')
+    expect(source).toContain('以用户的选择为准')
+    expect(source).toContain('suggest switching to 对话式')
+  })
 })

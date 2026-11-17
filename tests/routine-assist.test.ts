@@ -43,6 +43,16 @@ describe('buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC)', () => {
     expect(prompt).toContain('{{变量名}}')
     expect(prompt).not.toContain('参数')
   })
+
+  it('两模式认知：助手知道对话式之外还有工作流，创建任务先沟通模式再动手', () => {
+    const prompt = buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC)
+    // user 2026-11-15：新建任务时助手要先沟通用哪种模式（ask_user），选了
+    // 工作流就引导切任务类型——不能只认识对话式、上来就设计。
+    expect(prompt).toContain('两种模式')
+    expect(prompt).toContain('工作流')
+    expect(prompt).toContain('ask_user 确认')
+    expect(prompt).toContain('任务类型')
+  })
 })
 
 describe('parseFormPatch with ROUTINE_ASSIST_SPEC', () => {

@@ -411,6 +411,8 @@ export const WORKFLOW_ASSIST_SPEC: FormAssistSpec<WorkflowAssistantPatch> = {
     },
   ],
   rules: [
+    '这是「工作流式任务」：一张节点有向图，运行时每个节点由一个独立会话执行、按结果状态沿边调度——它不是「对话式任务」（单个会话从头跑到尾）。在【基本信息】步图往往还是空白脚手架：不要把它当单提示词的对话式任务来填，直接按「拆阶段 → 连边 → 定结果状态」的思路设计节点图。',
+    '反过来，如果聊下来用户的诉求其实是单阶段的定期任务，可以建议他切到「对话式任务」（任务类型单选）——更简单；以用户的选择为准。',
     '工作流是一张有向图：nodes 是任务节点，edges 是连线。同一个结果状态可以分出多条线，一个节点也可以由多个上游汇入（会等全部上游跑完）。',
     'nodes 是**增量**：改已有节点时只回传它的 id 和你要改的字段，没写的字段保持原样；不要回传你没有改动的节点。新增节点要给小写英文 id（如 draft、review），否则连线引用不到它。',
     '**只改用户点到的那一处**：用户说「补全定义」就只回 nodes:[{"id":"a","verdictDefs":{"pass":"…"}}]——这是完整合法的提案，不必重复 prompt/verdicts/title，更不要增删节点或重写 edges；说「改提示词」就只改那一个节点的 prompt。用户没要求时不要顺手优化整张图，也不要借补定义之机改流程。',
@@ -425,6 +427,8 @@ export const WORKFLOW_ASSIST_SPEC: FormAssistSpec<WorkflowAssistantPatch> = {
     '需要用户在明确的选项之间做选择时（比如要不要定时、要不要加分支），用 ask_user 工具给出可点选的选项，不要在正文里罗列让用户打字。',
   ],
   rulesEn: [
+    'This is a "workflow task": a directed graph of nodes where each node runs as its own one-shot session and edges route by result state — not a "conversational task" (one session doing everything). On the basics step the graph is often still a blank scaffold: never fill it like a single-prompt conversational task; design the node graph — split into nodes, wire the edges, declare result states.',
+    "Conversely, if the need turns out to be a single-stage scheduled task, suggest switching to 对话式 (the task-kind radio) — it is simpler; the user decides.",
     'A workflow is a directed graph: nodes are the task steps, edges are the lines between them. One verdict can fan out to several targets, and a node may have several upstreams (it waits for all of them).',
     'nodes are INCREMENTAL: to change an existing node send only its id plus the fields you want changed — everything you leave out stays as-is. Do not echo nodes you are not touching. Give new nodes a lowercase English id (draft, review) so edges can reference them.',
     '**Change only what was asked**: when the user says "fill in the definitions", send just nodes:[{"id":"a","verdictDefs":{"pass":"…"}}] — that is a complete, valid proposal; do not restate prompt/verdicts/title, and do not add or remove nodes or rewrite edges. When they say "shorten the review prompt", touch only that one prompt. Never take the opportunity to redesign the graph.',

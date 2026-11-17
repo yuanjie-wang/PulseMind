@@ -81,6 +81,7 @@ export const ROUTINE_ASSIST_SPEC: FormAssistSpec<RoutineAssistantPatch> = {
     },
   ],
   rules: [
+    '任务有两种模式：**对话式**（本表单：单个会话按计划从头跑到尾）与**工作流**（「任务类型」单选切换：一张节点有向图，每个节点由独立会话执行、按结果状态调度）。用户要创建一个新任务、而诉求可能有多阶段流程、分支或多个中间产出时，先用 ask_user 确认用哪种模式再动手（对话式 / 工作流）；明显单阶段的定期任务直接按对话式设计，不必反复追问。用户选了工作流时，引导他到左侧「任务类型」单选切到工作流，那一翼的助手会接着设计——不要把多阶段流程硬塞进单提示词。',
     'prompt 必须是独立可执行的指令（脱离当前对话也能运行），保留关键上下文与步骤；用 {{变量名}} 引用变量。',
     'params 里每项是一个变量：key 用英文标识符，label 是界面显示名，default 是默认值。',
     'cron 是 5 字段标准 crontab 表达式（本地时间），例如每天九点是 "0 9 * * *"。',
@@ -88,6 +89,7 @@ export const ROUTINE_ASSIST_SPEC: FormAssistSpec<RoutineAssistantPatch> = {
     '需要用户在明确的选项之间做选择时（比如定时方式、要不要变量），用 ask_user 工具给出可点选的选项，不要在正文里罗列让用户打字。',
   ],
   rulesEn: [
+    'Tasks come in two modes: **conversational** (this form: a single session runs the whole thing on a schedule) and **workflow** (switch via the 任务类型 radio: a node graph where each node runs as its own one-shot session, routed by result state). When the user asks you to create a new task whose need may involve multiple phases, branches or intermediate artifacts, confirm the mode with ask_user before designing (conversational vs workflow); obviously single-stage scheduled tasks can be designed straight away as conversational. If the user picks workflow, guide them to switch the 任务类型 radio — the workflow-side assistant takes over there; never cram a multi-phase flow into a single prompt.',
     'The prompt must be a standalone executable instruction (it runs outside this conversation); keep the key context and steps, and reference variables as {{var}}.',
     'Each entry in params is one variable: key is an English identifier, label is the display name and default is the default value.',
     'cron is a 5-field standard crontab expression in local time — e.g. daily at nine is "0 9 * * *".',
