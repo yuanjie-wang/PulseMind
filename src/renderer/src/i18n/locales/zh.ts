@@ -270,9 +270,9 @@ const zh = {
     staged: {
       hintBusy: '已暂存 {{count}} 条 · 本回合结束后自动发送',
       hintSettled: '已暂存 {{count}} 条 · 回合未正常结束，不会自动发送',
+      hintRestored: '已暂存 {{count}} 条 · 队首是重启前留下的，需手动发送',
       sendNow: '立即发送',
       remove: '移除',
-      hintRestored: '已暂存 {{count}} 条 · 队首是重启前留下的，需手动发送',
     },
     errorDisplay: {
       title: '错误',

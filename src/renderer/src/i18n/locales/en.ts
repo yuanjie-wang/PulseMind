@@ -276,9 +276,9 @@ const en: TranslationDict = {
     staged: {
       hintBusy: '{{count}} staged · sends when this turn ends',
       hintSettled: '{{count}} staged · turn ended abnormally, auto-send off',
+      hintRestored: '{{count}} staged · head survived a restart, send it manually',
       sendNow: 'Send now',
       remove: 'Remove',
-      hintRestored: '{{count}} staged · head survived a restart, send it manually',
     },
     errorDisplay: {
       title: 'Error',
