@@ -174,10 +174,14 @@ const compactionEvent = (): CompactionEvent => ({
   summary: { firstKeptId: 'u1', text: '摘要' },
 })
 
+// The window is 2_000 and maxTokens 1_024, so the engine's INPUT budget — the
+// denominator every ratio below is written against — is 1_000. The reserve may
+// not take more than half the window (engine/window-budget.ts), which is what
+// pins it to exactly 1_000 here.
 describe('engine: post-turn prewarm trigger', () => {
   it('prewarms and emits when usage crosses the post-turn ratio', async () => {
     const seen: CompactionEvent[] = []
-    const engine = makeEngine(1000, (e) => seen.push(e))
+    const engine = makeEngine(2_000, (e) => seen.push(e))
     const prewarm = stubCompactor(engine, 800, compactionEvent()) // 800 ≥ 750
     engine.schedulePostTurnCompaction()
     await vi.waitFor(() => expect(seen).toHaveLength(1))
@@ -186,20 +190,20 @@ describe('engine: post-turn prewarm trigger', () => {
   })
 
   it('stays idle below the ratio, for spawned sub-agents, and while manual is armed', async () => {
-    const engine = makeEngine(1000)
+    const engine = makeEngine(2_000)
     const below = stubCompactor(engine, 700, compactionEvent()) // 700 < 750
     engine.schedulePostTurnCompaction()
     await new Promise((r) => setTimeout(r, 0))
     expect(below).not.toHaveBeenCalled()
 
-    const spawned = makeEngine(1000)
+    const spawned = makeEngine(2_000)
     ;(spawned as unknown as { isSpawnedSubAgent: boolean }).isSpawnedSubAgent = true
     const spawnedPrewarm = stubCompactor(spawned, 900, compactionEvent())
     spawned.schedulePostTurnCompaction()
     await new Promise((r) => setTimeout(r, 0))
     expect(spawnedPrewarm).not.toHaveBeenCalled()
 
-    const manual = makeEngine(1000)
+    const manual = makeEngine(2_000)
     ;(manual as unknown as { manualCompactActive: boolean }).manualCompactActive = true
     const manualPrewarm = stubCompactor(manual, 900, compactionEvent())
     manual.schedulePostTurnCompaction()
@@ -208,7 +212,7 @@ describe('engine: post-turn prewarm trigger', () => {
   })
 
   it('fires from handleEndTurnResponse — the clean boundary', () => {
-    const engine = makeEngine(1000)
+    const engine = makeEngine(2_000)
     const prewarm = stubCompactor(engine, 900, compactionEvent())
     engine.messages = [
       { id: 'u1', role: 'user', contentBlocks: [text('任务')], createdAt: '2026-09-23T10:00:00.000Z' },
@@ -219,7 +223,7 @@ describe('engine: post-turn prewarm trigger', () => {
   })
 
   it('/compact arms the sticky force, prewarms with the instruction, and refuses mid-turn', async () => {
-    const engine = makeEngine(1000, () => {})
+    const engine = makeEngine(2_000, () => {})
     const manualEvent = { ...compactionEvent(), source: 'manual' } as CompactionEvent
     const prewarm = stubCompactor(engine, 500, manualEvent)
     const event = await engine.compactNow('保留所有决策')

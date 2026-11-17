@@ -273,7 +273,7 @@ describe('the merged fit gate: one token-metered decision for nano and light', (
     const compactor = readFileSync(join(root, 'src/renderer/src/agent/engine/context-compactor.ts'), 'utf8')
     const ring = readFileSync(join(root, 'src/renderer/src/components/chat/ContextRing.tsx'), 'utf8')
     // The live pass: same units as the light/hard walks below it (W1).
-    expect(engine).toContain('nanoCompact(pipelineMessages, opts.contextLength || 128000, fixedOverhead)')
+    expect(engine).toContain('nanoCompact(pipelineMessages, inputBudget, fixedOverhead)')
     // The prewarm simulation: a 0-overhead / windowless run would archive
     // later and less than the request does, which is exactly what
     // compaction-prewarm exists to catch.

@@ -36,6 +36,7 @@ import { persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
+import { effectiveInputWindow } from './engine/window-budget'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, dropStaleThinkingOnlyTurns, type CompactTracking } from './engine/context-compactor'
@@ -640,12 +641,20 @@ export class AgentEngine implements EngineCore {
    *  or paused (awaiting_continue) conversation is exactly when the user
    *  reaches for /compact. The gate made the command a silent no-op that
    *  reported the opposite of what happened (review0924 M1). */
+  /** The input-side budget every compaction gate and layer divides by (see
+   *  engine/window-budget.ts). `opts.contextLength` stays the provider's TOTAL
+   *  window — the context ring, the gauge and the request log keep showing that
+   *  — so the reduction to what input may spend happens here and nowhere else. */
+  private get inputWindow(): number {
+    return effectiveInputWindow(this.opts.contextLength || 128_000, this.opts.maxTokens)
+  }
+
   compactNow = async (instruction?: string): Promise<CompactionEvent | null> => {
     const status = this.agentStatus.status
     if (status === 'streaming' || status === 'executing' || status === 'retrying') return null
     this.manualCompactActive = true
     const event = await this.compactor.prewarm({
-      contextLength: this.opts.contextLength || 128_000,
+      contextLength: this.inputWindow,
       source: 'manual',
       instruction: instruction || undefined,
     })
@@ -664,8 +673,10 @@ export class AgentEngine implements EngineCore {
   schedulePostTurnCompaction = (): void => {
     if (this.isSpawnedSubAgent || this.isCancelled) return
     if (this.postTurnPrewarmInFlight || this.manualCompactActive) return
-    const contextLength = this.opts.contextLength
-    if (!contextLength) return
+    if (!this.opts.contextLength) return
+    // Gate AND payload take the input budget: a prewarm that compressed against
+    // a different denominator than the request build would summarize too late.
+    const contextLength = this.inputWindow
     if (this.compactor.contextTokens() < contextLength * POST_TURN_COMPACT_USED_RATIO) return
     this.postTurnPrewarmInFlight = true
     void this.compactor.prewarm({ contextLength, source: 'post-turn' })
@@ -788,7 +799,7 @@ export class AgentEngine implements EngineCore {
     }
     // ③ cheap pre-check: the force target is 0.6× the window — below 0.55×
     // there is provably nothing to drop and the pipeline would idle.
-    const contextLength = this.opts.contextLength || 128_000
+    const contextLength = this.inputWindow
     const tokens = this.compactor.contextTokens()
     if (tokens < contextLength * 0.55) {
       return { ok: false, reason: 'not_worthwhile', tokens, window: contextLength, freedResults, skippedIds }
@@ -1577,22 +1588,28 @@ export class AgentEngine implements EngineCore {
     // in the same wire-anchored units (and with the same fixed overhead) the
     // light/hard walks below use, so the layers cannot disagree about how
     // full the request is.
-    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages, opts.contextLength || 128000, fixedOverhead)
+    // One conversion for the whole pipeline: nano / strip / light / hard must
+    // agree on the denominator, and that denominator is the INPUT budget, not
+    // the total window (engine/window-budget.ts — the output reservation is not
+    // spendable). `inputBudget` rather than `this.inputWindow` because `opts`
+    // here is this build's own copy, which may carry a re-aimed window.
+    const inputBudget = effectiveInputWindow(opts.contextLength || 128_000, opts.maxTokens)
+    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages, inputBudget, fixedOverhead)
     // Snapshot the pass's own verdict immediately: the field is rewritten by
     // every nanoCompact (prewarm's simulation too), so a later read could
     // describe a different copy.
     const nanoArchive = this.compactor.lastNanoArchive
     // Stale-thinking strip beside nano (THINKING_STRIP_USED_RATIO): old turns'
     // reasoning_content off the wire. Runs here AND in prewarmBody.
-    const thinkingStripped = this.compactor.stripStaleThinking(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
+    const thinkingStripped = this.compactor.stripStaleThinking(nanoCompacted, inputBudget, fixedOverhead)
     // Two force sources, two scopes (keep them separate — see the field
     // comments): manualCompactActive (/compact) sticks until reset and drives
     // BOTH layers; pendingToolCompactForce (context_compact) is one-shot for
     // THIS copy and bypasses ONLY light — hard's passive 0.9× trigger stays
     // armed against the model's own misjudgement (D3 two-powers split).
     const lightForce = this.manualCompactActive || this.pendingToolCompactForce
-    const lightCompacted = this.compactor.lightCompact(thinkingStripped, opts.contextLength || 128000, fixedOverhead, lightForce)
-    const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
+    const lightCompacted = this.compactor.lightCompact(thinkingStripped, inputBudget, fixedOverhead, lightForce)
+    const truncatedMessages = this.compactor.hardTruncate(lightCompacted, inputBudget, fixedOverhead, this.manualCompactActive)
     // The tool force armed the drop this copy just materialized — consume it
     // here, after the build, so exactly one request runs slimmed.
     this.pendingToolCompactForce = false

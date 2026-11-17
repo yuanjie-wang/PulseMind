@@ -79,7 +79,10 @@ function makeEngine(o: MakeEngineOpts = {}): InstanceType<typeof AgentEngine> {
   if (o.onCompaction) callbacks.onCompaction = o.onCompaction
   const engine = new AgentEngine({
     apiKey: 'test-key', baseURL: 'https://example.invalid', model: 'test-model', maxTokens: 1024,
-    contextLength: o.contextLength ?? 100_000,
+    // 101_024 rather than 100_000: the engine divides by the INPUT budget, i.e.
+    // the window minus maxTokens (1024) — see engine/window-budget.ts. This way
+    // that budget is exactly 100_000 and the 55% guard's line stays at 55_000.
+    contextLength: o.contextLength ?? 101_024,
     myName: 'tester', soul: '', yourName: 'user',
     // buildRequest captures the built copy; nothing streams (continueLoop stubbed).
     adapter: {
@@ -181,7 +184,9 @@ describe('guards ①—④ (main action only; free_results exempt from ②③)',
 describe('success path: event, one-shot light-only force, notes', () => {
   it('prewarm runs with source tool, arms the force, and the next build consumes it on light only', async () => {
     const events: CompactionEvent[] = []
-    const engine = makeEngine({ contextLength: 6000, onCompaction: (e) => events.push(e) })
+    // 6_000 is the INPUT budget the assertions below name; the window it is
+    // derived from is 6_000 + maxTokens (1024).
+    const engine = makeEngine({ contextLength: 7_024, onCompaction: (e) => events.push(e) })
     const lightSpy = vi.spyOn(engine.compactor, 'lightCompact')
     const hardSpy = vi.spyOn(engine.compactor, 'hardTruncate')
     const before = engine.messages
@@ -216,7 +221,7 @@ describe('success path: event, one-shot light-only force, notes', () => {
   })
 
   it('summarizer failure keeps the notes (notesKept=true), landing a notes-only cache with an empty coverage claim', async () => {
-    const engine = makeEngine({ contextLength: 6000 })
+    const engine = makeEngine({ contextLength: 7_024 })
     ;(engine as unknown as { runHistorySummary: unknown }).runHistorySummary = async () => '' // LLM failure
     const out = await engine.compactForTool({ notes: '交接笔记：记住这个坑' })
     expect(out.ok).toBe(true)
