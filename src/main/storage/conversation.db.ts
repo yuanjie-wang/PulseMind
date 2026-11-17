@@ -653,14 +653,21 @@ export function setConversationApprovalMode(id: string, mode: SandboxApprovalMod
  *  `onCompaction` is fire-and-forget, so `engine.lastCompaction` lives only in
  *  memory: a desktop restart used to lose the 已压缩 chip, and the ring fell back
  *  to the pre-compaction watermark (too high) until the next request re-anchored
- *  it. Absent and unreadable both answer null — an honest absence, never a
- *  fabricated empty event. */
+ *  it. Absent, unreadable and foreign-shaped all answer null — an honest
+ *  absence, never a fabricated empty event. */
 export function getLastCompaction(id: string): CompactionEvent | null {
   if (!conversationKeyOf(id)) return null
   const row = getDb().prepare('SELECT last_compaction FROM conversations WHERE id = ?').get(id) as { last_compaction: string | null } | undefined
   if (!row?.last_compaction) return null
   try {
-    return JSON.parse(row.last_compaction) as CompactionEvent
+    const parsed = JSON.parse(row.last_compaction) as CompactionEvent
+    // Shape sentinel beside the JSON guard: a parseable but foreign-shaped
+    // payload (a field renamed in a later release, a hand-edited row) must
+    // also read as absence — the ring's projection orders messages against
+    // `ts` and rebases on `tokensAfter`, so those two decide; anything else
+    // trusting the rest of the shape is a fabrication this reader refuses.
+    if (typeof parsed?.ts !== 'number' || !Number.isFinite(parsed.ts) || typeof parsed?.tokensAfter !== 'number' || !Number.isFinite(parsed.tokensAfter)) return null
+    return parsed
   } catch {
     return null
   }

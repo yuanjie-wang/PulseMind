@@ -19,6 +19,7 @@ import type { PlatformInfo } from '../../shared/types/electron-bridge'
 import { setHost } from '../../renderer/src/agent/host'
 import { mainHost } from './main-host'
 import { bindLiveSkillManager } from './live-skill-registry'
+import { logMain, describeError } from '../main-log'
 import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
@@ -1545,7 +1546,10 @@ export class AgentSessionManagerImpl {
         try {
           setLastCompaction(sessionId, event)
         } catch (err) {
-          console.warn(`[AgentSession] compaction persist failed (${sessionId}):`, err)
+          // logMain, not console.* — a packaged GUI launch (Linux .deb / Windows
+          // portable) has no terminal, and this failure is invisible by design:
+          // the hook failures hit the same wall on 2026-11-05.
+          logMain('WARN', 'AgentSession', `compaction persist failed (${sessionId}): ${describeError(err)}`)
         }
         this.emit(sessionId, { type: 'compaction', event })
       },

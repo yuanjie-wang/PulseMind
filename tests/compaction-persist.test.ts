@@ -36,6 +36,17 @@ describe('P1-B lastCompaction 冷恢复接线', () => {
     expect(getter).toMatch(/catch \{\s*return null\s*\}/)
   })
 
+  it('getter 对合法 JSON 但形状不对的载荷也读作 null（ts/tokensAfter 哨兵）', () => {
+    // 环的压缩后投影按 ts 给消息排序、按 tokensAfter 重定基——这两个字段
+    // 决定一段 JSON 值不值得信。将来 CompactionEvent 改名/缩字段后，旧库里
+    // 的残留载荷读作缺席，而不是灌回一个半真半假的事件。
+    const at = CONV_DB.indexOf('export function getLastCompaction')
+    const getter = CONV_DB.slice(at, CONV_DB.indexOf('export function setLastCompaction'))
+    expect(getter).toMatch(/typeof parsed\?\.ts !== 'number'/)
+    expect(getter).toMatch(/typeof parsed\?\.tokensAfter !== 'number'/)
+    expect(getter).toMatch(/Number\.isFinite/)
+  })
+
   it('setter 走 stub-insert 契约，但 null 不建行（stub 只收字符串绑定）', () => {
     const setter = CONV_DB.slice(CONV_DB.indexOf('export function setLastCompaction'))
     expect(setter).toMatch(/if \(r\.changes === 0 && json\)/)
