@@ -24,6 +24,21 @@ import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
+// ── The send contract ──
+
+/** Why a submitted input never left the composer. Every bail in handleRequest
+ *  must name one: the callers' restore-the-row rule used to live in a comment
+ *  ("Every early `return false` above is a bail the caller must restore its
+ *  message for"), and a comment is not an invariant — a bail added later
+ *  without it silently dropped the user's message with only a toast to show
+ *  for it. The union makes the compiler ask at every return site. */
+export type SendBailReason = 'no_api_key' | 'no_conversation' | 'busy' | 'summon_without_task' | 'skill_without_task' | 'no_project_selected'
+
+/** handleRequest's answer. `ok: true` = the input was consumed (a turn left, or
+ *  a command that has nothing to restore); `ok: false` = nothing left, so the
+ *  caller must restore the staged row. */
+export type SendResult = { ok: true } | { ok: false; reasonCode: SendBailReason }
+
 // ── Options ──
 
 /** Conversation cap without auto-cleanup — the same number the sidebar's
@@ -266,10 +281,10 @@ export function useChatController(options: UseChatControllerOptions) {
 
   // ── 7. handleRequest (send message) ──
   const handleRequest = useCallback(
-    async (content: string) => {
+    async (content: string): Promise<SendResult> => {
       if (!apiKey) {
         console.warn('[ChatController] handleRequest blocked: no API key')
-        return false
+        return { ok: false, reasonCode: 'no_api_key' }
       }
 
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
@@ -284,7 +299,7 @@ export function useChatController(options: UseChatControllerOptions) {
         const target = conversationKeyOf(convId)
         if (!target) {
           message.warning(t('chatView.compaction.noConversation'))
-          return false
+          return { ok: false, reasonCode: 'no_conversation' }
         }
         const status = engine.agentStatus.status
         if (
@@ -296,7 +311,7 @@ export function useChatController(options: UseChatControllerOptions) {
           status !== 'awaiting_continue'
         ) {
           message.warning(t('chatView.compaction.busy'))
-          return false
+          return { ok: false, reasonCode: 'busy' }
         }
         // A rejected engine call must not vanish down the unhandled-rejection
         // hole (the callers swallow rejections to restore staged text): the
@@ -307,7 +322,7 @@ export function useChatController(options: UseChatControllerOptions) {
         } catch (err) {
           console.warn('[ChatController] /compact engine call failed:', err)
           message.error(t('chatView.compaction.failed'))
-          return true
+          return { ok: true }
         }
         if (event) {
           const freed = Math.max(0, event.tokensBefore - event.tokensAfter)
@@ -315,9 +330,9 @@ export function useChatController(options: UseChatControllerOptions) {
         } else {
           message.info(t('chatView.compaction.nothing'))
         }
-        // true = the command was consumed (nothing to restore): /compact is not
+        // ok = the command was consumed (nothing to restore): /compact is not
         // a send, so no turn will end for the drain to re-deliver it.
-        return true
+        return { ok: true }
       }
 
       // ── /new [text]: a fresh conversation of the SAME kind ──
@@ -335,11 +350,11 @@ export function useChatController(options: UseChatControllerOptions) {
         // new one in.
         if (options.savesEnabled === false) {
           message.warning(t('chatView.command.newUnavailable'))
-          return true
+          return { ok: true }
         }
         if (!autoCleanup && persistence.conversations.length >= MAX_SESSIONS) {
           message.warning(t('chatView.command.newLimit', { max: MAX_SESSIONS }))
-          return true
+          return { ok: true }
         }
         const current = conversationKeyOf(convId)
         const currentProjectId = current
@@ -363,8 +378,8 @@ export function useChatController(options: UseChatControllerOptions) {
         task.requestShake(null)
         await persistence.createNewConversation()
         const firstMessage = commandArgument(content, 'new')
-        // true = consumed: a bare /new is not a send.
-        if (!firstMessage) return true
+        // ok = consumed: a bare /new is not a send.
+        if (!firstMessage) return { ok: true }
         // Fall through as the first message of the conversation about to be
         // materialized (no open conversation any more): the materialization
         // reads the kind just set on the new-task form — project binding,
@@ -406,7 +421,7 @@ export function useChatController(options: UseChatControllerOptions) {
       const mentioned: SummonedExpert[] = mentions.experts.map((e) => ({ id: e.id, name: e.name }))
       if (mentioned.length > 0 && !mentions.task.trim()) {
         message.warning(t('chatView.expert.needTaskWithSummon'))
-        return false
+        return { ok: false, reasonCode: 'summon_without_task' }
       }
 
       // ── $技能 (2026-11-08): resolve the $-pinned skills ──
@@ -422,7 +437,7 @@ export function useChatController(options: UseChatControllerOptions) {
       const forcedSkills = skillMentions.skills
       if (forcedSkills.length > 0 && !skillMentions.task.trim()) {
         message.warning(t('chatView.skill.needTask'))
-        return false
+        return { ok: false, reasonCode: 'skill_without_task' }
       }
 
       // ── @知识库 (PLAN-knowledge-groups G5): resolve the base scope ──
@@ -451,7 +466,7 @@ export function useChatController(options: UseChatControllerOptions) {
         const task = useNewTaskStore.getState()
         if (task.mode === 'project' && !task.projectId) {
           message.warning(t('welcome.selectProjectFirst'))
-          return false
+          return { ok: false, reasonCode: 'no_project_selected' }
         }
         const now = new Date()
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
@@ -531,11 +546,11 @@ export function useChatController(options: UseChatControllerOptions) {
       if (userMsgCountBefore + 1 === 3) titleRefinePendingRef.current.add(convId)
       if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase, forcedSkills)
       else engineHandle.startLoop(content, knowledgeBase, forcedSkills)
-      // true = the turn left. Every early `return false` above is a bail the
-      // caller (the staged-queue drain, the strip's 立即发送) must restore its
-      // message for — a silent drop there loses the message with only a toast
-      // for company.
-      return true
+      // ok = the turn left. Every early `ok: false` above is a bail the caller
+      // (the staged-queue drain, the strip's 立即发送) must restore its message
+      // for — and the union now makes each one name its reason at the return
+      // site, so a bail added later cannot forget the restore rule silently.
+      return { ok: true }
     },
     [
       apiKey,
@@ -637,8 +652,13 @@ export function useChatController(options: UseChatControllerOptions) {
     const restore = (): void => restoreStaged(convId, item, 0)
     // A failed send (all-@ text, missing key, …) restores the head in place —
     // the message stays visible in the strip instead of evaporating.
-    void handleRequest(item.text).then((ok) => {
-      if (!ok) restore()
+    void handleRequest(item.text).then((result) => {
+      if (!result.ok) {
+        // The row comes back either way, but the reason is what answers a
+        // 「我的消息为什么没发出去」 report without a repro.
+        console.warn(`[ChatController] staged drain bail: ${result.reasonCode}`)
+        restore()
+      }
     }, restore)
   }, [engine.agentStatus, persistence.activeConversationKey, handleRequest])
 
@@ -708,7 +728,10 @@ export function useChatController(options: UseChatControllerOptions) {
   const sendStagedNow = useCallback(
     async (text: string): Promise<boolean> => {
       engine.stopExecution()
-      return handleRequest(text)
+      // The strip only asks "did it leave?" — the reason is logged at the
+      // source. SendResult stops at this boundary, so ChatView's onSendStaged
+      // keeps its boolean shape.
+      return (await handleRequest(text)).ok
     },
     [engine, handleRequest],
   )

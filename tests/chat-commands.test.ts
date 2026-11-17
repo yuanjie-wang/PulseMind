@@ -69,7 +69,7 @@ describe('/new send-path wiring (source scan)', () => {
   it('refuses in secondary windows and at the session cap; a bare /new is consumed, trailing text becomes the first message', () => {
     expect(block).toContain('options.savesEnabled === false')
     expect(block).toContain('persistence.conversations.length >= MAX_SESSIONS')
-    expect(block).toContain('if (!firstMessage) return true')
+    expect(block).toContain('if (!firstMessage) return { ok: true }')
     expect(block).toContain("convId = ''")
     expect(block).toContain('content = firstMessage')
   })

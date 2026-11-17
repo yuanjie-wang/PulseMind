@@ -102,20 +102,25 @@ describe('useChatController: the drain effect and 立即发送', () => {
     expect(effect).toContain('restoreStaged(convId, item, 0)')
     // Restore is wired to BOTH the false resolution and the rejection.
     // prettier 展开单行回调——对空白鲁棒。
-    expect(effect).toMatch(/\(ok\) => \{\s*if \(!ok\) restore\(\)\s*\}/)
+    // Restore is wired to BOTH the bail resolution and the rejection. The bail
+    // arm reports its reasonCode before restoring (SendResult), so the matcher
+    // anchors on the classification rather than on a bare boolean.
+    expect(effect).toMatch(/\(result\) => \{\s*if \(!result\.ok\)/)
+    expect(effect).toContain('restore()')
     // 拒绝臂也恢复（prettier 重排 then 的收尾形态——对空白鲁棒）。
     expect(effect).toMatch(/,\s*restore\s*\)/)
   })
 
-  it('handleRequest reports true/false so the caller knows whether to restore', () => {
+  it('handleRequest reports a classified SendResult so the caller knows whether to restore', () => {
     const from = CONTROLLER.indexOf('const handleRequest')
     const end = CONTROLLER.indexOf('const stagedStatusRef', from)
     const body = CONTROLLER.slice(from, end)
     // Success path leaves the turn.
-    expect(body).toContain('return true')
-    // Every bail is a false (counted, so a new early return cannot silently
-    // become a message drop): api key, parse bails, busy /compact, project.
-    const bails = body.match(/return false/g) ?? []
+    expect(body).toContain('return { ok: true }')
+    // Every bail names a reasonCode (counted, so a new early return cannot
+    // silently become a message drop): api key, parse bails, busy /compact,
+    // project, summon-without-task, skill-without-task.
+    const bails = body.match(/return \{ ok: false/g) ?? []
     expect(bails.length).toBeGreaterThanOrEqual(4)
     expect(body).not.toMatch(/return\s*\n\s*\}/) // no bare `return` early-exit
   })
