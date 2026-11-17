@@ -111,6 +111,13 @@ function isStagedMessage(value: unknown): value is StagedMessage {
   )
 }
 
+/** Whole-queue replacement, not a per-row merge: `restored` wins and whatever
+ *  `current` holds for that conversation is discarded. That is only safe because
+ *  the storage below reads SYNCHRONOUSLY (localStorage), so hydrate has already
+ *  landed before the UI can stage anything. Moving this store to an async
+ *  storage (main-process IPC, IndexedDB) would let hydrate arrive AFTER the user
+ *  staged a message and silently overwrite that fresh queue — such a move must
+ *  merge per conversation id instead of returning `restored` outright. */
 function mergePersisted(persisted: unknown, current: PendingMessageState): PendingMessageState {
   if (typeof persisted !== 'object' || persisted === null) return current
   const queues = (persisted as { queues?: unknown }).queues
