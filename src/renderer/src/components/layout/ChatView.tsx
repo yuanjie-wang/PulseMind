@@ -13,7 +13,7 @@ import { ChatBody, CHAT_SCROLLER_EDGE_GAP } from '../chat/ChatBody'
 import { useDeliverables } from '../../hooks/useDeliverables'
 import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
-import { InputArea } from '../chat/InputArea'
+import { InputArea, type SendAck } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
 import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import { BackgroundTasksStrip } from '../chat/BackgroundTasksStrip'
@@ -54,7 +54,8 @@ interface ChatViewProps {
   agentStatus: AgentStatus
   streamingBlocks: ContentBlock[]
   hasApiKey: boolean
-  onSendMessage: (content: string) => void
+  /** 应答原样上抛给 InputArea：`{ ok: false }` 时它保留草稿（含附件）。 */
+  onSendMessage: (content: string) => void | Promise<SendAck>
   /** 立即发送 (staged strip): stop the running turn and send this text as a new
    *  turn; false = the send never left (the row restores itself). Absent (or
    *  no conversationId) = the staged queue is off for this view. */
@@ -315,7 +316,8 @@ function ChatView({
   const sendMessageAndPin = useCallback(
     (content: string) => {
       follow.resume()
-      onSendMessage(content)
+      // 应答原样上抛：InputArea 靠它决定这次提交之后要不要清草稿。
+      return onSendMessage(content)
     },
     [follow, onSendMessage],
   )

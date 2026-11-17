@@ -30,6 +30,16 @@ import { normalizePathInput } from '../../../../shared/path-input'
 import { notifyFailure } from '../../utils/notify'
 import { CHAT_COMMANDS } from '../../agent/chat-commands'
 
+/** 一次提交的应答：只回答「这条输入有没有被收下」。故意不 import hook 里的
+ *  SendResult —— 组件层不该反向依赖 useChatController，结构兼容即可（它的
+ *  两个分支都满足 { ok: boolean }）。 */
+export type SendAck = { ok: boolean }
+
+/** true = 这条输入已被收下，草稿可以清。`void`（FormAssistColumn 这类宿主没有
+ *  reasonCode 可言）视为「宿主管不着」，维持旧行为：调用即视为拿走；只有显式
+ *  `{ ok: false }` 才把草稿留在输入框里。 */
+const didSend = (ack: void | SendAck): boolean => ack == null || ack.ok
+
 /** Approval levels, most restrictive first — the order the dropdown lists them
  *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
  *  safety / safety-certificate pair is two shields that read as one glyph at
@@ -117,7 +127,9 @@ function InputAreaImpl({
    *  with zIndex 10, which would otherwise draw ABOVE the host's overlay and
    *  cover its tail (the sub-agent drill-in's streaming cursor). */
   hidden?: boolean
-  onSendMessage: (content: string) => void
+  /** 返回 `{ ok: false }` = 这次提交没被收下，草稿（文本+附件+引用）留在输入框，
+   *  不再像从前那样无条件 clear。返回 `void` 的宿主按旧语义处理。 */
+  onSendMessage: (content: string) => void | Promise<SendAck>
   /** 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）：streaming 相位下提交
    *  语义改为转向——Enter 承担（antd-x Sender 在 loading 态吞 Enter，但
    *  onKeyDown 会透传进 textarea），提交钮保持停止钮（2026-09-29 单停止按钮
@@ -795,7 +807,8 @@ function InputAreaImpl({
       clear()
       return
     }
-    onSendMessage(outgoing)
+    // 连最后一道门也没收下：草稿留着，别把刚打的字连同附件一起清掉。
+    if (!didSend(await onSendMessage(outgoing))) return
     clear()
   }
 
@@ -926,7 +939,7 @@ function InputAreaImpl({
     if (head) sendStagedRow(head, 0)
   }
 
-  const submit = (raw: string): void => {
+  const submit = async (raw: string): Promise<void> => {
     const text = raw.trim()
     if (!text && !hasAttachments) return
     const outgoing = buildMessage(text)
@@ -951,7 +964,9 @@ function InputAreaImpl({
       sendStagedHead()
       return
     }
-    onSendMessage(outgoing)
+    // 未收下就保留草稿。这里从前是无条件 clear：一次 bail 就静默吃掉了用户的
+    // 消息（只剩一个 toast 陪跑），正是 B3 要根除的那类丢消息。
+    if (!didSend(await onSendMessage(outgoing))) return
     clear()
   }
 

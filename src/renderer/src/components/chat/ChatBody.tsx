@@ -36,7 +36,7 @@ import { ErrorDisplay } from './ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from './ExtensionPrompt'
 import { TurnDeliverablesCard } from './TurnDeliverablesCard'
 import type { collectTurnDeliverables, segmentTurnPlacement } from './deliverables'
-import { InputArea } from './InputArea'
+import { InputArea, type SendAck } from './InputArea'
 import { SelectionToolbar } from './SelectionToolbar'
 import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -114,7 +114,7 @@ interface ChatBodyProps {
    *  segment 时渲染——消息一到就让位给转录，不参与滚动高度之外的布局。 */
   emptySlot?: React.ReactNode
   navTopSlot: React.ReactNode
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string) => void | Promise<SendAck>
   onSteer?: (text: string) => Promise<SteerOutcome>
   onCancel: () => void
   staging?: Staging
