@@ -59,6 +59,12 @@ export interface TailFollowOptions {
   cancel?: (handle: number) => void
   /** Clock — injectable for the jump hold window. */
   now?: () => number
+  /**
+   * Watch the scroller's content for size changes that no React commit reports
+   * (async markdown, images, a card growing under an ask-user prompt). Returns a
+   * disposer. Injectable so tests can drive it without a layout engine.
+   */
+  observeSize?: (el: TailFollowTarget, onChange: () => void) => () => void
 }
 
 export interface TailFollow {
@@ -95,6 +101,50 @@ const TOUCH_SLOP = 2
 const PROOF_TTL_MS = 120
 
 /**
+ * Default content watcher: a ResizeObserver over the scroller's direct children.
+ *
+ * The settle loop alone cannot be the whole story: it gives up after ~0.4s of
+ * unchanged frames, and plenty of growth arrives later than that AND without a
+ * React commit to re-arm it — an ask-user card laying out its options, a code
+ * block highlighting, an image decoding, a conversation that was already
+ * streaming when you switched to it. All of those left the view short of the
+ * tail until the user nudged it (user 2026-11-17 反馈: ask user 在底部、进行中的
+ * 会话这两类场景仍不跟随).
+ *
+ * The scroller's OWN box never changes when its content overflows — the growth
+ * shows up on its children — so observe each direct child, and re-observe when
+ * the child list changes (a conversation switch replaces them).
+ */
+const domObserveSize = (el: TailFollowTarget, onChange: () => void): (() => void) => {
+  const g = globalThis as {
+    ResizeObserver?: new (cb: () => void) => { observe: (t: object) => void; disconnect: () => void }
+    MutationObserver?: new (cb: () => void) => { observe: (t: object, o: object) => void; disconnect: () => void }
+  }
+  const RO = g.ResizeObserver
+  if (!RO) return () => {}
+  const ro = new RO(onChange)
+  const observeChildren = (): void => {
+    ro.disconnect()
+    const kids = (el as { children?: ArrayLike<object> }).children
+    if (!kids) return
+    for (let i = 0; i < kids.length; i += 1) ro.observe(kids[i])
+  }
+  observeChildren()
+  const MO = g.MutationObserver
+  const mo = MO
+    ? new MO(() => {
+        observeChildren()
+        onChange()
+      })
+    : null
+  mo?.observe(el as object, { childList: true })
+  return () => {
+    ro.disconnect()
+    mo?.disconnect()
+  }
+}
+
+/**
  * Creates a tail follower over `getEl`. The element is resolved on every use so
  * a remount (conversation switch re-keying the scroller) needs no ceremony.
  */
@@ -106,6 +156,7 @@ export function createTailFollow(getEl: () => TailFollowTarget | null, opts: Tai
   const schedule = opts.schedule ?? ((cb: () => void) => requestAnimationFrame(cb))
   const cancelFrame = opts.cancel ?? ((handle: number) => cancelAnimationFrame(handle))
   const now = opts.now ?? (() => performance.now())
+  const observeSize = opts.observeSize ?? domObserveSize
 
   let following = true
   let held = false
@@ -115,6 +166,7 @@ export function createTailFollow(getEl: () => TailFollowTarget | null, opts: Tai
   let quiet = 0
   let lastHeight = -1
   let listenedEl: TailFollowTarget | null = null
+  let stopObserving: (() => void) | null = null
   let touchY: number | null = null
   let lastTop: number | null = null
   // Every scrollTop we wrote recently, with the time we wrote it. Scroll events
@@ -314,6 +366,8 @@ export function createTailFollow(getEl: () => TailFollowTarget | null, opts: Tai
   ]
 
   const detach = (): void => {
+    stopObserving?.()
+    stopObserving = null
     const el = listenedEl
     listenedEl = null
     touchY = null
@@ -327,6 +381,10 @@ export function createTailFollow(getEl: () => TailFollowTarget | null, opts: Tai
     if (!el?.addEventListener) return
     listenedEl = el
     for (const [type, handler] of bindings) el.addEventListener(type, handler)
+    // Growth without a commit — the settle loop may already have given up by the
+    // time it lands, so every content size change re-arms it. A no-op when the
+    // user has taken over (`settle` checks `following`).
+    stopObserving = observeSize(el, settle)
   }
 
   const dispose = (): void => {

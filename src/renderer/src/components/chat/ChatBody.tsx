@@ -279,7 +279,12 @@ export function ChatBody({
     prevPadRef.current = composerPad
     if (prev === composerPad) return
     if (!tail?.isFollowing()) return
+    // snap + settle, not snap alone: the reserve lands in stages (the above-card
+    // slot has its own observer, and an ask-user card keeps laying out its rows
+    // after the first measurement), so a single write leaves the card's bottom
+    // under the fold. settle() holds the tail while the rest of the height lands.
     tail.snap()
+    tail.settle()
   }, [composerPad, tail])
 
   // ── 紧凑 welcome（侧栏对话的空态；主卡 welcome 在 ChatView 的早退分支）──

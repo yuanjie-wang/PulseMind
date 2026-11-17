@@ -125,8 +125,12 @@ describe('ChatBody: dynamic spacer + at-tail re-pin', () => {
     // after the reserve grew — padding growth IS what pushes the tail away, so a
     // post-update measurement can never see "was at tail". isFollowing() carries
     // the intent, which is exactly what the re-pin needs.
+    // snap() AND settle(), in that order: the reserve lands in stages (its own
+    // observer reports it, and an ask-user card keeps laying rows out after the
+    // first measurement), so a single write leaves the card's bottom under the
+    // fold. settle() is what keeps the tail for the rest of the height.
     expect(CHAT_BODY).toMatch(
-      /useLayoutEffect\(\(\) => \{[\s\S]{0,400}if \(!tail\?\.isFollowing\(\)\) return[\s\S]{0,120}tail\.snap\(\)/,
+      /if \(!tail\?\.isFollowing\(\)\) return[\s\S]{0,400}tail\.snap\(\)\s*tail\.settle\(\)/,
     )
     // The local 100px threshold is retired — it was the second of the three
     // per-host thresholds that drifted apart.

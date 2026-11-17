@@ -81,6 +81,79 @@ function commit(ctx: Harness, by: number): void {
   ctx.follow.settle()
 }
 
+/**
+ * The settle loop only runs when the HOST reports a commit. Child components grow
+ * the DOM on their own — an XMarkdown body, a code block, an ask-user card laying
+ * out its rows after the first paint — without re-rendering ChatView, so nothing
+ * reports it and no loop is even alive to notice. That is the case that left the
+ * view short of the tail in a running conversation and under an ask-user prompt
+ * (user 2026-11-17 反馈：ask user 在底部、进行中的会话这两类仍不跟随).
+ */
+describe('tail-follow / growth that no commit reports', () => {
+  /** A size watcher the test fires by hand, standing in for ResizeObserver. */
+  function watched(): { ctx: Harness; resize: () => void; disposed: () => boolean } {
+    let fire: (() => void) | null = null
+    let disposed = false
+    const ctx = harness({
+      observeSize: (_el: TailFollowTarget, onChange: () => void) => {
+        fire = onChange
+        return () => {
+          disposed = true
+        }
+      },
+    })
+    return { ctx, resize: () => fire?.(), disposed: () => disposed }
+  }
+
+  it('keeps the tail when content grows with no host commit', () => {
+    const { ctx, resize } = watched()
+    ctx.el.setTop(ctx.el.maxTop)
+    expect(ctx.follow.gap()).toBe(0)
+
+    ctx.el.grow(300) // async markdown lands — the host never calls settle()
+    expect(ctx.follow.gap()).toBe(300)
+
+    resize()
+    ctx.frames()
+    expect(ctx.follow.gap()).toBe(0)
+  })
+
+  it('re-arms after the settle loop already gave up', () => {
+    const { ctx, resize } = watched()
+    ctx.el.setTop(ctx.el.maxTop)
+    commit(ctx, 100)
+    ctx.frames(60) // well past quietFrames (24) — the loop is dead by now
+    ctx.el.grow(400)
+    expect(ctx.follow.gap()).toBe(400)
+
+    resize()
+    ctx.frames()
+    expect(ctx.follow.gap()).toBe(0)
+  })
+
+  it('does not follow such growth once the user took over', () => {
+    const { ctx, resize } = watched()
+    ctx.el.setTop(ctx.el.maxTop)
+    ctx.el.emit('wheel', { deltaY: -200 })
+    ctx.el.setTop(200)
+    ctx.el.emit('scroll')
+    expect(ctx.follow.isFollowing()).toBe(false)
+
+    ctx.el.grow(300)
+    resize()
+    ctx.frames()
+    expect(ctx.el.scrollTop).toBe(200) // left exactly where the reader put it
+    expect(ctx.follow.isFollowing()).toBe(false)
+  })
+
+  it('disposes the size watcher on dispose', () => {
+    const { ctx, disposed } = watched()
+    expect(disposed()).toBe(false)
+    ctx.follow.dispose() // detach() runs inside — the watcher must not outlive it
+    expect(disposed()).toBe(true)
+  })
+})
+
 describe('tail-follow / following while content grows', () => {
   it('snaps to the tail on every frame the height changes', () => {
     const ctx = harness()
