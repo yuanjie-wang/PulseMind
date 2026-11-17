@@ -8,7 +8,7 @@ import type { ToolUseBlock } from '../../types/agent'
 import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
 import { MAX_LIVE_OUTPUT_CHARS } from '../engine/engine-constants'
 import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
-import { MEMORY_PAGE_INLINE_MAX } from '../../../../shared/memory-pages'
+import { MEMORY_PAGE_INLINE_MAX, isLivePage, resolvePageByRef } from '../../../../shared/memory-pages'
 import { interleaveRecallHits, RECALL_DEFAULT_LIMIT, type RecallHit } from '../../../../shared/recall'
 import { backgroundStartNote } from '../../../../shared/background-notice'
 import { registerForegroundExec, unregisterForegroundExec } from './foreground-exec'
@@ -293,21 +293,54 @@ export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Prom
     if (t.name === 'memory_save') {
       const title = String(t.input.title || '').trim()
       const content = String(t.input.content || '')
-      const type = ['fact', 'decision', 'preference', 'experience'].includes(String(t.input.type)) ? String(t.input.type) : 'fact'
+      // v3（2026-11-16，与 SessionReviewAgent 分工对齐）：memory_save 只写记忆页。
+      // 经验是提取协议的专属写者——显式拒绝而非静默回落 'fact'（会把经验意图存成
+      // 一条假 fact）。
+      if (String(t.input.type) === 'experience') {
+        const msg = 'NOT saved — experiences are distilled automatically by session review; save the durable conclusion as a preference/decision/fact page instead.'
+        ex.addToolResult(t.id, msg, true)
+        t.exitCode = 1; return true
+      }
+      const type = ['fact', 'decision', 'preference'].includes(String(t.input.type)) ? String(t.input.type) : 'fact'
       const aliases = Array.isArray(t.input.aliases) ? t.input.aliases.filter((a: unknown) => typeof a === 'string') : []
+      const summaryRaw = typeof t.input.summary === 'string' ? t.input.summary.trim() : ''
+      const summary = summaryRaw ? summaryRaw.slice(0, 50) : undefined
       if (!title || !content.trim()) {
         ex.addToolResult(t.id, 'NOT saved — title and content are both required.', true)
         t.exitCode = 1; return true
       }
       if ((type === 'preference' || type === 'fact') && content.length > MEMORY_ENTRY_MAX_CHARS) {
-        ex.addToolResult(t.id, `NOT saved — ${type} pages are ONE sentence of at most ${MEMORY_ENTRY_MAX_CHARS} characters. Distill the conclusion, or use type "decision"/"experience" for long content.`, true)
+        ex.addToolResult(t.id, `NOT saved — ${type} pages are ONE sentence of at most ${MEMORY_ENTRY_MAX_CHARS} characters. Distill the conclusion, or use type "decision" for long content.`, true)
         t.exitCode = 1; return true
       }
-      // title 命中既有页 → update（content 即完整修订稿）；未命中 → create。
-      const create = { action: 'create' as const, title, type: type as never, content, aliases, links: [] as string[] }
+      // title 命中既有记忆页 → update（content 即完整修订稿）；未命中 → create。
+      const create = { action: 'create' as const, title, type: type as never, content, aliases, links: [] as string[], ...(summary ? { summary } : {}) }
       let results = await getHost().applyMemoryPageOps([create])
       if (!results[0].ok && /撞名/.test(results[0].error ?? '')) {
-        results = await getHost().applyMemoryPageOps([{ action: 'update', target: title, content, aliases, links: [] }])
+        // 撞名报错只带 holderTitle，holder 的类型要在 renderer 侧自查——经验页不是
+        // 本工具的写面：回落 update 会按非模板正文覆盖磁盘上的 EXPERIENCE.md
+        // （memory-pages-store 的 update 对 experience 页照写），必须拒绝。解析用
+        // 与 store 同一个 resolvePageByRef（id → title → alias，NOCASE）。
+        const pages = await getHost().listMemoryPages()
+        const holderId = resolvePageByRef(
+          pages.filter(isLivePage).map((p) => ({ id: p.id, title: p.title, type: p.type, aliases: p.aliases })),
+          title,
+        )
+        const holder = holderId ? pages.find((p) => p.id === holderId) : null
+        if (holder?.type === 'experience') {
+          const msg = `NOT saved — "${title}" is taken by experience page "${holder.title}". Experiences are maintained by session review; pick a different title for this memory page.`
+          ex.addToolResult(t.id, msg, true)
+          t.exitCode = 1; return true
+        }
+        if (holder) {
+          // target 用 holder 的精确 title（title 可能只是 holder 的 alias——传原
+          // title store 也解析得到，但精确 title 是权威坐标）。
+          results = await getHost().applyMemoryPageOps([{ action: 'update', target: holder.title, content, aliases, links: [] }])
+        } else {
+          // 撞名源自新页自己的 alias（title 本身无主）——去 alias 重试 create，
+          // 而不是把 TARGET_NOT_FOUND 透给模型。
+          results = await getHost().applyMemoryPageOps([{ action: 'create', title, type: type as never, content, aliases: [], links: [] }])
+        }
       }
       const r = results[0]
       t.output = r.ok ? `Saved memory page: "${title}" (${type})` : `NOT saved: ${r.error}`

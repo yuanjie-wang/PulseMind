@@ -225,10 +225,17 @@ Not for small talk. Any other turn that could touch the user's standing preferen
 
   memory_save: `## memory_save
 
+### Page types (same bar as automatic extraction)
+- preference — how the user wants things done: tone, formats, workflow habits, corrections they made to your behavior
+- decision — a choice the USER made or ratified: scope, approach, tool pick, deliverable spec
+- fact — a durable truth about the USER themselves: role, organization, background, their own projects, standing constraints — NEVER tooling behavior, codebase trivia, environment gotchas or third-party repo info
+(experiences are distilled automatically by session review — this tool maintains memory pages only)
+
 ### Guidelines
-- A page is knowledge about THE USER or a durable lesson — something they decided, prefer, corrected, their background, or a reusable playbook. Work summaries are NOT pages unless the user ratified them ("记一下这个结论" counts)
-- fact/preference pages: ONE sentence, at most 100 characters — state the conclusion. decision/experience pages: full structured content
-- Superseded conclusions: save the new page under a fitting title; the old page stays in lineage
+- A page is knowledge about THE USER — never your own analysis or a recap of one task's execution, unless the user explicitly ratified it ("记一下这个结论" counts; quote their words)
+- A fact/preference must still be true OUTSIDE this project; project/tooling knowledge is not a page
+- fact/preference: ONE sentence, at most 100 characters — state the conclusion. decision: full structured content
+- Changed conclusion: update the SAME title — the old body is overwritten, no lineage copy is kept
 - Don't save transient chat
 `,
 

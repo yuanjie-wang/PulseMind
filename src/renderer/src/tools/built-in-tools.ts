@@ -492,10 +492,13 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // 读写是常驻区的配套通道，不该等激活。triggers 留着——关键词门读每个
   // gated 工具的触发词来激活整个类目，这里仍是 tool_result_search 的中文门。
   {
-    // v2（PLAN-memory-wiki）：写面 = 记忆页。title 命中既有页 → update（content
-    // 必须是完整修订稿）；未命中 → create。吸收了 experience_save 的职能。
+    // v3（2026-11-16，与 SessionReviewAgent A 节对齐）：memory_save 只维护记忆页
+    // （preference/decision/fact，类型定义与「关于用户」导向同提取协议），经验页
+    // 是提取协议的专属写者——枚举不带 experience，撞上经验页的回落 update 由执行
+    // 器拒绝（无模板覆盖会弄坏磁盘上的 EXPERIENCE.md）。写面语义：title 命中既有
+    // 记忆页 → update（content = 完整修订稿，type 沿用旧页）；未命中 → create。
     name: 'memory_save',
-    description: 'Save or update a memory page. If `title` matches an existing page it is UPDATED (content = the full revised body); otherwise a new page is created. Types: fact / decision / preference (one short sentence, ≤100 chars) or experience (long playbook).',
+    description: "Save or update a memory page about THE USER. Types (same bar as automatic extraction): preference (how they want things done), decision (a choice they made or ratified), fact (a durable truth about who they are — never tooling/codebase/environment behavior). If `title` matches an existing page it is UPDATED (content = the full revised body; the page's type is kept); otherwise a new page is created. fact/preference: ONE sentence ≤100 chars; decision: full structured content.",
     category: 'memory',
     triggers: ['remember', 'save', 'important', 'note this', '重要', '记一下'],
     input_schema: {
@@ -507,17 +510,21 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         },
         content: {
           type: 'string',
-          description: 'Page body. For fact/preference: ONE sentence, at most 100 characters. For decision/experience: full structured content.',
+          description: 'Page body. For fact/preference: ONE sentence, at most 100 characters. For decision: full structured content.',
         },
         type: {
           type: 'string',
-          description: 'The page type.',
-          enum: ['fact', 'decision', 'preference', 'experience'],
+          description: 'The page type. Experiences are NOT a type here — they are distilled automatically by session review.',
+          enum: ['fact', 'decision', 'preference'],
+        },
+        summary: {
+          type: 'string',
+          description: 'ONE-sentence conclusion, max 50 chars (recommended for decision pages — the extraction protocol requires it there).',
         },
         aliases: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Likely search terms for this page (optional).',
+          description: 'Likely search terms for this page (optional, 2-4).',
         },
       },
       required: ['title', 'content'],
