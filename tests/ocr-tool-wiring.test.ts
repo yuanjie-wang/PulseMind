@@ -33,10 +33,11 @@ describe('ocr tool wiring', () => {
   it('is wired through all five layers', () => {
     expect(read('src/shared/ipc-channels.ts')).toContain("UTIL_OCR_IMAGE: 'util:ocr-image'")
     expect(read('src/main/ipc/file-ops.handler.ts')).toContain('IPC_CHANNELS.UTIL_OCR_IMAGE')
-    expect(read('src/preload/index.ts')).toContain('ocrImage: (filePath: string)')
-    expect(read('src/shared/types/electron-bridge.ts')).toContain('ocrImage: (filePath: string)')
+    // crop/det_limit 随 opts 走 IPC（2026-11-16 第二刀），签名因此带第二参
+    expect(read('src/preload/index.ts')).toContain('ocrImage: (filePath: string, opts?')
+    expect(read('src/shared/types/electron-bridge.ts')).toContain('ocrImage: (filePath: string, opts?')
     expect(read('src/renderer/src/agent/host/types.ts')).toContain("'ocrImage'")
-    expect(read('src/main/agent/main-host.ts')).toContain('ocrImage: (filePath) =>')
+    expect(read('src/main/agent/main-host.ts')).toContain('ocrImage: (filePath, opts)')
   })
 
   it('the executor actually calls it — a definition alone changes nothing', () => {

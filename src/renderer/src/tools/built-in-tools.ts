@@ -46,13 +46,40 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'ocr',
     description:
-      'Recognize text in an IMAGE (screenshot / phone photo / scan) with a bundled PP-OCRv4 model — runs fully offline, no network and no API key. Returns the recognized lines with per-line confidence, plus image size and elapsed time. Use this for .png/.jpg/.jpeg/.webp/.bmp/.tif/.tiff — `read` has no image extractor and would dump binary. NOT for PDFs: text PDFs go through `read`, and a scanned PDF must be turned into images first.',
+      'Recognize text in an IMAGE (screenshot / phone photo / scan) with a bundled PP-OCRv4 model — runs fully offline, no network and no API key. Returns the recognized text plus per-line confidence; add include_layout to also get each line\'s bounding box (x0,y0,x1,y1 in image pixels) for table/form/layout work. Lines come in reading order (rows clustered by y, then left→right). crop re-runs a region (small text missed at full size) without changing the coordinate system; det_limit raises the detection resolution when tiny glyphs are missed; files batches up to 10 images in one call. The metadata header shows the size chain (original → decode → det) so internal scaling is visible; kept lines scoring below 0.90 are auto-listed for review. Use this for .png/.jpg/.jpeg/.webp/.bmp/.tif/.tiff — `read` refuses images and points here. NOT for PDFs: text PDFs go through `read`, and a scanned PDF must be turned into images first.',
     category: 'file',
     triggers: ['ocr', '图片文字', '文字识别', 'recognize', 'scan'],
     input_schema: {
       type: 'object',
       properties: {
-        file_path: { type: 'string', description: 'Absolute path to the image file.' },
+        file_path: { type: 'string', description: 'Absolute path to the image file. Exactly one of file_path / files.' },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Batch: up to 10 image paths in one call. Each file gets its own section; a failed file is reported as [FAILED] without affecting the rest.',
+          maxItems: 10,
+        },
+        include_layout: {
+          type: 'boolean',
+          description: 'Also return every line with its bounding box [x0,y0,x1,y1] in image pixels. Use it for tables, forms, and any layout/geometry question — and when the text looks incomplete: a dropped short cell shares a row with kept lines.',
+        },
+        crop: {
+          type: 'object',
+          description: 'Recognize only this region, in FULL-image pixel coordinates (same coordinate system as include_layout boxes — feed it a line\'s box to re-read exactly that line). x0/y0 = top-left, x1/y1 = bottom-right; clamped into the image. Returned boxes still reference the full image.',
+          properties: {
+            x0: { type: 'number' }, y0: { type: 'number' },
+            x1: { type: 'number' }, y1: { type: 'number' },
+          },
+          required: ['x0', 'y0', 'x1', 'y1'],
+        },
+        det_limit: {
+          type: 'number',
+          description: 'Detection resolution cap (longest side, default 960, max 2000). Raise to 1280-2000 only for native high-res sources where small/dense text is missed — upscaling an already-compressed screenshot (WeChat/QQ) amplifies artifacts and reads WORSE. Costs time and memory roughly with the square of the size.',
+        },
+        tile: {
+          type: 'boolean',
+          description: 'Split a tall image into horizontal bands and run detection at ~1:1 scale per band. Use it for LONG screenshots (chat logs / feeds / tall tables) where the whole-image pass downscales to 0.3-0.7x and the same text can read differently at different scales — the metadata header\'s size chain shows when that is happening. Boxes stay in full-image coordinates; no duplicate lines. Costs ~one detection per band. Mutually exclusive with crop.',
+        },
         include_dropped: {
           type: 'boolean',
           description: 'Also list the lines filtered out as interface noise — use it when the result looks incomplete and real content may have been dropped.',

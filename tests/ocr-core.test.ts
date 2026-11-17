@@ -6,6 +6,7 @@ import {
   dbPostProcess,
   dedupeJoin,
   filterNoiseLines,
+  readingOrderLines,
   resizeBilinear,
   toTensorData
 } from '../src/main/services/ocr-core'
@@ -335,5 +336,50 @@ describe('filterNoiseLines', () => {
     const { kept, dropped } = filterNoiseLines([body, noise])
     expect(kept[0]).toBe(body)
     expect(dropped[0]).toBe(noise)
+  })
+})
+
+describe('readingOrderLines', () => {
+  const line = (text: string, x0: number, y0: number, x1: number, y1: number) => ({ text, box: { x0, y0, x1, y1 } })
+
+  it('同一行的键值按 x 排序，哪怕 y 中心差 1-2px（conv_20261116210413 实测的错序形状）', () => {
+    // 值列 y 中心 639.5 < 键列 641 —— det 的 y 中心排序会把值排在键前面
+    const out = readingOrderLines([
+      line('50%', 642, 609, 764, 670),
+      line('6-7_6', 238, 609, 395, 673),
+    ])
+    expect(out.map(l => l.text)).toEqual(['6-7_6', '50%'])
+  })
+
+  it('第二行的值不插进第一行（y 中心 916 vs 917 同行，下一行 990+ 分行）', () => {
+    const out = readingOrderLines([
+      line('100%', 630, 884, 770, 948),
+      line('9', 294, 890, 339, 945),
+      line('10-11', 230, 982, 395, 1044),
+    ])
+    // 行 1: 9(x=294) → 100%(x=630)；行 2: 10-11
+    expect(out.map(l => l.text)).toEqual(['9', '100%', '10-11'])
+  })
+
+  it('行容差以中位行高为基准，正常多行文档不粘连', () => {
+    const out = readingOrderLines([
+      line('A3', 400, 200, 500, 250),
+      line('A1', 100, 40, 300, 90),
+      line('B2', 100, 250, 300, 300),
+      line('B1', 400, 45, 500, 95),
+      line('A2', 100, 45, 300, 95),
+    ])
+    // 行 1（y≈40-95）: A1, A2, B1 按 x；行 2（y≈200）: A3；行 3（y≈250-300）: B2
+    expect(out.map(l => l.text)).toEqual(['A1', 'A2', 'B1', 'A3', 'B2'])
+  })
+
+  it('返回新数组、不修改输入；单行原样返回', () => {
+    const input = [line('only', 10, 10, 50, 40)]
+    const out = readingOrderLines(input)
+    expect(out).not.toBe(input)
+    expect(out.map(l => l.text)).toEqual(['only'])
+    const two = [line('b', 200, 10, 300, 40), line('a', 10, 10, 100, 40)]
+    readingOrderLines(two)
+    expect(two.map(l => l.text)).toEqual(['b', 'a']) // 输入序不动
   })
 })

@@ -611,7 +611,20 @@ export async function svcConvertToMarkdown(filePath: string): Promise<{ content:
  * 模型目录与扩展名判断复用提取链那一份（storage/extractors/ocr-extractor），
  * 免得工具与提取器对「什么算图片」出现两套答案。
  */
-export async function svcOcrImage(filePath: string): Promise<{ text: string; lines: Array<{ text: string; score: number }>; dropped: Array<{ text: string; score: number }>; width: number; height: number; ms: number }> {
+export async function svcOcrImage(filePath: string, opts: { crop?: { x0: number; y0: number; x1: number; y1: number }; detLimit?: number; tile?: boolean } = {}): Promise<{
+  text: string
+  lines: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
+  dropped: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
+  width: number
+  height: number
+  originalWidth: number
+  originalHeight: number
+  detWidth: number
+  detHeight: number
+  crop?: { x0: number; y0: number; x1: number; y1: number }
+  tile?: { bands: number }
+  ms: number
+}> {
   const guard = await checkFsTarget(filePath, 'read')
   if (!guard.ok) throw new Error(`ocr denied: ${guard.reason}`)
 
@@ -642,13 +655,19 @@ export async function svcOcrImage(filePath: string): Promise<{ text: string; lin
     // 开发态常见：仓库 resources/ocr-models 缺失。点名路径，别让模型去猜。
     throw new Error(`OCR 模型未安装：${ocr.resolveModelsDir()} 下缺少 det.onnx / rec.onnx / cls.onnx / keys.txt`)
   }
-  const result = await ocr.recognizeImage(guard.resolved)
+  const result = await ocr.recognizeImage(guard.resolved, opts)
   return {
     text: result.text,
     lines: result.lines,
     dropped: result.dropped,
     width: result.width,
     height: result.height,
+    originalWidth: result.originalWidth,
+    originalHeight: result.originalHeight,
+    detWidth: result.detWidth,
+    detHeight: result.detHeight,
+    ...(result.crop ? { crop: result.crop } : {}),
+    ...(result.tile ? { tile: result.tile } : {}),
     ms: result.ms,
   }
 }

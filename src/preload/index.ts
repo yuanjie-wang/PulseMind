@@ -425,14 +425,20 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
-  ocrImage: (filePath: string): Promise<{
+  ocrImage: (filePath: string, opts?: { crop?: { x0: number; y0: number; x1: number; y1: number }; detLimit?: number; tile?: boolean }): Promise<{
     text: string
-    lines: Array<{ text: string; score: number }>
-    dropped: Array<{ text: string; score: number }>
+    lines: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
+    dropped: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
     width: number
     height: number
+    originalWidth: number
+    originalHeight: number
+    detWidth: number
+    detHeight: number
+    crop?: { x0: number; y0: number; x1: number; y1: number }
+    tile?: { bands: number }
     ms: number
-  }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_OCR_IMAGE, filePath),
+  }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_OCR_IMAGE, filePath, opts),
   registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),

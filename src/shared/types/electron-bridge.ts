@@ -554,14 +554,24 @@ export interface ElectronAPI {
     filePath: string
   }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
-  /** 图片文字识别（PP-OCRv4 本地模型，无网络）：按行返回文本与置信度，
-   *  外加尺寸/耗时/被当作界面碎片丢弃的行。非图片或模型缺失一律 reject。 */
-  ocrImage: (filePath: string) => Promise<{
+  /** 图片文字识别（PP-OCRv4 本地模型，无网络）：按行返回文本、置信度与检测框
+   *  （box 恒为原图像素坐标，crop 不改变坐标系），外加解码/原始/det 三层尺寸、
+   *  生效裁剪区、tile 分带回声、耗时、被当作界面碎片丢弃的行。非图片或模型
+   *  缺失一律 reject。opts.crop：识别前裁剪（原图坐标，钳制进界）；
+   *  opts.detLimit：det 长边上限（默认 960，≤2000）；opts.tile：竖长截图分带
+   *  1:1 检测（与 crop 互斥）。 */
+  ocrImage: (filePath: string, opts?: { crop?: { x0: number; y0: number; x1: number; y1: number }; detLimit?: number; tile?: boolean }) => Promise<{
     text: string
-    lines: Array<{ text: string; score: number }>
-    dropped: Array<{ text: string; score: number }>
+    lines: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
+    dropped: Array<{ text: string; score: number; box: { x0: number; y0: number; x1: number; y1: number } }>
     width: number
     height: number
+    originalWidth: number
+    originalHeight: number
+    detWidth: number
+    detHeight: number
+    crop?: { x0: number; y0: number; x1: number; y1: number }
+    tile?: { bands: number }
     ms: number
   }>
   /** M10: register the per-mount element-edit nonce in the main process —

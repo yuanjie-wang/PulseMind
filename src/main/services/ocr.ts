@@ -26,6 +26,7 @@ import {
   dbPostProcess,
   dedupeJoin,
   filterNoiseLines,
+  readingOrderLines,
   resizeBilinear,
   toTensorData
 } from './ocr-core'
@@ -60,9 +61,46 @@ interface OrtModule {
   }
 }
 
+export interface OcrBox {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+export interface OcrCallOptions {
+  /**
+   * 识别前裁剪，**原图（文件）像素坐标**——与 lines[].box 同一坐标系，所以
+   * 可以直接拿整图识别里某行的 box 来裁它。坐标钳制进图界（bbox 取整带来的
+   * 贴边越界不必重试），倒置/过小才报错。裁剪不改变 box 的坐标系：结果里
+   * 的框仍然是全图坐标（回声 crop 区域供核对）。与 tile 互斥。
+   */
+  crop?: OcrBox
+  /**
+   * det 检测输入长边上限（默认 DET_LIMIT=960）。密表小字漏检时调高
+   * （≤2000）；耗时与内存随像素面积平方级上涨（960→1920 约 4 倍）。
+   */
+  detLimit?: number
+  /**
+   * 分带识别（conv_20261116210413 round4-5：竖长截图整图 det 被压到 0.34x，
+   * 36px 的字只剩 12px，同一个字在 12px/36px 下稳定读成两个不同结果——
+   * det_limit 上限 2000 也救不了 1320 宽的图）。开启后按横带切分、每带 det
+   * 提到 ~1:1；**接受区间按带分区**（每行文字的 y 中心恰属一个带），结果
+   * 结构性零重复、无需去重。box 坐标系不变（仍是全图原图像素）。与 crop
+   * 互斥。代价：det 次数 = 带数（约 3-4 倍 det 耗时）。
+   */
+  tile?: boolean
+}
+
 export interface OcrLine {
   text: string
   score: number
+  /**
+   * 检测框，**原图（文件）像素坐标**。det 在缩放图上算框，先映射回解码尺寸、
+   * 再乘 decode 比例回到文件原尺寸（crop 时再平移回全图）——调用方拿到的
+   * 坐标可直接喂给任何按文件像素工作的工具（裁剪、标注），不用再自己换算。
+   */
+  box: OcrBox
 }
 
 export interface OcrResult {
@@ -73,8 +111,19 @@ export interface OcrResult {
    * 保留内容而非只留计数：误杀只能靠人看被丢的东西才能发现。
    */
   dropped: OcrLine[]
+  /** 解码后实际参与识别的尺寸：超过 MAX_DECODE_SIDE 的边先被降采样 */
   width: number
   height: number
+  /** 文件原始像素尺寸（EXIF 不旋转，与解码同一 orientation）——lines[].box 的坐标系 */
+  originalWidth: number
+  originalHeight: number
+  /** det 检测实际的工作尺寸（≤detLimit）：「输入被内部缩放」的唯一可见出口 */
+  detWidth: number
+  detHeight: number
+  /** 实际生效的裁剪区域（原图坐标，已钳制进界）——请求带了 crop 时回声 */
+  crop?: OcrBox
+  /** tile 生效时的分带回声：bands = 实际 det 次数 */
+  tile?: { bands: number }
   ms: number
 }
 
@@ -88,6 +137,8 @@ const REC_MAX_W = 2000
 const IDLE_RELEASE_MS = 5 * 60_000
 /** 超过这个尺寸先降采样，避免超大扫描件把 sharp 的解码内存打爆 */
 const MAX_DECODE_SIDE = 4000
+/** 慢调用落 logs/main.log 的门槛（正常：A4 300dpi 约 1.4–1.8s、截图 0.5–0.7s） */
+const OCR_SLOW_LOG_MS = 8_000
 
 let sessions: Sessions | null = null
 let loading: Promise<Sessions> | null = null
@@ -329,7 +380,7 @@ function rotate180 (rgb: Uint8Array, w: number, h: number): Uint8Array {
  * 识别一张图片（任意 sharp 能解码的格式）。
  * 抛错只在模型不可用或图片无法解码时发生；识别不出文字返回空 text。
  */
-export async function recognizeImage (filePath: string): Promise<OcrResult> {
+export async function recognizeImage (filePath: string, opts: OcrCallOptions = {}): Promise<OcrResult> {
   return enqueue(async () => {
     const started = Date.now()
     const s = await getSessions()
@@ -341,8 +392,36 @@ export async function recognizeImage (filePath: string): Promise<OcrResult> {
     // 两边形态不一致，只能断言。⚠️ 不要"顺着类型"改成取 .default —— 运行时会
     // 抛出 "sharp is not a function"。
     const sharp = require('sharp') as unknown as typeof import('sharp').default
-    const { data: rgb, info } = await sharp(filePath)
-      .removeAlpha()
+    // 原始尺寸：只读图片头，不解码。不加 .rotate()，与下方 raw 解码保持同一
+    // orientation——box 坐标系（原图）因此和这两处一致。
+    const meta = await sharp(filePath).metadata()
+    const origW = meta.width ?? 0
+    const origH = meta.height ?? 0
+
+    // crop：原图坐标钳制进界（bbox 取整带来的贴边越界不必重试一轮），四个数
+    // 都必须是有限数字——LLM 传来的 JSON，NaN/字符串直接给可读错误。
+    let cropRegion: OcrBox | null = null
+    let pipe = sharp(filePath).removeAlpha()
+    if (opts.crop) {
+      if (opts.tile === true) throw new Error('ocr 的 tile 与 crop 二选一——分带覆盖全图，裁剪请单独调用')
+      const c = opts.crop
+      const nums = [c.x0, c.y0, c.x1, c.y1]
+      if (!nums.every(n => typeof n === 'number' && Number.isFinite(n))) {
+        throw new Error(`ocr crop 需要四个有限数字 x0/y0/x1/y1（原图像素坐标），收到 [${nums.join(', ')}]`)
+      }
+      const x0 = Math.max(0, Math.min(Math.round(c.x0), origW))
+      const y0 = Math.max(0, Math.min(Math.round(c.y0), origH))
+      const x1 = Math.max(0, Math.min(Math.round(c.x1), origW))
+      const y1 = Math.max(0, Math.min(Math.round(c.y1), origH))
+      if (x1 - x0 < 8 || y1 - y0 < 4) {
+        throw new Error(`ocr crop 无效：[${c.x0},${c.y0},${c.x1},${c.y1}] 在 ${origW}x${origH} 的图上裁不出有效区域（x1>x0、y1>y0，坐标是原图像素）`)
+      }
+      cropRegion = { x0, y0, x1, y1 }
+      // extract 在 resize 之前 = 按输入（原图）坐标裁，之后才套 MAX_DECODE_SIDE
+      pipe = pipe.extract({ left: x0, top: y0, width: x1 - x0, height: y1 - y0 })
+    }
+
+    const { data: rgb, info } = await pipe
       .resize({
         width: MAX_DECODE_SIDE,
         height: MAX_DECODE_SIDE,
@@ -354,27 +433,91 @@ export async function recognizeImage (filePath: string): Promise<OcrResult> {
 
     const W = info.width
     const H = info.height
+    // 框坐标的回图比例：解码尺寸 → 框所属坐标系（原图全图）。有 crop 时比例
+    // 分母是**裁剪区**的文件尺寸，push 时再平移回全图——box 坐标系与裁剪无关。
+    const spanW = cropRegion ? cropRegion.x1 - cropRegion.x0 : origW
+    const spanH = cropRegion ? cropRegion.y1 - cropRegion.y0 : origH
+    const kx = W > 0 && spanW > 0 ? spanW / W : 1
+    const ky = H > 0 && spanH > 0 ? spanH / H : 1
 
     // --- det ---
-    const scale = Math.min(1, DET_LIMIT / Math.max(W, H))
-    const dw = Math.max(32, Math.round((W * scale) / 32) * 32)
-    const dh = Math.max(32, Math.round((H * scale) / 32) * 32)
-    const detImg = resizeBilinear(rgb, W, H, dw, dh)
-    const detOut = await s.det.run({
-      x: new ort.Tensor('float32', toTensorData(detImg, dw, dh, 'det'), [1, 3, dh, dw])
-    })
-    const prob = detOut[s.det.outputNames[0]].data
-    const rx = dw / W
-    const ry = dh / H
-    const boxes = dbPostProcess(prob, dw, dh)
-      .map(b => ({
-        x0: Math.max(0, Math.floor(b.x0 / rx)),
-        y0: Math.max(0, Math.floor(b.y0 / ry)),
-        x1: Math.min(W, Math.ceil(b.x1 / rx)),
-        y1: Math.min(H, Math.ceil(b.y1 / ry))
-      }))
-      .filter(b => b.x1 - b.x0 >= 4 && b.y1 - b.y0 >= 4)
-      .sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2 || a.x0 - b.x0)
+    // detLimit：钳进 [320, 2000]，默认 DET_LIMIT；非有限数字回落默认，不给 LLM
+    // 传来的垃圾值一次炸掉 sharp 的机会。
+    const detLimit = typeof opts.detLimit === 'number' && Number.isFinite(opts.detLimit)
+      ? Math.max(320, Math.min(Math.round(opts.detLimit), 2000))
+      : DET_LIMIT
+
+    interface DetBox { x0: number; y0: number; x1: number; y1: number }
+    let boxes: DetBox[] = []
+    let tileBands = 0
+    // det 实际工作尺寸（tile 时取首带的——除末带外各带同尺寸，回声语义不变）
+    let detW = 0
+    let detH = 0
+
+    if (opts.tile === true) {
+      // tile 分带：每带 det 提到 ~1:1（effDet 至少盖住带宽），接受区间按带
+      // 分区——每行文字的 y 中心恰属一个带，结果零重复、无需去重。
+      const effDet = Math.min(2000, Math.max(detLimit, W))
+      const bandH = Math.max(320, Math.floor(effDet * 0.85))
+      const ov = Math.floor(bandH * 0.2)
+      const step = bandH - ov
+      const starts: number[] = []
+      for (let y = 0; y < H; y += step) starts.push(y)
+      tileBands = starts.length
+      for (const [i, y0] of starts.entries()) {
+        // det 区域向下多带一份 overlap：被本带「拥有」的行（中心 < 下一带起点）
+        // 必须完整落在区域内，避免带缘裁出半行
+        const y1 = Math.min(H, y0 + bandH + ov)
+        const bh = y1 - y0
+        const bandImg = cropRgb(rgb, W, H, 0, y0, W, y1)
+        const bscale = Math.min(1, effDet / Math.max(W, bh))
+        const bdw = Math.max(32, Math.round((W * bscale) / 32) * 32)
+        const bdh = Math.max(32, Math.round((bh * bscale) / 32) * 32)
+        if (i === 0) { detW = bdw; detH = bdh }
+        const detImg = resizeBilinear(bandImg, W, bh, bdw, bdh)
+        const detOut = await s.det.run({
+          x: new ort.Tensor('float32', toTensorData(detImg, bdw, bdh, 'det'), [1, 3, bdh, bdw])
+        })
+        const prob = detOut[s.det.outputNames[0]].data
+        const rx = bdw / W
+        const ry = bdh / bh
+        // 接受区间 = [y0, 下一带起点)：与其它带的接受区间共同恰分 [0, H)
+        const acceptEnd = i + 1 < starts.length ? starts[i + 1] : H
+        for (const b of dbPostProcess(prob, bdw, bdh)) {
+          const bx0 = Math.max(0, Math.floor(b.x0 / rx))
+          const by0 = Math.max(0, Math.floor(b.y0 / ry)) + y0
+          const bx1 = Math.min(W, Math.ceil(b.x1 / rx))
+          const by1 = Math.min(bh, Math.ceil(b.y1 / ry)) + y0
+          if (bx1 - bx0 < 4 || by1 - by0 < 4) continue
+          const cy = (by0 + by1) / 2
+          if (cy < y0 || cy >= acceptEnd) continue
+          boxes.push({ x0: bx0, y0: by0, x1: bx1, y1: by1 })
+        }
+      }
+      boxes.sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2 || a.x0 - b.x0)
+    } else {
+      // 整图路径（缺省）：与历史行为逐字节一致，勿动
+      const scale = Math.min(1, detLimit / Math.max(W, H))
+      const dw = Math.max(32, Math.round((W * scale) / 32) * 32)
+      const dh = Math.max(32, Math.round((H * scale) / 32) * 32)
+      detW = dw; detH = dh
+      const detImg = resizeBilinear(rgb, W, H, dw, dh)
+      const detOut = await s.det.run({
+        x: new ort.Tensor('float32', toTensorData(detImg, dw, dh, 'det'), [1, 3, dh, dw])
+      })
+      const prob = detOut[s.det.outputNames[0]].data
+      const rx = dw / W
+      const ry = dh / H
+      boxes = dbPostProcess(prob, dw, dh)
+        .map(b => ({
+          x0: Math.max(0, Math.floor(b.x0 / rx)),
+          y0: Math.max(0, Math.floor(b.y0 / ry)),
+          x1: Math.min(W, Math.ceil(b.x1 / rx)),
+          y1: Math.min(H, Math.ceil(b.y1 / ry))
+        }))
+        .filter(b => b.x1 - b.x0 >= 4 && b.y1 - b.y0 >= 4)
+        .sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2 || a.x0 - b.x0)
+    }
 
     const lines: OcrLine[] = []
 
@@ -413,19 +556,52 @@ export async function recognizeImage (filePath: string): Promise<OcrResult> {
         picked++
       }
       if (!text.trim()) continue
-      lines.push({ text, score: picked ? scoreSum / picked : 0 })
+      const ox = cropRegion ? cropRegion.x0 : 0
+      const oy = cropRegion ? cropRegion.y0 : 0
+      lines.push({
+        text,
+        score: picked ? scoreSum / picked : 0,
+        // 解码空间的框 → 裁剪区文件尺寸 → 平移回全图（见 OcrLine.box 的契约）
+        box: {
+          x0: Math.round(box.x0 * kx) + ox,
+          y0: Math.round(box.y0 * ky) + oy,
+          x1: Math.round(box.x1 * kx) + ox,
+          y1: Math.round(box.y1 * ky) + oy
+        }
+      })
     }
 
     touchIdleTimer()
     // 界面碎片（X / <返回 / 它 / 小 / 21）会被 det 当成文字行，分数低、长度短。
     // 不过滤就会原样喂给 LLM，在医疗/合同这类场景里可能被当成正文。
     const { kept, dropped } = filterNoiseLines(lines)
+    // 阅读顺序：det 的框按 y 中心排序，同一行的键值 y 中心差 1-2px 时值的列会
+    // 排到键前面——纯文本与 lines 数组都按「行聚类→行内按 x」重排（见
+    // ocr-core 的 readingOrderLines），下游不解析 bbox 也不会静默拿错数据。
+    const orderedKept = readingOrderLines(kept)
+    const orderedDropped = readingOrderLines(dropped)
+    // 慢调用诊断（conv_20261116210413 第三轮：同图 1.85s→12.9s 的回归报告——
+    // 推理代码零改动、隔离复测 HEAD 比当前还慢，指向 ORT WASM 线程/机器状态
+    // 而非代码。GUI 启动无终端，耗时异常只有落进 logs/main.log 才可事后归因：
+    // 这行给出 det 工作尺寸与行数，能区分「冷会话」「线程未起」「分辨率放大」。
+    const tookMs = Date.now() - started
+    if (tookMs > OCR_SLOW_LOG_MS) {
+      void import('../main-log').then(({ logMain }) => {
+        logMain('WARN', 'ocr', `slow recognize: ${tookMs}ms det=${detW}x${detH}${tileBands > 1 ? ` tile=${tileBands}bands` : ''} decode=${W}x${H} lines=${orderedKept.length} dropped=${orderedDropped.length} crop=${cropRegion ? 'yes' : 'no'}`)
+      }).catch(() => { /* 诊断日志尽力而为 */ })
+    }
     return {
-      text: kept.map(l => l.text).join('\n'),
-      lines: kept,
-      dropped,
+      text: orderedKept.map(l => l.text).join('\n'),
+      lines: orderedKept,
+      dropped: orderedDropped,
       width: W,
       height: H,
+      originalWidth: origW,
+      originalHeight: origH,
+      detWidth: detW,
+      detHeight: detH,
+      ...(cropRegion ? { crop: cropRegion } : {}),
+      ...(tileBands > 0 ? { tile: { bands: tileBands } } : {}),
       ms: Date.now() - started
     }
   })

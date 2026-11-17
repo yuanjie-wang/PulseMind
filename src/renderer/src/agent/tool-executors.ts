@@ -26,6 +26,7 @@ import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
 import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspect-format'
 import { formatOfficeReadResult } from './office-read-format'
 import { formatOfficeSearchResult } from './office-search-format'
+import { formatOcrResult } from './ocr-result-format'
 import { detectVerifyCommands, isSourceFilePath, isVerifyExecCommand, officeSpotCheckHint, summarizeTestOutput, verifyStreakHint, VERIFY_STREAK_THRESHOLD } from './verify-loop'
 import { parseMultiFileDiff, type MultiFileSection } from '../../../shared/diff/patch-utils'
 import { SessionFileLedger } from '../../../shared/agent-session/file-changes'
@@ -549,6 +550,12 @@ export class ToolExecutor implements ToolExecContext {
     '.epub', '.msg', '.ipynb',
   ])
 
+  /** 镜像 main 侧 ocr-extractor 的 IMAGE_EXTENSIONS：read 的图片守卫用它拒绝
+   *  二进制读取并指路 ocr。两份名单必须同步（tests/ocr-layout.test.ts 钉）。 */
+  private static OCR_IMAGE_EXTS = new Set([
+    '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff',
+  ])
+
   /** Format `read` tool output with file metadata header. `fileSize` undefined
    *  = the stat failed — shown as `?` so it can never read as an empty file.
    *
@@ -645,28 +652,110 @@ export class ToolExecutor implements ToolExecContext {
         // ── ocr: bundled offline image text recognition ────────────────
         // read 的 CONVERTIBLE_EXTS 里没有任何图片扩展名，图片走 read 会落到
         // shell `cat` 吐出二进制乱码；这条分支才是模型拿到图片文字的唯一入口。
-        // 主进程侧（svcOcrImage）负责校验：路径门、是否图片、体积、模型是否就位。
+        // 主进程侧（svcOcrImage→recognizeImage）负责校验：路径门、是否图片、
+        // 体积、模型是否就位、crop 钳制。结果拼装在 ocr-result-format.ts（纯
+        // 函数、可单测）：头部带原始→解码→det 的尺寸链（内部缩放可见）与生效
+        // 裁剪区，include_layout 附每行 bbox（表格/版面任务）。
         if (t.name === 'ocr') {
+          // 参数白名单（conv_20261116210413 第二轮实测：静默忽略未知参数让模型
+          // 无法区分「功能不存在」与「参数名猜错」，成了验证一切更新的阻塞项
+          // ——报错并列出支持参数，模型一次调用就能自纠）。加新参数必须进这个
+          // 集合，接线测试（tests/ocr-layout.test.ts）钉它。
+          const OCR_PARAM_KEYS = new Set(['file_path', 'files', 'include_layout', 'include_dropped', 'crop', 'det_limit', 'tile'])
+          const unknown = Object.keys(t.input ?? {}).filter(k => !OCR_PARAM_KEYS.has(k))
+          if (unknown.length > 0) {
+            throw new Error(`ocr 不认识参数: ${unknown.join(', ')} —— 支持的参数: file_path / files / include_layout / include_dropped / crop / det_limit / tile`)
+          }
           const raw = String(t.input?.file_path || '')
-          if (!raw) throw new Error('file_path is required')
-          const filePath = this.resolveWorkspacePath(raw)
-          const result = await getHost().ocrImage(filePath)
+          const rawFiles = Array.isArray(t.input?.files)
+            ? (t.input.files as unknown[]).map(p => String(p ?? '').trim()).filter(Boolean)
+            : []
+          if (!raw && rawFiles.length === 0) throw new Error('file_path is required (or files: up to 10 image paths)')
+          if (raw && rawFiles.length > 0) throw new Error('file_path 与 files 二选一，不要同时给')
+          if (rawFiles.length > 10) throw new Error(`files 一次最多 10 张，收到 ${rawFiles.length} 张——分多次调用`)
+          // 值形态守卫（review_20261117 中1）：白名单治了「键猜错静默忽略」，这里
+          // 治「值形态错静默忽略」——crop: "0,0,100,100" 字符串形态 typeof 不是
+          // object、det_limit: "1280" 不是 number，双双落空 → 整图照跑/默认 960，
+          // 模型以为旋钮拧了，拿全图 bbox 核对进死循环。形态错在 executor 层报错
+          // 并列出期望形态（与白名单同待遇）；缺键的 NaN 与数值范围仍透传主进程
+          // （ocr.ts 的可读报错指路，不在这层复制范围规则——数组形态传下去就能
+          // 拿到那份报错）。字符串数字（"1280"/"10"）经 Number() 收编，不拒。
+          const ocrOpts: { crop?: { x0: number; y0: number; x1: number; y1: number }; detLimit?: number; tile?: boolean } = {}
+          if (t.input?.crop != null) {
+            if (typeof t.input.crop !== 'object' || Array.isArray(t.input.crop)) {
+              throw new Error(
+                `crop 必须是对象 { x0, y0, x1, y1 }（四个数字，全图像素坐标）——收到的是 ${
+                  Array.isArray(t.input.crop)
+                    ? '数组'
+                    : typeof t.input.crop === 'string'
+                      ? `字符串 "${t.input.crop}"`
+                      : typeof t.input.crop
+                }`
+              )
+            }
+            const c = t.input.crop as { x0?: unknown; y0?: unknown; x1?: unknown; y1?: unknown }
+            ocrOpts.crop = {
+              x0: Number(c.x0), y0: Number(c.y0),
+              x1: Number(c.x1), y1: Number(c.y1),
+            }
+          }
+          if (t.input?.det_limit != null) {
+            const detLimitN = Number(t.input.det_limit)
+            if (!Number.isFinite(detLimitN)) {
+              throw new Error(`det_limit 必须是数字（det 阶段长边像素上限，默认 960）——收到的是 ${JSON.stringify(t.input.det_limit)}`)
+            }
+            ocrOpts.detLimit = detLimitN
+          }
+          // tile：竖长截图分带 1:1 检测（conv_20261116210413 round5——同一字在
+          // 整图 0.34x 的 12px 与裁剪 1:1 的 36px 下稳定读成两个结果，det_limit
+          // 上限 2000 也够不到 1320 宽图的 1:1）。布尔形态守卫同上：字符串
+          // "true" 收编，其余形态报错。与 crop 互斥（分带覆盖全图）。
+          if (t.input?.tile != null) {
+            const tileV = t.input.tile
+            if (tileV === true || tileV === 'true') ocrOpts.tile = true
+            else if (tileV === false || tileV === 'false') { /* 显式 false = 不分带 */ }
+            else {
+              throw new Error(`tile 必须是布尔值 true/false（竖长截图分带 1:1 检测）——收到的是 ${JSON.stringify(tileV)}`)
+            }
+          }
+          if (ocrOpts.tile === true && ocrOpts.crop) {
+            throw new Error('ocr 的 tile 与 crop 二选一——tile 分带覆盖全图，复核某个区域请单独发一次 crop 调用')
+          }
+          const includeLayout = t.input?.include_layout === true
+          const includeDropped = t.input?.include_dropped === true
+
+          // 单文件：形状与历史一致（无分节头）
+          if (raw) {
+            const filePath = this.resolveWorkspacePath(raw)
+            const result = await getHost().ocrImage(filePath, ocrOpts)
+            t.status = 'completed'; t.exitCode = 0
+            t.output = result.text
+            this.addToolResult(
+              t.id,
+              formatOcrResult(result, { filePath, includeLayout, includeDropped }),
+              false,
+              undefined,
+              MAX_READ_RESULT_TOKENS
+            )
+            return
+          }
+
+          // 批量：逐文件识别（主进程串行闸本来就一次一张），单文件失败不拖垮其余
+          const paths = rawFiles.map(p => this.resolveWorkspacePath(p))
+          const sections: string[] = []
+          const texts: string[] = []
+          for (const [i, p] of paths.entries()) {
+            try {
+              const r = await getHost().ocrImage(p, ocrOpts)
+              texts.push(r.text)
+              sections.push(`=== File ${i + 1}/${paths.length}: ${p} ===\n` + formatOcrResult(r, { filePath: p, includeLayout, includeDropped }))
+            } catch (err) {
+              sections.push(`=== File ${i + 1}/${paths.length}: ${p} ===\n[FAILED] ${err instanceof Error ? err.message : String(err)}`)
+            }
+          }
           t.status = 'completed'; t.exitCode = 0
-          t.output = result.text
-          const minScore = result.lines.length ? Math.min(...result.lines.map(l => l.score)) : 0
-          const header = [
-            '--- OCR Metadata ---',
-            `path: ${filePath}`,
-            `image: ${result.width}x${result.height}`,
-            `lines: ${result.lines.length}${result.dropped.length ? ` (${result.dropped.length} noise lines dropped)` : ''}`,
-            `elapsed: ${result.ms}ms`,
-            result.lines.length ? `minScore: ${minScore.toFixed(3)}` : 'minScore: —',
-          ].join('\n')
-          // 误杀只能靠人看被丢的东西才能发现，所以按需原样列出，不折叠成计数
-          const droppedPart = t.input?.include_dropped === true && result.dropped.length
-            ? `\n\n### Dropped as noise\n${result.dropped.map(l => `- ${l.text} (${l.score.toFixed(3)})`).join('\n')}`
-            : ''
-          this.addToolResult(t.id, `${header}\n\n${result.text.trim() || '_图片中未检测到文字_'}${droppedPart}`, false, undefined, MAX_READ_RESULT_TOKENS)
+          t.output = texts.join('\n\n')
+          this.addToolResult(t.id, sections.join('\n\n'), false, undefined, MAX_READ_RESULT_TOKENS)
           return
         }
         // ── `read` tool: metadata header + content ────────────────────
@@ -721,6 +810,18 @@ export class ToolExecutor implements ToolExecContext {
             const fmt = ext === '.doc' ? 'Word' : 'PowerPoint'
             this.addToolResult(t.id,
               `「${ext}」是旧版 ${fmt} 格式，无法直接读取。请先在 Office/WPS 中另存为 .docx/.pptx，再用 office_edit 编辑或 read 查看。`,
+              true, undefined, MAX_READ_RESULT_TOKENS)
+            return
+          }
+
+          // Images have no extractor either — the shell fallback would `cat`
+          // binary garbage into the transcript (conv_20261116210413 反思 #7).
+          // Refuse HERE and point at ocr, so the model never burns a round on
+          // a garbage read. Mirrors ocr-extractor's IMAGE_EXTENSIONS — keep
+          // the two lists in sync (the wiring test below pins both).
+          if (ToolExecutor.OCR_IMAGE_EXTS.has(ext)) {
+            this.addToolResult(t.id,
+              `「${ext}」是图片，read 对图片没有提取器（落到 shell cat 会输出二进制乱码）。用 ocr 工具识别文字；表格/版面类任务加 include_layout: true 拿每行坐标。`,
               true, undefined, MAX_READ_RESULT_TOKENS)
             return
           }

@@ -310,3 +310,45 @@ export function filterNoiseLines<T extends ScoredLine> (
   }
   return { kept, dropped }
 }
+
+/** 阅读顺序重建的输入：文本行 + 原图像素框（见 ocr.ts 的 OcrLine.box 契约）。 */
+export interface ReadingOrderLine {
+  text: string
+  box: { x0: number; y0: number; x1: number; y1: number }
+}
+
+/**
+ * 阅读顺序：按行聚类、行内按 x 排序（conv_20261116210413 第二轮实测的缺陷——
+ * det 输出的框按 y 中心排序，同一行的键和值 y 中心差 1–2px 时**值的列会排到
+ * 键的前面**（642 在 238 前），纯文本拼接因此错序；下游只要不解析 bbox 就会
+ * 静默拿错数据）。行容差 = 全图中位行高 × 0.6：同一行的键值对中心差个位数
+ * 像素，相邻行的间距是行高的 2 倍以上，容差取中间值对两类都安全。
+ *
+ * 稳定性：返回新数组、不修改输入；相同坐标时保持输入序（sort 的稳定性由
+ * ES2019 保证，平手比较器返回 0）。
+ */
+export function readingOrderLines<T extends ReadingOrderLine> (lines: readonly T[]): T[] {
+  if (lines.length < 2) return [...lines]
+  const heights = lines.map(l => l.box.y1 - l.box.y0).sort((a, b) => a - b)
+  const medH = heights[Math.floor(heights.length / 2)] || 1
+  const tol = medH * 0.6
+
+  const yCenter = (l: T) => (l.box.y0 + l.box.y1) / 2
+  const sorted = [...lines].sort((a, b) => yCenter(a) - yCenter(b) || a.box.x0 - b.box.x0)
+
+  const rows: T[][] = []
+  let current: T[] = []
+  let currentSum = 0
+  for (const l of sorted) {
+    if (current.length > 0 && yCenter(l) - currentSum / current.length > tol) {
+      rows.push(current)
+      current = []
+      currentSum = 0
+    }
+    current.push(l)
+    currentSum += yCenter(l)
+  }
+  if (current.length > 0) rows.push(current)
+
+  return rows.flatMap(row => row.slice().sort((a, b) => a.box.x0 - b.box.x0))
+}
