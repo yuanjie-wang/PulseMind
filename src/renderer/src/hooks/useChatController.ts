@@ -14,7 +14,7 @@ import { extractRoutineFromConversation } from '../components/routine/routine-ex
 import { parseExpertMentions, parseKnowledgeBaseMention, parseSkillMentions, type SummonedExpert } from '../../../shared/expert-context'
 import { matchChatCommand, commandArgument, buildInitPrompt, INIT_PROJECT_INSTRUCTIONS_GRANT_MS } from '../agent/chat-commands'
 import { conversationKeyOf } from '../../../shared/conversation-key'
-import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
+import { peekStagedHead, takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
 import { shouldDrainOnStatusChange } from '../utils/staged-drain'
 import { isPoppedOut } from '../stores/popoutWatchStore'
 import type { ExpertProfile } from '../../../shared/types/expert'
@@ -637,7 +637,8 @@ export function useChatController(options: UseChatControllerOptions) {
   // (`status === 'completed'`) would drain all of those, i.e. send a message
   // whose turn ended long ago, twice, or into a conversation just opened. The
   // take is atomic (takeStagedHead pops), so even a double-fired pass cannot
-  // deliver the same message twice.
+  // deliver the same message twice. A row restored from disk never drains here
+  // (see the peek below) — a previous session's intent is not this edge's.
   const stagedStatusRef = useRef<{ convId: string | null; status: string } | null>(null)
   useEffect(() => {
     // conversationKeyOf answers string | undefined; the drain contract's
@@ -647,6 +648,14 @@ export function useChatController(options: UseChatControllerOptions) {
     const prev = stagedStatusRef.current
     stagedStatusRef.current = { convId, status }
     if (!convId || !shouldDrainOnStatusChange(prev, { convId, status })) return
+    // A row restored from disk was waiting on a turn that ended before the app
+    // closed — that edge is no longer evidence of this session's intent, so it
+    // leaves only by an explicit click and keeps blocking the head (FIFO order
+    // is the queue's invariant; skipping it would deliver a younger message
+    // first). Peek before popping: taking it and handing it back would reopen
+    // the very take/restore window the atomic pop exists to close.
+    const head = peekStagedHead(convId)
+    if (!head || head.restored) return
     const item = takeStagedHead(convId)
     if (!item) return
     const restore = (): void => restoreStaged(convId, item, 0)

@@ -1070,7 +1070,19 @@ function InputAreaImpl({
                       send" there would be a promise the code keeps only
                       sometimes. */}
                       <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '0 4px 4px' }}>
-                        {t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
+                        {/* A restored head outranks the busy/settled split: it never
+                        drains whatever the status is, and the rows behind it do not
+                        move either, so "sends when this turn ends" would be a false
+                        promise. Judged on the head alone — a restored row further
+                        back does not stop the ones ahead of it. */}
+                        {t(
+                          stagedQueue?.[0]?.restored
+                            ? 'chatView.staged.hintRestored'
+                            : isRequesting || isAwaitingInput
+                              ? 'chatView.staged.hintBusy'
+                              : 'chatView.staged.hintSettled',
+                          { count: stagedCount },
+                        )}
                       </div>
                       {(stagedQueue ?? []).map((item) => (
                         <div key={item.id} data-staged-item style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}>

@@ -48,7 +48,11 @@ describe('InputArea: Enter mid-run stages instead of silently dropping', () => {
     // isAwaitingInput the last park — keying on isRequesting alone read "won't
     // auto-send" to a user parked on ask_user while the drain sent anyway
     // (review0924 M3, also scanned in staged-drain-edge.test.ts).
-    expect(INPUT_AREA).toContain("t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled'")
+    // Matched as the ternary itself, not by its offset in the call: a restored
+    // head outranks this split (B2, staged-queue-persist.test.ts), so the arm
+    // now sits nested inside the else of that check — same keying, deeper.
+    const split = INPUT_AREA.match(/isRequesting \|\| isAwaitingInput\s*\?\s*'chatView\.staged\.hintBusy'\s*:\s*'chatView\.staged\.hintSettled'/)
+    expect(split, 'the busy/settled hint ternary is not keyed on isRequesting || isAwaitingInput').not.toBeNull()
     // The strip anchors through the same aboveCard slot as the mention popup
     // (inside the measured persistent group — see above-card-reserve.test.ts).
     expect(INPUT_AREA).toContain('topSlot || hasStagedStrip')
