@@ -119,6 +119,12 @@ interface ChatViewProps {
    *  toolbar button exists exactly where this prop arrives. */
   onExtractRoutine?: () => void | Promise<void>
   contextLength?: number
+  /** 引擎真正可用的输入侧窗口（总窗口扣掉输出预留），环上的刻度线画在它的
+   *  位置。由宿主用 `effectiveInputWindow` 算好传下来，组件层不自己减 ——
+   *  刻度与压缩链必须是同一个数（方案 A，user 2026-11-17）。缺失即不画刻度：
+   *  拿不到模型 maxTokens 的宿主（routine 工作台）宁可不显示，也不猜一个
+   *  会与引擎不符的边界。 */
+  inputBudget?: number
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
   workspaceDir?: string
@@ -217,6 +223,7 @@ function ChatView({
   planScrollToMsgId,
   onPlanScrollHandled,
   contextLength,
+  inputBudget,
   workspaceDir,
   conversations,
   convLights,
@@ -1113,6 +1120,7 @@ function ChatView({
                 onResetProfile={onResetProfile}
                 contextUsed={contextUsed}
                 contextLength={contextLength}
+                inputBudget={inputBudget}
                 cacheHit={cacheHit}
                 lastCompaction={lastCompaction}
                 approvalMode={approvalMode}
@@ -1195,6 +1203,7 @@ function ChatView({
       onResetProfile={onResetProfile}
       contextUsed={contextUsed}
       contextLength={contextLength}
+      inputBudget={inputBudget}
       cacheHit={cacheHit}
       lastCompaction={lastCompaction}
       activeExpertId={activeExpertId}

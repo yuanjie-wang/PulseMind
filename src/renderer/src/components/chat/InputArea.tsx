@@ -91,6 +91,7 @@ function InputAreaImpl({
   onSelectProfile,
   contextUsed,
   contextLength,
+  inputBudget,
   cacheHit,
   layout,
   placeholder,
@@ -142,6 +143,10 @@ function InputAreaImpl({
   onSelectProfile?: (profileId: string) => void
   contextUsed?: number
   contextLength?: number
+  /** 环上的输入预算刻度位置（总窗口扣掉输出预留），由宿主用
+   *  `effectiveInputWindow` 算好传入。可选：拿不到模型 maxTokens 的宿主不传，
+   *  环只画填充、不画刻度线 —— 宁缺，不画一根与引擎不符的线。 */
+  inputBudget?: number
   /** The session's prompt-cache hit rate, priced over the whole history — the
    *  context ring's tooltip carries it beside the fill percentage. Optional on
    *  purpose: a caller with no history (welcome view) omits it, and the ring
@@ -1463,7 +1468,7 @@ function InputAreaImpl({
             )}
             {hasMessages && contextLength != null && contextLength > 0 && (
               <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} cacheHit={cacheHit} />
+                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} cacheHit={cacheHit} inputBudget={inputBudget} />
               </span>
             )}
             {showModelPicker && (

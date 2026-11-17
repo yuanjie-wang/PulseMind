@@ -125,6 +125,10 @@ interface ChatBodyProps {
   onResetProfile?: () => void
   contextUsed?: number
   contextLength?: number
+  /** Forwarded verbatim to InputArea → ContextRing (方案 A 的输入预算刻度)。
+   *  Optional: a host that cannot resolve the model's maxTokens omits it and the
+   *  ring draws no tick rather than guessing a boundary the engine disagrees with. */
+  inputBudget?: number
   /** Forwarded verbatim to InputArea → ContextRing; see that prop for why it is
    *  optional (a caller without history omits it and the ring drops the line). */
   cacheHit?: CacheHitRate
@@ -189,6 +193,7 @@ export function ChatBody({
   onResetProfile,
   contextUsed,
   contextLength,
+  inputBudget,
   cacheHit,
   lastCompaction,
   activeExpertId,
@@ -339,6 +344,7 @@ export function ChatBody({
               onResetProfile={onResetProfile}
               contextUsed={contextUsed}
               contextLength={contextLength}
+              inputBudget={inputBudget}
               cacheHit={cacheHit}
               lastCompaction={lastCompaction}
               approvalMode={approvalMode}
@@ -519,6 +525,7 @@ export function ChatBody({
         onResetProfile={onResetProfile}
         contextUsed={contextUsed}
         contextLength={contextLength}
+        inputBudget={inputBudget}
         cacheHit={cacheHit}
         lastCompaction={lastCompaction}
         boundExpertId={activeExpertId}

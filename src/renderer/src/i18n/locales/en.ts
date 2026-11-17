@@ -291,6 +291,7 @@ const en: TranslationDict = {
       tooltip: '{{percent}}% · {{used}} / {{total}} context used',
       cacheHit: 'Prompt cache: {{rate}} served from cache ({{count}} requests)',
       cacheHitTentative: 'Prompt cache: {{rate}} served from cache ({{count}} requests — few, indicative only)',
+      inputBudget: 'Input budget {{budget}}: compaction starts past {{percent}}%',
     },
     compaction: {
       chip: 'Compacted {{dropped}} · ~{{freed}} freed',

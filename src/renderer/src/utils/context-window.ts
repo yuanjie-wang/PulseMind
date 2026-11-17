@@ -12,10 +12,32 @@ export function resolveContextWindow(
   effectiveProfileId: string | undefined,
   activeProfileId: string | undefined,
 ): number {
-  const resolved = (effectiveProfileId ? profiles.find((p) => p.id === effectiveProfileId) : undefined)
+  return resolveProfileEntry(profiles, effectiveProfileId, activeProfileId)?.contextLength || 128_000
+}
+
+/** 上面那条解析链的**唯一实现**：窗口与输出预留必须命中同一个条目。
+ *  拆开写两份就会漂移 —— 会话钉在 A、A 没设 maxTokens 时，用 B 的预留去
+ *  算 A 的预算，正是这个文件开头记的那类错（2026-10-18）。 */
+function resolveProfileEntry<T extends { id: string }>(
+  profiles: T[],
+  effectiveProfileId: string | undefined,
+  activeProfileId: string | undefined,
+): T | undefined {
+  return (effectiveProfileId ? profiles.find((p) => p.id === effectiveProfileId) : undefined)
     ?? (activeProfileId ? profiles.find((p) => p.id === activeProfileId) : undefined)
     ?? profiles[0]
-  return resolved?.contextLength || 128_000
+}
+
+/** 命中模型的输出预留（max_tokens），镜像主进程 `profile.maxTokens ?? 32_768`
+ *  （session-manager.ts 的 options 装配处）。圆环的「输入预算」刻度线要用它
+ *  反推 provider 真正留给输入的窗口 —— 没有这个值，刻度只能按默认 32K 画。
+ *  用 `??` 而不是 `||`，与主进程同型：0 是显式值，不该被当成缺省吞掉。 */
+export function resolveMaxTokens(
+  profiles: Array<{ id: string; maxTokens?: number }>,
+  effectiveProfileId: string | undefined,
+  activeProfileId: string | undefined,
+): number | undefined {
+  return resolveProfileEntry(profiles, effectiveProfileId, activeProfileId)?.maxTokens
 }
 
 // ── 溢出重瞄准的会话窗口（2026-10-24 harness review B8）──

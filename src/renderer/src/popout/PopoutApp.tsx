@@ -52,7 +52,8 @@ import { ImmersivePanels } from './ImmersivePanels'
 import { ConversationLightDot, ConversationLightDotStyle } from '../components/layout/ConversationLightDot'
 import { CONVERSATION_PAGE_SIZE } from '../components/layout/ConversationRows'
 import { resolvePlanNodeTarget, planNodeIdForSession } from '../agent/plan-node-target'
-import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from '../utils/context-window'
+import { resolveContextWindow, resolveMaxTokens, sessionWindowKeyOf, useSessionContextWindowStore } from '../utils/context-window'
+import { effectiveInputWindow } from '../agent/engine/window-budget'
 import { reportSilentFailure } from '../utils/notify-core'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
@@ -469,6 +470,9 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   }, [agentStatus, activeConvKey, effectiveProfileId, pinSessionWindow])
   const profileContextLength = resolveContextWindow(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId)
   const displayContextLength = pinnedSessionWindow != null ? Math.min(profileContextLength, pinnedSessionWindow) : profileContextLength
+  // 与 App 同一套口径（方案 A）：总窗口当分母，另画输入预算刻度。弹窗是独立
+  // 渲染宿主，不给它这条链的话两个窗口的环会显示不同的刻度位置。
+  const displayInputBudget = effectiveInputWindow(displayContextLength, resolveMaxTokens(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId))
   const changeProfile = useCallback(
     (profileId: string): void => {
       if (activeConvKey) {
@@ -848,6 +852,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       streamingBlocks={streamingBlocks}
       hasApiKey={hasApiKey}
       contextLength={displayContextLength}
+      inputBudget={displayInputBudget}
       onOpenPlanNode={onOpenPlanNode}
       onOpenNodeReport={onOpenNodeReport}
       onOpenSubAgent={onOpenSubAgent}

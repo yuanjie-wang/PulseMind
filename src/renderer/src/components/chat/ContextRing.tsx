@@ -17,7 +17,19 @@ const DEFAULT_RING_RADIUS = 9
 // Keeps the stroke's outer edge off the box edge, where it would be antialiased away.
 const RING_INSET = 0.25
 
-export function ContextRing({ used, total, diameter, cacheHit }: { used: number; total: number; diameter?: number; cacheHit?: CacheHitRate }): React.ReactElement | null {
+export function ContextRing({
+  used,
+  total,
+  diameter,
+  cacheHit,
+  inputBudget,
+}: {
+  used: number
+  total: number
+  diameter?: number
+  cacheHit?: CacheHitRate
+  inputBudget?: number
+}): React.ReactElement | null {
   // Leads the body so the hook still runs on the bail-out path below.
   const { t } = useTranslation()
   if (total <= 0) return null
@@ -29,6 +41,14 @@ export function ContextRing({ used, total, diameter, cacheHit }: { used: number;
   const offset = circ * (1 - pct)
   // The arc carries no label of its own; the tooltip is where the numbers are read out.
   const percent = Math.round(pct * 100)
+  // ── 输入预算刻度（方案 A，user 2026-11-17 拍板）──────────────────────
+  // 环的分母保持**总窗口** —— 那才是用户理解的「这个模型多大」——但引擎压缩
+  // 用的是扣掉输出预留的输入侧窗口：200K 窗口下两者差 32K，环显示 84% 时压缩
+  // 其实已经触发。刻度线画在引擎真正的边界上，让「才 84% 怎么就开始压缩」有个
+  // 看得见的解释，而不是靠用户去猜预留是多少。
+  // 只在 0 < budget < total 时画：等于 total 时刻度正落在顶点（无信息），大于
+  // total 则说明宿主与本组件的口径不一致 —— 宁可不画，也不画一根与引擎不符的线。
+  const tick = inputBudget != null && Number.isFinite(inputBudget) && inputBudget > 0 && inputBudget < total ? inputBudget / total : null
   // Both figures read in thousands, the unit the label is written in.
   const inK = (n: number) => `${(n / 1024).toFixed(1)}K`
   // The ring answers "how full is the window"; the session's cache hit rate
@@ -38,13 +58,17 @@ export function ContextRing({ used, total, diameter, cacheHit }: { used: number;
   // history or a provider that reports no cache fields would otherwise read as
   // a total miss, which is the opposite of what an absent reading means.
   const ringLine = t('chatView.contextRing.tooltip', { percent, used: inK(used), total: inK(total) })
-  const cacheLine =
+  const cacheLine: string | null =
     cacheHit && cacheHit.requestCount > 0
       ? t(cacheHit.reliable ? 'chatView.contextRing.cacheHit' : 'chatView.contextRing.cacheHitTentative', {
           rate: `${Math.round(cacheHit.hitRate * 100)}%`,
           count: cacheHit.requestCount,
         })
       : null
+  // 刻度线的读数单独一行：它回答的是「什么时候开始压缩」，与「现在多满」
+  // 「缓存命中多少」是两个问题，混在一句里就没人读了。
+  const budgetLine = tick == null ? null : t('chatView.contextRing.inputBudget', { percent: Math.round(tick * 100), budget: inK(inputBudget as number) })
+  const detailLines = [budgetLine, cacheLine].filter((line): line is string => line !== null)
 
   return (
     <>
@@ -54,7 +78,7 @@ export function ContextRing({ used, total, diameter, cacheHit }: { used: number;
         .pm-context-ring { display: inline-flex; border-radius: 50%; }
         .pm-context-ring:hover { background-color: var(--pm-hover-faint); }
       `}</style>
-      <Tooltip title={cacheLine === null ? ringLine : <>{ringLine}<br />{cacheLine}</>}>
+      <Tooltip title={detailLines.length === 0 ? ringLine : <>{ringLine}{detailLines.map((line, i) => <React.Fragment key={i}><br />{line}</React.Fragment>)}</>}>
         <span className="pm-context-ring">
           <svg width={RING_BOX} height={RING_BOX} viewBox={`0 0 ${RING_BOX} ${RING_BOX}`} style={{ display: 'block' }}>
             {/* The two strokes ride `style` rather than the presentation attributes:
@@ -68,6 +92,21 @@ export function ContextRing({ used, total, diameter, cacheHit }: { used: number;
               transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
               style={{ transition: 'stroke-dashoffset 0.3s ease', stroke: 'var(--pm-text-secondary)' }}
             />
+            {/* 刻度线画在环的外侧：压在填充弧上的话两者同色，什么都看不见。
+                起点贴着描边外沿（+0.25 留抗锯齿余量），终点收在盒内 11.75 以内 ——
+                到盒边会被抗锯齿抹掉（见 RING_INSET 的注释）。
+                角度按 0% = 顶点算，与填充弧的 rotate(-90) 同一套约定，否则刻度会
+                与指针起点对不齐。 */}
+            {tick != null && (
+              <line
+                x1={RING_CENTER + (r + RING_STROKE / 2 + 0.25) * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
+                y1={RING_CENTER + (r + RING_STROKE / 2 + 0.25) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
+                x2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
+                y2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
+                strokeWidth={1} strokeLinecap="butt"
+                style={{ stroke: 'var(--pm-text-secondary)' }}
+              />
+            )}
           </svg>
         </span>
       </Tooltip>

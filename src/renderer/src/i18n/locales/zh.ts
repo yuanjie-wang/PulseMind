@@ -285,6 +285,7 @@ const zh = {
       tooltip: '{{percent}}% · {{used}} / {{total}} 上下文已使用',
       cacheHit: '提示词缓存：{{rate}} 命中（{{count}} 次请求）',
       cacheHitTentative: '提示词缓存：{{rate}} 命中（仅 {{count}} 次请求，仅供参考）',
+      inputBudget: '输入预算 {{budget}}：越过 {{percent}}% 开始压缩',
     },
     compaction: {
       chip: '已压缩 {{dropped}} 条 · 释放 ~{{freed}}',

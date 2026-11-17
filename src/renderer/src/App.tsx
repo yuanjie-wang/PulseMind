@@ -44,7 +44,8 @@ import { enqueueStartupCompile } from './components/knowledge/compile-queue'
 import { createLlmAdapter } from './llm/index'
 import { generateMcpSummaries } from './agent/mcp-summary-service'
 import { useGreeting } from './hooks/useGreeting'
-import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from './utils/context-window'
+import { resolveContextWindow, resolveMaxTokens, sessionWindowKeyOf, useSessionContextWindowStore } from './utils/context-window'
+import { effectiveInputWindow } from './agent/engine/window-budget'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
@@ -425,6 +426,13 @@ function AppContent(): React.ReactElement {
   // （2026-10-18 用户报告「正在用 A，改了默认 B 的参数，错乱」）。
   const profileContextLength = resolveContextWindow(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId)
   const displayContextLength = pinnedSessionWindow != null ? Math.min(profileContextLength, pinnedSessionWindow) : profileContextLength
+  // 输入预算刻度（方案 A，user 2026-11-17 拍板）：环的分母仍是**总窗口** ——
+  // 那才是用户理解的「这个模型多大」——另在 provider 真正留给输入的边界加一根
+  // 刻度线。少了这根线，200K 窗口下环显示 84% 时压缩其实已经触发（引擎的
+  // 分母是 168K），用户只看到「才 84% 为什么就开始压缩了」。
+  // 必须复用 effectiveInputWindow 而不是在这里再减一次：刻度与压缩链是同一个
+  // 数，各算一套就会在 maxTokens 缺省、窗口异常时漂开（2026-10-18 那类错）。
+  const displayInputBudget = effectiveInputWindow(displayContextLength, resolveMaxTokens(settings.profiles ?? [], effectiveProfileId, settings.activeProfileId))
   const changeProfile = useCallback(
     (profileId: string): void => {
       if (activeConvKey) {
@@ -844,6 +852,7 @@ function AppContent(): React.ReactElement {
                     streamingBlocks={streamingBlocks}
                     hasApiKey={hasApiKey}
                     contextLength={displayContextLength}
+                    inputBudget={displayInputBudget}
                     onOpenPlanNode={onOpenPlanNode}
                     onOpenNodeReport={onOpenNodeReport}
                     onOpenSubAgent={onOpenSubAgent}
