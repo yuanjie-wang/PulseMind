@@ -46,7 +46,17 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
   })
 
   it('session-manager forwards onCompaction and whitelists compactNow', () => {
-    expectLines(sessionManager, /onCompaction: \(event: CompactionEvent\) => this\.emit\(sessionId, \{ type: 'compaction', event \}\)/, 'session-manager.ts')
+    // P1-B (2026-11-17) made this handler two steps — persist, then emit — so the
+    // single-line form is gone by design. The {0,400} span keeps the scan inside
+    // the handler: an unbounded lazy wildcard could hop to a later emit and pass
+    // even after the forward here was deleted. compaction-persist.test.ts owns
+    // the strict "write before emit" index assertion; this one only pins that
+    // both hops still live in the same handler.
+    expectLines(
+      sessionManager,
+      /onCompaction: \(event: CompactionEvent\) => \{[\s\S]{0,400}?setLastCompaction\(sessionId, event\)[\s\S]{0,400}?this\.emit\(sessionId, \{ type: 'compaction', event \}\)/,
+      'session-manager.ts'
+    )
     expectLines(sessionManager, /case 'compactNow': return engine\.compactNow\(args\[0\] as string \| undefined\)/, 'session-manager.ts')
   })
 

@@ -367,6 +367,11 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary_frontier TEXT') } catch {}
+  // P1-B（2026-11-17）：压缩事实的冷恢复 carrier。onCompaction 是 fire-and-forget，
+  // 重启后 engine.lastCompaction 归 null，已压缩 chip 与环形进度条的压缩后投影都会退回
+  // 压缩前水位（AgentEngine.ts:254 的注释已记下这个缺口）。摘要文本由上面的
+  // history_summary 承载，这里只存整条事件的 JSON，供冷启动原样回灌。
+  try { database.exec('ALTER TABLE conversations ADD COLUMN last_compaction TEXT') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN liked INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN processing_ms INTEGER') } catch {}

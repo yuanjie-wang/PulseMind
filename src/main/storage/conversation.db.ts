@@ -1,5 +1,6 @@
 import type { Conversation, ConversationIndexEntry, Message } from '../../shared/types/conversation'
 import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
+import type { CompactionEvent } from '../../shared/agent-protocol/payloads'
 import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { extractSnippet } from '../../shared/search/snippet'
@@ -644,6 +645,38 @@ export function setConversationApprovalMode(id: string, mode: SandboxApprovalMod
   const r = getDb().prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
   if (r.changes === 0) {
     stubInsertConversation(id, { approval_mode: mode })
+  }
+}
+
+/** Read the persisted compaction fact (P1-B, 2026-11-17).
+ *
+ *  `onCompaction` is fire-and-forget, so `engine.lastCompaction` lives only in
+ *  memory: a desktop restart used to lose the 已压缩 chip, and the ring fell back
+ *  to the pre-compaction watermark (too high) until the next request re-anchored
+ *  it. Absent and unreadable both answer null — an honest absence, never a
+ *  fabricated empty event. */
+export function getLastCompaction(id: string): CompactionEvent | null {
+  if (!conversationKeyOf(id)) return null
+  const row = getDb().prepare('SELECT last_compaction FROM conversations WHERE id = ?').get(id) as { last_compaction: string | null } | undefined
+  if (!row?.last_compaction) return null
+  try {
+    return JSON.parse(row.last_compaction) as CompactionEvent
+  } catch {
+    return null
+  }
+}
+
+/** Persist the compaction fact. Same stub-insert contract as
+ *  setConversationApprovalMode: may run before the row exists. A null event
+ *  clears the column and deliberately does NOT stub-insert — an absent row and a
+ *  cleared column read back identically, and stubInsertConversation only takes
+ *  string bindings. */
+export function setLastCompaction(id: string, event: CompactionEvent | null): void {
+  if (!isRealConversationId(id)) return
+  const json = event ? JSON.stringify(event) : null
+  const r = getDb().prepare('UPDATE conversations SET last_compaction = ? WHERE id = ?').run(json, id)
+  if (r.changes === 0 && json) {
+    stubInsertConversation(id, { last_compaction: json })
   }
 }
 

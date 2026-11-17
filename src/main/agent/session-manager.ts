@@ -23,7 +23,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation, updateMessageStats } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation, updateMessageStats, getLastCompaction, setLastCompaction } from '../storage/conversation.db'
 import { judgeSweepCandidate, nextSweepDelayMs, sweepIntervalMs, SWEEP_ACTIVE_WINDOW_MS, SWEEP_BATCH_LIMIT, SWEEP_MIN_DELTA } from '../../shared/memory-sweep'
 import { setMemorySweepTrigger, setSopDistillTrigger } from '../ipc/memory.handler'
 import { distillSop as runSopDistill, isSopDistilling } from './sop-runner'
@@ -992,6 +992,9 @@ export class AgentSessionManagerImpl {
         : {}),
     }
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
+    // P1-B：冷启动的引擎不知道这段历史被压缩过，先把事实从库里灌回去，让已压缩
+    // chip 与环形的压缩后投影在首个请求重新锚定之前就是对的。
+    engine.lastCompaction = getLastCompaction(sessionId)
     this.lastSentLen.set(sessionId, 0)
     this.sessions.set(sessionId, {
       engine,
@@ -1530,7 +1533,13 @@ export class AgentSessionManagerImpl {
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan }),
       onFileChangesChanged: (changes: SessionFileChange[]) => this.emit(sessionId, { type: 'file_changes', changes }),
-      onCompaction: (event: CompactionEvent) => this.emit(sessionId, { type: 'compaction', event }),
+      onCompaction: (event: CompactionEvent) => {
+        // P1-B: persist before emitting — a live client renders from the event,
+        // but only the DB can tell a cold-started engine that this history was
+        // compacted, and what the post-compaction baseline was.
+        setLastCompaction(sessionId, event)
+        this.emit(sessionId, { type: 'compaction', event })
+      },
     }
   }
 }

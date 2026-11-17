@@ -115,10 +115,12 @@ describe('the empty key cannot be read as a conversation', () => {
 
   it('every DB setter that can stub-insert a conversation row checks the id', () => {
     const src = readFileSync(CONV_DB, 'utf-8')
-    // project / expert / approval / workspace / origin / profile — the six
-    // writers that INSERT a conversation row when the UPDATE matched nothing.
+    // project / expert / approval / workspace / origin / profile / compaction —
+    // the seven writers that INSERT a conversation row when the UPDATE matched
+    // nothing. last_compaction (2026-11-17) joined this set when the compaction
+    // fact gained a cold-restart carrier.
     const guarded = [...src.matchAll(/if \(!isRealConversationId\(id\)\) return/g)].length
-    expect(guarded).toBe(6)
+    expect(guarded).toBe(7)
     // Non-vacuity: the helper really is the shared predicate, not a local copy.
     expect(src).toContain("import { conversationKeyOf } from '../../shared/conversation-key'")
     expect(src).toContain('if (conversationKeyOf(id)) return true')
