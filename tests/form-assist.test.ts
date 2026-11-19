@@ -259,10 +259,20 @@ describe('auto-apply wiring (source scans)', () => {
     expect(push).toBeGreaterThan(-1)
     expect(apply).toBeGreaterThan(push)
     // The frame carries the dirty flag too — 撤销 restores the 未保存 marker's honesty.
-    // 帧带 kind 标签（2026-11-08）：撤销栈由 routine/workflow 两臂共用，标签是
-    // 复原时选对 setter 的唯一依据。
+    // 帧带 kind 标签（2026-11-08）：标签是复原时选对 setter 的唯一依据。2026-11-18
+    // 起 kind 标签只剩 routine 臂在用——workflow 臂的画布历史独立成 wfHistRef
+    // （记全部定义改动，不只助手补丁），帧形状不再需要 kind。
     expect(page).toContain("{ kind: 'routine', draft, dirty }")
-    expect(page).toContain("{ kind: 'workflow', def, dirty }")
+  })
+
+  it('the workflow assist path captures the PRE-patch frame BEFORE writing the canvas (2026-11-18)', () => {
+    const page = readSrc('components', 'routine', 'TaskWizardPage.tsx')
+    // 助手补丁与用户手改共用同一条 wf 历史栈：assist 帧先压栈，defRef/setDef
+    // 落画布在其后——从 assist 帧的位置向后找第一个写入点，就是助手路径本身。
+    const push = page.indexOf('pushWfFrame({ assist: true })')
+    expect(push).toBeGreaterThan(-1)
+    const write = page.indexOf('defRef.current = next', push)
+    expect(write).toBeGreaterThan(push)
   })
 
   it('the expert host captures all six fields (empties included) BEFORE writing the patch', () => {

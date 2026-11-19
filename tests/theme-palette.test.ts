@@ -199,7 +199,9 @@ describe('buildThemeCss', () => {
   })
 
   it('carries every variable in both blocks', () => {
-    const namesIn = (section: string): string[] => [...section.matchAll(/(--pm-[a-z-]+):/g)].map((m) => m[1])
+    // 数字段合法（--pm-verdict-0..6 结果状态调色板，2026-11-18）：字符类不带
+    // 0-9 会让那七行整体不匹配，「集漂移即红」的门对新增变量静默失明。
+    const namesIn = (section: string): string[] => [...section.matchAll(/(--pm-[a-z0-9-]+):/g)].map((m) => m[1])
     const root = css.slice(css.indexOf(':root {'), css.indexOf("[data-theme='dark']"))
     const dark = css.slice(css.indexOf("[data-theme='dark']"))
     expect(namesIn(dark).sort()).toEqual(namesIn(root).sort())
