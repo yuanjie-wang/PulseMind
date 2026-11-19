@@ -17,7 +17,7 @@ import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { STAGE_FINISH_TOOL } from '../../../../shared/workflow/finish-tool'
 import { backgroundStartNote } from '../../../../shared/background-notice'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
-import { isProjectAgentsPath, isProjectInstructionsPath } from '../system-prompt-builder'
+import { isProjectInstructionsPath } from '../system-prompt-builder'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { commandAllowlistKey, commandMatchesAllowlist } from '../../../../shared/sandbox/command-allowlist'
 import { registerForegroundExec, unregisterForegroundExec } from '../executors/foreground-exec'
@@ -524,43 +524,33 @@ export class ExecutionFlow {
    * The write-tier partition, shared by the marking stage (handleToolUseResponse)
    * and the dispatch stage — the ladder and the executor must never disagree
    * about which writes run without asking. Three buckets:
-   *  - `auto`    — runs now (tier not held AND not protected);
-   *  - `held`    — waits on the approval ladder (tier held, OR the protected
-   *    path below);
-   *  - `denied`  — a spawned sub-agent's protected-path write: nobody can
+   *  - `auto`    — runs now (tier not held);
+   *  - `held`    — waits on the approval ladder (tier held);
+   *  - `denied`  — a spawned sub-agent's instructions-file write: nobody can
    *    approve it (heldTiers holds nothing unattended and a hold nobody can
    *    release is worse than an auto-run), so the call settles as a flat
    *    rejection instead.
-   * Protected = the project instructions file (.pulsemind/AGENTS.md): the
-   * state block teaches 「propose the change first」 — that proposal IS an
-   * approval hold, now at every level including 'auto' (2026-10-27).
-   *
-   * The /init window (2026-11-11): /init surveys the workspace and writes
-   * .pulsemind/AGENTS.md in several passes, so holding every pass turned one
-   * command into a click-through. When `projectInstructionsGrantUntil` is in
-   * the future, a call whose protected targets are ALL the .pulsemind file
-   * goes to `auto` instead. Deliberately NOT relaxed, in order of the checks:
-   *  - a spawned sub-agent still gets the flat rejection (first branch);
-   *  - a held write tier still wins (always-ask keeps asking — the window is
-   *    a release from the extra protected-path hold, not a tier override);
-   *  - any call touching root AGENTS.md stays held (`every` fails for it):
-   *    /init only ever writes the .pulsemind file, so the window must not
-   *    reach the shared cross-tool instructions.
+   * Instruction files are ordinary writes (user 2026-11-19 「放开改AGENTS.md的
+   * 权限」): .pulsemind/AGENTS.md and the workspace-root AGENTS.md used to ride
+   * a dedicated hold at every level (2026-10-27) with an /init-only grant
+   * window around it (2026-11-11) — both are gone. The interactive gate is now
+   * exactly the session's own approval mode ('outside-ask' holds only exec, so
+   * an AGENTS.md edit runs free; 'always-ask' still asks, like for any write).
+   * What keeps the injected-instructions channel from silent drift: the
+   * prompt-side discipline (buildProjectInstructionsSection — append, never
+   * reword; PulseMind-specific conventions route to the .pulsemind file) and
+   * the sub-agent denial below.
    */
   private partitionWrites(tools: ToolUseBlock[]): { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } {
     const out: { auto: ToolUseBlock[]; held: ToolUseBlock[]; denied: ToolUseBlock[] } = { auto: [], held: [], denied: [] }
     const wd = this.engine.opts.workspaceDir
     const tierHeld = this.heldTiers().has('write')
-    const grantActive = this.engine.projectInstructionsGrantUntil > Date.now()
     for (const t of tools) {
       // editToolTargetPaths names EVERY path one call writes — including each
-      // `diff --git` section of an atomic multi-file edit — so a protected
+      // `diff --git` section of an atomic multi-file edit — so an instructions
       // file cannot ride to disk inside a multi-file diff's later section.
-      const targets = editToolTargetPaths(t.input)
-      if (wd && targets.some((p) => isProjectInstructionsPath(p, wd))) {
-        if (this.engine.isSpawnedSubAgent) out.denied.push(t)
-        else if (grantActive && !tierHeld && targets.every((p) => !isProjectInstructionsPath(p, wd) || isProjectAgentsPath(p, wd))) out.auto.push(t)
-        else out.held.push(t)
+      if (wd && this.engine.isSpawnedSubAgent && editToolTargetPaths(t.input).some((p) => isProjectInstructionsPath(p, wd))) {
+        out.denied.push(t)
         continue
       }
       if (tierHeld) out.held.push(t)

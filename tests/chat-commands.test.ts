@@ -79,7 +79,9 @@ describe('buildInitPrompt', () => {
   it('teaches the .pulsemind/AGENTS.md write contract', () => {
     const p = buildInitPrompt()
     expect(p).toContain('.pulsemind/AGENTS.md')
-    expect(p).toContain('read-only')
+    // 2026-11-19 放开指令文件写入：root AGENTS.md 教学从「read-only」改为
+    // 「shared context（其他工具也在读）」， PulseMind 专属约定仍路由到 .pulsemind。
+    expect(p).toContain('other coding tools also read')
     expect(p).toMatch(/never delete or reword/)
     expect(p).not.toContain('Additional focus')
   })

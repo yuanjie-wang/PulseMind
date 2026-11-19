@@ -58,24 +58,15 @@ export function commandArgument(text: string, name: string): string {
     .trim()
 }
 
-/** How long `/init` may write .pulsemind/AGENTS.md without the per-write
- *  approval hold (user 2026-11-11: 「在init时…给予一定的时间范围，而不是每次都要
- *  授权」). One survey pass issues several write/edit calls in a row; ten
- *  minutes covers a slow survey without becoming a standing permission — the
- *  file returns to the protected-path hold on the next engine or after this
- *  window. The grant is scoped to .pulsemind/AGENTS.md only (root AGENTS.md
- *  stays held) and always-ask still asks. */
-export const INIT_PROJECT_INSTRUCTIONS_GRANT_MS = 10 * 60_000
-
 /** The model-facing turn text `/init` becomes. English, like every other
  *  canned prompt in the engine (system-prompt-builder conventions). The file
  *  contract it teaches mirrors buildProjectInstructionsSection exactly: the
- *  .pulsemind/AGENTS.md is the ONLY write surface, a root AGENTS.md is shared
- *  read-only context, and existing lines are never deleted or reworded. The
- *  survey checklist (2026-11-09) names the four dimensions a README usually
- *  lacks — layering, comment conventions, testing habits, external-dependency
- *  wrapping — each grounded in files actually read and depth-budgeted, because
- *  the output rides every request. */
+ *  .pulsemind/AGENTS.md is PulseMind's own instruction surface, a root
+ *  AGENTS.md is shared context other tools also read, and existing lines are
+ *  never deleted or reworded. The survey checklist (2026-11-09) names the four
+ *  dimensions a README usually lacks — layering, comment conventions, testing
+ *  habits, external-dependency wrapping — each grounded in files actually read
+ *  and depth-budgeted, because the output rides every request. */
 export function buildInitPrompt(focus?: string): string {
   const lines = [
     "Initialize this workspace's standing-instructions file (.pulsemind/AGENTS.md).",
@@ -88,7 +79,7 @@ export function buildInitPrompt(focus?: string): string {
     '   - External dependencies: how third-party services are wrapped — API clients, DB / ORM access, queues / caches — each with its wrapper module and the house rules (retry / timeout / error handling).',
     '   If the workspace is large, sample one or two representative files per layer. Omit any topic the workspace does not have.',
     '2. Write `.pulsemind/AGENTS.md` at the workspace root — concise standing instructions for FUTURE work here: a 2-3 line project overview, the commands, the layering table, then the conventions above. Keep it tight — a few lines per topic, each claim anchored to a real path; this file rides every request.',
-    '3. If a root AGENTS.md already exists, treat it as read-only shared context and record only PulseMind-specific notes in .pulsemind/AGENTS.md. If .pulsemind/AGENTS.md itself already exists, propose ADDITIONS instead of overwriting — never delete or reword its existing lines.',
+    '3. If a root AGENTS.md already exists, treat it as shared context that other coding tools also read — record PulseMind-specific notes in .pulsemind/AGENTS.md. If .pulsemind/AGENTS.md itself already exists, propose ADDITIONS instead of overwriting — never delete or reword its existing lines.',
     '4. When done, summarize what you recorded and point me at the file.',
   ]
   const trimmedFocus = focus?.trim()

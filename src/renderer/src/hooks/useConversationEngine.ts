@@ -87,11 +87,6 @@ export interface SessionEngineHandle {
   startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null, forcedSkills?: string[] | null): Promise<void>
   approveTool(toolUseId: string, alwaysAllow?: boolean): void
   rejectTool(toolUseId: string): void
-  /** /init's time-bounded write window for .pulsemind/AGENTS.md (scoped, see
-   *  AgentEngine.grantProjectInstructionsWrite). Resolves once main has opened
-   *  it; a failure is swallowed by the caller — the turn still runs, protected
-   *  writes just fall back to per-write approval. */
-  grantProjectInstructionsWrite(ttlMs: number): Promise<void>
   killTool(toolUseId: string): void
   /** 运行中「转入后台」(PLAN-background-tasks A): the call's outcome rides the
    *  event stream (the block settles with a backgroundPid); the promise only
@@ -291,13 +286,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     },
     approveTool: (toolUseId, alwaysAllow) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId, alwaysAllow === true]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
-    // /init 的限时写入窗: await creation first (agentSessionCreate is idempotent
-    // and queues behind an in-flight one main-side), so the grant cannot race
-    // the session's own creation and land on a session-not-found.
-    async grantProjectInstructionsWrite(ttlMs: number) {
-      await window.electronAPI.agentSessionCreate(convId)
-      await window.electronAPI.agentSessionEngineCall(convId, 'grantProjectInstructionsWrite', [ttlMs])
-    },
     killTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'killTool', [toolUseId]) },
     promoteToolToBackground: (toolUseId) =>
       window.electronAPI.agentSessionEngineCall(convId, 'promoteToolToBackground', [toolUseId]) as Promise<{ ok: boolean; error?: string }>,

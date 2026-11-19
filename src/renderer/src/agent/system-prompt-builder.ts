@@ -478,10 +478,10 @@ export const MAX_PROJECT_AGENTS_CHARS = 8_000
 /**
  * The workspace-local conventions file — PulseMind's OWN namespace under
  * .pulsemind/ (the scratch dir's parent, already the app's own namespace in
- * every workspace). It remains the only WRITE surface: a root AGENTS.md is
- * shared with every other coding tool that reads the repo, so PulseMind
- * never authors it (amended 2026-10-28: the root file is now READ as a
- * fallback — see readProjectInstructions).
+ * every workspace). The preferred write surface for PulseMind-specific
+ * conventions: a root AGENTS.md is shared with every other coding tool that
+ * reads the repo, so PulseMind-rulings land here (the root file is still read
+ * as a fallback source — see readProjectInstructions, 2026-10-28).
  */
 export function projectAgentsPath(workspaceDir: string): string {
   return `${workspaceDir}/.pulsemind/AGENTS.md`
@@ -489,12 +489,13 @@ export function projectAgentsPath(workspaceDir: string): string {
 
 /**
  * The workspace-root AGENTS.md — the cross-tool conventions file every major
- * coding agent reads. Read-only for PulseMind (fallback source when
- * .pulsemind/AGENTS.md is absent, 2026-10-28): the model is taught to treat
- * its body as context and to record PulseMind-specific conventions in
- * projectAgentsPath instead. Because that body IS injected as standing
- * instructions, isProjectInstructionsPath protects it like the .pulsemind
- * file — user-owned law, edits go through the approval ladder.
+ * coding agent reads. Fallback source when .pulsemind/AGENTS.md is absent
+ * (2026-10-28). Its body IS injected as standing instructions, so it shares
+ * the instructions-file identity below (sub-agents may not write it), but
+ * since the approval hold came off (user 2026-11-19 「放开改AGENTS.md的权限」)
+ * the main agent writes it like any workspace file — the prompt teaching
+ * routes PulseMind-specific conventions to projectAgentsPath and reserves
+ * this file for tool-neutral rules the user asks for.
  */
 export function rootAgentsPath(workspaceDir: string): string {
   return `${workspaceDir}/AGENTS.md`
@@ -502,19 +503,17 @@ export function rootAgentsPath(workspaceDir: string): string {
 
 /**
  * Whether a model-supplied file_path names a project instructions file —
- * the write surfaces the state block teaches the model to treat as
- * user-owned law (「never delete or reword existing lines — append, or
- * propose the change first」). Covers BOTH files: .pulsemind/AGENTS.md
- * (PulseMind's own) and the workspace-root AGENTS.md whose body is injected
- * as the read-only fallback — once a file's bytes ride the prompt as law,
- * an unreviewed write to it would poison every later session. The
- * approval-side half of that teaching (2026-10-27): a write/edit to either
- * path is HELD for approval at EVERY level including 'auto' — 「propose the
- * change first」 translated into the ladder; a spawned sub-agent (nobody to
- * approve) gets a flat rejection at dispatch instead. Resolution rides
- * resolveToolFilePath (the executor's own spelling) and the comparison
- * normalizes separators, so `\.pulsemind\…` matches on Windows too. A
- * `~`-spelled path never matches (the read gate's same deliberate gap).
+ * .pulsemind/AGENTS.md (PulseMind's own) or the workspace-root AGENTS.md
+ * whose body is injected as the fallback source. Since 2026-11-19 the
+ * predicate feeds ONE consumer: ExecutionFlow.partitionWrites' sub-agent arm
+ * (an unattended run has nobody to review an instructions rewrite, so it
+ * settles as a flat rejection). The interactive hold that used to sit on
+ * these paths at every approval level (2026-10-27) is gone — the main agent
+ * writes them like any workspace file, gated only by the session's approval
+ * mode. Resolution rides resolveToolFilePath (the executor's own spelling)
+ * and the comparison normalizes separators, so `\.pulsemind\…` matches on
+ * Windows too. A `~`-spelled path never matches (the read gate's same
+ * deliberate gap).
  */
 export function isProjectInstructionsPath(filePath: string, workspaceDir?: string): boolean {
   if (!workspaceDir) return false
@@ -523,22 +522,6 @@ export function isProjectInstructionsPath(filePath: string, workspaceDir?: strin
   const norm = (p: string): string => p.replace(/\\/g, '/')
   const target = norm(resolveToolFilePath(raw, workspaceDir))
   return target === norm(projectAgentsPath(workspaceDir)) || target === norm(rootAgentsPath(workspaceDir))
-}
-
-/**
- * Whether a path names ONLY PulseMind's own instructions file
- * (.pulsemind/AGENTS.md) — the narrower predicate a time-bounded write grant
- * is scoped to. Root AGENTS.md never matches: /init reads it as shared
- * context and its bytes are other tools' law, so a grant issued by /init
- * must not leak onto it. Same resolution/normalization as
- * isProjectInstructionsPath (executor spelling, Windows separators).
- */
-export function isProjectAgentsPath(filePath: string, workspaceDir?: string): boolean {
-  if (!workspaceDir) return false
-  const raw = filePath.trim()
-  if (!raw) return false
-  const norm = (p: string): string => p.replace(/\\/g, '/')
-  return norm(resolveToolFilePath(raw, workspaceDir)) === norm(projectAgentsPath(workspaceDir))
 }
 
 // ── repo-root discovery (the root AGENTS.md fallback's third candidate) ──
@@ -655,20 +638,20 @@ async function buildProjectInstructionsSection(opts: AgentEngineOptions): Promis
     if (read.source === 'root') {
       return [
         '## Project Instructions',
-        `Standing instructions for this project, from ${read.path} — the repo's shared AGENTS.md, also read by other coding tools. Follow it for work in this workspace, but treat it as read-only context: PulseMind-specific conventions belong in ${projectAgentsPath(opts.workspaceDir)} — offer to record them there when the user states one.`,
+        `Standing instructions for this project, from ${read.path} — the repo's shared AGENTS.md, also read by other coding tools. Follow it for work in this workspace. PulseMind-specific conventions belong in ${projectAgentsPath(opts.workspaceDir)} — record them there when the user states one; edit this shared file only for tool-neutral rules the user asks to change.`,
         read.body,
       ].join('\n')
     }
     return [
       '## Project Instructions',
-      `Standing instructions for this project, from ${projectAgentsPath(opts.workspaceDir)}. Follow them for work in this workspace. The file is user-authored: when updating it, never delete or reword existing lines — append, or propose the change first.`,
+      `Standing instructions for this project, from ${projectAgentsPath(opts.workspaceDir)}. Follow them for work in this workspace. The file is user-authored: when updating it, never delete or reword existing lines — append; a rewording happens only when the user explicitly asks for it.`,
       read.body,
     ].join('\n')
   }
   if (opts.projectName) {
     return [
       '## Project Instructions',
-      `- This project has no .pulsemind/AGENTS.md yet — its standing-instructions file (${projectAgentsPath(opts.workspaceDir)}). When the user states a durable, reusable convention for this project (tone, structure, naming, data rules), offer to record it there; confirm before the first write.`,
+      `- This project has no .pulsemind/AGENTS.md yet — its standing-instructions file (${projectAgentsPath(opts.workspaceDir)}). When the user states a durable, reusable convention for this project (tone, structure, naming, data rules), record it there directly and say what you wrote.`,
     ].join('\n')
   }
   return null

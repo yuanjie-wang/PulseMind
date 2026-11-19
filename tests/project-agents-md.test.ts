@@ -125,7 +125,7 @@ describe('## Project Instructions — the state-block injection point', () => {
     const block = stateBlock ?? ''
     expect(block).toContain('## Project Instructions')
     expect(block).toContain('no .pulsemind/AGENTS.md yet')
-    expect(block).toContain('confirm before the first write')
+    expect(block).toContain('record it there directly')
     expect(block).toContain(agentsPath())
   })
 
@@ -159,18 +159,20 @@ describe('## Project Instructions — the state-block injection point', () => {
 //
 // The shared cross-tool AGENTS.md is READ as a fallback when PulseMind's own
 // file is absent — workspace root first, then the git root for a workspace
-// nested inside a repo — but never written (the state block teaches
-// 「read-only context」 and points PulseMind-specific conventions at
-// projectAgentsPath). .pulsemind/AGENTS.md always wins when present.
+// nested inside a repo — and since 2026-11-19 the main agent writes it like
+// any workspace file; the teaching routes PulseMind-specific conventions to
+// projectAgentsPath and reserves the shared file for tool-neutral rules.
+// .pulsemind/AGENTS.md always wins when present.
 
 describe('root AGENTS.md fallback', () => {
-  it('absent .pulsemind + present workspace-root AGENTS.md → root body with the read-only teaching line', async () => {
+  it('absent .pulsemind + present workspace-root AGENTS.md → root body with the shared-context teaching line', async () => {
     installHost({ [rootAgentsPath(WS)]: '- 全仓用 pnpm' })
     const { stateBlock } = await prompt({ workspaceDir: WS, projectName: 'Demo' })
     expect(stateBlock).toContain('## Project Instructions')
     expect(stateBlock).toContain('- 全仓用 pnpm')
     expect(stateBlock).toContain(`${WS}/AGENTS.md`)
-    expect(stateBlock).toContain('read-only context')
+    expect(stateBlock).toContain('also read by other coding tools')
+    expect(stateBlock).toContain('PulseMind-specific conventions belong in')
     // PulseMind-specific conventions still learn their own write path.
     expect(stateBlock).toContain(agentsPath())
     expect(stateBlock).not.toContain('no .pulsemind/AGENTS.md yet')
