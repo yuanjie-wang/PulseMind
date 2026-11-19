@@ -148,6 +148,9 @@ export interface PipelineRun {
   inputs?: Record<string, string>
   /** git checkpoint 基线 commit（gitCheckpoint: false 时缺席）。 */
   baselineCommit?: string
+  /** 本实例的 plan 文件（启动表单 plans 的逐条展开；缺席 = 单实例无 plan）。
+   *  2026-11-18 落库：重跑/续跑要把同一份 plan 喂回阶段 prompt。 */
+  planPath?: string
   /** 工作目录（节点会话的 workspaceDir）。 */
   workspaceDir: string
   status: PipelineRunStatus

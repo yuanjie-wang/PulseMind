@@ -392,6 +392,9 @@ export interface ElectronAPI {
   pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string; vars?: Record<string, string>; approvalMode?: string; profileId?: string }) => Promise<{ runIds: string[] }>
   pipelineStop: (runId: string) => Promise<boolean>
   pipelineRuns: (runId?: string, limit?: number) => Promise<{ runs?: PipelineRun[]; stages?: PipelineStageRun[]; run?: PipelineRun }>
+  /** 重跑/续跑一个失败实例（2026-11-18）：fresh = 同一输入整条重跑；
+   *  resume = 复用前序已结算阶段，从失败节点接着跑。返回新实例 id。 */
+  pipelineRerun: (runId: string, mode: 'fresh' | 'resume') => Promise<{ runId: string }>
   pipelineBatchRun: (params: { workflowId: string; csvPath?: string }) => Promise<{ batchId: string; csvName: string; totalRows: number; enqueued: number; failedRows: number }>
   pipelineBatchStop: (batchId: string) => Promise<number>
   // ── PLAN-share-import-export：分享（消毒 payload 只在主进程，提交只回 token）──

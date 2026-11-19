@@ -37,6 +37,7 @@ import type { StageOutcome, WorkflowDefinition, WorkflowNode } from '../../share
 import { gitBaseline, gitCheckpointProbe, gitResetToBaseline, gitStageCommit } from './git-checkpoint'
 import { pipelineRunStore } from '../storage/pipeline-run-store'
 import { logMain } from '../main-log'
+import { notify } from '../system/notify'
 
 const DEFAULT_STAGE_TIMEOUT_MINUTES = 30
 const DEFAULT_MAX_STAGE_CONTINUES = 2
@@ -548,6 +549,15 @@ export interface RunInstanceOptions {
   profileId?: string
   /** 批量实例的行号（P2；单次/plan 队列缺席）。 */
   row?: string
+  /** 从失败节点续跑（2026-11-18）：前一次实例里**已结算**的阶段按原 verdict
+   *  重放——它们推进的上游上下文、清掉的前向依赖照常生效，起点节点重新入队。
+   *  没有这条通道，用户只能整条重跑，前序阶段的模型调用全部白烧。 */
+  resume?: {
+    /** 前一次实例 id（阶段行从这里读）。 */
+    fromRunId: string
+    /** 续跑起点：前一次失败/中断的节点。 */
+    nodeId: string
+  }
 }
 
 export interface RunInstanceResult {
@@ -689,7 +699,60 @@ export async function runWorkflowInstance(opts: RunInstanceOptions): Promise<Run
   let lastNodeId = workflow.entry
   /** 最后一个完成阶段的摘要（运行级最终结论的来源）。 */
   let lastConclusion: string | undefined
-  enqueue(workflow.entry)
+  if (opts.resume) {
+    // 续跑种子：读前一次实例的阶段行，把已结算阶段**当作刚跑完**重放一遍
+    // （done + arrivals + 前向依赖结清），起点节点不播种、稍后重新入队。
+    // 重放走的是与真实结算完全相同的三件事，所以分支/AND-join/回边的调度
+    // 语义不会因为「续跑」而分叉。
+    const seed = pipelineRunStore.listStagesOf(opts.resume.fromRunId)
+    const lastOf = new Map<string, (typeof seed)[number]>()
+    const runsOf = new Map<string, number>()
+    for (const s of seed) {
+      if (!s.verdict || s.error || !nodeById.has(s.nodeId)) continue
+      runsOf.set(s.nodeId, (runsOf.get(s.nodeId) ?? 0) + 1)
+      if (s.nodeId === opts.resume.nodeId) continue
+      lastOf.set(s.nodeId, s) // 循环/RETRY 会留下多行：只认最后一次结算
+    }
+    for (const [nodeId, s] of lastOf) {
+      const node = nodeById.get(nodeId)!
+      const verdict = s.verdict!
+      done.add(nodeId)
+      visits.set(nodeId, runsOf.get(nodeId) ?? 1)
+      const ref: StageUpstreamRef = {
+        id: nodeId,
+        title: node.title || nodeId,
+        verdict,
+        summary: s.summary ?? '',
+        artifacts: s.artifacts ?? [],
+      }
+      for (const e of workflow.edges) {
+        if (e.from !== nodeId || e.when !== verdict) continue
+        if (e.to === 'DONE') {
+          reachedDone = true
+          continue
+        }
+        if (e.to === 'FAILED' || e.to === 'RETRY' || !nodeById.has(e.to)) continue
+        if (done.has(e.to)) continue // 已结算的下游不重跑，也不留孤儿 arrival
+        const list = arrivals.get(e.to) ?? []
+        list.push(ref)
+        arrivals.set(e.to, list)
+      }
+      for (const e of workflow.edges) {
+        if (e.from !== nodeId || !nodeById.has(e.to)) continue
+        if (isLoopEdge(loopKeys, e)) continue
+        waiting.get(e.to)?.delete(nodeId)
+      }
+    }
+    // 起点节点在前一次实例里被走到过（它的上游早已结清），依赖门直接放行；
+    // 随后照常传播——没走到的分支会像上一轮一样被标成 skipped，死锁检查
+    // 因此不会把它们误判成「等待上游」。
+    waiting.get(opts.resume.nodeId)?.clear()
+    enqueue(opts.resume.nodeId)
+    propagate()
+    lastNodeId = opts.resume.nodeId
+  } else {
+    enqueue(workflow.entry)
+  }
 
   for (;;) {
     const current = queue.shift()
@@ -874,12 +937,15 @@ class PipelineEngine {
   }
 
   /** 撤销一个**尚未启动**的排队实例（P2 批量停止面）：从队列移除并把 run 行
-   *  记为失败（无引擎调用）。已在飞的实例走 stop()。 */
-  cancel(runId: string): boolean {
+   *  记为失败（无引擎调用）。已在飞的实例走 stop()。
+   *  reason 可换（2026-11-18 运行视图停止按钮）：批量面写「批量已停止」，
+   *  单个实例的停止按钮写「已停止」——两处文案都是用户在运行记录里读到的
+   *  失败原因，不该互相冒充。 */
+  cancel(runId: string, reason = '批量已停止（未启动）'): boolean {
     const idx = this.queue.findIndex((q) => q.runId === runId)
     if (idx === -1) return false
     this.queue.splice(idx, 1)
-    pipelineRunStore.updateRun(runId, { status: 'failed', finishedAt: new Date().toISOString(), error: '批量已停止（未启动）' })
+    pipelineRunStore.updateRun(runId, { status: 'failed', finishedAt: new Date().toISOString(), error: reason })
     return true
   }
 
@@ -906,6 +972,17 @@ class PipelineEngine {
         }
         if (result.status === 'failed') {
           console.warn(`[Pipeline] instance ${next.runId} failed: ${result.error ?? ''}`)
+        }
+        // 结算通知（2026-11-18）：工作流往往跑几分钟到几十分钟，用户不会守在
+        // 运行视图前。批量实例静默——一次 CSV 几十行会刷屏（批量自己有汇总面）。
+        // 通知失败不影响任何结算（notify 本身 best-effort）。
+        const row = pipelineRunStore.getRun(next.runId)
+        if (row && !row.batchId) {
+          const ok = result.status === 'success'
+          notify(
+            `${ok ? '工作流完成' : '工作流失败'}：${row.workflowName}`,
+            (ok ? '点击查看运行结果' : (row.error ?? result.error ?? '')).slice(0, 120),
+          )
         }
       }
     } finally {

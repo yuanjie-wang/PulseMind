@@ -433,6 +433,9 @@ function createTables(): void {
   try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN trigger TEXT') } catch {}
   // P2 批量归属：同一次 CSV 批量铸的实例行共享 batch_id（运行记录归组/停止面）。
   try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN batch_id TEXT') } catch {}
+  // 2026-11-18 重跑/续跑：实例的 plan 文件路径落库——重跑要把同一份 plan 喂回
+  // 阶段 prompt（此前只存在入队参数里，运行记录里无从还原）。
+  try { database.exec('ALTER TABLE pipeline_runs ADD COLUMN plan_path TEXT') } catch {}
 
   // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
   // Projects are named fixed workspaces picked on the welcome page (the
@@ -481,7 +484,8 @@ function createTables(): void {
       finished_at     TEXT,
       error           TEXT,
       inputs_json     TEXT,
-      conclusion      TEXT
+      conclusion      TEXT,
+      plan_path       TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);

@@ -41,6 +41,11 @@ export interface LaunchWorkflowRunOptions {
   /** 批量面（P2）：行号（内置 {{row}}）与批次归组 id。 */
   row?: string
   batchId?: string
+  /** 从失败实例续跑（2026-11-18）：新实例共用同一工作区/plan/输入，引擎按
+   *  前一次实例**已结算的阶段行**播种调度状态，起点 = 失败节点。
+   *  前置条件由调用方保证：前一次实例没有回滚过工作区（baseline_commit 空），
+   *  否则前序产物已不在盘上，续跑会拿着空上游往下跑。 */
+  resume?: { fromRunId: string; nodeId: string }
 }
 
 /**
@@ -95,11 +100,13 @@ export function launchWorkflowRun(opts: LaunchWorkflowRunOptions): string[] {
       workflowId: workflow.id,
       workflowName: workflow.name,
       objective: (opts.objective ?? workflow.objective ?? '').trim(),
+      planPath,
       workspaceDir: opts.workspaceDir?.trim() ?? '',
       status: 'running',
       trigger,
       batchId: opts.batchId,
-      currentNode: workflow.entry,
+      // 续跑的定位面 = 起点节点（展开行/运行图直接指到重跑的那一阶段）。
+      currentNode: opts.resume?.nodeId ?? workflow.entry,
       startedAt: new Date().toISOString(),
       inputs: vars,
     })
@@ -113,6 +120,7 @@ export function launchWorkflowRun(opts: LaunchWorkflowRunOptions): string[] {
       approvalMode,
       profileId,
       row: opts.row,
+      resume: opts.resume,
     })
   }
   return runIds

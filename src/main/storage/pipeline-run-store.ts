@@ -11,6 +11,7 @@ interface PipelineRunRow {
   workflow_name: string
   objective: string | null
   baseline_commit: string | null
+  plan_path: string | null
   workspace_dir: string | null
   status: string
   trigger: string | null
@@ -57,6 +58,7 @@ function rowToRun(r: PipelineRunRow): PipelineRun {
     workflowName: r.workflow_name,
     objective: r.objective ?? '',
     ...(r.baseline_commit ? { baselineCommit: r.baseline_commit } : {}),
+    ...(r.plan_path ? { planPath: r.plan_path } : {}),
     workspaceDir: r.workspace_dir ?? '',
     ...(r.conclusion ? { conclusion: r.conclusion } : {}),
     status: r.status as PipelineRunStatus,
@@ -97,8 +99,8 @@ export const pipelineRunStore = {
   createRun(run: Omit<PipelineRun, 'id'> & { id: string }): PipelineRun {
     getDb()
       .prepare(
-        `INSERT INTO pipeline_runs (id, workflow_id, workflow_name, objective, baseline_commit, workspace_dir, status, trigger, batch_id, current_node, started_at, inputs_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipeline_runs (id, workflow_id, workflow_name, objective, baseline_commit, plan_path, workspace_dir, status, trigger, batch_id, current_node, started_at, inputs_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -106,6 +108,7 @@ export const pipelineRunStore = {
         run.workflowName,
         run.objective || null,
         run.baselineCommit ?? null,
+        run.planPath ?? null,
         run.workspaceDir ?? null,
         run.status,
         run.trigger ?? null,

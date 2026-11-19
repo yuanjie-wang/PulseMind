@@ -376,6 +376,7 @@ export const IPC_CHANNELS = {
   PIPELINE_WORKFLOWS: 'pipeline:workflows',
   PIPELINE_RUN: 'pipeline:run',
   PIPELINE_STOP: 'pipeline:stop',
+  PIPELINE_RERUN: 'pipeline:rerun',
   PIPELINE_RUNS: 'pipeline:runs',
   PIPELINE_BATCH_RUN: 'pipeline:batch-run',
   PIPELINE_BATCH_STOP: 'pipeline:batch-stop',

@@ -11,7 +11,7 @@
 // 新 run 对象不得把画布卸载重挂（视口复位教训，PLAN-workflow-run-view）。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button } from 'antd'
+import { App as AntdApp, Button, Tooltip } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -26,6 +26,7 @@ import type { PipelineRun, PipelineStageRun, WorkflowDefinition } from '../../..
 import { verdictKindOf } from '../../../../shared/workflow/run-view'
 import { normalizeSimpleWorkflow } from '../../../../shared/workflow/simplify'
 import { autoWorkflowLayout } from '../../../../shared/workflow/layout'
+import { artifactAbsPath } from './run-artifact'
 
 const POLL_MS = 3_000
 // 只读转写的必填 handler 契约（TranscriptView 是活会话的形状）：viewOnly 面
@@ -123,12 +124,48 @@ function StageTranscript({ convId }: { convId: string }): React.ReactElement {
   )
 }
 
+/** 交付物 chip：点击用系统默认程序打开（文件 = 默认应用，目录 = 文件管理器）。
+ *  走 `openFolder`（shell.openPath）而不是 revealItem——用户要的是「点开产物」，
+ *  不是「在 Finder 里选中它」。主进程侧有可执行扩展名黑名单与 stat 门（缺失
+ *  路径会抛可行动文案），这里只负责把错误显示出来，不吞。 */
+function ArtifactLinks({ artifacts, workspaceDir }: { artifacts: string[]; workspaceDir: string }): React.ReactElement {
+  const { t } = useTranslation()
+  const { message } = AntdApp.useApp()
+  const open = (rel: string): void => {
+    void window.electronAPI.openFolder(artifactAbsPath(workspaceDir, rel)).catch((err: unknown) => {
+      message.error(err instanceof Error ? err.message : String(err))
+    })
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {artifacts.map((a) => (
+        <button
+          key={a}
+          type="button"
+          data-workflow-artifact={a}
+          title={t('workflow.runViewArtifactOpen')}
+          onClick={() => open(a)}
+          style={{
+            maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            padding: '1px 8px', borderRadius: 10, border: '1px solid var(--pm-separator-faint)',
+            background: 'var(--pm-fill)', color: 'var(--pm-link)', fontSize: 11.5,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          {a}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export interface WorkflowRunViewPageProps {
   runId: string
 }
 
 export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.ReactElement {
   const { t } = useTranslation()
+  const { message } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
   const [run, setRun] = useState<PipelineRun | null>(null)
   const [stages, setStages] = useState<PipelineStageRun[]>([])
@@ -138,6 +175,8 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
   const [sel, setSel] = useState<PanelSelection | null>(null)
   /** 选中节点的第几次执行（0 起；null = 最近一次）。 */
   const [execPick, setExecPick] = useState<number | null>(null)
+  /** 头部动作的在飞状态（停止 / 重跑 / 续跑，同一时刻只跑一件）。 */
+  const [busy, setBusy] = useState<null | 'stop' | 'fresh' | 'resume'>(null)
   /** 面板宽度（分隔条拖拽，user 2026-11-16「允许调整宽度」）。会话内记忆，
    *  不落盘（与向导助手栏的会话态同一档）。默认 = 行宽 60%（左4右6），
    *  行宽首次量到后覆盖占位值。 */
@@ -196,6 +235,21 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
       alive = false
       clearInterval(timer)
     }
+  }, [runId])
+
+  // 重跑/续跑会 navigate 到**新** runId（同一页面组件、只换 prop）：旧 run 的
+  // 行与选中态必须当场清掉，否则新实例第一拍轮询回来前，画布/面板显示的是
+  // 上一次运行的转写（页面看起来「重跑了但内容没变」）。
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- 按 prop 键清状态是有意为之：
+       清空必须与 runId 同一次提交生效，不能等轮询回来再清（否则先看到旧运行的
+       转写）；父级不按 runId 重挂载，也没有更廉价的替代写法。 */
+    setRun(null)
+    setStages([])
+    setMissing(false)
+    setSel(null)
+    setExecPick(null)
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [runId])
 
   // 定义按 **workflowId** 加载（轮询的新 run 对象不得触发重载——视口复位教训）。
@@ -278,6 +332,49 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
   )
   const activeStage = nodeStages.length > 0 ? nodeStages[execPick !== null ? Math.min(execPick, nodeStages.length - 1) : nodeStages.length - 1] : undefined
 
+  // ── 头部动作（2026-11-18）：停止 / 重跑本次 / 从失败节点续跑 ──
+  const onStop = useCallback(async () => {
+    if (!run) return
+    setBusy('stop')
+    try {
+      const ok = await window.electronAPI.pipelineStop(run.id)
+      // false = 既不在飞也不在队列（已被别的路径结算）——如实说，不假装停了。
+      if (!ok) message.warning(t('workflow.runViewStopNoop'))
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }, [run, message, t])
+
+  const onRerun = useCallback(
+    async (mode: 'fresh' | 'resume') => {
+      if (!run) return
+      setBusy(mode)
+      try {
+        const res = await window.electronAPI.pipelineRerun(run.id, mode)
+        message.success(t(mode === 'resume' ? 'workflow.runViewResumeStarted' : 'workflow.runViewRerunStarted'))
+        // 跳到新实例（同一页面只换 runId）：用户要看的正是这次新跑的过程。
+        if (res?.runId && res.runId !== runId) navigate({ kind: 'routines', workflowRunViewId: res.runId })
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(null)
+      }
+    },
+    [run, runId, navigate, message, t],
+  )
+
+  /** 续跑可用性：失败 + 停在一个节点上 + 有已完成的前序阶段 + **没有回滚过
+   *  基线**（回滚后前序产物已不在盘上，续跑会拿空上游往下跑——主进程同门）。 */
+  const resumeBlocked = useMemo((): null | 'rollback' | 'noPrior' => {
+    if (!run || run.status !== 'failed') return 'noPrior'
+    if (run.baselineCommit) return 'rollback'
+    if (!run.currentNode) return 'noPrior'
+    const hasPrior = stages.some((s) => s.nodeId !== run.currentNode && !!s.verdict && !s.error)
+    return hasPrior ? null : 'noPrior'
+  }, [run, stages])
+
   return (
     // 页面壳对齐任务中心（--pm-bg 全幅 + 分区留白）；双栏 = 两张沉浸配方卡
     // （editor-layout 同一份：--pm-separator-faint 边 + IMMERSIVE_CARD_RADIUS，
@@ -290,6 +387,50 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
         </Button>
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{run?.workflowName ?? '…'}</span>
         <span style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}>· {statusText}</span>
+        {/* 动作簇（2026-11-18）：运行中给停止；失败给「从失败节点续跑」+「重跑
+            本次」。续跑按钮常驻但按条件置灰——失败最常见的原因恰恰是回滚过
+            基线（gitCheckpoint 开着），藏起来会让用户以为功能不存在。 */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {run?.status === 'running' && (
+            <Button size="small" danger loading={busy === 'stop'} disabled={busy !== null && busy !== 'stop'} onClick={() => void onStop()}>
+              {t('workflow.runViewStop')}
+            </Button>
+          )}
+          {run?.status === 'failed' && (
+            <>
+              <Tooltip
+                title={
+                  resumeBlocked === 'rollback'
+                    ? t('workflow.runViewResumeBlockedRollback')
+                    : resumeBlocked === 'noPrior'
+                      ? t('workflow.runViewResumeBlockedNoPrior')
+                      : undefined
+                }
+              >
+                {/* 置灰的 antd Button 不派发鼠标事件——Tooltip 必须挂在外层 span 上 */}
+                <span>
+                  <Button
+                    size="small"
+                    loading={busy === 'resume'}
+                    disabled={resumeBlocked !== null || (busy !== null && busy !== 'resume')}
+                    onClick={() => void onRerun('resume')}
+                  >
+                    {t('workflow.runViewResume')}
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                size="small"
+                type="primary"
+                loading={busy === 'fresh'}
+                disabled={busy !== null && busy !== 'fresh'}
+                onClick={() => void onRerun('fresh')}
+              >
+                {t('workflow.runViewRerun')}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {missing ? (
@@ -394,8 +535,11 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
                       {t('workflow.runViewCompletedNoSummary')}
                     </div>
                     {finalStage.artifacts && finalStage.artifacts.length > 0 && (
-                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginTop: 2 }}>
-                        {t('workflow.runViewArtifacts')}：{finalStage.artifacts.join('、')}
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginBottom: 4 }}>
+                          {t('workflow.runViewArtifacts')}
+                        </div>
+                        <ArtifactLinks artifacts={finalStage.artifacts} workspaceDir={run.workspaceDir} />
                       </div>
                     )}
                   </div>
@@ -453,6 +597,15 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
                         </Button>
                       )
                     })}
+                  </div>
+                )}
+                {/* 该次执行的交付物（2026-11-18）：契约声明的相对路径 → 可点开 */}
+                {activeStage?.artifacts && activeStage.artifacts.length > 0 && (
+                  <div style={{ background: 'var(--pm-fill)', borderRadius: 10, padding: '10px 12px', flexShrink: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--pm-text-muted)', marginBottom: 4 }}>
+                      {t('workflow.runViewArtifacts')}
+                    </div>
+                    <ArtifactLinks artifacts={activeStage.artifacts} workspaceDir={run.workspaceDir} />
                   </div>
                 )}
                 {/* 内容：运行中提示 / 落库转写（失败的先亮错误块） */}

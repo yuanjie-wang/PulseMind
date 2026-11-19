@@ -92,7 +92,20 @@ window.__serveDefaultDef = () => {
   servedDef = DEF
 }
 
-const RUN = { id: 'prun_v', workflowId: 'wf_run', workflowName: '编码流水线', objective: '把计划落地', status: 'running', startedAt: '2026-11-15T10:00:00.000Z', conclusion: '报告已生成：reports/weekly.md', inputs: { topic: '远程办公的利与弊' } }
+const RUN = { id: 'prun_v', workflowId: 'wf_run', workflowName: '编码流水线', objective: '把计划落地', status: 'running', startedAt: '2026-11-15T10:00:00.000Z', conclusion: '报告已生成：reports/weekly.md', inputs: { topic: '远程办公的利与弊' }, workspaceDir: '/tmp/pm-probe-ws' }
+// 运行态可变（2026-11-18 头部动作）：停止钮只在 running 出现，重跑/续跑只在
+// failed 出现，续跑还按「回滚过基线 / 无已完成前序阶段」置灰——三档都要能演。
+let runOverride = {}
+window.__serveRun = (patch) => {
+  runOverride = patch ?? {}
+}
+// 头部动作与产物点开的调用流水：判据是**真点到了哪条 IPC、参数是什么**，
+// 不是按钮画出来了。
+const actionLog = []
+window.__actionLog = () => actionLog
+window.__clearActionLog = () => {
+  actionLog.length = 0
+}
 
 window.electronAPI = new Proxy({}, {
   get: (_t, key) => (...args) => {
@@ -101,12 +114,20 @@ window.electronAPI = new Proxy({}, {
       const [op] = args
       return Promise.resolve(op === 'get' ? servedDef : [servedDef])
     }
+    // 头部动作 + 产物点开（2026-11-18）：记账后给成功面。
+    if (key === 'pipelineStop' || key === 'pipelineRerun' || key === 'openFolder') {
+      actionLog.push({ fn: key, args })
+      if (key === 'pipelineStop') return Promise.resolve(true)
+      if (key === 'pipelineRerun') return Promise.resolve({ runId: 'prun_next' })
+      return Promise.resolve()
+    }
     // 侧边栏的真实数据面（3s 轮询）：一条 workflow 运行 + 它的 stage 行。
     if (key === 'pipelineRuns') {
       // 带 runId = 运行页的自取数（单 run + 它的 stage 行）；不带 = 近期运行列表。
       const [rid] = args
       const stages = PHASES[stagePhase] ?? STAGES
-      return Promise.resolve(rid ? { run: RUN, stages } : { runs: [RUN], stages })
+      const run = { ...RUN, ...runOverride }
+      return Promise.resolve(rid ? { run, stages } : { runs: [run], stages })
     }
     if (key === 'routineList' || key === 'routineRuns') return Promise.resolve([])
     // 阶段转写：落库的 pipe_ 会话（含 tool_result 的水合形态）。tool_use 按
@@ -659,6 +680,105 @@ check('点开始芯片 → 运行变量', startText.includes('topic'))
 await page.locator('.react-flow__node[data-id="terminal:DONE"]').click()
 await page.waitForTimeout(300)
 check('点结束芯片 → 最终结果（run 级结论优先）', ((await page.locator('[data-workflow-run-panel]').innerText()) || '').includes('报告已生成：reports/weekly.md'))
+
+// ── §3.6 头部动作与产物点开（2026-11-18）──
+// 判据不是「按钮画出来了」，而是**真点到了哪条 IPC、参数是什么**：停止要打到
+// 这个 runId，续跑/重跑要带对 mode（主进程按 mode 决定是否铸 resume），产物要
+// 带着工作区根拼出的绝对路径去 openFolder。续跑还有三档状态：可用 / 回滚过
+// 基线（置灰）/ 无已完成前序（置灰）——后两档只靠 run 对象区分，所以三种运行态
+// 都要演一遍。
+const actionLog = () => page.evaluate(() => window.__actionLog())
+const clearActions = () => page.evaluate(() => window.__clearActionLog())
+const headerBtn = (text) =>
+  page.evaluate((label) => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === label)
+    return b ? { disabled: !!b.disabled } : null
+  }, text)
+const clickHeader = (text) => page.locator('button', { hasText: text }).first().click()
+
+// ① 运行中：只有停止
+check('运行中：头部有停止钮', (await headerBtn('停止运行')) !== null)
+check(
+  '运行中：不给重跑/续跑（先停止再说）',
+  (await headerBtn('重跑本次')) === null && (await headerBtn('从失败节点续跑')) === null,
+)
+await clearActions()
+await clickHeader('停止运行')
+await page.waitForTimeout(250)
+const stopLog = await actionLog()
+check(
+  '点停止 → pipelineStop(本 runId)',
+  JSON.stringify(stopLog) === JSON.stringify([{ fn: 'pipelineStop', args: ['prun_v'] }]),
+  JSON.stringify(stopLog),
+)
+
+// ② 产物 chip：相对路径挂到工作区根下再交给 openFolder
+await page.locator('.react-flow__node[data-id="node:code"]').click()
+await page.waitForTimeout(400)
+check(
+  'code 节点面板列出本次执行的交付物',
+  (await page.locator('[data-workflow-artifact="src/a.ts"]').count()) === 1 &&
+    (await page.locator('[data-workflow-artifact="src/b.ts"]').count()) === 1,
+)
+await clearActions()
+await page.locator('[data-workflow-artifact="src/a.ts"]').first().click()
+await page.waitForTimeout(250)
+const artLog = await actionLog()
+check(
+  '点产物 → openFolder(工作区绝对路径)',
+  JSON.stringify(artLog) === JSON.stringify([{ fn: 'openFolder', args: ['/tmp/pm-probe-ws/src/a.ts'] }]),
+  JSON.stringify(artLog),
+)
+
+// ③ 失败态（有已完成前序）：续跑可用，真点带 resume
+await page.evaluate(() => window.__serveRun({ status: 'failed', currentNode: 'test', error: '2 个用例失败' }))
+await page.waitForTimeout(3400)
+check('失败态：停止钮退场', (await headerBtn('停止运行')) === null)
+const resumeBtn = await headerBtn('从失败节点续跑')
+check('失败态：续跑与重跑都在', resumeBtn !== null && (await headerBtn('重跑本次')) !== null)
+check('失败态（有已完成前序）：续跑可用', resumeBtn !== null && resumeBtn.disabled === false)
+await clearActions()
+await clickHeader('从失败节点续跑')
+await page.waitForTimeout(300)
+const resumeLog = await actionLog()
+check(
+  '点续跑 → pipelineRerun(runId, resume)',
+  JSON.stringify(resumeLog) === JSON.stringify([{ fn: 'pipelineRerun', args: ['prun_v', 'resume'] }]),
+  JSON.stringify(resumeLog),
+)
+check('续跑成功提示在', ((await page.locator('body').innerText()) || '').includes('已从失败节点续跑'))
+
+// ④ 回滚过基线：续跑置灰，强点也不发 IPC（前序产物已不在盘上）
+await page.evaluate(() =>
+  window.__serveRun({ status: 'failed', currentNode: 'test', baselineCommit: 'abc1234' }),
+)
+await page.waitForTimeout(3400)
+const rollbackBtn = await headerBtn('从失败节点续跑')
+check('回滚过基线：续跑置灰', rollbackBtn !== null && rollbackBtn.disabled === true)
+await clearActions()
+await page.locator('button', { hasText: '从失败节点续跑' }).first().click({ force: true })
+await page.waitForTimeout(250)
+check('置灰的续跑强点不发 IPC', (await actionLog()).length === 0)
+
+// ⑤ 停在第一个节点（无已完成前序）：同样置灰——那与重跑没有区别
+await page.evaluate(() => window.__serveRun({ status: 'failed', currentNode: 'code' }))
+await page.waitForTimeout(3400)
+const noPriorBtn = await headerBtn('从失败节点续跑')
+check('无已完成前序：续跑同样置灰', noPriorBtn !== null && noPriorBtn.disabled === true)
+
+// ⑥ 重跑本次：任何失败态都可用，真点带 fresh
+await clearActions()
+await clickHeader('重跑本次')
+await page.waitForTimeout(300)
+const freshLog = await actionLog()
+check(
+  '点重跑本次 → pipelineRerun(runId, fresh)',
+  JSON.stringify(freshLog) === JSON.stringify([{ fn: 'pipelineRerun', args: ['prun_v', 'fresh'] }]),
+  JSON.stringify(freshLog),
+)
+// 回到运行中，后续 §4c 的执行推进按原状继续
+await page.evaluate(() => window.__serveRun({}))
+await page.waitForTimeout(3400)
 
 // ── §4c 执行中连线不消失（user 2026-11-17「在执行过程中，连接线没了」）──
 // 真实运行每 3s 轮询换一批 stage 行：节点从「没跑到」→「运行中」→「结算」，

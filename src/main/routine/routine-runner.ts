@@ -20,8 +20,8 @@
 // rows and calls the primitive per row, suppressing the per-row notification
 // and collecting settlements through `onSettled`.
 
-import { BrowserWindow, Notification } from 'electron'
 import { shortUuid } from '../utils/id'
+import { notify } from '../system/notify'
 import { agentSessionManager } from '../agent/session-manager'
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
@@ -61,23 +61,11 @@ async function findPendingToolUseId(sessionId: string): Promise<string | null> {
   return null
 }
 
-/** Best-effort desktop notification — exported for the batch runner's one
- *  summary per batch (children stay silent through notifyOnFinish: false). */
-export function notify(title: string, body: string): void {
-  try {
-    if (!Notification.isSupported()) return
-    const notification = new Notification({ title, body })
-    notification.on('click', () => {
-      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-      if (win) {
-        if (win.isMinimized()) win.restore()
-        win.show()
-        win.focus()
-      }
-    })
-    notification.show()
-  } catch { /* notifications are best-effort */ }
-}
+/** Best-effort desktop notification — re-exported for the batch runner's one
+ *  summary per batch (children stay silent through notifyOnFinish: false).
+ *  实现在 system/notify.ts（pipeline-engine 也要用，不能让它 import 本模块的
+ *  better-sqlite3 依赖图）；这里保留同名再导出，既有调用方零改动。 */
+export { notify }
 
 /** Write the run's transcript into the conversations store — main-hosted
  *  sessions have no renderer to persist for them, and run-history click-through

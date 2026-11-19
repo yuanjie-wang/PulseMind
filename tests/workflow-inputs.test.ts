@@ -136,15 +136,77 @@ describe('run path wiring', () => {
 
 describe('run form wiring (WorkflowRunModal, P3 自 WorkflowSection 抽出)', () => {
   const section = read('src/renderer/src/components/routine/WorkflowRunModal.tsx')
+  const zh = read('src/renderer/src/i18n/locales/zh.ts')
+  const en = read('src/renderer/src/i18n/locales/en.ts')
 
-  it('动态输入字段 + required 前端门 + plans 可空文案', () => {
+  it('动态输入字段 + required 前端门', () => {
     expect(section).toMatch(/runWorkflow\?\.inputs/)
     expect(section).toMatch(/i\.required && !\(runVars\[i\.key\]/)
     expect(section).toContain('runInputRequired')
   })
 
+  it('plans 输入区已撤（user 2026-11-18）：手动启动恒单实例，别再长回来', () => {
+    expect(section).not.toContain('plansPlaceholder')
+    expect(section).not.toContain('runHint')
+    // 大小写不敏感：runPlans 的漏网形态 setRunPlans（startRun 残留未删）曾让
+    // 点击即 ReferenceError、浮窗挂不出来——substring 钉必须 /i。
+    expect(section).not.toMatch(/runplans/i)
+    // bridge 契约 plans: string[] 必带——手动路径恒传空 = 单实例。
+    expect(section).toMatch(/plans: \[\]/)
+    expect(zh).not.toContain('plansPlaceholder')
+    expect(zh).not.toContain('runHint')
+    expect(en).not.toContain('plansPlaceholder')
+    expect(en).not.toContain('runHint')
+  })
+
   it('启动调用携带 vars + 授权/模型覆盖', () => {
     expect(section).toMatch(/pipelineRun\(\{[^}]*vars: runVars/s)
     expect(section).toMatch(/approvalMode: runApproval/)
+  })
+
+  // 浮窗 UI 一刀（2026-11-18，review 九条）：以下四钉分别守「双击不重复
+  // 入队」「工作区可浏览」「必填有 inline 反馈」「placeholder 反映真实
+  // 生效值」——改动任何一条都要想清楚是不是在退回旧行为。
+  it('confirmLoading + 重入门：慢路径上双击「运行」不能铸两个实例', () => {
+    expect(section).toContain('confirmLoading={runSubmitting}')
+    expect(section).toMatch(/if \(runSubmitting\) return/)
+  })
+
+  it('工作区目录带「浏览」：openDirectory 选择器 + Input/Button 并排', () => {
+    expect(section).toMatch(/showOpenDialog\(\{ properties: \['openDirectory'\] \}\)/)
+    expect(section).toContain('workspaceBrowse')
+    expect(zh).toContain("workspaceLabel: '工作区目录'")
+    expect(en).toContain("workspaceLabel: 'Workspace directory'")
+  })
+
+  it('必填 inline 反馈：提交尝试后才标红（打开时常红是噪音）+ 星号内联在标签行', () => {
+    // runAttempted 门：标红 = runAttempted && 空，不是无条件红。
+    expect(section).toMatch(/runAttempted && workspaceBlank \? 'error' : undefined/)
+    expect(section).toMatch(/runAttempted && inp\.required && blank \? 'error' : undefined/)
+    // 星号是标签行的内联 span（单列 grid 里独立子元素会垂直堆叠成独立一行）。
+    expect(section).toMatch(/marginRight: 2 \}\}>\*<\/span>\}/)
+  })
+
+  it('全局目标栏位已撤（user 2026-11-18）：运行不带 objective，工作流级照常生效', () => {
+    // /i 负扫（runPlans 的教训：setRunPlans 大写形态漏过 substring 钉）。
+    expect(section).not.toMatch(/runObjective/i)
+    expect(section).not.toMatch(/objectiveLabel|objectivePlaceholder/)
+    expect(zh).not.toContain('objectiveLabel')
+    expect(zh).not.toContain('objectivePlaceholder')
+    expect(en).not.toContain('objectiveLabel')
+    expect(en).not.toContain('objectivePlaceholder')
+    // payload 不带 objective 键——launch.ts 缺席 = 工作流级目标。
+    expect(section).toMatch(/pipelineRun\(\{ workflowId: runWorkflow\.id, plans: \[\]/)
+  })
+
+  it('授权/模型 placeholder 反映真实生效值（运行级 > 工作流定义 > 缺省）', () => {
+    expect(section).toMatch(/approvalPlaceholderWorkflow/)
+    expect(section).toMatch(/modelPlaceholderWorkflow/)
+    expect(section).toMatch(/o\.value === runWorkflow\?\.approvalMode/)
+    expect(section).toMatch(/p\.id === runWorkflow\?\.profileId/)
+    expect(zh).toContain("approvalPlaceholderWorkflow: '工作流定义：{{label}}'")
+    expect(zh).toContain("modelPlaceholderWorkflow: '工作流指定：{{name}}'")
+    expect(en).toContain("approvalPlaceholderWorkflow: 'From workflow: {{label}}'")
+    expect(en).toContain("modelPlaceholderWorkflow: 'Pinned by workflow: {{name}}'")
   })
 })

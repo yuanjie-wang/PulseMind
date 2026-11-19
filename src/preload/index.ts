@@ -61,6 +61,7 @@ const electronAPI = {
   pipelineWorkflows: (op: 'list' | 'get' | 'save' | 'delete' | 'toggle', arg?: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_WORKFLOWS, op, arg),
   pipelineRun: (params: { workflowId: string; objective?: string; plans: string[]; workspaceDir: string; vars?: Record<string, string>; approvalMode?: string; profileId?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUN, params),
   pipelineStop: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_STOP, runId),
+  pipelineRerun: (runId: string, mode: 'fresh' | 'resume') => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RERUN, runId, mode),
   pipelineRuns: (runId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_RUNS, runId, limit),
   pipelineBatchRun: (params: { workflowId: string; csvPath?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_BATCH_RUN, params),
   pipelineBatchStop: (batchId: string) => ipcRenderer.invoke(IPC_CHANNELS.PIPELINE_BATCH_STOP, batchId),
