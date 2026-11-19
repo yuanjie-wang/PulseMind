@@ -479,6 +479,17 @@ function check(name, pass, detail) {
   console.log(`${pass ? '  PASS' : '  FAIL'}  ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 const near = (a, b) => Math.abs(a - b) <= 1.5
+// Resolve a themed token to its computed colour so the assertions compare like
+// with like (the border shorthand resolves through the same colour parser).
+const readVar = (name) =>
+  page.evaluate((n) => {
+    const probe = document.createElement('div')
+    probe.style.color = `var(${n})`
+    document.body.appendChild(probe)
+    const value = getComputedStyle(probe).color
+    probe.remove()
+    return value
+  }, name)
 /** 关掉节点属性模态框（脚注最后一颗钮 = 关闭；第一颗是删除）。添加新节点会
  *  自动选中它、模态框随之浮出——画布的后续动作（整理 / 拖线）必须先把遮罩撤掉，
  *  这正是模态框与旧的常驻栏在交互上的差别。 */
@@ -758,19 +769,25 @@ check(
   `dock=${dockGeom.dock?.cy.toFixed(1)} flow=${dockGeom.flow?.cy.toFixed(1)}`,
 )
 check(
-  '两个动作钮竖排（同 x，后一个更靠下）',
+  '动作钮竖排（同 x，逐个更靠下）',
   (() => {
-    const [a, b] = dockGeom.btns
-    return !!a && !!b && near(a.box.cx, b.box.cx) && b.box.top > a.box.top
+    const bs = dockGeom.btns
+    if (bs.length < 2) return false
+    return bs.every((b) => near(b.box.cx, bs[0].box.cx)) && bs.every((b, i) => i === 0 || b.box.top > bs[i - 1].box.top)
   })(),
   dockGeom.btns.map((b) => `${b.action}@${b.box.cx.toFixed(0)},${b.box.top.toFixed(0)}`).join(' | '),
 )
 check(
   '钮上只有图标（innerText 为空，文案退到 title/aria-label）',
-  dockGeom.btns.length === 2 && dockGeom.btns.every((b) => b.text === '' && b.label.length > 0),
+  // 四颗：添加 / 整理 / 撤销 / 重做（2026-11-18 撤销栈把后两颗加进来）。
+  dockGeom.btns.length === 4 && dockGeom.btns.every((b) => b.text === '' && b.label.length > 0),
   dockGeom.btns.map((b) => `"${b.text}"/"${b.label}"`).join(' | '),
 )
-check('动作齐全且顺序为 添加 → 整理', dockGeom.btns.map((b) => b.action).join(',') === 'add,tidy', dockGeom.btns.map((b) => b.action).join(','))
+check(
+  '动作齐全且顺序为 添加 → 整理 → 撤销 → 重做',
+  dockGeom.btns.map((b) => b.action).join(',') === 'add,tidy,undo,redo',
+  dockGeom.btns.map((b) => b.action).join(','),
+)
 check(
   '缩放条里不再挂添加钮（只剩 +/-/适应 三颗）',
   dockGeom.controlsBtns === 3 && dockGeom.controlsAddBtns === 0,
@@ -799,6 +816,49 @@ const afterAdd = await page.locator('.react-flow__node').count()
 await page.locator('[data-dock-action="tidy"]').click()
 await page.waitForTimeout(200)
 check('点「整理」不增删节点（只重排坐标）', (await page.locator('.react-flow__node').count()) === afterAdd)
+
+// 撤销 / 重做（2026-11-18）：历史在向导手里，dock 只是入口之一（另一个是
+// ⌘Z / ⇧⌘Z）。节点计数是这里唯一稳的观测量——坐标回滚要靠像素比对，
+// 而「加节点」与「整理」两步各自的进退会直接改变节点数。
+const undoBtn = page.locator('[data-dock-action="undo"]')
+const redoBtn = page.locator('[data-dock-action="redo"]')
+const nodeCount = () => page.locator('.react-flow__node').count()
+check(
+  '加过节点后「撤销」可点、「重做」仍灰',
+  (await undoBtn.isEnabled()) && !(await redoBtn.isEnabled()),
+  `undo=${await undoBtn.isEnabled()} redo=${await redoBtn.isEnabled()}`,
+)
+await undoBtn.click()
+await page.waitForTimeout(250)
+check(
+  '撤销一步：节点数不变（退掉的是整理，不是加节点）',
+  (await nodeCount()) === afterAdd && (await redoBtn.isEnabled()),
+  `${afterAdd} → ${await nodeCount()} redo=${await redoBtn.isEnabled()}`,
+)
+await undoBtn.click()
+await page.waitForTimeout(250)
+check(
+  '再撤销一步：新加的节点退场（回到 §5 起点）',
+  (await nodeCount()) === dockGeom.nodes,
+  `${afterAdd} → ${await nodeCount()}`,
+)
+await page.keyboard.press('Meta+z')
+await page.waitForTimeout(250)
+check(
+  '栈空时 ⌘Z 什么都不改（不是把图再往前推一格）',
+  (await nodeCount()) === dockGeom.nodes,
+  `${dockGeom.nodes} → ${await nodeCount()}`,
+)
+await page.keyboard.press('Meta+Shift+z')
+await page.waitForTimeout(250)
+check('⇧⌘Z 把节点带回来（键盘与 dock 共用同一条栈）', (await nodeCount()) === afterAdd, `${dockGeom.nodes} → ${await nodeCount()}`)
+await redoBtn.click()
+await page.waitForTimeout(250)
+check(
+  '再点「重做」：整理那一步也回来了（节点数不变，重做到底）',
+  (await nodeCount()) === afterAdd && !(await redoBtn.isEnabled()),
+  `${await nodeCount()} redo=${await redoBtn.isEnabled()}`,
+)
 await page.screenshot({ path: join(SHOTS, 'workflow-canvas-dock.png') })
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1629,26 +1689,31 @@ const verdictGeom = await page.evaluate(() => {
   }
   const nameEl = row.querySelector('[data-workflow-verdict-name]')
   const defEl = row.querySelector('[data-workflow-verdict-def]')
+  const colorEl = row.querySelector('[data-workflow-verdict-color]')
   const delEl = row.querySelector('button[aria-label="删除状态"]')
   return {
     name: box(nameEl),
     def: box(defEl),
+    color: box(colorEl),
     del: box(delEl),
     placeholder: defEl.getAttribute('placeholder') ?? '',
     ariaRequired: defEl.getAttribute('aria-required'),
   }
 })
-const centers = [verdictGeom.name.cy, verdictGeom.def.cy, verdictGeom.del.cy]
-check('三件控件在同一行（垂直中心差 ≤ 4px）', Math.max(...centers) - Math.min(...centers) <= 4, `centers=${centers.map((c) => c.toFixed(1)).join('/')}`)
+const centers = [verdictGeom.name.cy, verdictGeom.def.cy, verdictGeom.color.cy, verdictGeom.del.cy]
+check('四件控件在同一行（垂直中心差 ≤ 4px）', Math.max(...centers) - Math.min(...centers) <= 4, `centers=${centers.map((c) => c.toFixed(1)).join('/')}`)
 check(
   '状态名是窄字段（≈104px），定义占满剩余宽度（> 名字两倍）',
   Math.abs(verdictGeom.name.w - 104) <= 2 && verdictGeom.def.w > verdictGeom.name.w * 2,
   `name=${verdictGeom.name.w.toFixed(1)} def=${verdictGeom.def.w.toFixed(1)}`,
 )
 check(
-  '三者不重叠、删除钮在最右（名字 → 定义 → 删除）',
-  verdictGeom.name.right <= verdictGeom.def.x + 0.5 && verdictGeom.def.right <= verdictGeom.del.x + 1 && verdictGeom.del.w > 8,
-  `name.right=${verdictGeom.name.right.toFixed(1)} def=[${verdictGeom.def.x.toFixed(1)},${verdictGeom.def.right.toFixed(1)}] del.x=${verdictGeom.del.x.toFixed(1)}`,
+  '四者不重叠、删除钮在最右（名字 → 定义 → 类型圆圈 → 删除）',
+  verdictGeom.name.right <= verdictGeom.def.x + 0.5 &&
+    verdictGeom.def.right <= verdictGeom.color.x + 0.5 &&
+    verdictGeom.color.right <= verdictGeom.del.x + 1 &&
+    verdictGeom.del.w > 8,
+  `name.right=${verdictGeom.name.right.toFixed(1)} def=[${verdictGeom.def.x.toFixed(1)},${verdictGeom.def.right.toFixed(1)}] color=[${verdictGeom.color.x.toFixed(1)},${verdictGeom.color.right.toFixed(1)}] del.x=${verdictGeom.del.x.toFixed(1)}`,
 )
 check('定义占位文案写明必填、不再出现「可空」', verdictGeom.placeholder.includes('必填') && !verdictGeom.placeholder.includes('可空'), verdictGeom.placeholder)
 check(
@@ -1657,41 +1722,39 @@ check(
   `errorInputs=${await page.locator('[data-workflow-node-panel] [data-workflow-verdict-row] .ant-input-status-error').count()} aria-required=${verdictGeom.ariaRequired}`,
 )
 
-// 状态语义选择器（user 2026-11-17「你是不是写死了把 pass 作为成功态，failed 为
-// 失败态？」）：每行第三件控件，四档（自动/成功/失败/中性）。颜色只认它或拓扑
-// 推导，词面不携带语义——所以默认必须是「自动」（= 不声明、交给推导）。
-const kindSelect = (i = 0) => verdictRowLabel(i).locator('[data-workflow-verdict-kind] .ant-select')
-const kindValue = (i = 0) =>
+// 状态颜色圆圈（user 2026-11-19「不要平铺开，收到菜单里」+ 同日「不要对颜色
+// 进行定义，不要自动选项，默认选中蓝色」）：行内一颗当前生效色圆圈，点开
+// 菜单只有 7 色（无「自动」档、无语义后缀），未选色默认蓝。
+const colorBtnAt = (i = 0) => page.locator('[data-workflow-node-panel] [data-workflow-verdict-row]').nth(i).locator('[data-workflow-verdict-color]')
+const circleColorAt = (i = 0) =>
   page.evaluate((idx) => {
     const row = document.querySelectorAll('[data-workflow-node-panel] [data-workflow-verdict-row]')[idx]
-    // antd 6 的单选 Select 把选中值直接画在 `.ant-select-content` 里，
-    // 没有旧版的 `.ant-select-selection-item` 节点（多选才有）。
-    return row?.querySelector('[data-workflow-verdict-kind] .ant-select-content')?.textContent ?? ''
+    const el = row?.querySelector('[data-workflow-verdict-color] .wf-color-swatch')
+    return el ? getComputedStyle(el).backgroundColor : null
   }, i)
-const pickKind = async (i, label) => {
-  // 下拉已经开着就别再点一次——antd 的 Select 点一下是 toggle，会把刚展开的
-  // 菜单关掉，随后选项 locator 只等到一个不可见元素（实测超时）。
-  const open = await page.evaluate(() => !!document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)'))
-  if (!open) {
-    await kindSelect(i).click()
-    await page.waitForTimeout(200)
-  }
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: label }).first().click()
-  await page.waitForTimeout(250)
+const openColorMenu = async (i = 0) => {
+  await colorBtnAt(i).click()
+  await page.waitForSelector('.ant-dropdown:not(.ant-dropdown-hidden) .wf-verdict-menu-item')
+  await page.waitForTimeout(150)
 }
-const kindHint = await page.evaluate(
-  () => document.querySelector('[data-workflow-node-panel] [data-workflow-verdict-kind]')?.getAttribute('title') ?? '',
+const menuItem = (text) => page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item', { hasText: text }).first()
+const V0_9 = await readVar('--pm-verdict-0')
+const V1_9 = await readVar('--pm-verdict-1')
+const V3_9 = await readVar('--pm-verdict-3')
+check(
+  '每行带颜色圆圈，未选色默认蓝',
+  (await colorBtnAt().count()) === 1 && (await circleColorAt()) === V0_9,
+  `count=${await colorBtnAt().count()} bg=${await circleColorAt()} v0=${V0_9}`,
 )
-check('每行带状态语义选择器，默认「自动」（不声明 → 拓扑推导）', (await kindSelect().count()) === 1 && (await kindValue()) === '自动', await kindValue())
-check('语义提示写明「不参与调度」', kindHint.includes('不参与调度'), kindHint)
-await kindSelect().click()
+check('颜色提示写明「不参与调度」', ((await colorBtnAt().getAttribute('title')) ?? '').includes('不参与调度'), await colorBtnAt().getAttribute('title'))
+await openColorMenu()
+check('菜单收拢 7 项：只有颜色（无自动档，不平铺）', (await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .wf-verdict-menu-item').count()) === 7)
+check('未选色时「蓝色」是选中项', ((await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item-selected').textContent()) ?? '').includes('蓝色'))
+// 选绿；保持显式绿不放掉——下面的改名/重开/删状态三段全靠它验证颜色跟着
+// 状态名搬家（颜色不带语义：绿只是个颜色选择，不是「成功」）。
+await menuItem('绿色').click()
 await page.waitForTimeout(250)
-const kindOptions = await page.evaluate(() =>
-  [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')].map((el) => el.textContent),
-)
-check('语义四档：自动 / 成功 / 失败 / 中性', JSON.stringify(kindOptions) === JSON.stringify(['自动', '成功', '失败', '中性']), JSON.stringify(kindOptions))
-await pickKind(0, '成功')
-check('选「成功」落在行上', (await kindValue()) === '成功', await kindValue())
+check('选绿：圆圈变绿（选色即生效）', (await circleColorAt()) === V1_9, `bg=${await circleColorAt()} v1=${V1_9}`)
 
 // 先写定义、再改名：定义的键必须跟着状态名一起搬家（moveVerdictDef），
 // 否则改名之后这条状态在环节指令里就丢了「什么时候该报它」。
@@ -1713,7 +1776,12 @@ check(
   JSON.stringify(await verdictDefRows()) === JSON.stringify(['全部产物齐备且校验通过']),
   JSON.stringify(await verdictDefRows()),
 )
-check('改名不丢语义（verdictKinds 跟着键一起搬）', (await kindValue()) === '成功', await kindValue())
+check('改名不丢颜色（verdictColors 跟着键一起搬）', (await circleColorAt()) === V1_9, `bg=${await circleColorAt()} v1=${V1_9}`)
+// 改名换掉出口线头 id（out:done → out:成功），画布要在 rAF 里强制
+// updateNodeInternals 重测之后，引用新线头的边才有落点、<g> 才渲染——固定
+// 250ms 在负载下会抢在重测前读 DOM（实锤：三跑两败的时序抖动）。等新边
+// 出现才是这条断言的本意；旧边随 def 级联改写，与新边同帧替换。
+await page.waitForFunction(() => [...document.querySelectorAll('.react-flow__edge')].some((e) => e.getAttribute('data-id') === 'edge:plan|成功|code'), { timeout: 5000 })
 const edgeIdsAfterRename = await page.evaluate(() => [...document.querySelectorAll('.react-flow__edge')].map((e) => e.getAttribute('data-id')))
 const planEdgeIds = edgeIdsAfterRename.filter((id) => (id ?? '').startsWith('edge:plan|'))
 check(
@@ -1743,13 +1811,39 @@ check(
   JSON.stringify(await cardVerdictLabels()),
 )
 // 卡面只有状态名，定义挂在悬停文案上（「什么时候报这个状态」是长文本，塞不进卡片）。
-const planVerdictTitles = await page.evaluate(() =>
-  [...document.querySelectorAll('.react-flow__node[data-id="node:plan"] .wf-stage-verdict')].map((el) => el.getAttribute('title')),
+// 2026-11-18 起 title 还会接一句「没有出口连线」的警示——定义与警示是同一处悬停
+// 的两条信息（两个 title 属性只会后写的赢），所以断言按「名（+定义）· 警示」整串。
+const planVerdicts = await page.evaluate(() =>
+  [...document.querySelectorAll('.react-flow__node[data-id="node:plan"] .wf-stage-verdict')].map((el) => ({
+    title: el.getAttribute('title'),
+    unwired: el.classList.contains('wf-stage-verdict--unwired'),
+  })),
 )
 check(
-  '卡面悬停文案带定义（有定义 → 「状态：定义」，没定义 → 只有状态名）',
-  JSON.stringify(planVerdictTitles) === JSON.stringify(['成功：全部产物齐备且校验通过', 'state2']),
-  JSON.stringify(planVerdictTitles),
+  '卡面悬停文案 = 状态名（+ 定义），未接线的再接一句警示',
+  JSON.stringify(planVerdicts) ===
+    JSON.stringify([
+      { title: '成功：全部产物齐备且校验通过', unwired: false },
+      { title: 'state2 · 没有出口连线：运行到这个状态会让实例直接失败', unwired: true },
+    ]),
+  JSON.stringify(planVerdicts),
+)
+// 单状态节点没有状态名行，卡头的警示旗是唯一线索（2026-11-18）：有未接线状态
+// 才挂、挂在卡头且悬停能读到是哪几个状态。
+const unwiredFlags = await page.evaluate(() =>
+  [...document.querySelectorAll('.react-flow__node[data-id="node:plan"] .wf-unwired-flag')].map((el) => ({
+    hook: el.hasAttribute('data-workflow-unwired-warning'),
+    inHead: !!el.closest('.wf-stage-head'),
+    title: el.getAttribute('title'),
+  })),
+)
+check(
+  '未接线警示旗挂在卡头且点名状态（已接线的节点不挂）',
+  unwiredFlags.length === 1 &&
+    unwiredFlags[0].hook &&
+    unwiredFlags[0].inHead &&
+    (unwiredFlags[0].title ?? '').includes('state2'),
+  JSON.stringify(unwiredFlags),
 )
 // 定义存在节点 def 里（不是面板本地态）：关掉面板再打开必须还在。
 await closePanel()
@@ -1759,18 +1853,20 @@ check(
   JSON.stringify(await verdictDefRows()) === JSON.stringify(['全部产物齐备且校验通过', '']),
   JSON.stringify(await verdictDefRows()),
 )
-check('关掉面板再打开，语义仍在（存在节点 def 里，不是面板本地态）', (await kindValue()) === '成功', await kindValue())
+check('关掉面板再打开，颜色仍在（存在节点 def 里，不是面板本地态）', (await circleColorAt()) === V1_9, `bg=${await circleColorAt()}`)
 await page.screenshot({ path: join(SHOTS, 'workflow-node-verdicts.png') })
 
 // 删一个**没连线**的状态：不需要确认（确认弹窗只保护会连带删边的删除）。
-// 删之前先给它声明一个语义——删除必须把语义表里的键一起裁掉（simplify 也会
-// 裁孤儿键，但当场删干净，别让已删除的状态还带着颜色语义）。
-await pickKind(1, '失败')
-check('第二个状态可以独立声明语义（按节点内状态名分开）', (await kindValue(1)) === '失败', await kindValue(1))
+// 删之前先给它选个色（红）——删除必须把颜色表里的键一起裁掉（simplify 也会
+// 裁孤儿键，但当场删干净，别让已删除的状态还挂着颜色）。
+await openColorMenu(1)
+await menuItem('红色').click()
+await page.waitForTimeout(250)
+check('第二个状态可以独立选色（按节点内状态名分开：第二行红、第一行绿）', (await circleColorAt(1)) === V3_9 && (await circleColorAt(0)) === V1_9, `row1=${await circleColorAt(1)} row0=${await circleColorAt(0)}`)
 await verdictRowLabel(1).locator('button[aria-label="删除状态"]').click()
 await page.waitForTimeout(250)
 check('删没连线的状态不用二次确认，直接落地', JSON.stringify(await verdictRows()) === JSON.stringify(['成功']), JSON.stringify(await verdictRows()))
-check('删状态后语义表不串（第一行仍是「成功」）', (await kindValue(0)) === '成功', await kindValue(0))
+check('删状态后颜色表不串（第一行仍是绿）', (await circleColorAt(0)) === V1_9, `bg=${await circleColorAt(0)}`)
 check('确认弹窗没有浮出（无连线的状态删除是无损操作）', (await page.locator('.ant-modal-confirm').count()) === 0)
 check('只剩一个状态时删除钮禁用（没有状态 = 没有出口）', await verdictRowLabel(0).locator('button[aria-label="删除状态"]').isDisabled())
 
@@ -1810,18 +1906,6 @@ await closePanel()
 console.log('\n§9 · 无底色卡片 / 收起展开 / 拖动分隔条')
 await closePanel()
 await page.waitForTimeout(250)
-
-// Resolve a themed token to its computed colour so the assertions compare like
-// with like (the border shorthand resolves through the same colour parser).
-const readVar = (name) =>
-  page.evaluate((n) => {
-    const probe = document.createElement('div')
-    probe.style.color = `var(${n})`
-    document.body.appendChild(probe)
-    const value = getComputedStyle(probe).color
-    probe.remove()
-    return value
-  }, name)
 
 const BG = await readVar('--pm-bg')
 // --pm-fill stays only as a NEGATIVE control: the ruling was to stop painting
@@ -2469,21 +2553,29 @@ check(
   ids13.join(' | '),
 )
 
-// ── ① 静止态：不淡化、终态上色、无标签 ──
+// ── ① 静止态：不淡化、边吃状态色、无标签 ──
 const rest13 = { mid: await edgeStyle(EDGE_MID13), done: await edgeStyle(EDGE_DONE13), start: await edgeStyle(EDGE_START13) }
 check(
   '静止：没有选中态就一条都不淡化（三条边 <g> opacity 全是 1）',
   [rest13.mid, rest13.done, rest13.start].every((s) => s && s.gOpacity === '1'),
   JSON.stringify(rest13),
 )
-const SUCCESS13 = await readVar('--pm-success')
-const ERROR13 = await readVar('--pm-error')
-check('终态配色：通往 DONE 的边是成功色（stroke = --pm-success）', rest13.done?.stroke === SUCCESS13, `stroke=${rest13.done?.stroke} success=${SUCCESS13}`)
+// 状态色（user 2026-11-18）：连线 = 起点状态的调色板色。夹具的 done 状态
+// 未显式选色 → 默认蓝（--pm-verdict-0）——边与线头三处同色。
+const V0_13 = await readVar('--pm-verdict-0')
+const handleBg13 = (nodeId) =>
+  page.evaluate((nid) => {
+    const h = document.querySelector(`.react-flow__node[data-id="${nid}"] .react-flow__handle.wf-handle-source`)
+    return h ? getComputedStyle(h).backgroundColor : null
+  }, nodeId)
 check(
-  '终态配色只给终态：任务→任务的边仍是默认灰（既不是成功色也不是错误色）',
-  !!rest13.mid && rest13.mid.stroke !== SUCCESS13 && rest13.mid.stroke !== ERROR13,
-  `stroke=${rest13.mid?.stroke} success=${SUCCESS13} error=${ERROR13}`,
+  '状态色：两条出边都是起点状态的推导色（stroke = --pm-verdict-0）',
+  rest13.mid?.stroke === V0_13 && rest13.done?.stroke === V0_13,
+  `mid=${rest13.mid?.stroke} done=${rest13.done?.stroke} v0=${V0_13}`,
 )
+const bgPlan13 = await handleBg13('node:plan')
+const bgCode13 = await handleBg13('node:code')
+check('线头同色：plan/code 的出线头背景同为 --pm-verdict-0', bgPlan13 === V0_13 && bgCode13 === V0_13, `plan=${bgPlan13} code=${bgCode13}`)
 check(
   '单状态节点的出边不挂状态词（没有 EdgeText 包裹层）',
   rest13.mid?.label === null && rest13.done?.label === null,
@@ -2621,9 +2713,9 @@ check(
   `edges=${[back13.mid, back13.done, back13.start].map((s) => s?.gOpacity).join('/')} nodes=${JSON.stringify(backNodes13)}`,
 )
 check(
-  '取消选中后 DONE 的边回到成功色（选中蓝只是临时让位，不是覆盖）',
-  back13.done?.stroke === SUCCESS13 && back13.done?.selected === false,
-  `stroke=${back13.done?.stroke} success=${SUCCESS13}`,
+  '取消选中后 DONE 的边回到状态色（选中蓝只是临时让位，不是覆盖）',
+  back13.done?.stroke === V0_13 && back13.done?.selected === false,
+  `stroke=${back13.done?.stroke} v0=${V0_13}`,
 )
 check('回到静止后状态词仍不存在（撤除不是隐藏）', back13.mid?.label === null || back13.mid?.label === undefined || back13.mid?.label === '0', `label=${back13.mid?.label}`)
 await page.screenshot({ path: join(SHOTS, '13-read-language-rest.png') })
@@ -2741,6 +2833,61 @@ check(
   turningPts && blockerPts ? `crossings=${crossingsOf(blockerPts, turningPts)}` : '路径缺失',
 )
 await page.screenshot({ path: join(SHOTS, '14-routing-alt-side.png') })
+
+// ══════════════════════════════════════════════════════════════════════════
+// §15 · 状态颜色（user 2026-11-19：7 色收进菜单、不带语义定义、无自动档、
+// 默认蓝；选色同步画布线头与连线）
+// ══════════════════════════════════════════════════════════════════════════
+// 颜色链路的每一环只有真渲染读 computed style 才算数：面板圆圈与菜单选中项、
+// 边 <path> 的 stroke（经 --xy-edge-stroke 变量）、线头 Handle 的背景。判定
+// 走「现场解析 CSS 变量」——探针不写死 hex，主题改色不需要改这里。
+console.log('\n§15 · 状态颜色：圆圈菜单 → 线头/连线同步')
+await mountWorkflow()
+await gotoStep('任务内容')
+await page.waitForSelector('.react-flow__node[data-id="terminal:DONE"]')
+await page.locator('.react-flow__controls-fitview').click()
+await page.waitForTimeout(400)
+
+const EDGE_DONE15 = 'edge:code|done|DONE'
+const handleBg15 = (nodeId) =>
+  page.evaluate((nid) => {
+    const h = document.querySelector(`.react-flow__node[data-id="${nid}"] .react-flow__handle.wf-handle-source`)
+    return h ? getComputedStyle(h).backgroundColor : null
+  }, nodeId)
+const circleBg15 = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('[data-workflow-node-panel] [data-workflow-verdict-color] .wf-color-swatch')
+    return el ? getComputedStyle(el).backgroundColor : null
+  })
+const openMenu15 = async () => {
+  await page.locator('[data-workflow-node-panel] [data-workflow-verdict-color]').click()
+  await page.waitForSelector('.ant-dropdown:not(.ant-dropdown-hidden) .wf-verdict-menu-item')
+  await page.waitForTimeout(150)
+}
+const menuItem15 = (text) => page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item', { hasText: text }).first()
+
+await openNodePanel('node:code')
+const V0_15 = await readVar('--pm-verdict-0')
+const V2_15 = await readVar('--pm-verdict-2')
+check('未选色：类型圆圈默认蓝', (await circleBg15()) === V0_15, `bg=${await circleBg15()} v0=${V0_15}`)
+await openMenu15()
+check('菜单 7 项（只有颜色，无自动档，不平铺）', (await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .wf-verdict-menu-item').count()) === 7)
+await menuItem15('橙色').click()
+await page.waitForTimeout(400)
+check('点橙（下标 2）：code→DONE 边变橙（stroke = --pm-verdict-2）', (await edgeStyle(EDGE_DONE15))?.stroke === V2_15, `stroke=${(await edgeStyle(EDGE_DONE15))?.stroke} v2=${V2_15}`)
+const bg15 = await handleBg15('node:code')
+check('点橙：出线头背景同步变橙（Handle = --pm-verdict-2）', bg15 === V2_15, `bg=${bg15} v2=${V2_15}`)
+check('点橙：类型圆圈同步变橙', (await circleBg15()) === V2_15, `bg=${await circleBg15()}`)
+await openMenu15()
+check('重开菜单：橙色项带选中态（色随 def 走，不是 DOM 态）', (await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item-selected', { hasText: '橙色' }).count()) === 1)
+// 点回蓝色 = 显式写 0（默认色与显式蓝同值，落盘是用户的选择）。
+await menuItem15('蓝色').click()
+await page.waitForTimeout(400)
+check('点回蓝：边色 = --pm-verdict-0', (await edgeStyle(EDGE_DONE15))?.stroke === V0_15, `stroke=${(await edgeStyle(EDGE_DONE15))?.stroke} v0=${V0_15}`)
+check('点回蓝：线头 = --pm-verdict-0', (await handleBg15('node:code')) === V0_15)
+check('点回蓝：圆圈 = --pm-verdict-0', (await circleBg15()) === V0_15)
+await closeNodePanel()
+await page.screenshot({ path: join(SHOTS, '15-verdict-colors.png') })
 
 await browser.close()
 

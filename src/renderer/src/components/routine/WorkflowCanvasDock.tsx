@@ -7,7 +7,7 @@
 // 两个入口既冗余又容易被当成缩放按钮——那个钮已撤，添加只此一处。
 
 import React from 'react'
-import { ApartmentOutlined, PlusOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, PlusOutlined, RedoOutlined, UndoOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 
 export interface WorkflowCanvasDockProps {
@@ -15,13 +15,25 @@ export interface WorkflowCanvasDockProps {
   onAddNode: () => void
   /** 自动整理布局（全量重排，忽略已有坐标）。 */
   onTidy: () => void
+  /** 撤销/重做（2026-11-18）：历史在向导手里（与助手补丁同一条栈），
+   *  这里只是入口之一（另一个是 ⌘Z / ⇧⌘Z）。缺席 = 该画布没有历史。 */
+  onUndo?: () => boolean
+  onRedo?: () => boolean
+  canUndo?: boolean
+  canRedo?: boolean
 }
 
-export function WorkflowCanvasDock({ onAddNode, onTidy }: WorkflowCanvasDockProps): React.ReactElement {
+export function WorkflowCanvasDock({ onAddNode, onTidy, onUndo, onRedo, canUndo, canRedo }: WorkflowCanvasDockProps): React.ReactElement {
   const { t } = useTranslation()
   const actions = [
-    { key: 'add', icon: <PlusOutlined />, label: t('workflow.canvasAddNode'), onClick: onAddNode },
-    { key: 'tidy', icon: <ApartmentOutlined />, label: t('workflow.canvasTidy'), onClick: onTidy },
+    { key: 'add', icon: <PlusOutlined />, label: t('workflow.canvasAddNode'), onClick: onAddNode, disabled: false },
+    { key: 'tidy', icon: <ApartmentOutlined />, label: t('workflow.canvasTidy'), onClick: onTidy, disabled: false },
+    ...(onUndo
+      ? [
+          { key: 'undo', icon: <UndoOutlined />, label: t('workflow.canvasUndo'), onClick: () => void onUndo(), disabled: !canUndo },
+          { key: 'redo', icon: <RedoOutlined />, label: t('workflow.canvasRedo'), onClick: () => void onRedo?.(), disabled: !canRedo },
+        ]
+      : []),
   ]
   return (
     <div className="wf-canvas-dock" data-canvas-dock="workflow" role="toolbar" aria-orientation="vertical">
@@ -32,6 +44,7 @@ export function WorkflowCanvasDock({ onAddNode, onTidy }: WorkflowCanvasDockProp
           className="wf-dock-btn"
           data-dock-action={a.key}
           onClick={a.onClick}
+          disabled={a.disabled}
           title={a.label}
           aria-label={a.label}
         >

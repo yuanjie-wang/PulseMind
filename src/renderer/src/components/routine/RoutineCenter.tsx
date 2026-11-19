@@ -10,7 +10,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tooltip } from 'antd'
-import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -25,6 +25,8 @@ import { useWorkflowRun } from './WorkflowRunModal'
 import { UnifiedRunsSidebar } from './UnifiedRunsSidebar'
 import { ShareImportModal } from './ShareImportModal'
 import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
+import { WORKFLOW_TEMPLATE_ENTRIES } from './workflow-templates'
+import { copyName, duplicateTriggers } from './task-copy'
 import { discardAssistConversation } from '../form-assist/session-lifecycle'
 import { formAssistConversationId } from '../form-assist/form-assist'
 import { ROUTINE_ASSIST_SPEC } from './routine-assist'
@@ -131,6 +133,11 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     navigate({ kind: 'routines', routineEditing: true, routineTemplateId: templateId })
   }
 
+  /** 工作流模板 → 向导 workflow 分支（模板定义由主进程播种，向导取副本当草稿）。 */
+  const openWorkflowTemplate = (templateId: string): void => {
+    navigate({ kind: 'routines', workflowEditing: true, workflowTemplateId: templateId })
+  }
+
   /** 分享导入：主进程开文件对话框 → 解析/消毒/校验 → 预览行 + importToken。 */
   const openImport = useCallback(async () => {
     setImportError(undefined)
@@ -216,6 +223,45 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     }).catch((err: unknown) => notify.error(err instanceof Error ? err.message : String(err)))
   }
 
+  // ── 复制任务（user 2026-11-18）──
+  // 名字递增与触发器的口径在 task-copy.ts（纯函数，单测覆盖）。定时任务的副本
+  // 先停用：两份同 cron 的任务会同时跑，而卡片上的开关随时能再打开；手动任务
+  // 的 enabled 原样保留——它没有开关可点，停用就成了永久禁用。
+  const duplicateRoutine = (routine: Routine): void => {
+    window.electronAPI.routineCreate({
+      name: copyName(routine.name, t('routine.copySuffix')),
+      description: routine.description,
+      prompt: routine.prompt,
+      params: routine.params,
+      icon: routine.icon,
+      schedule: routine.schedule,
+      enabled: routine.schedule?.cron ? false : routine.enabled,
+      skills: routine.skills,
+      workspaceDir: routine.workspaceDir,
+      approvalMode: routine.approvalMode,
+      profileId: routine.profileId,
+      timeoutMinutes: routine.timeoutMinutes,
+      batch: routine.batch,
+      triggers: duplicateTriggers(routine.triggers),
+    }).then(() => {
+      notify.success(t('routine.duplicated'))
+      void reload()
+    }).catch((err: unknown) => notify.error(err instanceof Error ? err.message : String(err)))
+  }
+
+  const duplicateWorkflow = (wf: WorkflowDefinition): void => {
+    void window.electronAPI.pipelineWorkflows('save', {
+      ...wf,
+      id: `flow-${Date.now()}`,
+      name: copyName(wf.name, t('routine.copySuffix')),
+      enabled: wf.schedule?.cron ? false : wf.enabled,
+      triggers: duplicateTriggers(wf.triggers),
+    }).then(() => {
+      notify.success(t('routine.duplicated'))
+      void reload()
+    }).catch((err: unknown) => notify.error(err instanceof Error ? err.message : String(err)))
+  }
+
   // ── 混排卡片：两类同壳，按名称排序（不区分是哪一种，user 2026-11-08）。 ──
   // 标签只有两个（user 2026-11-09）：执行计划（手动执行 / 下次运行时间）与
   // 批量数据（配了 CSV 才出现）。其余的定时 Tag、最近运行、变量列表一律不展示。
@@ -234,6 +280,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     onRun: () => void
     onBatch?: () => void
     onEdit: () => void
+    onDuplicate: () => void
     onExport: () => void
     onDelete: () => void
     onOpen: () => void
@@ -260,6 +307,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
       onRun: () => runNow(routine),
       onBatch: routine.batch?.csvPath ? () => runBatch(routine) : undefined,
       onEdit: () => openEditor(routine),
+      onDuplicate: () => duplicateRoutine(routine),
       onExport: () => exportItem('routine', routine.id),
       onDelete: () => removeRoutine(routine),
       onOpen: () => openHistory(routine.id),
@@ -289,6 +337,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
       onRun: () => runWorkflowNow(wf),
       onBatch: wf.batch?.csvPath ? () => setBatchWorkflow(wf) : undefined,
       onEdit: () => openWorkflowEditor(wf),
+      onDuplicate: () => duplicateWorkflow(wf),
       onExport: () => exportItem('workflow', wf.id),
       onDelete: () => removeWorkflow(wf),
       onOpen: () => openWorkflowEditor(wf),
@@ -406,6 +455,9 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                       <Tooltip title="编辑">
                         <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={card.onEdit} />
                       </Tooltip>
+                      <Tooltip title={t('routine.duplicate')}>
+                        <Button type="text" icon={<CopyOutlined style={{ fontSize: 15 }} />} data-action="task-duplicate" onClick={card.onDuplicate} />
+                      </Tooltip>
                       <Tooltip title="导出">
                         <Button type="text" icon={<ExportOutlined style={{ fontSize: 15 }} />} data-action="share-export" onClick={card.onExport} />
                       </Tooltip>
@@ -452,6 +504,36 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                   </button>
                 ))}
               </div>
+              {/* 工作流模板（user 2026-11-18）：内置工作流的「新建起点」。与上面
+                  同一契约——点击只把定义带进向导做草稿，保存后才创建。 */}
+              {WORKFLOW_TASKS_UI && (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--pm-text-muted)', margin: '16px 0 8px' }}>
+                    {t('routine.workflowTemplates')}
+                  </div>
+                  <div style={TEMPLATE_GRID}>
+                    {WORKFLOW_TEMPLATE_ENTRIES.map((template) => (
+                      <button
+                        key={template.id}
+                        type="button"
+                        data-workflow-template={template.id}
+                        className="routine-template"
+                        onClick={() => openWorkflowTemplate(template.id)}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)' }}>
+                            {template.name[locale] || template.name.zh}
+                          </span>
+                          <span className="routine-pill">{t('routine.workflowBadge')}</span>
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)', lineHeight: '18px' }}>
+                          {template.description[locale] || template.description.zh}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           </div>
 

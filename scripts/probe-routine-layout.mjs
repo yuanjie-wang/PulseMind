@@ -40,6 +40,14 @@
  *   - the starters: five templates, each a real <button> whose click reaches
  *     the navigation store as `routineEditing + routineTemplateId` and creates
  *     NOTHING (the whole point of a template is that it is not a routine yet)
+ *   - the workflow starter group (2026-11-18): a second grid under the routine
+ *     five, each click reaching the wizard as `workflowEditing +
+ *     workflowTemplateId` — also creating nothing (the definition is a draft
+ *     until 保存). The templates section can therefore hold two grids, which is
+ *     why its bottom padding is measured against the LAST one
+ *   - 复制 (2026-11-18): every card carries the action, and duplicating a
+ *     scheduled task goes through routineCreate as 「… 副本」 with enabled=false
+ *     (two tasks on one cron would fire twice; the card switch re-enables it)
  *   - 新建任务 from either affordance lands on the plain create-new form (no
  *     stale templateId) and creates nothing either, and the empty state keeps
  *     the card and the starters on screen
@@ -364,8 +372,21 @@ window.__layout = () => {
   const templates = document.querySelector('[data-section="templates"]')
   const runs = document.querySelector('[data-section="runs"]')
   const cards = [...document.querySelectorAll('.routine-card')]
-  const buttons = [...document.querySelectorAll('.routine-template')]
+  // Only the ROUTINE starters: data-template is their identity attribute. The
+  // workflow template group (2026-11-18) shares the .routine-template visual
+  // class but carries data-workflow-template and lives in a second grid below
+  // the first — counting it here would turn "five starters" into seven and
+  // shift every geometry assertion below onto the wrong grid.
+  const buttons = [...document.querySelectorAll('.routine-template[data-template]')]
   const grid = buttons[0] ? buttons[0].parentElement : null
+  // The templates section can now hold TWO grids (routine starters, then the
+  // workflow group). The "slab is uncapped" check below measures the section's
+  // bottom against its LAST grid, so the group must be measured, not assumed.
+  const templateGrids = templates
+    ? [...templates.children].filter((el) => el !== templates.firstElementChild)
+    : []
+  const lastTemplateGrid = templateGrids.length ? templateGrids[templateGrids.length - 1] : null
+  const workflowTemplateButtons = [...document.querySelectorAll('.routine-template[data-workflow-template]')]
   const runsScroller = runs ? runs.querySelector('div[style*="overflow-y"]') : null
   return {
     view: box(document.getElementById('view')),
@@ -406,6 +427,12 @@ window.__layout = () => {
     templateIsButton: buttons.map((b) => b.tagName === 'BUTTON' && b.getAttribute('type') === 'button'),
     // The description inside the card, to prove the whole card is the target.
     templateDescBoxes: buttons.map((b) => box(b.querySelectorAll('span')[1])),
+    // Second group (workflow templates): the last grid in the section and its
+    // buttons, measured separately so the routine-starter contract stays exact.
+    lastTemplateGrid: box(lastTemplateGrid),
+    workflowTemplateIds: workflowTemplateButtons.map((b) => b.getAttribute('data-workflow-template')),
+    workflowTemplateBoxes: workflowTemplateButtons.map((b) => box(b)),
+    workflowTemplateNames: workflowTemplateButtons.map((b) => b.querySelector('span span')?.textContent ?? ''),
   }
 }
 /** The 新建任务 card's own facts — one element, read three ways (tag/box/paint). */
@@ -650,8 +677,11 @@ check(
 )
 check(
   '…and the lower half ends at its own bottom padding (nothing stretches it — natural height, no leftover distributed inside it)',
-  L.templates.bottom - L.grid.bottom >= 18 && L.templates.bottom - L.grid.bottom <= 24,
-  `templates end ${L.templates.bottom.toFixed(1)}, grid ends ${L.grid.bottom.toFixed(1)} (Δ ${(L.templates.bottom - L.grid.bottom).toFixed(1)} = the 20px bottom padding)`
+  // Since 2026-11-18 the section holds a second grid (workflow templates), so
+  // "the content" is the LAST grid — measuring the routine grid would read the
+  // whole second group as leftover distributed space.
+  L.lastTemplateGrid != null && L.templates.bottom - L.lastTemplateGrid.bottom >= 18 && L.templates.bottom - L.lastTemplateGrid.bottom <= 24,
+  `templates end ${L.templates.bottom.toFixed(1)}, last grid ends ${L.lastTemplateGrid ? L.lastTemplateGrid.bottom.toFixed(1) : 'n/a'} (Δ ${L.lastTemplateGrid ? (L.templates.bottom - L.lastTemplateGrid.bottom).toFixed(1) : 'n/a'} = the 20px bottom padding)`
 )
 check('…inside the left column (never under the runs column)', L.templates.right <= L.runs.left + 0.5, `${L.templates.right.toFixed(1)} <= ${L.runs.left.toFixed(1)}`)
 check('the task cards render in that upper half', L.cardCount === 3 && L.cardBox.top >= L.tasks.top && L.cardBox.bottom <= L.templates.top, `${L.cardCount} cards, first ${L.cardBox.top.toFixed(1)}..${L.cardBox.bottom.toFixed(1)}`)
@@ -687,8 +717,8 @@ check(
 )
 check(
   'the template slab is uncapped (no 52% limit, no inner scroller — the 2026-09-24 ruling)',
-  L.templatesScroller === null && Math.abs(L.templates.bottom - L.grid.bottom - 20) < 1,
-  `grid ends ${L.grid.bottom.toFixed(1)}, slab ends ${L.templates.bottom.toFixed(1)}, inner scroller ${L.templatesScroller ? 'present' : 'none'}`
+  L.templatesScroller === null && L.lastTemplateGrid != null && Math.abs(L.templates.bottom - L.lastTemplateGrid.bottom - 20) < 1,
+  `last grid ends ${L.lastTemplateGrid ? L.lastTemplateGrid.bottom.toFixed(1) : 'n/a'}, slab ends ${L.templates.bottom.toFixed(1)}, inner scroller ${L.templatesScroller ? 'present' : 'none'}`
 )
 await page.screenshot({ path: join(SHOTS, 'zh.png') })
 
@@ -726,6 +756,62 @@ check(
 )
 check('…and writes nothing (no routine is created by a click)', !callsAfterTemplate.includes('routineCreate'), callsAfterTemplate.join(', '))
 check('the template’s own routine is not opened for editing', afterTemplate.routineId === undefined, String(afterTemplate.routineId))
+
+// ── 6b · the second starter group: workflow templates (2026-11-18) ──
+// Same contract as the routine starters — a click hands the wizard a template
+// id and creates nothing — but a different id space (workflowTemplateId) and a
+// definition main seeds. The group is why the templates section can hold TWO
+// grids, so its geometry is asserted here rather than assumed.
+check(
+  'two workflow starters render, in order, as real buttons',
+  JSON.stringify(L.workflowTemplateIds) === JSON.stringify(['coding-pipeline', 'doc-translate-pipeline']) &&
+    L.workflowTemplateBoxes.every((b) => b != null),
+  L.workflowTemplateIds.join(', ')
+)
+check(
+  '…strictly below the routine grid and inside the left column',
+  L.workflowTemplateBoxes.length === 2 &&
+    L.workflowTemplateBoxes[0].top >= L.grid.bottom - 0.5 &&
+    L.workflowTemplateBoxes.every((b) => b.left >= L.tasks.left - 0.5 && b.right <= L.runs.left + 0.5),
+  `routine grid ends ${L.grid.bottom.toFixed(1)}, workflow group starts ${L.workflowTemplateBoxes[0] ? L.workflowTemplateBoxes[0].top.toFixed(1) : 'n/a'}`
+)
+await page.evaluate(() => { window.__calls = [] })
+await page.locator('.routine-template[data-workflow-template="coding-pipeline"]').click()
+await page.waitForTimeout(120)
+const afterWfTemplate = await viewOf()
+const callsAfterWfTemplate = await page.evaluate(() => window.__calls.map((c) => c.method))
+check(
+  'a workflow template click opens the workflow wizard with that template id',
+  afterWfTemplate.kind === 'routines' && afterWfTemplate.workflowEditing === true &&
+    afterWfTemplate.workflowTemplateId === 'coding-pipeline' && afterWfTemplate.workflowId === undefined,
+  JSON.stringify(afterWfTemplate)
+)
+check(
+  '…and writes nothing (the definition is only a draft until 保存)',
+  !callsAfterWfTemplate.includes('pipelineSave') && !callsAfterWfTemplate.includes('routineCreate'),
+  callsAfterWfTemplate.join(', ')
+)
+
+// ── 6c · 复制：a card action that creates a copy, not a template click ──
+// Two rules the unit tests pin (task-copy.test.ts) are worth seeing in the real
+// card too: the name increments, and a SCHEDULED copy is created disabled (two
+// tasks on one cron would fire twice; the card's switch can re-enable it).
+await page.evaluate(() => { window.__mount({}) })
+await page.waitForSelector('.routine-card')
+const dupButtons = await page.locator('[data-action="task-duplicate"]').count()
+const dupCards = await page.locator('.routine-card').count()
+check('every task card carries a duplicate action', dupButtons === dupCards && dupCards === 3, `${dupButtons} buttons / ${dupCards} cards`)
+await page.evaluate(() => { window.__calls = [] })
+await page.locator('.routine-card', { hasText: '每日工作日报' }).first()
+  .locator('[data-action="task-duplicate"]').click()
+await page.waitForTimeout(150)
+const dupCall = await page.evaluate(() => window.__calls.find((c) => c.method === 'routineCreate'))
+check(
+  'duplicating a scheduled task creates 「… 副本」, disabled, same schedule',
+  !!dupCall && dupCall.args[0].name === '每日工作日报 副本' && dupCall.args[0].enabled === false &&
+    dupCall.args[0].schedule?.cron === '0 18 * * *',
+  dupCall ? JSON.stringify({ name: dupCall.args[0].name, enabled: dupCall.args[0].enabled, cron: dupCall.args[0].schedule?.cron }) : 'no routineCreate'
+)
 
 // ── 7 · 新建任务 lands on the plain create-new form, and creates nothing ──
 await page.evaluate(() => { window.__calls = [] })

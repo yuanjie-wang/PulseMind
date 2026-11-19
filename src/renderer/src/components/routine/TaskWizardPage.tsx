@@ -64,11 +64,28 @@ const WIZARD_ROW_GAP = 12
  *  state into the form (switching kinds clears the stack outright). */
 type UndoFrame = { kind: 'routine'; draft: RoutineDraftState; dirty: boolean } | { kind: 'workflow'; def: WorkflowDefinition; dirty: boolean }
 
+/** 画布撤销/重做的一帧（2026-11-18）。与上面的 UndoFrame 分开：routine 侧的
+ *  撤销栈只记助手补丁（表单编辑不走历史），workflow 侧记**全部**定义改动
+ *  （连线/拖拽/属性面板/助手补丁同一条栈），所以帧形状不需要 kind 标签。
+ *  assist 标记让「撤销助手填充」那条可见的 UndoBar 只在栈顶确实是助手补丁时
+ *  出现——用户随后手改了几笔，那颗钮不该假装还能还原助手那一次。 */
+interface WfFrame {
+  def: WorkflowDefinition
+  dirty: boolean
+  assist?: boolean
+}
+
+/** 连打合并窗口：同一个 coalesceKey 在这个时长内的连续改动合成一步（打一个字
+ *  一步历史等于撤销键失效）；超过窗口 = 新的思考段落，开新步。 */
+const WF_COALESCE_MS = 700
+const WF_HISTORY_LIMIT = 100
+
 export interface TaskWizardPageProps {
   kind: TaskKind
   /** routine 编辑目标；absent = 新建。 */
   routineId?: string
-  /** 推荐模板预填（routine 新建）。 */
+  /** 推荐模板预填（新建）：routine 分支读 routine-templates.ts，workflow 分支
+   *  读 workflow-templates.ts（内置定义从主进程取副本）。 */
   templateId?: string
   /** 对话工具条「存为日常任务」交接的草稿（一次消费）。 */
   routineDraft?: ExtractedRoutineDraft
@@ -142,6 +159,96 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   const [wfBoundId, setWfBoundId] = useState<string | null>(kindProp === 'workflow' ? (workflowId ?? null) : null)
   const [wfSessionReset, setWfSessionReset] = useState(0)
 
+  // ── 画布撤销/重做（2026-11-18）──
+  // 栈住在 ref 里而不是 state：撤销/重做会在同一 tick 里连读带写（键盘连按），
+  // state 闭包会读到上一帧；ref 永远是当前值。渲染只需要三个布尔（dock 可用态 +
+  // 助手撤销条），每次栈变化时算好塞进 state——渲染期不读 ref。def/dirty 也各有
+  // 一面 ref 镜像——mutateWf 要在 setDef 生效**之前**把「改之前」的那份压栈。
+  const wfHistRef = useRef<{ past: WfFrame[]; future: WfFrame[] }>({ past: [], future: [] })
+  const [wfHistView, setWfHistView] = useState<{ canUndo: boolean; canRedo: boolean; topIsAssist: boolean }>({
+    canUndo: false,
+    canRedo: false,
+    topIsAssist: false,
+  })
+  const wfEditRef = useRef<{ key: string; at: number } | null>(null)
+  const defRef = useRef(def)
+  const dirtyRef = useRef(dirty)
+  // 任何一次提交（含外部 setDef：预填/换 kind/保存）都把镜像拉回 state。
+  useEffect(() => {
+    defRef.current = def
+    dirtyRef.current = dirty
+  }, [def, dirty])
+
+  const syncWfHistView = useCallback(() => {
+    const h = wfHistRef.current
+    setWfHistView({
+      canUndo: h.past.length > 0,
+      canRedo: h.future.length > 0,
+      // 可见 UndoBar 只在栈顶是助手补丁时出现：它是「撤销助手填充」的专线，
+      // 用户自己的手改不该让这条 bar 冒出来（画布 dock 的两颗钮才是通用入口）。
+      topIsAssist: h.past.length > 0 && h.past[h.past.length - 1].assist === true,
+    })
+  }, [])
+
+  /** 把「当前 def」压进历史（同 key 的连打在窗口内不重复压）。 */
+  const pushWfFrame = useCallback(
+    (opts?: { assist?: boolean; coalesceKey?: string }) => {
+      const now = Date.now()
+      const last = wfEditRef.current
+      if (opts?.coalesceKey && last && last.key === opts.coalesceKey && now - last.at < WF_COALESCE_MS) {
+        last.at = now
+        return
+      }
+      wfEditRef.current = opts?.coalesceKey ? { key: opts.coalesceKey, at: now } : null
+      const h = wfHistRef.current
+      h.past.push({ def: defRef.current, dirty: dirtyRef.current, assist: opts?.assist })
+      if (h.past.length > WF_HISTORY_LIMIT) h.past.splice(0, h.past.length - WF_HISTORY_LIMIT)
+      h.future = []
+      syncWfHistView()
+    },
+    [syncWfHistView],
+  )
+
+  /** 清历史（换 kind / 加载另一份定义 / 保存成新基线）：跨定义的帧没有可还原的
+   *  对象，留着就是拿 A 的 def 覆盖 B。 */
+  const resetWfHistory = useCallback(() => {
+    wfHistRef.current = { past: [], future: [] }
+    wfEditRef.current = null
+    syncWfHistView()
+  }, [syncWfHistView])
+
+  const undoWf = useCallback((): boolean => {
+    const h = wfHistRef.current
+    const frame = h.past.pop()
+    if (!frame) return false
+    h.future.push({ def: defRef.current, dirty: dirtyRef.current })
+    wfEditRef.current = null
+    defRef.current = frame.def
+    dirtyRef.current = frame.dirty
+    setDef(frame.def)
+    setDirty(frame.dirty)
+    syncWfHistView()
+    return true
+  }, [syncWfHistView])
+
+  const redoWf = useCallback((): boolean => {
+    const h = wfHistRef.current
+    const frame = h.future.pop()
+    if (!frame) return false
+    h.past.push({ def: defRef.current, dirty: dirtyRef.current })
+    wfEditRef.current = null
+    defRef.current = frame.def
+    dirtyRef.current = frame.dirty
+    setDef(frame.def)
+    setDirty(frame.dirty)
+    syncWfHistView()
+    return true
+  }, [syncWfHistView])
+
+  const wfCanUndo = wfHistView.canUndo
+  const wfCanRedo = wfHistView.canRedo
+  const wfTopIsAssist = wfHistView.topIsAssist
+
   // workflow 预填（编辑既有）
   useEffect(() => {
     if (kind !== 'workflow' || !workflowId) return
@@ -156,7 +263,12 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
           setWfBoundId(null)
           return
         }
-        setDef(autoWorkflowLayout(normalizeSimpleWorkflow(loaded)))
+        const next = autoWorkflowLayout(normalizeSimpleWorkflow(loaded))
+        // 换了一份定义：历史里全是上一份 def 的帧，留着就会用 A 覆盖 B。
+        resetWfHistory()
+        defRef.current = next
+        dirtyRef.current = false
+        setDef(next)
         setDirty(false)
         setWfUpdateId(loaded.id)
         setWfBoundId(loaded.id)
@@ -167,7 +279,44 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
     return () => {
       alive = false
     }
-  }, [kind, workflowId])
+  }, [kind, workflowId, resetWfHistory])
+
+  // 模板预填（workflow 新建）：内置模板在主进程播种成了一份真实定义，这里取
+  // 它的**副本**当草稿——换新 id、名字沿用模板名，保存后才真正创建（与 routine
+  // 模板同一契约：点击不落盘）。模板被删掉时退回空白画布并说明原因。
+  const wfTemplateAppliedRef = useRef(false)
+  useEffect(() => {
+    // 用 kindProp（本页的入口分支）而不是 live kind：向导里切换任务类型不该把
+    // 另一个分支的 templateId 当成本分支的模板去取（routine 的模板 id 在这里
+    // 必然查不到，只会弹一句误导的「模板已不存在」）。
+    if (kindProp !== 'workflow' || workflowId || !templateId || wfTemplateAppliedRef.current) return
+    wfTemplateAppliedRef.current = true
+    let alive = true
+    void (async () => {
+      try {
+        const tpl = (await window.electronAPI.pipelineWorkflows('get', templateId)) as WorkflowDefinition | null
+        if (!alive) return
+        if (!tpl) {
+          notify.warning('该模板已不存在（可能已被删除），已切换到空白工作流')
+          return
+        }
+        // IPC 已结构化克隆，拿到的是自己的树；换 id 是为了保存时新建而不是覆盖模板。
+        const next = autoWorkflowLayout(normalizeSimpleWorkflow({ ...tpl, id: `flow-${Date.now()}` }))
+        resetWfHistory()
+        defRef.current = next
+        dirtyRef.current = false
+        setDef(next)
+        setDirty(false)
+        setWfUpdateId(null)
+        setWfBoundId(null)
+      } catch (err) {
+        console.warn('[TaskWizard] workflow template prefill failed:', err)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [kindProp, workflowId, templateId, resetWfHistory])
 
   // routine 预填（编辑既有）
   useEffect(() => {
@@ -244,9 +393,9 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
     void discardAssistConversation(assistConvId).then(() => setSessionReset((n) => n + 1))
   }, [assistConvId])
   const discardWorkflowSession = useCallback((): void => {
-    setUndoStack([])
+    resetWfHistory()
     void discardAssistConversation(wfAssistConvId).then(() => setWfSessionReset((n) => n + 1))
-  }, [wfAssistConvId])
+  }, [wfAssistConvId, resetWfHistory])
 
   const routineAssist = useFormAssistSession({
     convId: kind === 'routine' ? assistConvId : null,
@@ -264,7 +413,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   })
 
   // workflow 的补丁落地前先过保存同一道门：画布是硬门，不合法的链一律不写
-  // （助手不是用户，没有「先存个坏的再改」这回事）。不合法时不推 undo 帧——
+  // （助手不是用户，没有「先存个坏的再改」这回事）。不合法时不推历史帧——
   // 撤销条按帧数门控，不会假装有东西可撤。
   const workflowAssist = useFormAssistSession({
     convId: kind === 'workflow' ? wfAssistConvId : null,
@@ -283,8 +432,14 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
         notify.error(t('workflow.assistRejected'))
         return
       }
-      setUndoStack((stack) => [...stack, { kind: 'workflow', def, dirty }])
-      setDef(autoWorkflowLayout(normalized))
+      // 助手补丁与用户手改共用同一条历史（2026-11-18）：撤销一次就是退回补丁
+      // 之前那张图，不必在「撤销助手」与「撤销手改」之间猜。`assist` 标记让
+      // 那条可见的 UndoBar 只在栈顶确实是助手补丁时出现。
+      const next = autoWorkflowLayout(normalized)
+      pushWfFrame({ assist: true })
+      defRef.current = next
+      dirtyRef.current = true
+      setDef(next)
       // 图已经落画布，但保存门还多一条「每个状态必填定义」——这里顺手跑一次
       // 把它立刻回显，用户当场就看到哪几个状态没写定义，不必等到保存才被拦。
       // **只报不拒**：草稿语义不变，硬门仍只在 saveWorkflow 那一处。
@@ -304,7 +459,6 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   // workflow 新建态同款：进来先把草稿桶丢掉，保证每次新建都从干净线程开始。
   useEffect(() => {
     if (kind !== 'workflow' || wfBoundId !== null) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- same one-shot discard as the routine arm
     discardWorkflowSession()
   }, [kind, wfBoundId, discardWorkflowSession])
 
@@ -312,10 +466,23 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
     setDraft(next)
     setDirty(true)
   }
-  const mutateWf = useCallback((fn: (d: WorkflowDefinition) => WorkflowDefinition) => {
-    setDef((d) => fn(d))
-    setDirty(true)
-  }, [])
+  // workflow 侧的一切定义改动都走这里（2026-11-18 撤销/重做）：先把「改之前」
+  // 的那份压栈，再落新值。**eager 计算**而不是函数式 setDef——Delete 键那种
+  // 「先删节点、再删残余边」的连发里，第二次读到的是还没提交的旧 def，帧就错了；
+  // defRef 在两次调用之间始终指向最新草稿。
+  const mutateWf = useCallback(
+    (fn: (d: WorkflowDefinition) => WorkflowDefinition, coalesceKey?: string) => {
+      const prev = defRef.current
+      const next = fn(prev)
+      if (next === prev) return
+      pushWfFrame({ coalesceKey })
+      defRef.current = next
+      dirtyRef.current = true
+      setDef(next)
+      setDirty(true)
+    },
+    [pushWfFrame],
+  )
 
   const goBack = (): void => {
     const action = () => navigate({ kind: 'routines' })
@@ -386,6 +553,11 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
     setWfErrors([])
     try {
       await window.electronAPI.pipelineWorkflows('save', normalized)
+      // 保存 = 新基线：历史清空（再撤销就该回到磁盘上的版本之外了），
+      // defRef/dirtyRef 一并归位。
+      resetWfHistory()
+      defRef.current = normalized
+      dirtyRef.current = false
       setDef(normalized)
       setWfUpdateId(normalized.id)
       // 首次保存：草稿桶里的助手线程升格到工作流自己的槽位（routine 同款；
@@ -430,6 +602,13 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   }
 
   const undoAssistantPatch = (): void => {
+    // workflow 臂（2026-11-18）：助手补丁就在画布历史里，撤销一步 = 退回补丁前。
+    if (kind === 'workflow') {
+      if (!undoWf()) return
+      assist.clearAppliedPatch()
+      notify.success(t('formAssist.undone'))
+      return
+    }
     const frame = undoStack[undoStack.length - 1]
     if (!frame) return
     setUndoStack((stack) => stack.slice(0, -1))
@@ -492,8 +671,12 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   const resetForKind = (next: TaskKind): void => {
     setDirty(false)
     setUndoStack([])
+    resetWfHistory()
     if (next === 'workflow') {
-      setDef(autoWorkflowLayout(normalizeSimpleWorkflow(blankWorkflow((k) => t(k)))))
+      const fresh = autoWorkflowLayout(normalizeSimpleWorkflow(blankWorkflow((k) => t(k))))
+      defRef.current = fresh
+      dirtyRef.current = false
+      setDef(fresh)
       setWfUpdateId(null)
       setWfBoundId(null)
       setWfErrors([])
@@ -568,7 +751,8 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
   //    WorkflowInputDef 真有这一维，启动表单会渲染成文本域）。
   //    key 收紧到 \w：占位符是 {{key}}，键里有空格/标点会让替换歧义。
   const wfInputsChange = (rows: VariableRow[]): void => {
-    mutateWf((d) => ({ ...d, inputs: rows.map((r) => ({ ...r, key: r.key.replace(/[^\w]/g, '') })) }))
+    // 连打合并：变量名逐字符输入不该在历史里留一串帧（同 wf:name）。
+    mutateWf((d) => ({ ...d, inputs: rows.map((r) => ({ ...r, key: r.key.replace(/[^\w]/g, '') })) }), 'wf:inputs')
   }
 
   const canSave = kind === 'routine' ? draft.name.trim() !== '' && draft.prompt.trim() !== '' : def.name.trim() !== ''
@@ -629,8 +813,10 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
         {/* data-pm-wizard-editor: 步骤卡（探针据此断言助手卡不是它的后代）。 */}
         <div style={{ ...EDITOR_CARD_SURFACE, flexDirection: 'column', gap: 10 }} data-pm-wizard-editor>
           {/* 撤销条贯穿四步：助手改的字段可能落在任何一步，不该只在内容步出现。
-              门还要求栈里有帧——主人拒绝的补丁不会推帧，不能假装有东西可撤。 */}
-          {assist.appliedPatch && undoStack.length > 0 && <UndoBar onUndo={undoAssistantPatch} />}
+              门还要求栈顶确实是助手补丁——主人拒绝的补丁不会推帧，用户自己的
+              手改也不该把这条专线顶出来（画布 dock 才是通用撤销入口）。 */}
+          {assist.appliedPatch &&
+            (kind === 'workflow' ? wfTopIsAssist : undoStack.length > 0) && <UndoBar onUndo={undoAssistantPatch} />}
           <div className="auto-hide-scroll" style={{ flex: 1, minWidth: 0, overflowY: 'auto', paddingRight: 8 }}>
             {step === 'basics' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -643,7 +829,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
                     onChange={(e) => {
                       const name = e.target.value
                       if (kind === 'routine') editDraft({ ...draft, name })
-                      else mutateWf((d) => ({ ...d, name }))
+                      else mutateWf((d) => ({ ...d, name }), 'wf:name')
                     }}
                     placeholder={kind === 'routine' ? '例如：每日依赖巡检' : t('workflow.canvasNamePlaceholder')}
                     autoFocus
@@ -656,7 +842,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
                     onChange={(e) => {
                       const description = e.target.value
                       if (kind === 'routine') editDraft({ ...draft, description })
-                      else mutateWf((d) => ({ ...d, description }))
+                      else mutateWf((d) => ({ ...d, description }), 'wf:description')
                     }}
                     placeholder="可选，一句话说明这个任务做什么"
                   />
@@ -726,7 +912,14 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
                   </div>
                 )}
                 <div style={{ flex: 1, minHeight: 480 }}>
-                  <WorkflowCanvas def={def} mutate={mutateWf} />
+                  <WorkflowCanvas
+                    def={def}
+                    mutate={mutateWf}
+                    onUndo={undoWf}
+                    onRedo={redoWf}
+                    canUndo={wfCanUndo}
+                    canRedo={wfCanRedo}
+                  />
                 </div>
               </div>
             )}

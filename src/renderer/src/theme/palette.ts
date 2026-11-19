@@ -118,6 +118,18 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-warn-border': '#ffd591',
     '--pm-error': '#cf1322',
     '--pm-success': '#389e0d',
+    // ── 结果状态调色板（user 2026-11-18：节点结果状态 7 色圆圈，线头/连线
+    //  同步着色）。下标即 shared/workflow/verdict-colors.ts 的 0–6：蓝/绿/橙/
+    //  红四个锚点复用上方的 link/success/warn/error 字面量（未显式选色的状态
+    //  按 verdictKinds 推导到绿/红，缺省蓝 = 线头的旧观感），紫/青/灰是新色相。
+    //  dark 表取同色相亮一档的配对值。
+    '--pm-verdict-0': '#1677ff',
+    '--pm-verdict-1': '#389e0d',
+    '--pm-verdict-2': '#d46b08',
+    '--pm-verdict-3': '#cf1322',
+    '--pm-verdict-4': '#722ed1',
+    '--pm-verdict-5': '#08979c',
+    '--pm-verdict-6': '#8c8c8c',
     /** 工作区 tree row inks for files the session itself created / rewrote
      *  (2026-10-28): VS Code's light-modern git decoration pair (untracked /
      *  modified) — their own roles, not --pm-success/--pm-warn, which are
@@ -407,6 +419,15 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-warn-border': '#7c5914',
     '--pm-error': '#ff7875',
     '--pm-success': '#49aa19',
+    // 结果状态调色板（light 表注释同源）：同色相亮一档，锚点四色照抄本表
+    // link/success/warn/error 的 dark 值。
+    '--pm-verdict-0': '#4096ff',
+    '--pm-verdict-1': '#49aa19',
+    '--pm-verdict-2': '#d89614',
+    '--pm-verdict-3': '#ff7875',
+    '--pm-verdict-4': '#9254de',
+    '--pm-verdict-5': '#13c2c2',
+    '--pm-verdict-6': '#a6a6a6',
     '--pm-ws-created': '#73c991',
     '--pm-ws-modified': '#e2c08d',
     '--pm-elevated-glass': 'rgba(31, 31, 31, 0.85)',

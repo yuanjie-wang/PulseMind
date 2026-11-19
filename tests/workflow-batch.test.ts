@@ -106,7 +106,9 @@ describe('batch feeder & engine wiring', () => {
   })
 
   it('stop：cancel 撤队列（行记失败）+ stop 停在飞 + 内存注册表', () => {
-    expect(engine).toMatch(/cancel\(runId: string\): boolean/)
+    // reason 可换（2026-11-18 运行视图停止按钮）：批量面默认「批量已停止」，
+    // 单个实例的停止按钮自带「已停止」，两者都是用户在运行记录里读到的原因。
+    expect(engine).toMatch(/cancel\(runId: string, reason = '批量已停止（未启动）'\): boolean/)
     expect(engine).toMatch(/批量已停止/)
     expect(feeder).toMatch(/pipelineEngine\.cancel\(runId\)/)
     expect(feeder).toMatch(/pipelineEngine\.stop\(runId\)/)

@@ -74,16 +74,39 @@ export function nodeVerdictKinds(
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+/** 结果状态的颜色表归一（user 2026-11-18）：与 verdictKinds 同一条规矩——只留
+ *  **当前词汇表里还在**的键、值必须是整数（越界 clamp 在读取侧做，读面宽容），
+ *  全空返回 undefined（不写空对象，旧定义落盘形态逐字节不变）。 */
+export function nodeVerdictColors(node: { verdictColors?: Record<string, number> }, verdicts: string[]): Record<string, number> | undefined {
+  const source = node.verdictColors
+  if (!source || typeof source !== 'object') return undefined
+  const byName = new Map<string, number>()
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = rawKey.trim()
+    if (key.length === 0 || typeof rawValue !== 'number' || !Number.isInteger(rawValue)) continue
+    if (!byName.has(key)) byName.set(key, rawValue)
+  }
+  const out: Record<string, number> = {}
+  for (const verdict of verdicts) {
+    const color = byName.get(verdict)
+    if (color !== undefined) out[verdict] = color
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 export function normalizeSimpleWorkflow(def: WorkflowDefinition): WorkflowDefinition {
   const nodes: WorkflowNode[] = def.nodes.map((n) => {
     const verdicts = nodeVerdicts(n)
     const verdictDefs = nodeVerdictDefs(n, verdicts)
     const verdictKinds = nodeVerdictKinds(n, verdicts)
+    const verdictColors = nodeVerdictColors(n, verdicts)
     const next: WorkflowNode = { ...n, verdicts }
     if (verdictDefs) next.verdictDefs = verdictDefs
     else delete next.verdictDefs
     if (verdictKinds) next.verdictKinds = verdictKinds
     else delete next.verdictKinds
+    if (verdictColors) next.verdictColors = verdictColors
+    else delete next.verdictColors
     return next
   })
   const ids = new Set(nodes.map((n) => n.id))

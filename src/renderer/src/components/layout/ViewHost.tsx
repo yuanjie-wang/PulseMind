@@ -80,7 +80,7 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
         : view.routineEditing
           ? <LazyTaskWizardPage kind="routine" routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
           : view.workflowEditing && WORKFLOW_TASKS_UI
-            ? <LazyTaskWizardPage kind="workflow" workflowId={view.workflowId} />
+            ? <LazyTaskWizardPage kind="workflow" workflowId={view.workflowId} templateId={view.workflowTemplateId} />
             : <LazyRoutineCenter runHistoryOf={view.runHistoryOf} />
       break
     case 'capability':

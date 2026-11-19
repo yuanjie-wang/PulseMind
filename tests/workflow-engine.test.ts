@@ -112,10 +112,15 @@ vi.mock('../src/main/storage/conversation-workspace', () => ({
 }))
 const runRows = new Map<string, { status: string; currentNode?: string; error?: string; baselineCommit?: string }>()
 const stageRows: Array<{ runId: string; nodeId: string }> = []
+/** 续跑用例的读面：`listStagesOf(前一次 runId)` 返回这些行（其余 runId 空）。
+ *  真实 store 按 runId 过滤；这里只服务「续跑播种」这一组用例。 */
+let priorStages: Array<{ nodeId: string; verdict?: string; summary?: string; artifacts?: string[]; error?: string }> = []
 vi.mock('../src/main/storage/pipeline-run-store', () => ({
   pipelineRunStore: {
-    createRun: vi.fn((run: { id: string }) => {
-      runRows.set(run.id, { status: 'running' })
+    createRun: vi.fn((run: { id: string; workflowName?: string; batchId?: string }) => {
+      // 结算通知（2026-11-18）读的是**落库行**（workflowName 进标题、batchId
+      // 决定静默），所以假 store 也得存这两列，否则那条分支永远测不到。
+      runRows.set(run.id, { status: 'running', workflowName: run.workflowName, batchId: run.batchId })
       return run
     }),
     updateRun: vi.fn((id: string, patch: Record<string, unknown>) => {
@@ -127,13 +132,17 @@ vi.mock('../src/main/storage/pipeline-run-store', () => ({
     }),
     finishStage: vi.fn(),
     listRuns: vi.fn(() => []),
-    listStagesOf: vi.fn(() => []),
-    getRun: vi.fn(() => null),
+    listStagesOf: vi.fn(() => priorStages),
+    getRun: vi.fn((id: string) => runRows.get(id) ?? null),
   },
 }))
+// 桌面通知（2026-11-18）：实例结算时发一条，批量实例静默。真实实现 import
+// electron（通知窗），测试进程只认调用面。
+vi.mock('../src/main/system/notify', () => ({ notify: vi.fn() }))
 
 import { pipelineEngine, runWorkflowInstance } from '../src/main/pipeline/pipeline-engine'
 import { pipelineRunStore } from '../src/main/storage/pipeline-run-store'
+import { notify } from '../src/main/system/notify'
 import { resolveWorkflowHandoff } from '../src/shared/workflow/handoff'
 
 // ── fixtures ──
@@ -176,6 +185,7 @@ function freshState(script: Array<
   sessionState.lastAnswer = ''
   runRows.clear()
   stageRows.length = 0
+  priorStages = []
 }
 
 /** 工作区夹具：临时目录 + 落一个 PLAN.md（readPlanContent 的读取面）。 */
@@ -794,6 +804,73 @@ describe('runWorkflowInstance', () => {
   }, 30_000)
 })
 
+// ── 结算通知（2026-11-18）──
+// 工作流往往跑几分钟到几十分钟，用户不会守在运行视图前；但通知也不能变成
+// 刷屏源——批量实例静默（一次 CSV 几十行），失败要带原因（用户点开前就知道
+// 是哪一步垮的）。判据都在**调用面**：标题里的名称与成败词、正文是否给得出
+// 下一步，而不是「通知函数被 import 了」。
+//
+// 位置承重：必须排在 pipelineEngine.stop 组**之前**（见那组的注释）。
+describe('pipelineEngine 结算通知', () => {
+  const notifyMock = vi.mocked(notify)
+  const waitNotify = async (n: number): Promise<void> => {
+    for (let i = 0; i < 100 && notifyMock.mock.calls.length < n; i++) await new Promise((r) => setTimeout(r, 20))
+  }
+
+  it('成功结算 → 「工作流完成」+ 名称，正文引导点开', async () => {
+    notifyMock.mockClear()
+    freshState([{ verdict: 'pass', summary: 'ok' }, { verdict: 'pass', summary: 'ok' }])
+    pipelineEngine.start('prun_notify_ok', { runId: 'prun_notify_ok', workflow: linearWorkflow, planPath, workspaceDir: makeWorkspace() })
+    await waitNotify(1)
+    expect(notifyMock).toHaveBeenCalledTimes(1)
+    const [title, body] = notifyMock.mock.calls[0]
+    expect(title).toBe('工作流完成：测试流水线')
+    expect(body).toBe('点击查看运行结果')
+  })
+
+  it('失败结算 → 「工作流失败」+ 名称，正文带失败原因', async () => {
+    notifyMock.mockClear()
+    freshState([{ verdict: 'fail', summary: '完不成' }])
+    pipelineEngine.start('prun_notify_fail', { runId: 'prun_notify_fail', workflow: linearWorkflow, planPath, workspaceDir: makeWorkspace() })
+    await waitNotify(1)
+    expect(notifyMock).toHaveBeenCalledTimes(1)
+    const [title, body] = notifyMock.mock.calls[0]
+    expect(title).toBe('工作流失败：测试流水线')
+    expect(body.length).toBeGreaterThan(0)
+  })
+
+  it('批量实例静默（一次 CSV 几十行不能刷屏）', async () => {
+    notifyMock.mockClear()
+    freshState([{ verdict: 'pass', summary: 'ok' }, { verdict: 'pass', summary: 'ok' }])
+    // enqueue 不建行（建行是 start 的事）：批量铸行时带 batchId，这里照抄。
+    pipelineRunStore.createRun({
+      id: 'prun_notify_batch',
+      workflowId: 'test-flow',
+      workflowName: '测试流水线',
+      objective: '',
+      workspaceDir: '',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      batchId: 'batch_1',
+    })
+    pipelineEngine.enqueue('prun_notify_batch', {
+      runId: 'prun_notify_batch',
+      workflow: linearWorkflow,
+      planPath,
+      workspaceDir: makeWorkspace(),
+    })
+    // 等实例真的结算再断言零通知——固定 sleep 会让用例假绿。
+    for (let i = 0; i < 100 && runRows.get('prun_notify_batch')?.status === 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(runRows.get('prun_notify_batch')?.status).not.toBe('running')
+    expect(notifyMock).not.toHaveBeenCalled()
+  })
+})
+
+// 位置承重：'hang' 阶段永不结算 → runWorkflowInstance 不返回 → 全局单例的
+// draining 一直是 true。本组之后不得再放依赖引擎队列真跑起来的用例（后续的
+// resume 组直接调 runWorkflowInstance，不经队列，因此不受影响）。
 describe('pipelineEngine.stop', () => {
   it('stop 句柄命中当前阶段：stopExecution 下发', async () => {
     freshState(['hang'])
@@ -814,6 +891,76 @@ describe('pipelineEngine.stop', () => {
     expect(pipelineEngine.stop('prun_unknown')).toBe(false)
   }, 15_000)
 })
+
+// ── 从失败节点续跑（2026-11-18 运行视图「从失败节点续跑」的引擎面）──
+// 续跑的全部价值就在「前序阶段的模型调用不白烧」，所以这组用例钉的是调度状态
+// 的播种：已结算阶段重放成 done + arrivals + 前向依赖结清，起点节点重新入队，
+// 起点自己那条失败行**不播种**（否则它会像真结算一样把下游推起来）。
+
+describe('runWorkflowInstance.resume（续跑播种）', () => {
+  it('前序已结算阶段不重跑：只铸起点阶段的会话，成功后正常收口 DONE', async () => {
+    freshState([{ verdict: 'pass', summary: '全绿' }])
+    priorStages = [
+      { nodeId: 'code', verdict: 'pass', summary: '编码完成', artifacts: ['src/x.ts'] },
+      { nodeId: 'test', verdict: 'fail', summary: '两个测试挂了', error: '阶段失败' },
+    ]
+    const result = await runWorkflowInstance({
+      runId: 'prun_resume',
+      workflow: linearWorkflow,
+      planPath,
+      workspaceDir: makeWorkspace(),
+      resume: { fromRunId: 'prun_prev', nodeId: 'test' },
+    })
+    expect(result.status).toBe('success')
+    // 前序阶段一行都没起（code 的模型调用没有被重复烧）
+    expect(stageRows.map((s) => s.nodeId)).toEqual(['test'])
+    expect(sessionState.created).toHaveLength(1)
+  })
+
+  it('起点自身的失败行不播种：不因前一次的 fail 把实例推进到 fix', async () => {
+    freshState([{ verdict: 'pass', summary: '全绿' }])
+    // 前一次 test 结算为 fail（它就是用户点的那个失败节点）；若这行被当结算
+    // 重放，实例会直接排上 fix 而不重跑 test。
+    priorStages = [
+      { nodeId: 'code', verdict: 'pass', summary: '编码完成' },
+      { nodeId: 'test', verdict: 'fail', summary: '两个测试挂了' },
+    ]
+    const result = await runWorkflowInstance({
+      runId: 'prun_resume2',
+      workflow: linearWorkflow,
+      planPath,
+      workspaceDir: makeWorkspace(),
+      resume: { fromRunId: 'prun_prev', nodeId: 'test' },
+    })
+    expect(result.status).toBe('success')
+    expect(stageRows.map((s) => s.nodeId)).toEqual(['test'])
+  })
+
+  it('播种的上游上下文真的进 prompt：续跑节点的 {{prevSummary}} 是前序结算的摘要', async () => {
+    freshState([
+      { verdict: 'pass', summary: '修复完成' },
+      { verdict: 'pass', summary: '全绿' },
+    ])
+    priorStages = [
+      { nodeId: 'code', verdict: 'pass', summary: '编码完成' },
+      { nodeId: 'test', verdict: 'fail', summary: '两个测试挂了' },
+    ]
+    const result = await runWorkflowInstance({
+      runId: 'prun_resume3',
+      workflow: linearWorkflow,
+      planPath,
+      workspaceDir: makeWorkspace(),
+      // 起点是 fix：它的 prompt 吃 {{prevVerdict}} / {{prevSummary}}
+      resume: { fromRunId: 'prun_prev', nodeId: 'fix' },
+    })
+    expect(result.status).toBe('success')
+    expect(sessionState.asks[0].content).toContain('fail')
+    expect(sessionState.asks[0].content).toContain('两个测试挂了')
+    // fix pass → test 重跑（失败节点的下游照常推进），不是整条从 code 重来
+    expect(stageRows.map((s) => s.nodeId)).toEqual(['fix', 'test'])
+  })
+})
+
 
 // ── PLAN-workflow-context：信封 + handoff 接线 ──
 

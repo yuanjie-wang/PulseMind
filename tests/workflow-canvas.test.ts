@@ -10,6 +10,7 @@ import { autoWorkflowLayout, countCrossings, depthOf, isLoopEdge, loopEdgeKeys }
 import { RESERVED_PLACEHOLDER_KEYS, STAGE_PLACEHOLDER_GROUPS, renderNodePrompt } from '../src/shared/workflow/render'
 import { altSidesOf, inputSideOf } from '../src/renderer/src/components/routine/WorkflowCanvas'
 import { normalizeSimpleWorkflow } from '../src/shared/workflow/simplify'
+import { resolveVerdictColorIndex } from '../src/shared/workflow/verdict-colors'
 import type { WorkflowDefinition } from '../src/shared/workflow/types'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -66,19 +67,25 @@ describe('workflow canvas wiring', () => {
 
   it('拖停写回 layout（画布就绪契约的写入面）', () => {
     expect(canvas).toContain('onNodeDragStop')
-    expect(canvas).toMatch(/layout: \{ x: Math\.round\(node\.position\.x\), y: Math\.round\(node\.position\.y\) \}/)
+    // 落点先取整成一个 pos 再原样写回（2026-11-18 撤销栈那一刀）：同一个取整
+    // 结果既要进 def 又要做「原地松手不留帧」的比较，分两处各算一次会让两者
+    // 在浮点边界上不等，白推一帧撤销记录。
+    expect(canvas).toMatch(/const pos = \{ x: Math\.round\(node\.position\.x\), y: Math\.round\(node\.position\.y\) \}/)
+    expect(canvas).toMatch(/layout: pos/)
   })
 
   it('三类节点归一在三处生效：向导打开 / 助手应用 / 保存', () => {
     expect(wizard).toMatch(/autoWorkflowLayout\(normalizeSimpleWorkflow\(blankWorkflow/)
     // 助手应用（2026-11-08）：提案合并后先归一、再校验、再过布局才灌进画布。
     expect(wizard).toMatch(/normalizeSimpleWorkflow\(applyWorkflowAssistantPatch\(patch, def\)\)/)
-    expect(wizard).toMatch(/setDef\(autoWorkflowLayout\(normalized\)\)/)
+    // 归一结果先绑一个局部再同时喂给 ref 与 setState（撤销栈要求两者是同一个
+    // 对象），所以不再是内联的 setDef(autoWorkflowLayout(...))。
+    expect(wizard).toMatch(/const next = autoWorkflowLayout\(normalized\)[\s\S]{0,200}setDef\(next\)/)
     expect(wizard).toMatch(/normalizeSimpleWorkflow\(def\)/)
   })
 
   it('助手代建结果过 normalize + autoWorkflowLayout 后灌进画布（向导助手栏）', () => {
-    expect(wizard).toMatch(/setDef\(autoWorkflowLayout\(normalized\)\)/)
+    expect(wizard).toMatch(/const next = autoWorkflowLayout\(normalized\)[\s\S]{0,200}setDef\(next\)/)
     expect(wizard).toMatch(/validateWorkflow\(normalized\)/)
   })
 })
@@ -110,6 +117,38 @@ describe('normalizeSimpleWorkflow（三类节点归一）', () => {
     expect(out.nodes[1].verdicts).toEqual(['ok'])
     expect(out.nodes[2].verdicts).toEqual(['pass'])
     expect(out.nodes[3].verdicts).toEqual(['pass'])
+  })
+
+  it('颜色表归一：只留词表内的键、非整数丢弃、空表 undefined（落盘形态不变）', () => {
+    // verdictColors（user 2026-11-18）与 verdictKinds 同一条规矩：状态改名/删除
+    // 后的孤儿颜色没有主语，保存时必须裁掉。
+    const out = normalizeSimpleWorkflow(
+      def({
+        nodes: [
+          { id: 'a', title: 'a', prompt: 'p', verdicts: ['a', 'b'], verdictColors: { a: 2, gone: 5, bad: 'red' } },
+          { id: 'b', title: 'b', prompt: 'p', verdicts: ['x'], verdictColors: { gone: 1 } },
+        ],
+      } as never),
+    )
+    expect(out.nodes[0].verdictColors).toEqual({ a: 2 })
+    expect(out.nodes[1].verdictColors).toBeUndefined()
+  })
+
+  it('resolveVerdictColorIndex：显式选色优先、越界 clamp、未选色恒默认蓝（user 2026-11-19「不要对颜色进行定义」）', () => {
+    const node = {
+      verdictColors: { a: 4, b: 99, c: -2, d: 2.6 },
+      // verdictKinds 与颜色互不相干（2026-11-19：颜色不带语义）——声明了语义的
+      // 状态没选色照样是蓝。
+      verdictKinds: { e: 'success', f: 'failure', g: 'neutral' },
+    }
+    expect(resolveVerdictColorIndex(node, 'a')).toBe(4) // 显式优先
+    expect(resolveVerdictColorIndex(node, 'b')).toBe(6) // 越界上夹
+    expect(resolveVerdictColorIndex(node, 'c')).toBe(0) // 越界下夹
+    expect(resolveVerdictColorIndex(node, 'd')).toBe(3) // 四舍五入（读面宽容）
+    expect(resolveVerdictColorIndex(node, 'e')).toBe(0) // 有语义无选色 → 仍默认蓝
+    expect(resolveVerdictColorIndex(node, 'f')).toBe(0)
+    expect(resolveVerdictColorIndex(node, 'g')).toBe(0)
+    expect(resolveVerdictColorIndex({}, 'x')).toBe(0) // 全缺 → 蓝（存量定义零迁移）
   })
 
   it('去往 FAILED/RETRY 的边丢弃；到节点的边与 DONE 保留（when 是调度键，不改写）', () => {
@@ -636,16 +675,17 @@ describe('canvas toolbox & simple model', () => {
     expect(read('src/renderer/src/i18n/locales/en.ts')).not.toContain('toolboxTitle')
   })
 
-  it('工作流级「全局目标」编辑栏已撤（user 2026-11-09），运行级覆盖仍在启动表单', () => {
-    // 画布上方那块「全局目标（可空）」输入框整块拿掉；objective 字段本身
-    // 不动（render 解析序 运行级 > 工作流级 > 空），启动表单仍可逐次覆盖。
+  it('「全局目标」编辑栏已撤（user 2026-11-09 画布级 → 2026-11-18 启动表单级也撤）', () => {
+    // 画布上方那块「全局目标（可空）」输入框整块拿掉；启动表单的目标栏位
+    // 也撤（user 2026-11-18）。objective 字段本身不动（render 解析序
+    // 运行级 > 工作流级 > 空）——运行不带 objective 时工作流级照常生效。
     expect(wizard).not.toContain('canvasObjectivePlaceholder')
     expect(wizard).not.toMatch(/def\.objective/)
     expect(read('src/renderer/src/i18n/locales/zh.ts')).not.toContain('canvasObjectivePlaceholder')
     expect(read('src/renderer/src/i18n/locales/en.ts')).not.toContain('canvasObjectivePlaceholder')
     const runModal = read('src/renderer/src/components/routine/WorkflowRunModal.tsx')
-    expect(runModal).toContain('objectivePlaceholder')
-    expect(runModal).toContain('objective: runObjective.trim() || undefined')
+    expect(runModal).not.toContain('objectivePlaceholder')
+    expect(runModal).not.toMatch(/runObjective/i)
     // 解析序没被改动：运行级目标缺省回落工作流级，再回落空。
     expect(read('src/shared/workflow/render.ts')).toContain('export function resolveObjective')
   })
@@ -757,7 +797,17 @@ describe('canvas toolbox & simple model', () => {
     // 至少留一个状态：空词汇表会让卡片没有出口线头。
     expect(canvas).toMatch(/disabled=\{selectedNode\.verdicts\.length <= 1\}/)
     expect(card).not.toContain('wf-diamond')
-    expect(card).not.toContain('verdictColor')
+    // 状态颜色（user 2026-11-18 → 2026-11-19 升级为类型入口）：改名/删除都要
+    // 级联第三张表 verdictColors（键是状态名，与 defs/kinds 同一条规矩），面板
+    // 每行一颗类型圆圈（7 色收进菜单）。
+    expect(canvas).toMatch(/colors && colors\[prev\] !== undefined \? moveRecordKey\(colors, prev, next\) : colors/)
+    expect(canvas).toMatch(/const setVerdictColor = useCallback\(/)
+    expect(canvas).toContain('data-workflow-verdict-color')
+    expect(canvas).toMatch(/VERDICT_PALETTE_SIZE/)
+    // 卡面：线头吃同一份 resolve（resolveVerdictColorIndex）；状态名行**不带**
+    // 圆点——正下方就是同色线头，再画一个是重复（user 2026-11-19，负扫钉住）。
+    expect(card).toContain('resolveVerdictColorIndex(node, v)')
+    expect(card).not.toContain('wf-verdict-dot')
   })
 
   it('每个结果状态可以写一句定义，改名字跟着搬家、删状态一起删（user 2026-11-09）', () => {
@@ -778,8 +828,10 @@ describe('canvas toolbox & simple model', () => {
     // 删状态：连同它的定义一起删，表空就 delete 掉整个字段。
     expect(canvas).toMatch(/delete defs\[verdict\]/)
     expect(canvas).toMatch(/if \(Object\.keys\(defs\)\.length > 0\) next\.verdictDefs = defs/)
-    // 卡面只放状态名：那句定义挂在 title 上，悬停可读。
-    expect(card).toMatch(/title=\{def \? `\$\{v\}：\$\{def\}` : v\}/)
+    // 卡面只放状态名：那句定义挂在 title 上，悬停可读。2026-11-18 起 title 还
+    // 拼上「这个状态没接线」的提示——定义与警示是同一处悬停的两条信息，拆成
+    // 两个 title 属性只会后写的赢。
+    expect(card).toMatch(/title=\{\[def \? `\$\{v\}：\$\{def\}` : v, missing \? unwiredHint : ''\]\.filter\(Boolean\)\.join\(' · '\)\}/)
   })
 
   it('结果状态是「窄名 + 必填定义 + 删除」一行（user 2026-11-09）', () => {
@@ -794,13 +846,25 @@ describe('canvas toolbox & simple model', () => {
     expect(rowStart).toBeGreaterThan(-1)
     expect(rowEnd).toBeGreaterThan(rowStart)
     const row = canvas.slice(rowStart, rowEnd)
+    // 2026-11-18 起行是两层：内层仍是一条横排（名 → 定义 → 删，输入行不得
+    // 再纵向流），外层纵排挂第二行的 7 色圆圈（swatch 是小写 <button>，不进
+    // <Button 计数）。
     expect(row.match(/<Input\b/g)).toHaveLength(2)
     expect(row.match(/<Button\b/g)).toHaveLength(1)
+    // 类型入口是一颗圆圈按钮（7 色收进 Dropdown 菜单，user 2026-11-19「不要
+    // 平铺开」）——源码里一个 <button> 字面量；菜单 items 在行切片之外的
+    // verdictColorMenu 构建器里，全文件断言。
+    expect(row.match(/<button\b/g)).toHaveLength(1)
+    expect(row).toContain('data-workflow-verdict-color')
+    expect(row).toContain('verdictColorMenu(i, v)')
     expect(row.indexOf('data-workflow-verdict-name')).toBeLessThan(row.indexOf('data-workflow-verdict-def'))
-    expect(row.indexOf('data-workflow-verdict-def')).toBeLessThan(row.indexOf('<Button'))
-    expect(row).not.toContain('flexDirection')
-    // 三处样式：行容器横向居中、名字定宽 104、定义占剩余宽度并能压缩到 0。
-    expect(canvas).toContain("const VERDICT_ROW_STYLES: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 }")
+    expect(row.indexOf('data-workflow-verdict-def')).toBeLessThan(row.indexOf('data-workflow-verdict-color'))
+    expect(row.indexOf('data-workflow-verdict-color')).toBeLessThan(row.indexOf('<Button'))
+    expect(canvas).toMatch(/Array\.from\(\{ length: VERDICT_PALETTE_SIZE \}/)
+    expect(canvas).toMatch(/selectedKeys: \[String\(active\)\]/)
+    // 内层行是横向流（新行结构里只有内层有 flexDirection 语义，外层纵排常量
+    // 在切片之外）；名字定宽 104、定义占剩余宽度并能压缩到 0。
+    expect(canvas).toContain("const VERDICT_ROW_STYLES: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 5 }")
     expect(canvas).toContain("const VERDICT_NAME_STYLES: React.CSSProperties = { flex: '0 0 104px', width: 104 }")
     expect(canvas).toContain("const VERDICT_DEF_STYLES: React.CSSProperties = { flex: '1 1 auto', minWidth: 0 }")
     // 必填的可见面：空定义当场红框（不用等到点保存），且标 aria-required。
@@ -818,14 +882,15 @@ describe('canvas toolbox & simple model', () => {
     expect(zhLocale).toContain("canvasVerdictNamePlaceholder: '状态名'")
   })
 
-  it('状态语义只影响配色、不参与调度，且配色不认词面（user 2026-11-17）', () => {
+  it('状态颜色不带语义（user 2026-11-19「不要对颜色进行定义」）：菜单只有 7 色、默认蓝，判词不认词面（user 2026-11-17）', () => {
     // 「你是不是写死了把 pass 作为成功态，failed 为失败态？」——结果状态是用户
-    // 自定义词表（成功/失败/需修订…），配色只能来自显式声明 verdictKinds 或
-    // 拓扑推导（run-view.ts 的 verdictKindOf）。四张消费面（画布卡片/画布边/
-    // 卡面徽标/详情页结论）都必须走同一个判词。
+    // 自定义词表，语义只能来自拓扑推导（run-view.ts 的 verdictKindOf）。2026-11-18
+    // 起边不再做语义判词（跟状态色走）；2026-11-19 颜色菜单落地且**同日再裁定
+    // 颜色不带语义定义**——绿≠成功、红≠失败，kindForColor 耦合已删，判词只剩
+    // 卡片徽标/节点描边这一个消费面（其语义来自拓扑推导，与颜色无关）。
     expect(canvas).toContain("import { runNodeStates, runTakenEdges, verdictKindOf } from")
     expect(canvas).toMatch(/const kind = s\.verdict === undefined \? 'neutral' : verdictKindOf\(def, nodeId, s\.verdict\)/)
-    expect(canvas).toMatch(/const kind = verdictKindOf\(def, e\.from, e\.when\)/)
+    expect(canvas).not.toMatch(/const kind = verdictKindOf\(def, e\.from, e\.when\)/)
     // 徽标颜色跟着画布下发的语义类走，不再自己判词面。
     expect(card).toContain("runClass === 'run-pass' ? ' wf-run-badge--pass'")
     expect(card).toContain("runClass === 'run-fail' ? ' wf-run-badge--fail'")
@@ -835,32 +900,52 @@ describe('canvas toolbox & simple model', () => {
     const codeOnly = canvas.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     expect(codeOnly).not.toMatch(/verdict\s*===\s*'pass'/)
     expect(codeOnly).not.toMatch(/verdict\s*===\s*'fail'/)
-    // 面板里的语义选择器：锚点 + 四档；「自动」= 撤掉声明（undefined 不落空表）。
-    expect(canvas).toContain('data-workflow-verdict-kind')
-    expect(canvas).toMatch(/const setVerdictKind = useCallback\(/)
-    expect(canvas).toMatch(/if \(kind\) kinds\[name\] = kind\n\s*else delete kinds\[name\]/)
-    expect(canvas).toMatch(/Object\.keys\(kinds\)\.length > 0 \? kinds : undefined/)
-    // 删状态时语义表跟着裁（残留孤儿键保存时也会被 simplify 裁掉，但当场删干净）。
+    // 旧的下拉语义选择器整块退场（锚点/回调/全部 Kind 档都别再长回来）。
+    expect(canvas).not.toContain('data-workflow-verdict-kind')
+    expect(canvas).not.toMatch(/const setVerdictKind/)
+    expect(canvas).not.toContain('kindForColor')
+    // 选色只写颜色表（user 2026-11-19：颜色与语义互不相干，别再耦合 verdictKinds）。
+    const colorCbStart = canvas.indexOf('const setVerdictColor = useCallback(')
+    const colorCbEnd = canvas.indexOf('const verdictColorMenu', colorCbStart)
+    expect(colorCbStart).toBeGreaterThan(-1)
+    expect(colorCbEnd).toBeGreaterThan(colorCbStart)
+    const colorCb = canvas.slice(colorCbStart, colorCbEnd)
+    expect(colorCb).toMatch(/\(index: number, color: number\)/)
+    expect(colorCb).toContain('colors[name] = color')
+    expect(colorCb).not.toContain('verdictKinds')
+    expect(canvas).toMatch(/const verdictColorMenu = \(index: number, name: string\): MenuProps =>/)
+    // 删状态时颜色/语义表跟着裁（残留孤儿键保存时也会被 simplify 裁掉，但当场删干净；
+    // kinds 清理只服务旧数据，颜色表才是本字段的正身）。
     expect(canvas).toMatch(/delete kinds\[verdict\]/)
     expect(canvas).toMatch(/if \(Object\.keys\(kinds\)\.length > 0\) next\.verdictKinds = kinds/)
-    // 语义选择器只占一窄列，定义输入框优先吃宽。
-    expect(canvas).toContain("const VERDICT_KIND_STYLES: React.CSSProperties = { flex: '0 0 82px', width: 82 }")
-    // i18n：两 locale 五键齐全，且提示里说清「只影响配色、不参与调度」。
+    expect(canvas).toMatch(/delete colors\[verdict\]/)
+    expect(canvas).toMatch(/if \(Object\.keys\(colors\)\.length > 0\) next\.verdictColors = colors/)
+    // 类型入口只占一窄列，定义输入框优先吃宽。
+    expect(canvas).toContain("const VERDICT_COLOR_STYLES: React.CSSProperties = { flex: '0 0 48px', width: 48, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }")
+    // i18n：颜色键两 locale 齐全；canvasVerdictKind* 全系退役（自动/成功/失败/
+    // 中性/Label/Hint——颜色不带语义，留着就是邀请它们回来），提示说清
+    // 「不参与调度」。
     const zhLocale = read('src/renderer/src/i18n/locales/zh.ts')
     const enLocale = read('src/renderer/src/i18n/locales/en.ts')
     for (const key of [
-      'canvasVerdictKindLabel',
-      'canvasVerdictKindHint',
-      'canvasVerdictKindAuto',
-      'canvasVerdictKindSuccess',
-      'canvasVerdictKindFailure',
-      'canvasVerdictKindNeutral',
+      'verdictColor',
+      'verdictColorHint',
+      'verdictColor0',
+      'verdictColor1',
+      'verdictColor2',
+      'verdictColor3',
+      'verdictColor4',
+      'verdictColor5',
+      'verdictColor6',
     ]) {
       expect(zhLocale).toContain(`${key}:`)
       expect(enLocale).toContain(`${key}:`)
     }
+    for (const locale of [zhLocale, enLocale]) {
+      expect(locale).not.toMatch(/canvasVerdictKind(Neutral|Auto|Success|Failure|Label|Hint):/)
+    }
     expect(zhLocale).toContain('不参与调度')
-    expect(enLocale).toContain('never scheduling')
+    expect(enLocale).toContain('never affects scheduling')
   })
 
   it('运行徽标钉在卡右上角，未自定义状态显示「成功」而不是内部词 pass（user 2026-11-17）', () => {
@@ -1008,16 +1093,42 @@ describe('canvas toolbox & simple model', () => {
     expect(canvas.slice(start, loop)).not.toContain('altSides')
   })
 
-  it('运行视图的「没走过的边」必须读得到（user 2026-11-17「在执行过程中，连接线没了」）', () => {
+  it('运行视图的「没走过的边」必须读得到（user 2026-11-17 弱化底线 → 2026-11-18 改状态色弱化）', () => {
     // 刚开跑时几乎所有边都还没走过，而 idle 是整张图的主体——它一淡就等于
-    // 「连线没了」。第一版 #cccccc@0.7 在白底上合成为 ~#dbdbdb，1.5px 的线在
-    // 屏幕上没有存在感；现行口径 = muted 灰 @0.8（合成 ~#adadad，与 RF 默认灰
-    // #b1b1b7 同档）。判据写死这两个数：改回 disabled 灰或加回更低的透明度
-    // 都会让这条钉子红。
-    expect(canvas).toContain('.react-flow__edge.wf-edge-idle { --xy-edge-stroke: var(--pm-text-muted, #999999); opacity: 0.8; }')
-    // 前缀 .react-flow__edge 承重：wf-edge-done/failed 是 (0,2,0)，单类选择器
-    // 压不过它，未走到的 DONE 边会顶着成功色冒充「已走过」。
-    expect(canvas.indexOf('.react-flow__edge.wf-edge-idle')).toBeGreaterThan(canvas.indexOf('.react-flow__edge.wf-edge-done'))
+    // 「连线没了」。历史上是 muted 灰换色 @0.8；状态色方案（user 2026-11-18
+    // 「运行视图也跟状态色」）下改为纯透明度：颜色维度归 wf-edge-verdict-N，
+    // 运行类只控强度。0.35 对任何色相都保住「没走过」的可读性，彩色线又比
+    // 当年的 #cccccc 醒目。idle 不得再写 --xy-edge-stroke（那会把状态色洗掉）。
+    expect(canvas).toContain('.react-flow__edge.wf-edge-idle { opacity: 0.35; }')
+    expect(canvas).not.toMatch(/\.wf-edge-idle \{ --xy-edge-stroke/)
+    // 旧的三档语义 run 类必须退场（颜色跟状态走，不跟 pass/fail 走）。
+    expect(canvas).not.toContain('.wf-edge-taken--pass')
+    expect(canvas).not.toContain('.wf-edge-taken--fail')
+  })
+
+  it('连线颜色 = 起点状态色：七条规则、声明序压过终态配色（user 2026-11-18）', () => {
+    // 每条边带 wf-edge-verdict-<idx> 类（resolve 与线头同一份），CANVAS_STYLES
+    // 七条 --xy-edge-stroke 规则齐全；声明在 done/failed 之后——同特异性按
+    // 声明序，状态色一律获胜（终态边也跟着自己的状态色，绿红只留在芯片上）。
+    expect(canvas).toMatch(/`wf-edge-verdict-\$\{resolveVerdictColorIndex\(nodeById\.get\(e\.from\) \?\? \{\}, e\.when\)\}`/)
+    for (let c = 0; c < 7; c++) {
+      expect(canvas).toContain(`.react-flow__edge.wf-edge-verdict-${c} { --xy-edge-stroke: var(--pm-verdict-${c}); }`)
+    }
+    const doneIdx = canvas.indexOf('.react-flow__edge.wf-edge-done')
+    const verdictIdx = canvas.indexOf('.react-flow__edge.wf-edge-verdict-0')
+    expect(verdictIdx).toBeGreaterThan(doneIdx)
+    // shared 侧同一份 resolve：显式色优先，未选色恒默认蓝（2026-11-19「不要对
+    // 颜色进行定义」——语义推导臂已删）。
+    expect(canvas).toContain("from '../../../../shared/workflow/verdict-colors'")
+    const vc = read('src/shared/workflow/verdict-colors.ts')
+    expect(vc).toContain('VERDICT_PALETTE_SIZE = 7')
+    expect(vc).toMatch(/return 0/)
+    expect(vc).not.toMatch(/success|failure/)
+    // 主题表两套七色（palette.ts light/dark），组件不写死 hex。
+    const palette = read('src/renderer/src/theme/palette.ts')
+    for (let c = 0; c < 7; c++) {
+      expect(palette.match(new RegExp(`'--pm-verdict-${c}': '#[0-9a-f]+'`, 'g'))?.length).toBe(2)
+    }
   })
 
   it('运行视图自己补齐定义 + 挂载期必测一次线头（user 2026-11-17「连接线又没了」）', () => {
@@ -1197,11 +1308,17 @@ describe('canvas toolbox & simple model', () => {
     // 样式串与静态样式同一 <style>（两条规则同源，优先级按源码顺序落定）。
     expect(canvas.indexOf('{CANVAS_STYLES}')).toBeLessThan(canvas.indexOf('{focusDimCss}'))
 
-    // ② 终态配色：结果状态是用户自定义字符串，没有语义可上色；唯一有语义的是
-    //    保留目标。颜色走 --xy-edge-stroke 变量（在 <g> 上覆盖），选中态的蓝
-    //    因此仍由 RF 自己的 .selected 规则赢——不许用 !important 打架。
-    // 运行视图叠加：定义态的终态配色保留，run 类缀在后面（CSS 声明顺序定胜负）。
-    expect(canvas).toMatch(/\[e\.to === 'DONE' \? 'wf-edge-done' : e\.to === 'FAILED' \? 'wf-edge-failed' : undefined, runClassOf\(e, id\)\]/)
+    // ② 连线配色：状态色类打头（2026-11-18），终态 done/failed 类随其后、其
+    //    规则在 CSS 里被状态色压过（声明序）。颜色走 --xy-edge-stroke 变量（在
+    //    <g> 上覆盖），选中态的蓝仍由 RF 自己的 .selected 规则赢——不许用
+    //    !important 打架。run 类缀在最后（只控强度，与颜色正交）。
+    // ${...} 里的 `?? {}` 有花括号，逐段 contains 比一条大正则稳。
+    expect(canvas).toContain('`wf-edge-verdict-${resolveVerdictColorIndex(nodeById.get(e.from) ?? {}, e.when)}`')
+    expect(canvas).toContain("e.to === 'DONE' ? 'wf-edge-done' : e.to === 'FAILED' ? 'wf-edge-failed' : undefined,")
+    expect(canvas).toMatch(/runClassOf\(id\),\s*\]/)
+    const clsIdx = canvas.indexOf('wf-edge-verdict-${resolveVerdictColorIndex')
+    expect(clsIdx).toBeLessThan(canvas.indexOf("e.to === 'DONE' ? 'wf-edge-done'", clsIdx))
+    expect(clsIdx).toBeGreaterThan(-1)
     expect(canvas).toContain('.react-flow__edge.wf-edge-done { --xy-edge-stroke: var(--pm-success')
     expect(canvas).toContain('.react-flow__edge.wf-edge-failed { --xy-edge-stroke: var(--pm-error)')
     expect(canvas).not.toMatch(/!\s*important\s*;/)

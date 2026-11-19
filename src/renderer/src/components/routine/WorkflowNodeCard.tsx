@@ -15,8 +15,9 @@
 //   结束（DONE，target 端口）芯片；不可拖不可删。
 
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, WarningOutlined } from '@ant-design/icons'
 import type { WorkflowNode } from '../../../../shared/workflow/types'
+import { resolveVerdictColorIndex, verdictColorVar } from '../../../../shared/workflow/verdict-colors'
 
 export const STAGE_NODE_TYPE = 'workflowStage'
 export const TERMINAL_NODE_TYPE = 'workflowTerminal'
@@ -51,6 +52,13 @@ export interface WorkflowStageNodeData extends Record<string, unknown> {
   runMode?: boolean
   run?: { status: 'running' | 'settled' | 'failed'; verdict?: string; error?: string; badge: string }
   runClass?: string
+  /** 未接线的结果状态（2026-11-18）：这些状态一条出边都没有，引擎跑到
+   *  它们时 outEdges 为空 → 整实例失败。编辑器里线头与别的长得一样，所以
+   *  卡头挂一颗琥珀警示、多状态行给对应状态名加虚线底（一眼看出是哪根）。
+   *  判定在画布侧（buildFlowNodes），与 verdictKindOf 的「无出边 = 失败」同源。 */
+  unwired?: string[]
+  unwiredHint?: string
+  unwiredTitle?: string
 }
 
 export interface WorkflowTerminalNodeData extends Record<string, unknown> {
@@ -64,12 +72,13 @@ export type WorkflowStageFlowNode = Node<WorkflowStageNodeData, typeof STAGE_NOD
 export type WorkflowTerminalFlowNode = Node<WorkflowTerminalNodeData, typeof TERMINAL_NODE_TYPE>
 
 export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): React.ReactElement {
-  const { node, onEdit, editLabel, onDelete, deleteLabel, runMode, run, runClass } = data
+  const { node, onEdit, editLabel, onDelete, deleteLabel, runMode, run, runClass, unwired, unwiredHint, unwiredTitle } = data
   // `verdicts` 缺席兜底（2026-11-17）：盘上手写/旧版定义可以没有这个字段，
   // 裸解引用会整张卡抛错（画布白屏、连带所有连线消失）。运行视图已过
   // normalizeSimpleWorkflow 补齐，这里是第二道门（编辑器加载路径同吃）。
   const verdicts = node.verdicts && node.verdicts.length > 0 ? node.verdicts : ['pass']
   const multi = verdicts.length > 1
+  const unwiredSet = new Set(unwired ?? [])
   // 运行视图的卡面状态类由画布下发（verdict 感知：pass 绿 / fail 红 / 其余
   // 中性），缺席（还没跑到）= idle 弱化——底稿一眼可辨「哪些还没发生」。
   // `--runview` 是运行态的总开关（与具体状态无关）：徽标绝对定位到卡右上角、
@@ -123,6 +132,14 @@ export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): R
       )}
       <div className="wf-stage-head">
         <span className="wf-stage-title">{node.title || node.id}</span>
+        {/* 未接线警示（2026-11-18）：琥珀色感叹号，悬停看是哪几个状态。
+            单状态节点没有状态名行，这颗钮就是唯一的线索——引擎跑到这里会
+            直接判实例失败，编辑期看得见比跑一次才知道便宜得多。 */}
+        {unwiredSet.size > 0 && (
+          <span className="wf-unwired-flag" data-workflow-unwired-warning title={unwiredTitle ?? unwiredHint}>
+            <WarningOutlined />
+          </span>
+        )}
         {/* 运行视图的状态徽标：运行中（呼吸）/ 结算出的 verdict 原词 / 失败。
             verdict 是用户自定义词表，徽标只做展示不做语义翻译；**颜色**跟着
             画布给出的语义类走（runClass），不认词面（user 2026-11-17）。 */}
@@ -142,11 +159,12 @@ export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): R
             // 悬停看定义（user 2026-11-09「定义结果状态时还需要明确状态定义」）：
             // 卡面只放得下状态名，那句「什么时候报这个状态」是面板里的长文本。
             const def = (node.verdictDefs?.[v] ?? '').trim()
+            const missing = unwiredSet.has(v)
             return (
               <span
                 key={v}
-                className="wf-stage-verdict"
-                title={def ? `${v}：${def}` : v}
+                className={'wf-stage-verdict' + (missing ? ' wf-stage-verdict--unwired' : '')}
+                title={[def ? `${v}：${def}` : v, missing ? unwiredHint : ''].filter(Boolean).join(' · ')}
                 // 与下面的出口 Handle 用**同一个 (i+0.5)/n 百分比**（同一个包含块），
                 // 状态名才逐像素落在自己那根线头正上方；maxWidth 一条列宽，长名字
                 // 走省略号、相邻两条恰好不重叠。
@@ -159,7 +177,10 @@ export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): R
         </div>
       )}
       {/* 出口按状态分叉：多状态时每个线头落在自己那一列的中央（与上面状态名
-          对齐），单状态仍是一个居中的底线头。 */}
+          对齐），单状态仍是一个居中的底线头。线头颜色 = 状态色（user 2026-11-18
+          「选择后需要同步改变画布中对应连接端点的颜色」）：Handle 上内联
+          background 是安全的——选中态规则只针对边（.react-flow__edge.selected），
+          线头没有会跟内联打架的样式表。 */}
       {verdicts.map((v, i) => (
         <Handle
           key={v}
@@ -167,7 +188,10 @@ export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): R
           type="source"
           position={Position.Bottom}
           className="wf-handle-source"
-          style={multi ? { left: `${((i + 0.5) / verdicts.length) * 100}%` } : undefined}
+          style={{
+            ...(multi ? { left: `${((i + 0.5) / verdicts.length) * 100}%` } : {}),
+            background: verdictColorVar(resolveVerdictColorIndex(node, v)),
+          }}
         />
       ))}
     </div>

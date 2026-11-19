@@ -39,6 +39,11 @@ export interface WorkflowNode {
    *  键必须是 verdicts 里的一项（simplify 裁掉孤儿键）；缺席的状态按拓扑
    *  推导（见 WorkflowVerdictKind 注释）——旧定义零迁移、落盘形态不变。 */
   verdictKinds?: Record<string, WorkflowVerdictKind>
+  /** 每个结果状态的颜色（状态名 → 调色板下标 0–6，verdict-colors.ts）。
+   *  只影响画布线头/连线着色，不参与调度（状态名仍是模型契约键）。键必须是
+   *  verdicts 里的一项（simplify 裁掉孤儿键）；缺席的状态按 verdictKinds
+   *  推导（绿/红），再缺省蓝——旧定义零迁移、落盘形态不变。 */
+  verdictColors?: Record<string, number>
   /** 预留画布坐标（v1 原样透传）。 */
   layout?: WorkflowNodeLayout
   /** 隐式上下文开关（PLAN-workflow-context）：整个字段缺席 = 全开——存量工作流

@@ -36,6 +36,12 @@ export interface AppView {
   /** `routines` wizard: which workflow is loaded. Absent (with
    *  `workflowEditing`) = the create-new flow. */
   workflowId?: string
+  /** `routines` wizard: a workflow template (workflow-templates.ts) to prefill
+   *  the create-new canvas with — the built-in definitions are seeded as real
+   *  workflows, so the draft is their copy with a fresh id. Ignored when
+   *  `workflowId` is set (editing an existing workflow is never a template
+   *  application). Nothing is created until the user saves. */
+  workflowTemplateId?: string
   /** `routines` editor page: true = open the three-column create/edit page
    *  (list · form · assistant) instead of the card grid. */
   routineEditing?: boolean
