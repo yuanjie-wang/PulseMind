@@ -13,6 +13,13 @@ export const IPC_CHANNELS = {
   APP_GET_DATA_PATHS: 'app:get-data-paths',
   APP_SYSTEM_RESUMED: 'app:system-resumed',
   APP_SYSTEM_RESUMED_ACK: 'app:system-resumed-ack',
+  // Renderer liveness heartbeat (renderer-health.ts): main pings, the preload
+  // answers without touching React. A missing pong means the renderer can no
+  // longer receive IPC at all — the post-sleep freeze where the process is
+  // alive, the compositor keeps painting, and yet neither notifications nor a
+  // `reload()` ever arrive.
+  APP_RENDERER_PING: 'app:renderer-ping',
+  APP_RENDERER_PONG: 'app:renderer-pong',
   APP_HOOKS_COMPLETED: 'app:hooks-completed',
   // 原生菜单/加速键 → 渲染层动作（菜单点击或 before-input fallback 命中后推送）
   MENU_ACTION: 'app:menu-action',

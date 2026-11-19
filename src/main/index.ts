@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, nativeImage, nativeTheme, protocol, powerMonitor, screen } from 'electron'
+import { app, BrowserWindow, dialog, shell, nativeImage, nativeTheme, protocol, powerMonitor, screen, ipcMain } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
@@ -39,6 +39,7 @@ import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
 import { keepAwake } from './system/keep-awake'
 import { notifyResume } from './ipc/app.handler'
+import { createRendererHealth, type RendererHealth } from './renderer-health'
 import { hardenDataDirPermissions } from './storage/permissions'
 import { migrateEncryptedSecrets } from './storage/settings-store'
 import { expireOldBackups } from './services/backup-retention'
@@ -109,6 +110,71 @@ let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null
 // SIGTERM kills are not).
 let forcedRendererRecovery = false
 
+// ── Renderer recovery: kill the process, don't ask it to reload ───────────
+// 2026-11-18 post-sleep freeze: the renderer process stayed alive (compositor
+// kept painting carets, main kept logging) yet received no IPC at all — the
+// resume notification timed out AND the `reload()` sent as its fallback never
+// arrived, because a reload is just another IPC command. Chromium's own
+// 'unresponsive' event never fires there: the message loop is idle, not
+// blocked. `forcefullyCrashRenderer()` acts at the process level, so it is the
+// one recovery that does not need the dead channel; render-process-gone above
+// then reloads the window into a fresh renderer with a fresh channel.
+function recoverRenderer(win: BrowserWindow | null, cause: string): void {
+  if (!win || win.isDestroyed() || isQuitting) return
+  const wc = win.webContents
+  if (wc.isDestroyed()) return
+  // Open DevTools may mean a paused breakpoint is holding the thread on
+  // purpose — never trade a debugging session for a speculative recovery.
+  if (wc.isDevToolsOpened()) {
+    writeLog('WARN', `renderer recovery skipped (${cause}): DevTools is open`)
+    return
+  }
+  writeLog('WARN', `renderer recovery (${cause}): forcing crash — render-process-gone reloads`)
+  forcedRendererRecovery = true
+  try {
+    wc.forcefullyCrashRenderer()
+  } catch (err) {
+    forcedRendererRecovery = false
+    writeLog('WARN', `renderer recovery (${cause}): forcefullyCrashRenderer failed: ${err}`)
+  }
+}
+
+// Renderer heartbeat (renderer-health.ts). Installed per window in createWindow;
+// a pong (or a resume ack, or a finished load) proves the channel is alive.
+let rendererHealth: RendererHealth | null = null
+let stopRendererHealth: (() => void) | null = null
+let rendererHealthIpcBound = false
+
+function installRendererHealth(win: BrowserWindow): void {
+  if (!rendererHealthIpcBound) {
+    rendererHealthIpcBound = true
+    ipcMain.on(IPC_CHANNELS.APP_RENDERER_PONG, () => rendererHealth?.markAlive())
+    ipcMain.on(IPC_CHANNELS.APP_SYSTEM_RESUMED_ACK, () => rendererHealth?.markAlive())
+  }
+  stopRendererHealth?.()
+  rendererHealth = createRendererHealth({
+    target: win.webContents,
+    onWedged: (idleMs) => recoverRenderer(win, `no-pong-${Math.round(idleMs / 1000)}s`),
+    onSkip: (reason, idleMs) =>
+      writeLog('WARN', `renderer health: watchdog skipped (${reason}, idle ${Math.round(idleMs / 1000)}s)`),
+  })
+  stopRendererHealth = rendererHealth.start()
+  // Post-recovery evidence: a forced crash must be followed by this line, and a
+  // missing one is the diagnostic for "recovery ran but the document never came
+  // back" (2026-11-18 had no such line because the reload never landed).
+  win.webContents.on('did-finish-load', () => {
+    rendererHealth?.markAlive()
+    let url = ''
+    try { url = win.webContents.getURL() } catch { /* gone */ }
+    writeLog('INFO', `renderer: document loaded${url ? ` ${url.slice(0, 160)}` : ''}`)
+  })
+  win.on('closed', () => {
+    stopRendererHealth?.()
+    stopRendererHealth = null
+    rendererHealth = null
+  })
+}
+
 // ── Startup & crash log ──────────────────────────────────────────────
 // Packaged builds on Windows have no visible console, so a silent first-run
 // auto-close (app.quit from the startup catch, window-all-closed, or an
@@ -161,6 +227,9 @@ app.on('render-process-gone', (_e, wc, details) => {
   try { url = wc.getURL() } catch {}
   writeLog('WARN', `render-process-gone: reason=${details.reason} exitCode=${details.exitCode} url=${url}`)
   console.warn('[Main] render-process-gone:', details, url)
+  // The replacement renderer restarts the heartbeat's countdown — otherwise the
+  // preload's boot time would be charged against the dead process's silence.
+  rendererHealth?.markAlive()
   // Auto-recover: a dead renderer (crash/OOM — including the forced crash
   // from the unresponsive watchdog in createWindow) leaves a white/frozen
   // window the user previously had to restart the whole app for. Reload in
@@ -209,6 +278,11 @@ setInterval(() => {
   const drift = now - watchdogLastTick - WATCHDOG_INTERVAL_MS
   watchdogLastTick = now
   if (drift <= WATCHDOG_STALL_THRESHOLD_MS || drift > WATCHDOG_SLEEP_CEILING_MS) return
+  // Asleep (suspend seen, no resume after it): every tick drift observed now is
+  // a dark-wake blip, not a stall — 2026-11-18 logged "stalled ~112.3s" in the
+  // middle of an hour of sleep. The resume arm is the first moment anything can
+  // be acted on anyway.
+  if (powerEventTimestamps.lastSuspendAt > powerEventTimestamps.lastResumeAt) return
   // Overlap with a suspend/resume boundary → the machine slept through it.
   const { lastSuspendAt, lastResumeAt } = powerEventTimestamps
   if ((lastSuspendAt && now - lastSuspendAt <= drift + 30_000)
@@ -589,15 +663,15 @@ function createWindow(): void {
   // window, converting a permanent freeze into a brief reload.
   mainWindow.webContents.on('unresponsive', () => {
     if (rendererRecoveryTimer) return // recovery already pending
-    const wc = mainWindow?.webContents
-    if (!wc || wc.isDestroyed() || isQuitting) return
+    const win = mainWindow
+    const wc = win?.webContents
+    if (!win || !wc || wc.isDestroyed() || isQuitting) return
     writeLog('WARN', 'renderer unresponsive — will crash+reload in 15s unless it recovers')
     rendererRecoveryTimer = setTimeout(() => {
       rendererRecoveryTimer = null
-      if (!wc || wc.isDestroyed() || isQuitting) return
+      if (wc.isDestroyed() || isQuitting) return
       writeLog('WARN', 'renderer still unresponsive after 15s — forcing crash to recover')
-      forcedRendererRecovery = true
-      try { wc.forcefullyCrashRenderer() } catch { /* already gone */ }
+      recoverRenderer(win, 'unresponsive-15s')
     }, 15_000)
     wc.once('responsive', () => {
       if (rendererRecoveryTimer) {
@@ -607,6 +681,10 @@ function createWindow(): void {
       writeLog('INFO', 'renderer responsive again')
     })
   })
+
+  // Heartbeat: the wedge the 'unresponsive' event cannot see — a renderer that
+  // still paints but can no longer receive IPC (post-sleep freeze, 2026-11-18).
+  installRendererHealth(mainWindow)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -915,18 +993,20 @@ if (gotTheLock) {
       }
 
       // 3. Notify renderer to recover gracefully (GPU context, WebGL, timers).
-      //    If renderer doesn't ack within 5s, fall back to a full reload.
       const win = mainWindow
       if (!win || win.isDestroyed()) return
+      // Grace for the watchdog too: the machine was asleep, so its countdown
+      // was frozen, and the resume notification is the first real message.
+      rendererHealth?.markAlive()
       notifyResume(win, 5000, () => {
-        try {
-          // Reload only helps something on screen. A hidden/closed window has
-          // nothing to recover visually — reloading it would just reset its
-          // state for no benefit.
-          if (!win.isVisible()) return
-          writeLog('WARN', 'power: renderer did not ack resume — reloading')
-          win.webContents.reload()
-        } catch { /* window may be destroyed */ }
+        // The ack travels over the same channel as input events, so no ack in
+        // 5s means either a stuck JS loop or a dead channel. A reload cannot
+        // fix the second: it is itself an IPC command, and on 2026-11-18 it
+        // was logged yet never arrived — the window stayed frozen for hours
+        // while main kept running. Kill the process instead, visible or not: a
+        // hidden window with a dead renderer is exactly the state the user
+        // finds later, and the crash+reload is invisible while hidden.
+        recoverRenderer(win, 'resume-no-ack')
       })
     }, 3000)
   })

@@ -632,3 +632,12 @@ const electronAPI = {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
+
+// ── Renderer health heartbeat answer ──────────────────────────────────────
+// Answered from the preload, never through the api object: the reply has to
+// prove that this document's JS thread and its IPC channel are alive, so it
+// must not wait on React mounting. A missing answer is what makes main kill the
+// process and replace it — see renderer-health.ts.
+ipcRenderer.on(IPC_CHANNELS.APP_RENDERER_PING, () => {
+  ipcRenderer.send(IPC_CHANNELS.APP_RENDERER_PONG)
+})
