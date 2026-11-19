@@ -9,6 +9,7 @@ import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
 import { summarizeToolCall } from './context-compactor'
 import { generateMsgId, safeInvokeObserver } from '../agent-utils'
+import { stampTurnDuration } from './turn-clock'
 import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
@@ -245,6 +246,13 @@ export class StreamRunner {
             // silent close.
             console.warn(`[AgentEngine] thinking-only round persisted after retry (stop=${stopReason}) — ending the turn with an explicit error`)
             const hint = '模型连续两轮只输出了思考，没有生成正文或工具调用，回合已停止。可直接重试，或输入「继续」让其接着当前进度往下做。'
+            // 错误终态也是结算类停止（2026-11-18）：NOW-marker 不许在错误上继续
+            // 转（见 PlanManager.clearCurrentMarker）。
+            this.engine.planManager.clearCurrentMarker()
+            // 错误终态也是结算类停止（2026-11-19 结算即盖章）：停表盖章——
+            // 「发送 → 最后输出字符」的运行段累计落在已产出的答案上，而不是让
+            // 它停在最后一轮自己的时长（一个跑了十分钟然后死掉的回合显示 11s）。
+            stampTurnDuration(this.engine.messages, this.engine.turnClock)
             this.engine.agentStatus = { status: 'error', error: hint }
             this.engine.notify()
             safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'error', error: hint } }, 'afterLlmCall')
@@ -493,7 +501,15 @@ export class StreamRunner {
         }
       }
 
-      if (!isCancel) { this.engine.agentStatus = { status: 'error', error: message }; this.engine.notify() }
+      // 错误终态也是结算类停止（2026-11-18）：重试链耗尽、回合关死——NOW-
+      // marker 不许跨错误存活（见 PlanManager.clearCurrentMarker）。isCancel
+      // 分支不动：那是冻结（取消把回合停进 awaiting_continue），marker 是
+      // 继续执行的面包屑。
+      // 错误终态也是结算类停止（2026-11-19 结算即盖章）：停表盖章 + 时钟归位
+      // ——error 不在等待集里，不停表时钟会一直空跑到下一次 start()。isCancel
+      // 分支同样不盖章：真实终局已由 stopExecution / prepareTurn 盖过，迟到的
+      // 死讯再盖一次只会盖出更晚的时刻。
+      if (!isCancel) { this.engine.planManager.clearCurrentMarker(); stampTurnDuration(this.engine.messages, this.engine.turnClock); this.engine.agentStatus = { status: 'error', error: message }; this.engine.notify() }
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: null, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterLlmCall')
       safeInvokeObserver(opts.hooks?.afterSession, { messages: this.engine.messages, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterSession')
       if (!isCancel) this.engine.resolveCompletionIfSpawned('error')

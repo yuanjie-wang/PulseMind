@@ -37,7 +37,7 @@ import { ExecutionFlow } from './engine/execution-flow'
 import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { effectiveInputWindow } from './engine/window-budget'
-import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
+import { TurnClock, stampTurnDuration, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, dropStaleThinkingOnlyTurns, type CompactTracking } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
@@ -1092,6 +1092,14 @@ export class AgentEngine implements EngineCore {
     // 都是 no-op。
     this.executionFlow.settleSubAgentTree(this)
     releaseQueuedSubAgents(subAgentBudgetKey(this.opts))
+    // 输入了新消息 = 旧回合终止：NOW-marker 随旧回合一起死（同 stopExecution，
+    // 见 PlanManager.clearCurrentMarker）——旧回合冻在 awaiting_continue 的
+    // current 标记不许带进新回合的状态块。
+    this.planManager.clearCurrentMarker()
+    // 打断也是终局（2026-11-19 结算即盖章）：旧回合先停表盖章再重开——下面
+    // turnClock.start() 会清零累计，不先结算，一个跑了十分钟后被新消息打断的
+    // 回合就丢了时长（终点=打断瞬间，等待用户的段落 TurnClock 已排除）。
+    stampTurnDuration(this.messages, this.turnClock)
     // 排空结算续延：completion 的 resolve、排队者的拒绝都是微任务，它们经
     // addToolResult 回调 continueLoop，而唯一的闸门是 isCancelled——必须趁它
     // 还关着让这些续延跑完（一个宏任务保证所有微任务排空），否则它们会与下面的
@@ -1418,6 +1426,10 @@ export class AgentEngine implements EngineCore {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       console.error('[AgentEngine] loop request failed:', message)
+      // 错误关闭也是结算类停止（2026-11-18）：回合就此关死（retryLastTurn 是
+      // 同一转写上的新循环，模型重标一次成本极低），NOW-marker 不许在错误终态
+      // 上继续转（见 PlanManager.clearCurrentMarker）。
+      this.planManager.clearCurrentMarker()
       this.agentStatus = { status: 'error', error: message }
       this.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: null, status: { status: 'error', error: message } }, 'afterLlmCall')

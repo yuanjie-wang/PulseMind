@@ -27,6 +27,7 @@
  * `now` is injected so the arithmetic can be pinned in a test instead of being
  * measured.
  */
+import type { AgentMessage, TurnStopReason } from '../../types/agent'
 
 /** Statuses where the ball is in the user's court. The turn clock stops for
  *  these and only these: every one of them is the engine saying "I cannot
@@ -44,6 +45,32 @@ const WAITING_ON_USER: ReadonlySet<string> = new Set([
 
 export function isWaitingOnUserStatus(status: string): boolean {
   return WAITING_ON_USER.has(status)
+}
+
+/**
+ * 结算即盖章（2026-11-19 裁定扩展）：回合的每一种终局——正常收口、错误终态、
+ * 停止任务、输入新消息打断、阶段完成协议——都必须停表，并把「发送 → 终局」的
+ * 运行段累计盖到最后一条 assistant 消息上。倒序搜索：交付/工具结果/恢复通知
+ * 这些 role:'user' 条目常在答案之后追加，读尾部会静默跳过（2026-11-06 实锤）。
+ * 找不到 assistant 消息（第一轮就终局）时只停表——时长无处可落，但时钟必须
+ * 归位，不能把旧回合的表带进下一个回合；错误状态不在等待集里，不停表时钟会
+ * 一直空跑到下一次 start()。
+ * `stopReason` 只由正常收口路径携带：错误/停止/打断不新增终态词（错误详情在
+ * status.error 里，stopReason 词汇表不动，数据面保持同形）。
+ */
+export function stampTurnDuration(
+  messages: AgentMessage[],
+  clock: TurnClock,
+  stopReason?: TurnStopReason
+): void {
+  const totalMs = clock.isActive() ? Math.round(clock.stop()) : null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role !== 'assistant') continue
+    if (totalMs !== null) msg.processingMs = totalMs
+    if (stopReason) msg.stopReason = stopReason
+    break
+  }
 }
 
 export class TurnClock {

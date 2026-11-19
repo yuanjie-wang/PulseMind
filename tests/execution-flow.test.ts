@@ -83,7 +83,7 @@ function makeCore(over: {
     currentAssistantBlocks: [] as unknown[],
     toolUseBlocks: [] as ToolUseBlock[],
     jsonAccumulators: new Map(),
-    planManager: { execCreatePlan: vi.fn(async () => {}), execAdvancePlan: vi.fn(async () => {}) },
+    planManager: { execCreatePlan: vi.fn(async () => {}), execAdvancePlan: vi.fn(async () => {}), clearCurrentMarker: vi.fn() },
     planScheduler: { kick: vi.fn(() => false) },
     pendingVerbatimReply: null,
     opts: {

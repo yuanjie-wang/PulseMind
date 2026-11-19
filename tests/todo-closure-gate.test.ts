@@ -48,17 +48,25 @@ const REQ = { apiUrl: 'https://example.invalid/v1/chat/completions', headers: {}
 const runnerOf = (engine: InstanceType<typeof AgentEngine>): Runner =>
   (engine as unknown as { streamRunner: Runner }).streamRunner
 
-function makeStreamHost(): PulseHost & { pump(chunks: string[]): void } {
+function makeStreamHost(): PulseHost & { pump(chunks: string[]): void; fail(message: string): void } {
   const chunkListeners = new Set<(d: { requestId: string; data: string }) => void>()
   const doneListeners = new Set<(d: { requestId: string }) => void>()
+  const errorListeners = new Set<(d: { requestId: string; error: string }) => void>()
   const queue: string[][] = []
+  const errorQueue: string[] = []
   const noop = () => Promise.resolve([] as unknown[])
   const host = {
     onApiStreamChunk: (fn: (d: { requestId: string; data: string }) => void) => { chunkListeners.add(fn); return () => { chunkListeners.delete(fn) } },
-    onApiStreamError: () => () => {},
+    onApiStreamError: (fn: (d: { requestId: string; error: string }) => void) => { errorListeners.add(fn); return () => { errorListeners.delete(fn) } },
     onApiStreamDone: (fn: (d: { requestId: string }) => void) => { doneListeners.add(fn); return () => { doneListeners.delete(fn) } },
     onApiStreamRetry: () => () => {},
     apiFetchStream: async (requestId: string) => {
+      const failed = errorQueue.shift()
+      if (failed !== undefined) {
+        // ApiStreamErrorEvent 的形状：error 在顶层（stream-runner 读 data.error）。
+        for (const fn of [...errorListeners]) fn({ requestId, error: failed })
+        return
+      }
       const chunks = queue.shift() ?? []
       for (const c of chunks) for (const fn of [...chunkListeners]) fn({ requestId, data: c })
       for (const fn of [...doneListeners]) fn({ requestId })
@@ -72,8 +80,9 @@ function makeStreamHost(): PulseHost & { pump(chunks: string[]): void } {
     expertList: noop,
     getSkillPreferences: () => Promise.resolve({}),
     getSettings: () => Promise.resolve({ locale: 'zh' }),
-  } as unknown as PulseHost & { pump(chunks: string[]): void }
+  } as unknown as PulseHost & { pump(chunks: string[]): void; fail(message: string): void }
   ;(host as unknown as { pump(chunks: string[]): void }).pump = (chunks: string[]) => { queue.push(chunks) }
+  ;(host as unknown as { fail(message: string): void }).fail = (message: string) => { errorQueue.push(message) }
   return host
 }
 
@@ -442,5 +451,128 @@ describe('wiring scans (a half-landed edit must fail here)', () => {
     expect(src).toContain('The engine enforces the closure')
     expect(src).toContain('bounced back with a closure directive')
     expect(src).toContain('a bounce that produced no tool work closes as-is')
+  })
+})
+
+/**
+ * 结算类停止盖掉 NOW-marker（2026-11-18，user: 主对话停止了，todo list 里的
+ * 任务状态应该也要停止）。
+ *
+ * `in_progress` 不是一个存储状态——它是 pending + plan.currentNodeId，而
+ * currentNodeId 的合同（plan.ts）是「the node the main agent is working on
+ * NOW」。todo_write 的派生块只在下一次 reconcile 时清它；回合终止没有任何人
+ * 清——面板 spinner 永转、plan_json 跨重启携带假事实。裁定：四个结算臂
+ * （停止任务 / 新消息结算旧回合 / 错误终态 / 正常收口）一律盖掉 marker；
+ * 冻结臂（⏹ cancelLoop → awaiting_continue）刻意不清——「停在这里」是确认条
+ * 继续执行的面包屑（user ruling 2026-09-29 冻结不是结算）。节点 status 一律
+ * 不动：停止 ≠ 失败，模型下一次 todo_write 自己重标或改判。
+ */
+describe('settle-class stops retire the NOW-marker; the freeze keeps it', () => {
+  it('stopExecution clears the marker and persists; cancelLoop (freeze) keeps the breadcrumb', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, { conversationId: undefined })
+    engine.planManager.plan = makeDirectPlan(
+      [
+        { id: 'n1', description: 'step one', status: 'completed' },
+        { id: 'n2', description: 'step two' },
+      ],
+      { currentNodeId: 'n2' },
+    )
+    const saves: Array<Plan | null> = []
+    ;(engine as unknown as { savePlan: (p: Plan | null) => void }).savePlan = (p) => { saves.push(p) }
+
+    // The ⏹ freeze: 停在这里 — the marker is exactly what 继续执行 resumes from.
+    engine.cancelLoop()
+    expect(engine.agentStatus.status).toBe('awaiting_continue')
+    expect(engine.planManager.plan?.currentNodeId).toBe('n2')
+    expect(saves).toHaveLength(0)
+
+    // The 确认条 settle: 停止任务 — nothing runs any more, the marker dies.
+    engine.stopExecution()
+    expect(engine.agentStatus).toEqual({ status: 'idle' })
+    expect(engine.planManager.plan?.currentNodeId).toBeUndefined()
+    // delete, not undefined-assign: the key must leave the persisted JSON.
+    expect('currentNodeId' in engine.planManager.plan!).toBe(false)
+    expect(saves).toHaveLength(1)
+  })
+
+  it('a normal close retires a stale marker the closure gate cannot see (settled list)', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, { conversationId: undefined })
+    // The disease shape: every entry settled, but the marker still points at
+    // n1 (the model checked it off without a later todo_write... or the gate's
+    // 说而不做 close). No pending entries → the gate is quiet → the close arm
+    // is the only thing that can retire the stale claim.
+    engine.planManager.plan = makeDirectPlan(
+      [{ id: 'n1', description: 'only step', status: 'completed' }],
+      { completed: true, currentNodeId: 'n1' },
+    )
+
+    await drive(host, engine, [endTurnStream()])
+
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'end_turn' })
+    expect(engine.planManager.plan?.currentNodeId).toBeUndefined()
+  })
+
+  it('a max_tokens close retires the marker too (the gate skips truncation, the close arm does not)', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, { conversationId: undefined })
+    engine.planManager.plan = makeDirectPlan([{ id: 'n1', description: 'open step' }], { currentNodeId: 'n1' })
+
+    await drive(host, engine, [maxTokenStream()])
+
+    expect(engine.agentStatus).toEqual({ status: 'completed', stopReason: 'max_tokens' })
+    expect(engine.planManager.plan?.currentNodeId).toBeUndefined()
+  })
+
+  it('an exhausted-transport error settle retires the marker (retryLastTurn re-marks it cheaply)', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, { conversationId: undefined })
+    engine.planManager.plan = makeDirectPlan([{ id: 'n1', description: 'open step' }], { currentNodeId: 'n1' })
+    // No transport-retry marker in the message → the runner's retry chain
+    // skips and the catch lands on the error settle.
+    host.fail('provider exploded unexpectedly (test)')
+
+    await runnerOf(engine).run(engine.opts, REQ)
+    await waitForClose(engine)
+
+    expect(engine.agentStatus.status).toBe('error')
+    expect(engine.planManager.plan?.currentNodeId).toBeUndefined()
+  })
+
+  it('no marker → the settle arm is a persistence no-op', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, { conversationId: undefined })
+    engine.planManager.plan = makeDirectPlan([{ id: 'n1', description: 'step one', status: 'completed' }], { completed: true })
+    const saves: Array<Plan | null> = []
+    ;(engine as unknown as { savePlan: (p: Plan | null) => void }).savePlan = (p) => { saves.push(p) }
+
+    engine.stopExecution()
+
+    expect(engine.agentStatus).toEqual({ status: 'idle' })
+    expect(saves).toHaveLength(0)
+  })
+
+  it('wiring: PlanManager owns the clear; every settle arm calls it; the freeze arm never does', () => {
+    const read = (p: string): string => readFileSync(join(__dirname, '..', p), 'utf-8')
+    const pm = read('src/renderer/src/agent/plan-manager.ts')
+    expect(pm).toContain('clearCurrentMarker(): void')
+    expect(pm).toContain('delete this.plan.currentNodeId')
+    // execution-flow: stopExecution + the close arm. AgentEngine: prepareTurn
+    // settle + continueLoop catch. stream-runner: thinking-only error + the
+    // transport-error settle. (Comments mention the name without parens —
+    // the ()-suffixed count only matches real calls.)
+    expect(read('src/renderer/src/agent/engine/execution-flow.ts').match(/clearCurrentMarker\(\)/g)).toHaveLength(2)
+    expect(read('src/renderer/src/agent/AgentEngine.ts').match(/this\.planManager\.clearCurrentMarker\(\)/g)).toHaveLength(2)
+    expect(read('src/renderer/src/agent/engine/stream-runner.ts').match(/clearCurrentMarker\(\)/g)).toHaveLength(2)
+    // The freeze arm must stay clean: the resume breadcrumb lives there.
+    const ef = read('src/renderer/src/agent/engine/execution-flow.ts')
+    const freezeBody = ef.slice(ef.indexOf('pauseExecution = (): void => {'), ef.indexOf('resumeExecution = (): void => {'))
+    expect(freezeBody).not.toContain('clearCurrentMarker')
   })
 })

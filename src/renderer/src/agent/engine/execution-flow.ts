@@ -24,6 +24,7 @@ import { registerForegroundExec, unregisterForegroundExec } from '../executors/f
 import type { EngineCore } from './engine-core'
 import type { PulseHost } from '../host/types'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './subagent-limiter'
+import { stampTurnDuration } from './turn-clock'
 import { beginTerminalSpan } from '../terminal-span'
 
 /** Built-in tools that only look — the 'read' tier, never gated.
@@ -450,6 +451,14 @@ export class ExecutionFlow {
     this.settleSubAgentTree(this.engine)
     // 排队等槽位的专家不能在用户按停止之后再起一个。
     releaseQueuedSubAgents(subAgentBudgetKey(this.engine.opts))
+    // 结算类停止（2026-11-18）：NOW-marker 与回合同寿——停止后没有东西在跑，
+    // spinner 与 IN PROGRESS 不得跨停止存活（见 PlanManager.clearCurrentMarker）。
+    this.engine.planManager.clearCurrentMarker()
+    // 停止也是终局（2026-11-19 结算即盖章）：「发送 → 停止点击」的运行段累计
+    // 照盖（TurnClock 已排除等人的段落），否则最后一条 assistant 消息停在它
+    // 自己那一轮的时长上，一个跑了十分钟后被叫停的回合显示 11s。终态词不盖：
+    // stopReason 词汇表没有「被停止」，错误详情在 status.error 里，数据面不动。
+    stampTurnDuration(this.engine.messages, this.engine.turnClock)
     this.engine.agentStatus = { status: 'idle' }
     this.engine.streamingBlocks = []
     this.engine.pendingToolIds = new Set()
@@ -910,6 +919,11 @@ export class ExecutionFlow {
         // 放在 kick() 之前：finish 是阶段级终止信号，调度器没有接下来要派的东西。
         // 同批的写工具并不被跳过——本分支只在整批跑完且 pending 清空后才到。
         if (this.engine.consumeStageFinishTurnEnd()) {
+          // 阶段完成协议是真终局（2026-11-19 结算即盖章）：模型已声明结果状态、
+          // 不再起一轮 LLM，回合在这里关死——运行段累计照盖。同分支族里 934 行
+          // 的 completed 刻意不盖：那是「长跑命令退出后 addToolResult 重开循环」
+          // 的排水形态，盖了表回合就再也拿不回时长。
+          stampTurnDuration(this.engine.messages, this.engine.turnClock)
           this.engine.agentStatus = { status: 'completed' }
           this.engine.resolveCompletionIfSpawned('completed')
         } else if (!this.engine.planScheduler.kick()) {
@@ -1006,6 +1020,12 @@ export class ExecutionFlow {
     // gate (a legitimate close), and the quota bound lives in the engine like
     // the nudge above: the second open-ended close closes normally.
     if (this.engine.nudgeTodoIfUnsettled(stopReason)) return
+    // 正常收口也盖 NOW-marker（2026-11-18）：走到这里回合必关——三个续发门
+    // （召唤 nudge / 调度器 kick / todo 收口门）任何一个续发都提前 return 了。
+    // 模型无视收口指令、或 max_tokens 截断收尾时，currentNodeId 可能还指着
+    // 最后一轮的节点——回合已关，marker 不许存活（同 stopExecution，见
+    // PlanManager.clearCurrentMarker）。
+    this.engine.planManager.clearCurrentMarker()
     // The turn's duration — user send → this last output character, with every
     // thinking round and tool call in between counted and any stretch parked on
     // the user (held approval / ask_user / loop-limit prompt / manual pause)
@@ -1015,22 +1035,14 @@ export class ExecutionFlow {
     // 「模型自己停的」在数据面完全同形——两处都写 completed，遥测层看不到
     // 早停健康度，事后也无从统计截断率。
     const stop = classifyStopReason(stopReason)
-    const totalMs = this.engine.turnClock.isActive() ? Math.round(this.engine.turnClock.stop()) : null
-    // The turn's answer is the LAST ASSISTANT message — not necessarily the
-    // last message. A plan wave's delivery, a tool result and a resume notice
-    // all append a `role: 'user'` entry right after the round that produced
-    // them, so reading `messages[len - 1]` and requiring
-    // `role === 'assistant'` skipped the stamp silently on every
-    // plan-dispatched turn (user report 2026-11-06: a 13-sub-agent review read
-    // back as its final round's 11s). Search backwards instead of trusting the
-    // tail.
-    for (let i = this.engine.messages.length - 1; i >= 0; i--) {
-      const msg = this.engine.messages[i]
-      if (msg.role !== 'assistant') continue
-      if (totalMs !== null) msg.processingMs = totalMs
-      msg.stopReason = stop
-      break
-    }
+    // The turn's duration — user send → this last output character, with every
+    // thinking round and tool call in between counted and any stretch parked on
+    // the user (held approval / ask_user / loop-limit prompt / manual pause)
+    // excluded. The clock is the accumulator that knows the difference; the
+    // per-round times stay on the intermediate messages.
+    // 结算即盖章（2026-11-19）：本函数不再是唯一盖章点——错误终态/停止/打断/
+    // finish_stage 都走同一 stampTurnDuration（倒序搜索的细节见 turn-clock.ts）。
+    stampTurnDuration(this.engine.messages, this.engine.turnClock, stop)
     // 唯一需要能在日志里数出来的形态：它不是「模型选择收尾」，是输出预算耗尽。
     if (stop === 'max_tokens') {
       console.warn(`[AgentEngine] turn closed by max_tokens — output truncated (msgs=${this.engine.messages.length}, toolRounds=${this.engine.toolRoundsThisTurn})`)

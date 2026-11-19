@@ -108,6 +108,23 @@ export class PlanManager {
     if (this.plan && updateNodeExecution(this.plan, ref, attemptId, status, subConvId)) this.notifyPlanChange()
   }
 
+  /** 结算类停止的 NOW-marker 收口（2026-11-18，user: 主对话停止了，todo 的
+   *  任务状态也应该停止）。currentNodeId 的合同是「the node the main agent is
+   *  working on NOW」——回合终止后没有任何东西在跑，marker 留着就是面板
+   *  spinner 永转 + plan_json 跨重启携带假事实。四个结算臂都调它：停止任务
+   *  （stopExecution）、输入了新消息结算旧回合（prepareTurn）、错误关闭
+   *  （stream-runner / continueLoop 的 catch）、正常收口（handleEndTurnResponse
+   *  的关闭臂——三个续发门任何一个都会提前 return，走到这里回合必关）。
+   *  冻结臂（cancelLoop → awaiting_continue）刻意不清：「停在这里」是确认条
+   *  继续执行的面包屑（user ruling 2026-09-29 冻结不是结算）。节点 status 一律
+   *  不动：停止 ≠ 失败，模型下一次 todo_write 自己重标或改判。幂等——无
+   *  marker 时是 no-op，不触发存档。 */
+  clearCurrentMarker(): void {
+    if (!this.plan?.currentNodeId) return
+    delete this.plan.currentNodeId
+    this.notifyPlanChange()
+  }
+
   /** Auto-scheduler settlement (PLAN-plan-scheduler S2/S10): a node whose
    *  attempt DELIVERED is accepted without an LLM round — the whole point of
    *  the scheduler. Same single-writer class, second policy: markNode's

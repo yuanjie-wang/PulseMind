@@ -10,7 +10,7 @@ process.env.HOME = mkdtempSync(join(tmpdir(), 'pulsemind-turn-duration-'))
 
 const { AgentSessionManagerImpl } = await import('../src/main/agent/session-manager')
 const { AgentEngine } = await import('../src/renderer/src/agent/AgentEngine')
-const { TurnClock } = await import('../src/renderer/src/agent/engine/turn-clock')
+const { TurnClock, stampTurnDuration } = await import('../src/renderer/src/agent/engine/turn-clock')
 const { setHost } = await import('../src/renderer/src/agent/host')
 const { applySessionEvent, freshSessionState } = await import('../src/shared/agent-session/mirror')
 const { ToolManager } = await import('../src/renderer/src/tools/ToolManager')
@@ -246,5 +246,110 @@ describe('turn duration: user send → last output character', () => {
     messages[0].processingMs = 12_000
     t.emitMessages('s2', messages)
     expect(events.filter((e) => e.type === 'message_stats')).toHaveLength(1)
+  })
+
+  // ── 结算即盖章（2026-11-19，用户「还是有场景会有问题」）──────────────────
+  // handleEndTurnResponse 曾是唯一盖章点，而一个回合有六种终局：错误终态、
+  // 停止任务、输入新消息打断的回合从不盖章——最后一条 assistant 消息停在它
+  // 自己那一轮的时长上，跑了十分钟然后死掉的回合显示 11s。
+
+  it('stamps the total when the turn dies in the error terminal (retry chain exhausted)', async () => {
+    const engine = makeEngine()
+    const first = assistant('a1', 9_000)
+    const final = assistant('a2', 21_000)
+    engine.messages = [user(), first, final]
+
+    let clock = 1_000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      engine.turnClock.start()
+      clock = 40_000
+      // adapter is {} — createStreamParser is missing, the TypeError lands in
+      // the runner's catch BEFORE any listener registers (cleanupListeners
+      // stays undefined, so the Proxy test host is safe), and the message
+      // matches no retry branch: not an idle marker, not transport-shaped,
+      // not context overflow, not 'HTTP '-prefixed.
+      await (engine as unknown as { streamRunner: { run: (o: unknown, r: unknown) => Promise<void> } })
+        .streamRunner.run(engine.opts, { apiUrl: 'https://example.invalid', headers: {}, resolvedBody: {} })
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(final.processingMs).toBe(39_000)
+    expect(engine.agentStatus.status).toBe('error')
+    // 时钟归位：error 不在等待集里，不停表它会一直空跑到下一次 start()。
+    expect(engine.turnClock.isActive()).toBe(false)
+  })
+
+  it('stamps the total when the user stops the task (停止任务 → stopExecution)', () => {
+    const engine = makeEngine()
+    const final = assistant('a2', 12_000)
+    engine.messages = [user(), assistant('a1', 30_000), final]
+
+    let clock = 0
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      engine.turnClock.start()
+      clock = 30_000
+      engine.agentStatus = { status: 'awaiting_approval', tools: [] }
+      engine.notify()
+      clock = 330_000 // five minutes parked on the approval card
+      engine.stopExecution()
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(final.processingMs).toBe(30_000) // the parked stretch stays excluded
+    expect(engine.turnClock.isActive()).toBe(false)
+  })
+
+  it('stamps the interrupted turn before the new send reopens the clock', async () => {
+    const engine = makeEngine()
+    const final = assistant('a2', 12_000)
+    engine.messages = [user(), assistant('a1', 30_000), final]
+
+    let clock = 0
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      engine.turnClock.start()
+      clock = 45_000
+      await (engine as unknown as { prepareTurn: (t: string) => Promise<string | null> }).prepareTurn('换个方向')
+    } finally {
+      spy.mockRestore()
+    }
+
+    // 旧回合的表在 start() 清零之前结算——终点=打断瞬间的累计。
+    expect(final.processingMs).toBe(45_000)
+    expect(engine.messages[engine.messages.length - 1].role).toBe('user')
+    expect(engine.turnClock.isActive()).toBe(true) // 新表已开
+  })
+
+  it('stampTurnDuration: a first-round death stops the clock with nothing to stamp; an idle clock is a no-op', () => {
+    let clock = 100
+    const tc = new TurnClock(() => clock)
+    tc.start()
+    clock = 5_100
+    stampTurnDuration([user()], tc) // round 1 never produced an answer
+    expect(tc.isActive()).toBe(false)
+
+    // 时钟已停（回合并未运行）：零动作、不抛。
+    const idle = assistant('a1', 9_000)
+    stampTurnDuration([idle], new TurnClock(() => clock))
+    expect(idle.processingMs).toBe(9_000)
+    expect(idle.stopReason).toBeUndefined()
+  })
+
+  it('every settle path stamps (wiring scan: 2 error terminals, stop, steer, finish_stage)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8')
+    // stream-runner: thinking-only 二次退化 + catch 错误终态，两处。
+    expect(read('../src/renderer/src/agent/engine/stream-runner.ts')
+      .match(/stampTurnDuration\(this\.engine\.messages, this\.engine\.turnClock\)/g)).toHaveLength(2)
+    const flow = read('../src/renderer/src/agent/engine/execution-flow.ts')
+    // handleEndTurnResponse（带终态词）+ stopExecution + finish_stage。
+    expect(flow).toContain('stampTurnDuration(this.engine.messages, this.engine.turnClock, stop)')
+    expect(flow.match(/stampTurnDuration\(this\.engine\.messages/g)).toHaveLength(3)
+    expect(read('../src/renderer/src/agent/AgentEngine.ts'))
+      .toContain('stampTurnDuration(this.messages, this.turnClock)')
   })
 })
