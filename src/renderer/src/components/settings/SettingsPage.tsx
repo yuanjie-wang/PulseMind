@@ -13,6 +13,7 @@ import {
   InfoCircleOutlined,
   ApiOutlined,
   KeyOutlined,
+  AudioOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -26,6 +27,7 @@ import ExtensionSettings from './ExtensionSettings'
 import ShortcutsSettings from './ShortcutsSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
+import VoiceSettings from './VoiceSettings'
 import AboutPage from './AboutPage'
 import { runSettingsLeaveGuard } from './settings-leave-guard'
 
@@ -39,6 +41,7 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'assistant', icon: <UserOutlined />, labelKey: 'appLayout.assistant' },
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'data', icon: <DatabaseOutlined />, labelKey: 'appLayout.dataRuntime' },
+  { key: 'voice', icon: <AudioOutlined />, labelKey: 'appLayout.voice' },
   { key: 'about', icon: <InfoCircleOutlined />, labelKey: 'menu.about' },
 ]
 
@@ -83,6 +86,8 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
         return <ShortcutsSettings inline open onClose={() => {}} />
       case 'environment':
         return <EnvironmentSettings inline open onClose={() => {}} onReloadConversations={onReloadConversations} />
+      case 'voice':
+        return <VoiceSettings inline open onClose={() => {}} />
       case 'about':
         return <AboutPage />
       default:

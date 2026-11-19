@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Dropdown, Tooltip } from 'antd'
+import { Button, Dropdown, Popover, Tooltip } from 'antd'
 import {
   PlusOutlined,
   FolderOutlined,
@@ -11,14 +11,18 @@ import {
   SafetyOutlined,
   ThunderboltOutlined,
   RobotOutlined,
+  AudioOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
 import type { SteerOutcome } from '../../types/agent'
-import { Composer, useInputHistory, COMPOSER_MAX_WIDTH, ABOVE_CARD_GAP } from './Composer'
+import { Composer, useInputHistory, COMPOSER_MAX_WIDTH, ABOVE_CARD_GAP, clampComposerInput } from './Composer'
 import type { ComposerHandle } from './Composer'
+import { useVoiceInput } from './useVoiceInput'
+import { VoiceGuideCard } from '../settings/VoiceGuideCard'
 import { usePendingMessageStore, type StagedMessage } from '../../stores/pendingMessageStore'
 import type { LlmProfile } from '../../types/settings'
 import type { ExpertProfile } from '../../../../shared/types/expert'
@@ -210,6 +214,10 @@ function InputAreaImpl({
     /** `/`-command popup (init/compact). Same rule: commands execute in
      *  useChatController's send path. */
     commands?: boolean
+    /** 语音输入麦克风按钮（PLAN-voice-input M1）。缺省只在完整聊天形态出现：
+     *  传了 features 对象的复用宿主（routine run / form assist / tool studio）
+     *  不带它就维持原样，要开得显式 voice: true。 */
+    voice?: boolean
   }
   /** Staged-message queue (暂存区). Absent = feature off and the reuse sites
    *  keep today's behavior: Enter mid-run does nothing (Sender's loading
@@ -260,9 +268,55 @@ function InputAreaImpl({
   // Hoisted: the trigger popup's command rows read their descriptions through t.
   const { t } = useTranslation()
   const showAuthorization = (features?.authorization ?? features === undefined) && onChangeApprovalMode !== undefined
+  const showVoice = features?.voice ?? features === undefined
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
   const composerRef = useRef<ComposerHandle>(null)
+
+  // ── 语音输入（PLAN-voice-input §3.5）──
+  // 录音态机与转写走 useVoiceInput；转写结果插回光标处（不自动发送，可编辑）。
+  const voice = useVoiceInput({ t })
+  // 插入要读「当下」的草稿（回调经 hook 的 ref 转发，闭包会旧），镜像一份。
+  const inputValueRef = useRef(inputValue)
+  inputValueRef.current = inputValue
+  const insertVoiceText = useCallback((text: string): void => {
+    const prev = inputValueRef.current
+    const ta = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
+    const start = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : prev.length
+    const end = ta && typeof ta.selectionEnd === 'number' ? ta.selectionEnd : start
+    // 与既有内容留一个空格（除非行首/贴着空白），语音和手打互不粘连
+    const joiner = start > 0 && !/\s$/.test(prev.slice(0, start)) ? ' ' : ''
+    const next = clampComposerInput(`${prev.slice(0, start)}${joiner}${text}${prev.slice(end)}`)
+    const caret = Math.min(next.length, start + joiner.length + text.length)
+    setInputValue(next)
+    // 渲染后把光标放到插入末尾——下一次说话从这里接上
+    requestAnimationFrame(() => {
+      const el = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (el) {
+        el.focus()
+        el.setSelectionRange(caret, caret)
+      }
+    })
+  }, [])
+  useEffect(() => {
+    voice.onTranscribed(insertVoiceText)
+  }, [voice, insertVoiceText])
+
+  // ⌥V（Alt+V）：仅当本输入框持有焦点时拦截——「聚焦输入框即可用」（裁定 #9），
+  // 不碰 globalShortcut。同一窗口可能有多个 InputArea 宿主，焦点判据天然消歧。
+  useEffect(() => {
+    if (!showVoice) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyV') return
+      const ta = composerRef.current?.nativeElement?.querySelector('textarea')
+      if (!ta || document.activeElement !== ta) return
+      e.preventDefault()
+      if (voice.state.phase === 'idle') voice.start()
+      else if (voice.state.phase === 'recording') voice.stop()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showVoice, voice])
 
   // ── 选中文字引用（2026-11-06）──
   // 工具栏的「提问」不把选中文字塞进草稿：草稿里一段 markdown 引用块既看不出
@@ -1408,6 +1462,52 @@ function InputAreaImpl({
                   style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
                 />
               </>
+            )}
+            {showVoice && (
+              <Popover
+                // 引导卡挂在麦克风按钮旁（场景 A：首按无模型）——不是全屏向导。
+                // open 完全受控：guideVisible 由 hook 置位（无模型首按 / 转写失败），
+                // 点其他地方/装好模型自动收。
+                open={voice.state.guideVisible}
+                placement="topLeft"
+                trigger={[]}
+                content={
+                  <VoiceGuideCard
+                    models={undefined}
+                    onChanged={() => voice.dismissGuide()}
+                  />
+                }
+              >
+                <Button
+                  size="small"
+                  type="text"
+                  aria-label={
+                    voice.state.phase === 'recording'
+                      ? t('voiceInput.micStop')
+                      : voice.state.phase === 'transcribing'
+                        ? t('voiceInput.micTranscribing')
+                        : t('voiceInput.micStart')
+                  }
+                  icon={
+                    voice.state.phase === 'transcribing'
+                      ? <LoadingOutlined style={{ fontSize: 14 }} spin />
+                      : <AudioOutlined style={{ fontSize: 14 }} />
+                  }
+                  onClick={() => {
+                    if (voice.state.phase === 'recording') voice.stop()
+                    else if (voice.state.phase === 'idle') voice.start()
+                  }}
+                  style={{
+                    fontSize: 12,
+                    // 录音中变红是「停止」的信号色（与发送态同源），不是装饰
+                    color: voice.state.phase === 'recording' ? 'var(--pm-error, #cf1322)' : 'var(--pm-text-secondary)'
+                  }}
+                >
+                  {voice.state.phase === 'recording' && (
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{voice.state.seconds}s</span>
+                  )}
+                </Button>
+              </Popover>
             )}
             {showAuthorization && (
               <Dropdown

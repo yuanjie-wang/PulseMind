@@ -40,6 +40,15 @@ async function main() {
   })
   console.log('✓ Extract worker built → out/main/storage/extractors/extract-worker.js')
 
+  // ASR inference worker (worker_threads, PLAN-voice-input §3.4) — sherpa-onnx
+  // 推理离开主进程事件循环。加载器/模型管理在主 bundle 里，worker 只管推理。
+  await build({
+    entryPoints: ['src/main/services/asr-worker.ts'],
+    outdir: 'out/main',
+    ...nodeTarget(EXTERNAL)
+  })
+  console.log('✓ ASR worker built → out/main/asr-worker.js')
+
   // Preload script
   await build({
     entryPoints: ['src/preload/index.ts'],

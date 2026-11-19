@@ -230,11 +230,14 @@ describe('glibc 需求扫描：版本串比对与上限判定', () => {
     )
   })
 
-  it('递归收集 .node，不误收其它文件', () => {
+  it('收集 .node 与随包引擎 .so（PLAN-voice-input M3），不误收其它文件', () => {
     const dir = tmpDir()
     writeFileSync(join(dir, 'a.node'), 'x')
-    writeFileSync(join(dir, 'not-a-module.so'), 'x')
-    expect(collectNodeFiles(dir)).toEqual([join(dir, 'a.node')])
+    writeFileSync(join(dir, 'libsherpa-onnx-c-api.so'), 'x')
+    writeFileSync(join(dir, 'libonnxruntime.so'), 'x')
+    writeFileSync(join(dir, 'not-a-module.dll'), 'x')
+    writeFileSync(join(dir, 'readme.txt'), 'x')
+    expect(collectNodeFiles(dir)).toEqual([join(dir, 'a.node'), join(dir, 'libonnxruntime.so'), join(dir, 'libsherpa-onnx-c-api.so')])
   })
 })
 

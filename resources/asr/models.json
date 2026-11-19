@@ -1,0 +1,30 @@
+{
+  "family": "asr",
+  "engineReq": ">=2.0.0",
+  "models": [
+    {
+      "modelId": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "displayName": "SenseVoice 高精度（中/粤/英/日/韩）",
+      "version": "2024-07-17",
+      "engineReq": ">=2.0.0",
+      "languages": ["zh", "yue", "en", "ja", "ko"],
+      "expectedZip": "pulsemind-asr-model-sensevoice-zh-en-ja-ko-yue-2024-07-17.zip",
+      "zipSha256": "6915bab7492b0145365ef97090fa01cf179ad1d4dabb8dc015b7bb3fd5705e78",
+      "zipBytes": 239550063,
+      "sizeText": "≈228 MB",
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+          "bytes": 239233841
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+          "bytes": 315894
+        }
+      ],
+      "helpUrl": ""
+    }
+  ]
+}

@@ -29,6 +29,9 @@ readme30.pdf
 # Local working files
 .workbuddy/
 resources/chromium/
+# sherpa-onnx 引擎（PLAN-voice-input §3.2，prepare-asr-engine.js 生成，同
+# resources/chromium 纪律：CI/dev 由脚本产出，不进 git）
+resources/asr-engine/
 
 # Ad-hoc debug scratch under scripts/ (throwaway probe/dump snippets)
 scripts/.tmp/

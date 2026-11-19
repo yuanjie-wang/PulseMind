@@ -69,14 +69,17 @@ function exceedsCeiling (versions, ceiling) {
   return max !== null && compareVersion(max, parseVersion(ceiling)) > 0
 }
 
-/** 递归收集 .node 文件（linux-unpacked 里的原生模块全在 app.asar.unpacked 下）。 */
+/** 递归收集 .node 与随包引擎的 .so（PLAN-voice-input M3：resources/asr-engine
+ *  的 libsherpa-onnx-*.so / libonnxruntime.so 走 extraResources 落在
+ *  linux-unpacked 根下，同一个 glibc 门必须罩住它们——M0-3 静态扫描实测官方
+ *  包的 sherpa-onnx.node 要 GLIBC_2.32，靠这道门在打包期拦住）。 */
 function collectNodeFiles (dir) {
   const out = []
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
       const full = join(current, entry.name)
       if (entry.isDirectory()) walk(full)
-      else if (entry.isFile() && entry.name.endsWith('.node')) out.push(full)
+      else if (entry.isFile() && (entry.name.endsWith('.node') || entry.name.endsWith('.so'))) out.push(full)
     }
   }
   if (existsSync(dir) && statSync(dir).isDirectory()) walk(dir)
@@ -103,7 +106,7 @@ function main (argv) {
 
   const files = collectNodeFiles(dir)
   if (files.length === 0) {
-    console.error(`[check-linux-glibc] no *.node found under ${dir}`)
+    console.error(`[check-linux-glibc] no *.node/*.so found under ${dir}`)
     console.error('[check-linux-glibc] 先打包（npx electron-builder --linux deb）再来验；空扫描不放行。')
     return 2
   }

@@ -111,6 +111,11 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
+      # PLAN-voice-input M3：引擎随包。win 包零后处理（process.dlopen 的
+      # LOAD_WITH_ALTERED_SEARCH_PATH 解析同目录 dll），脚本只产 sha manifest。
+      - name: Prepare bundled ASR engine
+        run: node scripts/prepare-asr-engine.js
+
       - name: Build bundles
         run: npm run build
 
@@ -137,6 +142,27 @@ jobs:
       # 文件存在 ≠ 能加载：这里拿打包后的 onnxruntime 真建 det/rec/cls 三个会话。
       - name: Smoke packed OCR runtime
         run: node scripts/smoke-packed-ocr.js --app-out dist/win-unpacked --platform win32 --arch x64
+
+      # PLAN-voice-input M3：包内引擎真加载（M0 门 2 的 CI 前哨——真 1809 实机
+      # 验证仍要人工跑一次，见 PLAN §4）。模型缓存段沿用 mac 的 key。
+      - name: Cache ASR model for smoke
+        id: asr-model
+        uses: actions/cache@v4
+        with:
+          path: ~/asr-model-smoke
+          key: asr-sensevoice-2024-07-17
+      - name: Fetch ASR model for smoke
+        if: steps.asr-model.outputs.cache-hit != 'true'
+        run: |
+          New-Item -ItemType Directory -Force ~/asr-model-smoke | Out-Null
+          Invoke-WebRequest -Uri 'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx' -OutFile ~/asr-model-smoke/model.int8.onnx
+          Invoke-WebRequest -Uri 'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt' -OutFile ~/asr-model-smoke/tokens.txt
+      - name: Smoke packed ASR runtime
+        shell: pwsh
+        run: |
+          $modelArgs = @()
+          if (Test-Path "$HOME/asr-model-smoke/model.int8.onnx") { $modelArgs = @('--model-dir', "$HOME/asr-model-smoke") }
+          node scripts/smoke-packed-asr.js --app-out dist/win-unpacked --platform win32 --arch x64 @modelArgs
 
       # 一条悬案要定：afterPack 报「freed 187.3MB」，但 portable exe 两次构建都是
       # 256.90MB、字节数只差 10KB（269,221,526 → 269,232,183）。看 win-unpacked

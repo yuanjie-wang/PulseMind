@@ -442,6 +442,42 @@ const electronAPI = {
     tile?: { bands: number }
     ms: number
   }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_OCR_IMAGE, filePath, opts),
+  // ── 语音输入（PLAN-voice-input §3.6）──
+  asrGetState: (): Promise<{
+    engine: { dir: string; source: string; version: string; platform: string } | null
+    engineError: string | null
+    numThreads: number
+    catalog: {
+      family: string
+      engineReq: string
+      error: string | null
+      models: Array<{
+        modelId: string
+        displayName: string
+        version: string
+        languages: string[]
+        expectedZip: string
+        zipSha256: string
+        sizeText: string
+        helpUrl: string
+        installed: boolean
+      }>
+    }
+  }> => ipcRenderer.invoke(IPC_CHANNELS.ASR_GET_STATE),
+  // samples 必须是 16k 单声道 Float32Array（下混/重采样在渲染端 audio-decode 完成）；
+  // structured clone 过 IPC 后主进程侧 transfer 给 worker，渲染端的副本不受影响。
+  asrTranscribe: (samples: Float32Array, sampleRate: number, opts?: { language?: string }): Promise<{ text: string; ms: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ASR_TRANSCRIBE, samples, sampleRate, opts),
+  asrImportModel: (zipPath: string): Promise<
+    | { ok: true; status: 'imported'; modelId: string; warning?: string }
+    | { ok: false; status: 'hash-mismatch' | 'version-mismatch' | 'wrong-family' | 'invalid-zip' | 'io-error'; message: string }
+  > => ipcRenderer.invoke(IPC_CHANNELS.ASR_IMPORT_MODEL, zipPath),
+  asrRemoveModel: (modelId: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.ASR_REMOVE_MODEL, modelId),
+  onAsrModelsChanged: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC_CHANNELS.ASR_MODELS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ASR_MODELS_CHANGED, handler)
+  },
   registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),

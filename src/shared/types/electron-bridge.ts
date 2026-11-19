@@ -581,6 +581,41 @@ export interface ElectronAPI {
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */
   registerPreviewNonce: (input: { filePath: string; nonce: string }) => Promise<void>
+
+  // ── 语音输入（PLAN-voice-input §3.6）：本地离线 ASR ──
+  /** 引擎状态 + 已装模型 + 随包支持清单（设置页渲染与首按引导卡的数据源） */
+  asrGetState: () => Promise<{
+    engine: { dir: string; source: string; version: string; platform: string } | null
+    engineError: string | null
+    numThreads: number
+    catalog: {
+      family: string
+      engineReq: string
+      error: string | null
+      models: Array<{
+        modelId: string
+        displayName: string
+        version: string
+        languages: string[]
+        expectedZip: string
+        zipSha256: string
+        sizeText: string
+        helpUrl: string
+        installed: boolean
+      }>
+    }
+  }>
+  /** 转写一段 16k 单声道 Float32 PCM（下混/重采样在渲染端 audio-decode 完成）。
+   *  空结果（没听清）text 为空串；无模型/引擎失败 reject 可读文案。 */
+  asrTranscribe: (samples: Float32Array, sampleRate: number, opts?: { language?: string }) => Promise<{ text: string; ms: number }>
+  /** 导入模型 zip。失败带可读文案（hash/版本/家族三道门），hash-mismatch 含期望 vs 实际前缀对照。 */
+  asrImportModel: (zipPath: string) => Promise<
+    | { ok: true; status: 'imported'; modelId: string; warning?: string }
+    | { ok: false; status: 'hash-mismatch' | 'version-mismatch' | 'wrong-family' | 'invalid-zip' | 'io-error'; message: string }
+  >
+  asrRemoveModel: (modelId: string) => Promise<boolean>
+  /** 模型安装/删除广播（主进程多窗口推送；设置页与引导卡据此刷新） */
+  onAsrModelsChanged: (callback: () => void) => () => void
   /** Measure a named sandboxed preview iframe from the main process — the
    *  frame's DOM is unreachable from the renderer (opaque origin). `centerX`
    *  also parks the frame's own horizontal scroll at the middle of its

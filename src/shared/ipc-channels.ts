@@ -201,6 +201,14 @@ export const IPC_CHANNELS = {
   UTIL_COPY_FILE: 'util:copy-file',
   UTIL_CONVERT_TO_MARKDOWN: 'util:convert-to-markdown',
   UTIL_OCR_IMAGE: 'util:ocr-image',
+  // ── 语音输入（PLAN-voice-input §3.6）：本地离线 ASR。转写吃 16k 单声道
+  // Float32 PCM（重采样在渲染端完成）；模型管理只做导入（裁定 #7），广播
+  // models-changed 让设置页与引导卡在导入/删除后自行刷新。
+  ASR_GET_STATE: 'asr:get-state',
+  ASR_TRANSCRIBE: 'asr:transcribe',
+  ASR_IMPORT_MODEL: 'asr:import-model',
+  ASR_REMOVE_MODEL: 'asr:remove-model',
+  ASR_MODELS_CHANGED: 'asr:models-changed',
   // 工作区文件操作（PLAN-project-ide 刀三）：树的新建/重命名悬停动作。读同一
   // deny-root 语义的写门（guardFsTarget），无会话时即基线拒绝根。
   UTIL_CREATE_DIR: 'util:create-dir',

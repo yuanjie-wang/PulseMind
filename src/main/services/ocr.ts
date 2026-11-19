@@ -30,6 +30,7 @@ import {
   resizeBilinear,
   toTensorData
 } from './ocr-core'
+import { enqueueInference as enqueue } from './inference-queue'
 
 /** 只声明用到的部分，不依赖 onnxruntime 的类型（避免 tsc 被可选依赖绊住） */
 interface SessionLike {
@@ -143,7 +144,6 @@ const OCR_SLOW_LOG_MS = 8_000
 let sessions: Sessions | null = null
 let loading: Promise<Sessions> | null = null
 let idleTimer: NodeJS.Timeout | null = null
-let queue: Promise<unknown> = Promise.resolve()
 
 /** 模型目录：打包态在 resourcesPath 下，开发态在仓库 resources/ 下 */
 export function resolveModelsDir (): string {
@@ -312,16 +312,6 @@ export async function disposeOcr (): Promise<void> {
       /* 释放失败不影响后续重建 */
     }
   }
-}
-
-/** 串行闸：OCR 是内存大户，并发没有收益 */
-function enqueue<T> (fn: () => Promise<T>): Promise<T> {
-  const run = queue.then(fn, fn)
-  queue = run.then(
-    () => undefined,
-    () => undefined
-  )
-  return run
 }
 
 export interface OcrWarmUp {

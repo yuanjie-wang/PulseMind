@@ -427,6 +427,13 @@ function readRetentionDays(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
+/** 语音转写语言 hint 的读取器（PLAN-voice-input M2）：非法值回落 'auto'，
+ *  不让一个手改的 settings.json 拒载整个文件。 */
+const VOICE_LANGUAGES = ['auto', 'zh', 'en', 'ja', 'ko', 'yue'] as const
+function readVoiceLanguage(raw: unknown): 'auto' | 'zh' | 'en' | 'ja' | 'ko' | 'yue' {
+  return (VOICE_LANGUAGES as readonly string[]).includes(raw as string) ? (raw as 'auto') : 'auto'
+}
+
 /** 备份保留天数的读取器：与 readRetentionDays 的「缺失=永久」刻意不同 ——
  *  这里的预期就是默认开启（用户批准 P3 时点名了存量备份），所以缺失/非法
  *  落到调用方给的默认值；只有显式 0 才是永久保留。 */
@@ -567,6 +574,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
   backupRetentionDays: 30,
+  voiceLanguage: 'auto',
   maxLoopIterations: 200,
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
@@ -651,6 +659,7 @@ export class SettingsStore {
           keepAwakeEnabled: parsed.keepAwakeEnabled ?? false,
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
           conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
+          voiceLanguage: readVoiceLanguage(parsed.voiceLanguage),
           maxLoopIterations: readIntInRange(parsed.maxLoopIterations, 200, 1, 500),
           maxParallelSubAgents: readIntInRange(parsed.maxParallelSubAgents, 5, 1, 10),
           debugLlmRequests: parsed.debugLlmRequests === true,
@@ -740,6 +749,7 @@ export class SettingsStore {
       experienceEnabled: true,
       keepAwakeEnabled: false,
       routineRunRetentionDays: 0,
+      voiceLanguage: 'auto',
       maxLoopIterations: 200,
       maxParallelSubAgents: 5,
       debugLlmRequests: false,

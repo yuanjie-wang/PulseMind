@@ -185,6 +185,13 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
+      # PLAN-voice-input M3 / M0-3 静态扫描结论（2026-11-19）：官方 sherpa-onnx
+      # linux-x64 包的 .node 要 GLIBC_2.32（__libc_single_threaded）+ GLIBCXX_3.4.26，
+      # 双双超 UOS 2.28 上限——check-linux-glibc.js 的 .so 扫描会在打包期拦下它。
+      # **因此 linux 暂不随包引擎**（本步刻意缺位）：应用侧 resolveAsrEngineDir
+      # 落空给可读文案（语音输入不可用 ≠ 崩），zig 自编通道（better-sqlite3 的
+      # zig-cc wrapper 现成，target 钉 2.28）落地后再接 prepare-asr-engine.js +
+      # extraResources 的 linux 段。
       - name: Build bundles
         run: npm run build
 

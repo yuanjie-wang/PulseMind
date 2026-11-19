@@ -126,6 +126,12 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
+      # PLAN-voice-input M3：引擎随包（resources/asr-engine 是 gitignore 的，
+      # CI 现场生成）。darwin 包已自带 @loader_path rpath（M0-4），脚本只做
+      # ad-hoc 重签 + sha manifest。
+      - name: Prepare bundled ASR engine
+        run: node scripts/prepare-asr-engine.js
+
       - name: Build bundles
         run: npm run build
 
@@ -226,6 +232,35 @@ jobs:
           set -euo pipefail
           app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
           node scripts/smoke-packed-ocr.js --app-out "$(dirname "$app")" --platform darwin --arch "$ARCH"
+
+      # PLAN-voice-input M3：驱动产品代码加载包内引擎（sha 门 + addon）+ 真转写
+      # 随包 wav 夹具。模型 226MB 不随包：按 models.json 的 zipSha256 缓存一份
+      # 解包目录，命中则做真转写段，未命中（首次）退化为 engine-load 段。
+      - name: Cache ASR model for smoke
+        id: asr-model
+        uses: actions/cache@v4
+        with:
+          path: ~/asr-model-smoke
+          key: asr-sensevoice-2024-07-17
+      - name: Fetch ASR model for smoke
+        if: steps.asr-model.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/asr-model-smoke
+          cd ~/asr-model-smoke
+          curl -fL --retry 2 -o model.int8.onnx https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx
+          curl -fL --retry 2 -o tokens.txt https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt
+      - name: Smoke packed ASR runtime
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          model_args=""
+          if [ -f ~/asr-model-smoke/model.int8.onnx ]; then
+            model_args="--model-dir $HOME/asr-model-smoke"
+          else
+            echo "::warning::ASR 模型缓存缺失——冒烟退化为 engine-load 段（真转写段下次缓存命中时跑）"
+          fi
+          node scripts/smoke-packed-asr.js --app-out "$(dirname "$app")" --platform darwin --arch "$ARCH" $model_args
 
       - name: Assert packaged tree is usable
         run: |

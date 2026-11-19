@@ -113,6 +113,8 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-syntax-highlighter": "^16.1.1",
+    "sherpa-onnx-darwin-arm64": "^2.0.2",
+    "sherpa-onnx-node": "^2.0.2",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.64.0",
     "vite": "^5.4.0",
@@ -241,6 +243,9 @@
         "dmg"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "PulseMind 需要使用麦克风进行本地语音输入（录音仅在本机转写，不会上传）。"
+      },
       "files": [
         "package.json",
         "!node_modules/exiftool-vendored.pl/**"
@@ -249,6 +254,13 @@
         {
           "from": "resources/bin",
           "to": "bin",
+          "filter": [
+            "darwin-${arch}/**"
+          ]
+        },
+        {
+          "from": "resources/asr-engine",
+          "to": "asr-engine",
           "filter": [
             "darwin-${arch}/**"
           ]
@@ -269,6 +281,13 @@
           "filter": [
             "win32-${arch}/**"
           ]
+        },
+        {
+          "from": "resources/asr-engine",
+          "to": "asr-engine",
+          "filter": [
+            "win32-${arch}/**"
+          ]
         }
       ]
     },
@@ -286,6 +305,13 @@
         {
           "from": "resources/bin",
           "to": "bin",
+          "filter": [
+            "linux-${arch}/**"
+          ]
+        },
+        {
+          "from": "resources/asr-engine",
+          "to": "asr-engine",
           "filter": [
             "linux-${arch}/**"
           ]

@@ -43,6 +43,8 @@ import { createRendererHealth, type RendererHealth } from './renderer-health'
 import { hardenDataDirPermissions } from './storage/permissions'
 import { migrateEncryptedSecrets } from './storage/settings-store'
 import { expireOldBackups } from './services/backup-retention'
+import { cleanupAsrTmpInstalls } from './ipc/asr.handler'
+import { installMediaPermissionHandlers } from './media-permissions'
 
 // P0 (PLAN-security-hardening): everything this process creates from here on
 // is 0600/0700 — settings.json tmp files (plaintext keys mid-rename), the
@@ -784,6 +786,11 @@ if (gotTheLock) {
   // lives in preview/serve-preview.ts (PLAN-html-element-edit M1).
   protocol.handle('local-file', (request) => serveLocalFile(request))
 
+  // PLAN-voice-input §3.5: media 权限门——只收 media（麦克风），其余 permission
+  // 维持无 handler 时代的默认放行态。挂在 defaultSession（主窗/弹窗/工具
+  // webview 都用它），覆盖 request + check 两侧。
+  installMediaPermissionHandlers()
+
   writeLog('INFO', `startup: platform=${process.platform} execPath=${process.execPath}`)
   ensureDataDir()
   createSplashWindow()
@@ -817,6 +824,8 @@ if (gotTheLock) {
   try { await migrateEncryptedSecrets() } catch (err) { writeLog('WARN', `startup: secret migration failed: ${err}`) }
   // P3-a: expire unmanaged db backups past their retention window.
   try { expireOldBackups() } catch (err) { writeLog('WARN', `startup: backup retention failed: ${err}`) }
+  // PLAN-voice-input M2: 安装中掉电留下的模型 tmp 残留（rename 成功路径不产生）。
+  try { cleanupAsrTmpInstalls() } catch (err) { writeLog('WARN', `startup: asr tmp cleanup failed: ${err}`) }
   registerIpcHandlers()
   writeLog('INFO', 'startup: ipc handlers registered')
 
