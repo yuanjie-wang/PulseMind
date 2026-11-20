@@ -4,11 +4,14 @@
 // probe-asr-m0.mjs 与 smoke-packed-asr.js 在真引擎上验证）。
 
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const DARWIN_FILES = ['sherpa-onnx.node', 'libonnxruntime.dylib', 'libsherpa-onnx-c-api.dylib', 'libsherpa-onnx-cxx-api.dylib']
+
+// npm 平台包名段：厂商 Windows 包叫 win（sherpa-onnx-win-x64），目录名才是 win32
+const PKG_NAME = `sherpa-onnx-${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`
 
 let cleanup: Array<() => void> = []
 
@@ -58,7 +61,7 @@ describe('resolveAsrEngineDir — 三级回落', () => {
       // 如果开发机的 node_modules 里真有 sherpa-onnx-darwin-arm64（devDep 装
       // 过），dev 候选会命中——两种结局都合法，只锁 env 落空不炸这一点。
     } catch (e) {
-      expect((e as Error).message).toContain(`sherpa-onnx-${process.platform}-${process.arch}`)
+      expect((e as Error).message).toContain(PKG_NAME)
     }
     void devDir
   })
@@ -69,7 +72,7 @@ describe('resolveAsrEngineDir — 三级回落', () => {
     // 目录放进向上搜索的 node_modules……太重。这里直接在错误断言里兼容
     // 「devDep 在场」的环境：只有当真没有 devDep 时才走这条。
     delete process.env.PULSEMIND_ASR_ENGINE
-    const devDepPath = join(process.cwd(), 'node_modules', `sherpa-onnx-${process.platform}-${process.arch}`)
+    const devDepPath = join(process.cwd(), 'node_modules', PKG_NAME)
     if (require('node:fs').existsSync(join(devDepPath, 'sherpa-onnx.node'))) {
       return // devDep 在场：回落会命中，跳过这条（CI 的打包环境由 smoke 钉）
     }
@@ -157,7 +160,7 @@ describe('loadAsrAddon — 错误翻译', () => {
 describe('平台门', () => {
   it('REQUIRED 清单按平台分流（darwin/win32/linux 各自的 dylib/dll/so 家族）', async () => {
     const mod = await freshModule()
-    const filesOf = (platform: string): string[] => {
+    const filesOf = (_platform: string): string[] => {
       // 通过 resolve 的行为间接锁清单：resolve 在伪造目录上判断 hasAllFiles
       const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-plat-'))
       cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
@@ -168,5 +171,7 @@ describe('平台门', () => {
     // 直接验证内部导出（REQUIRED 不导出，行为面锁在 resolveAsrEngineDir 的
     // 错误文案里已覆盖）——这里锁 asrPlatformArch 的拼写纪律
     expect(mod.asrPlatformArch()).toBe(`${process.platform}-${process.arch}`)
+    // npm 平台包名段：只有 win32 换拼写（厂商包叫 win），目录名不动
+    expect(mod.asrPackageArch()).toBe(`${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`)
   })
 })

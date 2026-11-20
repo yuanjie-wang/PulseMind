@@ -41,6 +41,15 @@ export function asrPlatformArch(): string {
   return `${process.platform}-${process.arch}`
 }
 
+/**
+ * npm 平台包的名字段：厂商在 Windows 上用 `win`（sherpa-onnx-win-x64），
+ * 而目录名与 resources 布局沿用 process.platform 的 `win32`（打包 filter
+ * 的 `win32-${arch}/**` 依赖它）。dev 回落找包与错误文案都用这一个拼写。
+ */
+export function asrPackageArch(): string {
+  return `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`
+}
+
 function requiredFiles(platform = process.platform): string[] {
   return REQUIRED_FILES[platform] ?? REQUIRED_FILES.linux
 }
@@ -50,7 +59,7 @@ function devCandidates(): string[] {
   const out: string[] = []
   let dir = __dirname
   for (let i = 0; i < 6; i++) {
-    out.push(join(dir, 'node_modules', `sherpa-onnx-${asrPlatformArch()}`))
+    out.push(join(dir, 'node_modules', `sherpa-onnx-${asrPackageArch()}`))
     dir = join(dir, '..')
   }
   return out
@@ -75,7 +84,7 @@ function readManifestVersion(dir: string): string | null {
  * 定位随包引擎目录。三级回落（照抄 resolveOrtWebDir 的纪律）：
  *   1. PULSEMIND_ASR_ENGINE env —— 直接指向平台目录（dev/探针/冒烟）
  *   2. process.resourcesPath/asr-engine/<platform>-<arch> —— 打包态
- *   3. node_modules/sherpa-onnx-<platform>-<arch> —— dev 态
+ *   3. node_modules/sherpa-onnx-<pkg-platform>-<arch> —— dev 态（win32 → win）
  *
  * 每级候选都必须同时满足：目录存在 + 必备文件齐全。找不到时错误里列出
  * 「有哪些平台目录在场」——装错平台/架构的用户能直接看到差别。
@@ -122,7 +131,7 @@ export function resolveAsrEngineDir(): AsrEngineDir {
   const got = present.size > 0 ? `（在场：${[...present].join(', ')}）` : ''
   throw new Error(
     `语音引擎未安装或不完整：本机需要 ${want} 的 sherpa-onnx 引擎${got}。` +
-      `期望文件：${files.join(' + ')}。安装包损坏请重新安装；开发态请安装 devDep sherpa-onnx-${want}。`,
+      `期望文件：${files.join(' + ')}。安装包损坏请重新安装；开发态请安装 devDep sherpa-onnx-${asrPackageArch()}。`,
   )
 }
 

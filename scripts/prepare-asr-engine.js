@@ -7,7 +7,9 @@
  *
  * 用法：node scripts/prepare-asr-engine.js [--platform-arch darwin-arm64]
  *   缺省处理当前平台架构；跨架构打包（arm64 宿主出 x64 dmg）传参前先
- *   `npm i --no-save sherpa-onnx-<pa>@<version>` 装齐目标平台的 devDep 包。
+ *   `npm i --no-save sherpa-onnx-<pkg-platform>-<arch>@<version>` 装齐目标平台的
+ *   devDep 包。⚠️ npm 包名段与目录名不同：厂商 Windows 包叫 win（sherpa-onnx-win-x64），
+ *   目录/resources 布局仍用 process.platform 的 win32（打包 filter 是 win32-${arch}/**）。
  *
  * 平台后处理（M0 实测结论，2026-11-19）：
  * - mac：官方包已自带 LC_RPATH=@loader_path（M0-4 独立目录免 DYLD_* 可载），
@@ -49,11 +51,13 @@ function run(cmd, args, opts = {}) {
 }
 
 function prepare(platformArch) {
-  const [platform] = platformArch.split('-')
-  const src = join(REPO, 'node_modules', `sherpa-onnx-${platformArch}`)
+  const [platform, ...archParts] = platformArch.split('-')
+  // npm 包名段：win32 → win（厂商平台包命名），目录名保持 platformArch 原样
+  const pkgDir = `sherpa-onnx-${platform === 'win32' ? 'win' : platform}-${archParts.join('-')}`
+  const src = join(REPO, 'node_modules', pkgDir)
   const required = REQUIRED[platform] ?? REQUIRED.linux
   if (!existsSync(src)) {
-    console.error(`✗ sherpa-onnx-${platformArch} 不在 node_modules —— 先 npm i --no-save sherpa-onnx-${platformArch}@${VERSION}`)
+    console.error(`✗ ${pkgDir} 不在 node_modules —— 先 npm i --no-save ${pkgDir}@${VERSION}`)
     process.exit(1)
   }
   if (!required.every((f) => existsSync(join(src, f)))) {
