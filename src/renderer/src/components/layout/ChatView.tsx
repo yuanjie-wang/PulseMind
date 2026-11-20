@@ -52,6 +52,9 @@ interface ChatViewProps {
    *  suppresses the welcome screen so it doesn't flash before messages land. */
   isLoadingConversation?: boolean
   agentStatus: AgentStatus
+  /** 运行中回合的 live 总时长（null = 没有回合在跑）——转录脚部的实时读数，
+   *  收口后由消息上的总章接替（2026-11-20「处理时间偏差太大」）。 */
+  turnElapsedMs?: number | null
   streamingBlocks: ContentBlock[]
   hasApiKey: boolean
   /** 应答原样上抛给 InputArea：`{ ok: false }` 时它保留草稿（含附件）。 */
@@ -195,6 +198,7 @@ function ChatView({
   lastCompaction,
   isLoadingConversation,
   agentStatus,
+  turnElapsedMs,
   streamingBlocks,
   onSendMessage,
   onSendStaged,
@@ -892,7 +896,11 @@ function ChatView({
       const segs = jumpSegsRef.current
       const winTop = jumpWindowTopRef.current
       const extra = jumpExtraTopRef.current
-      const targetId = msgIdToAnchorRef.current.get(requested) ?? requested
+      // The map (and every DOM anchor) is keyed on the STRIPPED id; the
+      // navigator hands over AgentMessage.id as-is, so strip before the
+      // lookup — a suffixed prompt (staged flow) used to miss the map AND
+      // the DOM, silently bailing the widen before it started.
+      const targetId = msgIdToAnchorRef.current.get(requested.replace(/__\w+$/, '')) ?? requested
       // If the target segment is above the rendered window, widen it so the target's
       // anchor mounts; the retry below re-checks once the DOM catches up, then scrolls.
       const anchor = document.getElementById(`chat-msg-${targetId}`)
@@ -1178,6 +1186,7 @@ function ChatView({
       isRequesting={isRequesting}
       workspaceDir={workspaceDir}
       agentStatus={agentStatus}
+      turnElapsedMs={turnElapsedMs}
       isError={isError}
       isRetrying={isRetrying}
       retryCountdown={retryCountdown}

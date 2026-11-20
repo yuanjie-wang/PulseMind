@@ -59,6 +59,15 @@ describe('IPC 三件套', () => {
     expect(index).toContain('registerAsrHandlers()')
   })
 
+  it('导入臂：换装前先释放 worker + 全异步（review 20261120 M1/M2）', () => {
+    const handler = read('src/main/ipc/asr.handler.ts')
+    expect(handler).toMatch(/ASR_IMPORT_MODEL, async/)
+    // Windows 上 ORT 保持 model.int8.onnx 打开：先 await 到 terminate 完成
+    // 才允许 importModelZip 动盘（重导入不砸已装模型）
+    expect(handler).toContain('await disposeAsr()')
+    expect(handler).toContain('await importModelZip')
+  })
+
   it('启动清扫（tmp 安装残留）挂进 index.ts 启动段', () => {
     const main = read('src/main/index.ts')
     expect(main).toContain('cleanupAsrTmpInstalls()')
@@ -92,7 +101,7 @@ describe('media 权限门', () => {
 describe('打包接线', () => {
   it('三个平台段的 extraResources 都带 asr-engine filter（本平台架构）', () => {
     const pkg = read('package.json')
-    for (const filter of ['darwin-${arch}/**', 'win32-${arch}/**', 'linux-${arch}/**']) {
+    for (const _filter of ['darwin-${arch}/**', 'win32-${arch}/**', 'linux-${arch}/**']) {
       expect(pkg).toContain(`"from": "resources/asr-engine"`)
     }
     const build = JSON.parse(read('package.json')) as {
@@ -118,6 +127,22 @@ describe('打包接线', () => {
     expect(pkg.build.mac.extendInfo?.NSMicrophoneUsageDescription).toBeTruthy()
   })
 
+  it('随包清单进全局 extraResources（review 20261120 H1：候选梯的打包侧）', () => {
+    const pkg = JSON.parse(read('package.json')) as { build: { extraResources: Array<{ from: string; to: string; filter?: string[] }> } }
+    const entry = pkg.build.extraResources.find((r) => r.from === 'resources/asr')
+    expect(entry, '全局 extraResources 缺 resources/asr → 打包态模型清单不可达（H1 回归）').toBeDefined()
+    expect(entry?.to).toBe('asr')
+    expect(entry?.filter).toContain('models.json')
+  })
+
+  it('model-manager 的清单候选梯（env 缝 → resourcesPath → dev）+ 流式 hash', () => {
+    const mm = read('src/main/services/model-manager.ts')
+    expect(mm).toContain('PULSEMIND_ASR_CATALOG')
+    expect(mm).toContain("join(resourcesPath, 'asr', 'models.json')")
+    // M2：240MB 级 sha256 不许整文件 readFileSync 进 Buffer
+    expect(mm).toContain('createReadStream')
+  })
+
   it('check-linux-glibc 扫 .so（随包引擎的 libonnxruntime.so 等入罩）', () => {
     expect(read('scripts/check-linux-glibc.js')).toContain("endsWith('.so')")
   })
@@ -128,6 +153,9 @@ describe('打包接线', () => {
     expect(smoke).toContain('asr-recognizer.ts')
     expect(smoke).toContain('transcribeSamples')
     expect(smoke).toContain('PULSEMIND_ASR_ENGINE')
+    // H1 回归钉：打包态 readCatalog 断言（model-manager bundle + resourcesPath 假体）
+    expect(smoke).toContain('model-manager.ts')
+    expect(smoke).toContain('readCatalog')
   })
 })
 
@@ -139,6 +167,19 @@ describe('渲染端接线', () => {
     expect(input).toContain('features?.voice ?? features === undefined')
     expect(input).toContain("e.code !== 'KeyV'")
     expect(input).toContain('insertVoiceText')
+  })
+
+  it('引导卡的消失契约（user 2026-11-20：受控 Popover 不会自己收，三个契机必须接线）', () => {
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    // overlayClassName 是外部点击判定的锚点（内容在 body portal，靠 DOM 判内外）
+    expect(input).toContain('pm-voice-guide')
+    // 点外部：document 级 pointerdown 捕获 + mic 按钮与卡内豁免
+    expect(input).toContain("addEventListener('pointerdown', onDocPointerDown, true)")
+    expect(input).toContain('micBtnRef.current?.contains(target)')
+    expect(input).toContain("target.closest('.pm-voice-guide')")
+    // Esc 收卡 + 再按麦克风 toggle
+    expect(input).toContain('if (voice.state.guideVisible) voice.dismissGuide()')
+    expect(input).toContain('if (e.key !== \'Escape\') return')
   })
 
   it('useVoiceInput 的录音形态（getUserMedia + MediaRecorder opus + Esc 取消）', () => {
@@ -158,7 +199,7 @@ describe('渲染端接线', () => {
   it('i18n 两 locale 都有 voiceInput 节（键集同形，防单侧漂移）', () => {
     const zh = read('src/renderer/src/i18n/locales/zh.ts')
     const en = read('src/renderer/src/i18n/locales/en.ts')
-    const zhKeys = [...zh.matchAll(/^    (\w+):/gm)].map((m) => m[1])
+    const zhKeys = [...zh.matchAll(/^ {4}(\w+):/gm)].map((m) => m[1])
     expect(zh).toContain('voiceInput: {')
     expect(en).toContain('voiceInput: {')
     for (const key of [

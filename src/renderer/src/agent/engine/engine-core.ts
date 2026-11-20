@@ -44,6 +44,11 @@ export interface EngineCore {
   opts: AgentEngineOptions
   abortController: AbortController | null
   currentRequestId: string | null
+  /** llm-request hook identity (2026-11-20): minted by prepareTurn, stable
+   *  across every re-issue within the turn; null outside a turn. StreamRunner
+   *  forwards these (plus opts.conversationId) into the hook context. */
+  currentTurnId: string | null
+  currentTurnIndex: number | null
   /** True only while continueLoop is inside prepareLoopRequest — the build
    *  phase where compaction may await its history-summary LLM call. That call
    *  rides the same retrying transport as a live request (20 attempts, each

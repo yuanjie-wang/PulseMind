@@ -161,3 +161,109 @@ describe('IPC 四面 + i18n 两 locale', () => {
     }
   })
 })
+
+// ── 执行链导航（user 2026-11-20「右栏前进/后退顺着执行链路走」）──
+// 纯推导在 workflow-run-view.test.ts 有行为单测；UI 与画布的接线只有源码扫描
+// 能抓：链位状态、落到正确运行次数、画布定位 prop 与聚焦描边、i18n 键。
+describe('执行链导航：右栏前进/后退 + 画布定位（源码扫描）', () => {
+  const page = read('src/renderer/src/components/routine/WorkflowRunViewPage.tsx')
+  const canvas = read('src/renderer/src/components/routine/WorkflowCanvas.tsx')
+  const card = read('src/renderer/src/components/routine/WorkflowNodeCard.tsx')
+
+  it('页面：链推导来自 run-view 纯函数，链位/聚焦两条状态在', () => {
+    expect(page).toContain("import { runExecutionChain, verdictKindOf } from '../../../../shared/workflow/run-view'")
+    expect(page).toContain('const chain = useMemo(() => runExecutionChain(stages), [stages])')
+    expect(page).toContain('const [chainIndex, setChainIndex] = useState<number | null>(null)')
+    expect(page).toContain('const [runFocus, setRunFocus] = useState<{ nodeId: string; nonce: number } | null>(null)')
+    // 重跑/续跑换 runId 时随既有 reset 块清干净，不把旧运行的链位带给新实例
+    expect(page).toMatch(/setExecPick\(null\)[\s\S]{0,120}setChainIndex\(null\)[\s\S]{0,60}setRunFocus\(null\)/)
+  })
+
+  it('页面：导航落到该次运行 + 画布定位（goToStep 三件套）', () => {
+    // visit 是 1 起，execPick 是 0 起——差一就是错运行
+    expect(page).toMatch(/setSel\(\{ kind: 'node', nodeId: step\.nodeId \}\)[\s\S]{0,120}setExecPick\(step\.visit - 1\)/)
+    expect(page).toMatch(/setRunFocus\(\{ nodeId: step\.nodeId, nonce: focusNonce\.current \}\)/)
+    expect(page).toContain('runFocus={runFocus ?? undefined}')
+    // 默认选中落链尾；点节点回落该节点最后一次执行（与「换节点回到最近一次」
+    // 同语义），还没跑过的节点不动链位（否则导航条被打成一坨禁用的「—」）
+    expect(page).toContain('setChainIndex(orderedStages.length - 1)')
+    expect(page).toMatch(/setExecPick\(null\) \/\/ 换节点回到最近一次[\s\S]{0,260}if \(idx !== null\) setChainIndex\(idx\)/)
+  })
+
+  it('页面：两端钳制不回绕，prev/next 的 onClick 各走各向', () => {
+    expect(page).toMatch(/disabled=\{!currentStep \|\| \(chainIndex \?\? 0\) <= 0\}/)
+    expect(page).toMatch(/disabled=\{!currentStep \|\| \(chainIndex \?\? 0\) >= chain\.length - 1\}/)
+    expect(page).toContain('onClick={() => goToStep((chainIndex ?? 1) - 1)}')
+    expect(page).toContain('onClick={() => goToStep((chainIndex ?? -1) + 1)}')
+    // 手选 #i 选择条时链位同步（导航条与面板同源）
+    expect(page).toMatch(/const idx = chainIndexFor\(sel\.nodeId, i\)/)
+  })
+
+  it('画布：runFocus prop 在，定位走 fitView(nodes) 并接管视口', () => {
+    expect(canvas).toContain('runFocus?: { nodeId: string; nonce: number }')
+    // 定位的 id 必须是 RF 节点 id（stageNodeId 前缀），不是 def 节点 id
+    expect(canvas).toMatch(/const id = stageNodeId\(runFocusNodeId\)/)
+    expect(canvas).toMatch(/rfFitView\(\{ nodes: \[\{ id \}\], duration: 300, padding: 0\.2, maxZoom: 1 \}\)/)
+    // nonce 记账：同一次导航只拍一次，轮询重建 nodes 不得把视口反复拽回
+    expect(canvas).toMatch(/appliedFocusNonce\.current = runFocusNonce/)
+    // 聚焦是显式用户动作：落定后接管视口，resize 的全图 fitView 不再拽回
+    expect(canvas).toMatch(/appliedFocusNonce[\s\S]{0,200}userMovedViewport\.current = true/)
+  })
+
+  it('选中蓝边（user 2026-11-20 二刀）：runSelectedNodeId 与定位分离，导航步与画布点选都亮', () => {
+    // 两个 prop 各管一件事：runFocus 管视口移动，runSelectedNodeId 管蓝边
+    expect(canvas).toContain('runSelectedNodeId?: string')
+    // 页面把「面板选中的节点」直接下发——点选与导航步都落在这里
+    expect(page).toContain('runSelectedNodeId={sel?.kind === \'node\' ? sel.nodeId : undefined}')
+    // 节点重建跟着选中走（描边换人的那一拍就要生效）
+    expect(canvas).toMatch(/buildFlowNodes\(def, t, openNode, requestDeleteNode, runView, runSelectedNodeId, runSelectedTerminal\)/)
+    expect(canvas).toMatch(/\[def, setNodes, openNode, requestDeleteNode, runView, runSelectedNodeId, runSelectedTerminal\]/)
+  })
+
+  it('三刀：开始/结束芯片同灰、聚焦只剩蓝边框、选中芯片也亮蓝边', () => {
+    // 芯片同灰（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：运行态的
+    // 实例终态色（绿/红/蓝）与编辑态身份色一并让位，与任务卡同一 hairline 灰
+    expect(canvas).not.toContain('.wf-terminal--run-success')
+    expect(canvas).not.toContain('.wf-terminal--run-failed')
+    expect(canvas).not.toContain('.wf-terminal--run-running')
+    expect(canvas).toContain('.wf-runmode .wf-terminal { border-color: var(--pm-border-hairline); color: var(--pm-text-secondary); }')
+    // 卡片侧不再产出实例状态类，改产出选中类
+    expect(card).not.toMatch(/wf-terminal--run-(running|success|failed)/)
+    expect(card).not.toContain('runStatus')
+    expect(card).toContain("data.focused ? ' wf-terminal--run-focus' : ''")
+    // 选中的开始/结束芯片与任务卡同语义亮蓝边（sel 的 start/done 两臂）
+    expect(canvas).toContain("runSelectedTerminal?: 'start' | 'done'")
+    expect(page).toContain("runSelectedTerminal={sel?.kind === 'start' ? 'start' : sel?.kind === 'done' ? 'done' : undefined}")
+    expect(canvas).toContain('.wf-runmode .wf-terminal.wf-terminal--run-focus { border-color: var(--pm-link); }')
+    // 聚焦 = 纯蓝边框（user 2026-11-20 三刀「不需要阴影扩散效果」）：双环/外晕退役
+    expect(canvas).toContain('.wf-stage-card--run-focus { border-color: var(--pm-link); }')
+    expect(canvas).not.toMatch(/\.wf-stage-card--run-focus \{[^}]*box-shadow/)
+    expect(canvas).not.toContain('color-mix(in srgb, var(--pm-link) 22%')
+    // 悬停不再变蓝（蓝 = 选中语义，hover 换色会与选中混淆）
+    expect(canvas).not.toContain('.wf-runmode .wf-terminal:hover')
+  })
+
+  it('卡面灰边制 + 次数徽标（user 2026-11-20 二刀）：状态色/状态徽标退役', () => {
+    // 一律灰边（基底即灰），唯一状态类只剩 idle 弱化与选中的蓝描边
+    expect(canvas).not.toContain('wf-stage-card--run-pass')
+    expect(canvas).not.toContain('wf-stage-card--run-fail')
+    expect(canvas).not.toContain('wf-stage-card--run-running')
+    expect(canvas).not.toContain('wf-stage-card--run-settled')
+    expect(card).toContain("wf-stage-card--runview${(runCount ?? 0) === 0 ? ' wf-stage-card--run-idle' : ''}")
+    expect(card).toContain("focused ? ' wf-stage-card--run-focus' : ''")
+    expect(canvas).toContain('focused: n.id === highlightNodeId')
+    // 徽标 = 次数（runCountLabel 由画布 i18n 下发），没跑过不给
+    expect(card).toContain('runCount?: number')
+    expect(canvas).toContain("t('workflow.runBadgeCount', { count: visitCounts.get(n.id) ?? 0 })")
+    expect(canvas).toContain('runVisitCounts(runView.stages)')
+  })
+
+  it('文案键中英同批存在', () => {
+    const zh = read('src/renderer/src/i18n/locales/zh.ts')
+    const en = read('src/renderer/src/i18n/locales/en.ts')
+    for (const key of ['runPanelNavPrev', 'runPanelNavNext', 'runPanelNavPos']) {
+      expect(zh).toContain(`${key}:`)
+      expect(en).toContain(`${key}:`)
+    }
+  })
+})

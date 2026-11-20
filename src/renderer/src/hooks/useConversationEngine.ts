@@ -68,6 +68,9 @@ export function statusToLight(status: AgentStatus['status'], isRead: boolean): C
 export interface SessionEngineHandle {
   readonly messages: AgentMessage[]
   readonly agentStatus: AgentStatus
+  /** 运行中回合的 TurnClock 锚点（2026-11-20）：status 事件捎带、缺席时
+   *  undefined。live 显示与存档快照经 useChatController 外推消费。 */
+  readonly turnMs?: number
   readonly streamingBlocks: ContentBlock[]
   readonly plan: Plan | null
   getHistorySummary(): { firstKeptId: string; text: string } | null
@@ -206,6 +209,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const activeEngineIdRef = useRef<string>('')
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
+  const [turnMs, setTurnMs] = useState<number | undefined>(undefined)
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
@@ -250,6 +254,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     return {
     get messages() { return st.messages },
     get agentStatus() { return st.agentStatus },
+    get turnMs() { return st.turnMs },
     get streamingBlocks() { return st.streamingBlocks },
     get plan() { return st.plan },
     getHistorySummary() { return st.historySummary },
@@ -365,6 +370,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     if (st.agentStatus !== last.agentStatus) {
       last.agentStatus = st.agentStatus
       setAgentStatus(st.agentStatus)
+      // turnMs 与 agentStatus 同一事件原子更新，跟着同一次 flush 过 React。
+      setTurnMs(st.turnMs)
     }
     if (st.plan !== last.plan) {
       last.plan = st.plan
@@ -698,6 +705,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     activeEngineIdRef,
     messages,
     agentStatus,
+    turnMs,
     streamingBlocks,
     plan,
     convLights,

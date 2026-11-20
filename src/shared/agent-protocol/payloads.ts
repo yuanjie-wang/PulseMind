@@ -319,8 +319,12 @@ export interface CompactionEvent {
  *  one is how the retry count got dropped from both, user report 2026-09-24).
  *  `error`'s reason, `retrying`'s attempt/maxRetries/delayMs/message and
  *  `awaiting_extension`'s currentCount/limit ride only when the engine had
- *  them: an honest absence beats a fake zero. */
-export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number }
+ *  them: an honest absence beats a fake zero.
+ *  `turnMs`（2026-11-20「处理时间偏差太大」）：回合在跑时 TurnClock 的运行段
+ *  累计锚点（每次 notify 刷新，流式期 ~12.5/s）。渲染端据此显示 live 总时长、
+ *  两次锚点之间按「运行态推进、等待态冻结」外推、存档时落近似总章。时钟
+ *  停了不带——undefined 才是「没有回合在跑」，0 会是假话。 */
+export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number; turnMs?: number }
 
 /** One file the session's own tools created or rewrote (2026-10-28 工作区树
  *  会话改动着色). `kind` is fixed at the FIRST touch and never revised: a file

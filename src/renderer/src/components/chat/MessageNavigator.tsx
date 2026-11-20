@@ -9,9 +9,10 @@
  *    已处于第一条时前一条置灰；下一条到最后一条对称处理），可用性由组件
  *    自挂在视口实测上实时重算（捕获式滚动监听 + rAF 节流，翻面才 setState）。
  *
- * 步进的目标测算（measureStepTarget）在**点击与渲染共用同一份**：以视口为
- * 参照、不维护光标，手滚之后也不会跳错。跳转本身上抛给宿主的统一跳转
- * effect（扩窗 + 平滑滚动机制，无高亮脉冲）。
+ * 步进的目标测算（measureStepTarget，住在 message-navigator 纯逻辑层）在
+ * **点击与渲染共用同一份**：以视口为参照、不维护光标，手滚之后也不会跳
+ * 错。跳转本身上抛给宿主的统一跳转 effect（扩窗 + 平滑滚动机制，无高亮
+ * 脉冲）。
  *
  * 渲染位置：InputArea 的 topSlot——与 Composer 同容器锚定，autosize 增高时
  * 随卡片上移，永不被遮挡。
@@ -19,7 +20,7 @@
 import React, { useEffect, useState } from 'react'
 import { Tooltip } from 'antd'
 import { ArrowDownOutlined, ArrowUpOutlined, CaretDownFilled } from '@ant-design/icons'
-import type { UserPromptAnchor } from './message-navigator'
+import { measureStepTarget, type UserPromptAnchor } from './message-navigator'
 import { COMPOSER_MAX_WIDTH } from './Composer'
 import { useTranslation } from '../../i18n/useTranslation'
 
@@ -32,55 +33,6 @@ const ICON_BTN: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-}
-
-/**
- * 步进目标测算（视口实测，返回命中下标或 -1）。参照物两种情况：
- * 视口内有可见的用户消息 → 最接近视口中心的那条为「当前」，目标 = 它的
- * 前/后一条（连续点击逐条走；居中那条不会被同方向重复命中——「按同侧
- * 最近选目标」的旧算法在这里会命中当前条自己，点了像没动）；视口内一条
- * 都不可见 → 取刚越过视口边缘最近的那条。窗口化转写未挂载的锚测不到，
- * 按索引步进天然命中它们（宿主的扩窗机制兜底）；一条都没挂载时全部在
- * 窗口之上，up 取最后一条，down 无处可去。
- */
-export function measureStepTarget(prompts: UserPromptAnchor[], dir: -1 | 1): number {
-  if (prompts.length === 0) return -1
-  const center = window.innerHeight / 2
-  let currentIdx = -1
-  let currentDist = Infinity
-  let edgeIdx = -1
-  let edgeDist = Infinity
-  let mountedSeen = false
-  for (let i = 0; i < prompts.length; i++) {
-    const el = document.getElementById(`chat-msg-${prompts[i].anchorId}`)
-    if (!el) continue
-    mountedSeen = true
-    const rect = el.getBoundingClientRect()
-    if (rect.bottom > 0 && rect.top < window.innerHeight) {
-      const d = Math.abs((rect.top + rect.bottom) / 2 - center)
-      if (d < currentDist) {
-        currentDist = d
-        currentIdx = i
-      }
-    }
-    // dir 侧刚越过视口边缘的最近一条：up = 完全在视口顶之上（rect.bottom
-    // 越大越近），down = 完全在视口底之下（rect.top 越小越近）。
-    const past = dir === -1 ? -rect.bottom : rect.top - window.innerHeight
-    if (past >= 0 && past < edgeDist) {
-      edgeDist = past
-      edgeIdx = i
-    }
-  }
-  let targetIdx = -1
-  if (currentIdx >= 0) {
-    targetIdx = currentIdx + dir
-  } else if (edgeIdx >= 0) {
-    targetIdx = edgeIdx
-  } else if (dir === -1 && !mountedSeen) {
-    targetIdx = prompts.length - 1
-  }
-  if (targetIdx < 0 || targetIdx >= prompts.length) return -1
-  return targetIdx
 }
 
 export interface MessageNavControlsProps {

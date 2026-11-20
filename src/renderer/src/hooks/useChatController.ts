@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { App as AntdApp } from 'antd'
 import { useChatManagers } from './useChatManagers'
 import { useConversationEngine } from './useConversationEngine'
@@ -20,6 +20,8 @@ import { isPoppedOut } from '../stores/popoutWatchStore'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage } from '../types/agent'
+import type { AgentStatus } from '../types/agent'
+import { isWaitingOnUserStatus } from '../agent/engine/turn-clock'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
@@ -734,6 +736,39 @@ export function useChatController(options: UseChatControllerOptions) {
     [engine, handleRequest],
   )
 
+  // 运行中回合的 live 总时长（2026-11-20「处理时间偏差太大」）。主进程托管的
+  // TurnClock 经 status 事件捎带锚点（turnMs，每次 notify 刷新，流式期
+  // ~12.5/s，停靠等待时是排除等待段的冻结累计）；渲染端外推分两层：锚点新鲜
+  // （流式期、工具事件频繁的时段）直接显示锚点；锚点稳定（长跑工具的静默段）
+  // 用 tick 的「运行态推进、等待态冻结」读数。外推只补运行段的墙钟，等待段
+  // 引擎锚点已经排除，两端口径同源（isWaitingOnUserStatus 是同一份谓词）。
+  // 收口后 turnMs 缺席 → 显示 null，数字由消息上的总章（stampTurnDuration）
+  // 接替。tick 戳记它基于的 agentStatus 对象：状态换了身份（新事件/新回合）
+  // 就回落到引擎锚点——旧回合的数字不会残留进新回合。
+  const turnAnchorRef = useRef<{ status: AgentStatus; turnMs: number | undefined; at: number }>({ status: { status: 'idle' }, turnMs: undefined, at: 0 })
+  useEffect(() => {
+    turnAnchorRef.current = { status: engine.agentStatus, turnMs: engine.turnMs, at: Date.now() }
+  }, [engine.agentStatus, engine.turnMs])
+  const [turnTick, setTurnTick] = useState<{ status: AgentStatus; v: number } | null>(null)
+  const turnLive = engine.turnMs != null
+  useEffect(() => {
+    if (!turnLive) return
+    const timer = window.setInterval(() => {
+      const anchor = turnAnchorRef.current
+      if (anchor.turnMs == null) return
+      const waiting = isWaitingOnUserStatus(anchor.status.status)
+      setTurnTick({ status: anchor.status, v: Math.round(waiting ? anchor.turnMs : anchor.turnMs + (Date.now() - anchor.at)) })
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [turnLive])
+  const turnElapsedMs = !turnLive || engine.turnMs == null
+    ? null
+    // tick 读数只在它基于的那次 notify 仍是最新时可信；状态对象换了身份
+    // （新事件/新回合）就回落到引擎锚点——旧回合的数字不会残留进新回合。
+    : turnTick && turnTick.status === engine.agentStatus
+      ? turnTick.v
+      : Math.round(engine.turnMs)
+
   // ── 8. Return ──
   return {
     conversations: persistence.conversations,
@@ -781,6 +816,8 @@ export function useChatController(options: UseChatControllerOptions) {
     saveConversationSync: persistence.saveConversationSync,
     saveAllConversationsSync: persistence.saveAllConversationsSync,
     agentStatus: engine.agentStatus,
+    /** 运行中回合的 live 总时长（null = 没有回合在跑）。 */
+    turnElapsedMs,
     streamingBlocks: engine.streamingBlocks,
     plan: engine.plan,
     approveTool: engine.approveTool,

@@ -135,6 +135,18 @@ function statusSnapshotOf(status: AgentStatus): StatusSnapshot {
   }
 }
 
+/** 运行中回合的 TurnClock 锚点（2026-11-20「处理时间偏差太大」）：status 事件
+ *  与重连快照都捎带（两处 spread 同一 helper，口径不会分叉）。渲染端据此显示
+ *  live 总时长、按运行段外推、存档落近似总章。时钟停了不带——undefined 是
+ *  「没有回合在跑」，0 会是假话；停靠在等待状态时照带（isActive 为真），
+ *  值是排除等待段后的累计，渲染端冻结显示。 */
+function turnMsOf(sessions: Map<string, SessionEntry>, sessionId: string): { turnMs?: number } {
+  // turnClock 可选读：测试桩引擎与异构宿主不带时钟——不携带即诚实缺席，
+  // 绝不因探测报错拖垮状态事件本身。
+  const clock = (sessions.get(sessionId)?.engine as { turnClock?: { isActive(): boolean; elapsed(): number } } | undefined)?.turnClock
+  return clock?.isActive() ? { turnMs: Math.round(clock.elapsed()) } : {}
+}
+
 function sessionPlatformInfo(): PlatformInfo {
   const p = platform()
   return {
@@ -1220,6 +1232,9 @@ export class AgentSessionManagerImpl {
       // that re-attaches mid-turn — parked in `error`, or mid-backoff on a
       // retry — has no other carrier and can only show its own fallback.
       status: statusSnapshotOf(status),
+      // turnMs 同款：重连进一个正在跑的回合，客户端的 live 时长立刻有锚点，
+      // 不用等下一次状态翻转。
+      ...turnMsOf(this.sessions, sessionId),
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
       fileChanges: entry.engine.getFileChanges(),
@@ -1513,6 +1528,7 @@ export class AgentSessionManagerImpl {
           // delay and message) — statusSnapshotOf is the same projection the
           // snapshot makes, so a re-attach sees exactly what the event said.
           ...statusSnapshotOf(status),
+          ...turnMsOf(this.sessions, sessionId),
           // Held tools ride along on the two "the user must decide" statuses so
           // a remote client (browser extension) can render confirmation cards
           // without holding engine internals. args ships in full only for the

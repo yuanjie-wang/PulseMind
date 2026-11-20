@@ -1,11 +1,15 @@
 /**
  * Run view probe (real Chromium) — PLAN-workflow-run-view 的可视化验收：
  * 同一张正交路由画布，runView 在场 = 运行查看态——
- *   ① 节点按 stage 着色：pass 绿 / running 主题呼吸 / 未到达弱化；
+ *   ① 节点一律灰边（2026-11-20 二刀：状态色退役），右上角 = 执行次数徽标，
+ *      未到达弱化（--run-idle）、选中蓝边框（--run-focus，三刀去掉阴影扩散）；
  *   ② 走过的边亮（wf-edge-taken）、没走的弱化（wf-edge-idle）；
- *   ③ DONE 芯片反映实例终态；
+ *   ③ 开始/结束芯片同灰（三刀：实例终态色退役），选中芯片与任务卡同款蓝边；
+ *      聚焦效果 = 纯蓝边框、无阴影扩散；
  *   ④ 编辑面全体退场：悬停编辑/删除钮、dock 都不在 DOM；
- *   ⑤ 对照：不给 runView 的定义视图，编辑钮照常在（默认行为逐字节不变）。
+ *   ⑤ 对照：不给 runView 的定义视图，编辑钮照常在（默认行为逐字节不变）；
+ *   ⑥ §1e 执行链导航（user 2026-11-20）：右栏前进/后退逐步走链、落到正确
+ *      节点与运行次数、画布聚焦定位、两端禁用不回绕、画布点选同步链位。
  * Usage: node scripts/probe-workflow-run-view.mjs [--headed]
  */
 import { build } from 'esbuild'
@@ -37,9 +41,9 @@ const DEF = {
   objective: '把计划落地',
   entry: 'code',
   // verdictKinds 是**显式语义**（user 2026-11-17「你是不是写死了把 pass 作为
-  // 成功态」）：运行图配色只认它或拓扑推导，不认词面。这张夹具声明
-  // pass=成功 / fail=失败，于是「结算节点着色（--run-pass）」那条断言与改动前
-  // 逐字一致；不声明语义的旧定义由下面 §1c 的中文词表夹具覆盖（推导向）。
+  // 成功态」）：语义辨读只活在右栏详情。2026-11-20 二刀后卡面不吃状态色，
+  // 这张夹具的 verdictKinds 只用于右栏面板的 verdict 文字配色；卡面断言一律
+  // 「灰边 + 次数徽标」。
   nodes: [
     { id: 'code', title: '编码', prompt: '把计划落地为代码', verdicts: ['pass', 'fail'], verdictKinds: { pass: 'success', fail: 'failure' }, layout: { x: 0, y: 0 } },
     { id: 'test', title: '测试', prompt: '跑测试', verdicts: ['pass', 'fail'], verdictKinds: { pass: 'success', fail: 'failure' }, layout: { x: 320, y: 0 } },
@@ -198,8 +202,8 @@ window.__mountDefinition = () => {
   )
   return true
 }
-// §1c：把任意定义 + 任意 stage 行直接挂到运行态画布上——用来验证「结果状态的
-// 语义驱动着色」对**任意词表**成立（不必再绕 WorkflowRunViewPage 的定义加载）。
+// §1c：把任意定义 + 任意 stage 行直接挂到运行态画布上——用来验证「卡面与
+// 结果状态解耦」对**任意词表**成立（不必再绕 WorkflowRunViewPage 的定义加载）。
 window.__mountCanvasRun = (def, stages) => {
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
@@ -334,12 +338,34 @@ check('首屏全图都在画布内', framing.inside)
 // 晚一两帧——显式等它，别让计数断言在忙机器上偶发落空。
 await page.waitForSelector('.wf-edge-taken', { timeout: 5000 })
 
-check('运行中的节点着色（--run-running）', (await page.locator('.wf-stage-card--run-running').count()) === 1)
-check('结算节点着色（--run-pass）', (await page.locator('.wf-stage-card--run-pass').count()) === 1)
+// user 2026-11-20 二刀：卡面一律灰边（run-pass/fail/running/settled 状态色
+// 全部退役），右上角 = 执行次数徽标（running 的那次也计数）。
+const badgeTextAt = async (id) =>
+  ((await page.locator(`.react-flow__node[data-id="node:${id}"] .wf-run-badge`).innerText()) || '').trim()
+check('卡面一律灰边（状态着色类全部退场）',
+  (await page.locator('.wf-stage-card--run-pass,.wf-stage-card--run-fail,.wf-stage-card--run-running,.wf-stage-card--run-settled').count()) === 0)
 check('未到达节点弱化（--run-idle）', (await page.locator('.wf-stage-card--run-idle').count()) === 1)
-check('运行徽标在（运行中）', (await page.locator('.wf-run-badge--running').innerText()) === '运行中')
+check('次数徽标：code=2 次、test=2 次（running 那次也计数）',
+  (await badgeTextAt('code')) === '2 次' && (await badgeTextAt('test')) === '2 次',
+  `code=${await badgeTextAt('code')} test=${await badgeTextAt('test')}`)
+check('没跑过的节点不给徽标（review）', (await page.locator('.react-flow__node[data-id="node:review"] .wf-run-badge').count()) === 0)
 check('走过的高亮 + 没走的弱化（边类都在）', (await page.locator('.wf-edge-taken').count()) >= 1 && (await page.locator('.wf-edge-idle').count()) >= 1)
-check('DONE 芯片反映实例终态（fixture running → --run-running）', (await page.locator('.wf-terminal--run-running').count()) === 1)
+// user 2026-11-20 三刀：开始/结束芯片也进灰边族——实例终态色（--run-*）与编辑态
+// 身份色（开始蓝/结束绿）在运行视图一并让位，与任务卡同一 hairline 灰；蓝边只
+// 属于「选中」（§3.5 断）。
+check('开始/结束芯片的实例终态色退役（--run-success/failed/running 全无）',
+  (await page.locator('.wf-terminal--run-running,.wf-terminal--run-success,.wf-terminal--run-failed').count()) === 0)
+const chipBorders = await page.evaluate(() => {
+  const border = (el) => (el ? getComputedStyle(el).borderTopColor : null)
+  return {
+    card: border(document.querySelector('.wf-stage-card')),
+    start: border(document.querySelector('.react-flow__node[data-id="terminal:START"] .wf-terminal')),
+    done: border(document.querySelector('.react-flow__node[data-id="terminal:DONE"] .wf-terminal')),
+  }
+})
+check('开始/结束芯片与任务卡同一灰边',
+  !!chipBorders.card && chipBorders.start === chipBorders.card && chipBorders.done === chipBorders.card,
+  `card=${chipBorders.card} start=${chipBorders.start} done=${chipBorders.done}`)
 check('编辑/删除钮全体退场', (await page.locator('[data-workflow-node-edit]').count()) === 0 && (await page.locator('[data-workflow-node-delete]').count()) === 0)
 check('端口圆点不可见（opacity 0，不是 display 抽掉）', await page.evaluate(() => {
   const h = document.querySelector('.wf-handle-source, .wf-handle-target')
@@ -404,13 +430,16 @@ check(
 await page.screenshot({ path: join(SHOTS, 'run-view-no-layout.png') })
 await page.evaluate(() => window.__serveDefaultDef())
 
-// ── §1c 结果状态的语义驱动着色（user 2026-11-17「你是不是写死了把 pass 作为
-// 成功态，failed 为失败态？」）──
-// 结果状态是用户自定义词表（成功/失败/需修订…），运行图的颜色只能来自**声明**
-// 或**拓扑推导**，不能来自词面。三臂各自独立挂一张运行态画布：
-//   A. 中文词表 + 显式 verdictKinds：成功→绿、需修订（中性）→灰；
-//   B. 同一张定义，结算成「失败」→ 红（卡片、徽标、出边三处）；
-//   C. 旧定义（无 verdictKinds）：按出边推——→DONE 绿、无出边红。
+// ── §1c 结果状态与卡面解耦（user 2026-11-17「你是不是写死了把 pass 作为成功态」
+// → 2026-11-20 二刀「所有节点都是灰色边框…不用在节点右上角展示节点执行状态」）──
+// 结果状态是用户自定义词表（成功/失败/需修订…）；2026-11-20 二刀后卡面不再吃
+// 任何状态色/状态词——无论 verdict 是什么词、声明了什么语义，运行态卡一律
+// 灰边 + 次数徽标（多次执行每次结果可能不同，单值状态是误导），成功/失败的
+// 辨读只剩右栏详情。三臂各自独立挂一张运行态画布，验证「无论结算成什么，
+// 卡面都一样」+ 出边强度维（taken/idle）仍跟结算的 verdict 走：
+//   A. 中文词表 + 显式 verdictKinds：成功 / 需修订（中性）；
+//   B. 同一张定义，结算成「失败」；
+//   C. 旧定义（无 verdictKinds）：按出边推。
 const cnStage = (nodeId, verdict, i) => ({
   id: `cn${i}`,
   runId: 'prun_cn',
@@ -438,23 +467,39 @@ const CN_EXPLICIT = {
     { from: 'b', when: '需修订', to: 'DONE' },
   ],
 }
+// 出边的颜色维度归状态类（wf-edge-verdict-N，2026-11-18 七色配色），运行维度
+// 只控强度（走过全亮、没走弱化）。
+const edgeHasClass = (id, cls) =>
+  page.evaluate(([eid, c]) => !!document.querySelector(`[data-id="${eid}"]`)?.classList.contains(c), [id, cls])
+const cnBadge = async (id) =>
+  ((await page.locator(`.react-flow__node[data-id="node:${id}"] .wf-run-badge`).innerText()) || '').trim()
+const noStatusClasses = async () =>
+  (await page.locator('.wf-stage-card--run-pass,.wf-stage-card--run-fail,.wf-stage-card--run-running,.wf-stage-card--run-settled').count()) === 0
+
 await mountCanvasRun(CN_EXPLICIT, [cnStage('a', '成功', 0), cnStage('b', '需修订', 1)])
-await page.waitForSelector('.wf-edge-taken--pass', { timeout: 5000 })
-check('中文词表：显式 success（「成功」）→ 绿', (await page.locator('.wf-stage-card--run-pass').count()) === 1)
-check('中文词表：显式 neutral（「需修订」）→ 中性', (await page.locator('.wf-stage-card--run-settled').count()) === 1)
-check('中文词表：词面「失败」没被误读成红（没有 stage 报它）', (await page.locator('.wf-stage-card--run-fail').count()) === 0)
-check('中文词表：徽标展示原词、颜色跟语义走', ((await page.locator('.wf-run-badge--pass').innerText()) || '') === '成功')
-check('中文词表：成功出边染绿、中性出边不染色', (await page.locator('.wf-edge-taken--pass').count()) === 1 && (await page.locator('.wf-edge-taken--fail').count()) === 0)
+await page.waitForSelector('.wf-edge-taken', { timeout: 5000 })
+check('A 显式词表：卡面无状态着色类（灰边）', await noStatusClasses())
+check('A 显式词表：次数徽标与状态词无关（各 1 次）',
+  (await cnBadge('a')) === '1 次' && (await cnBadge('b')) === '1 次',
+  `a=${await cnBadge('a')} b=${await cnBadge('b')}`)
+check('A：出边强度跟着结算的 verdict 走',
+  (await edgeHasClass('edge:a|成功|b', 'wf-edge-taken')) &&
+    (await edgeHasClass('edge:a|失败|DONE', 'wf-edge-idle')) &&
+    (await edgeHasClass('edge:b|需修订|DONE', 'wf-edge-taken')) &&
+    (await edgeHasClass('edge:b|通过|DONE', 'wf-edge-idle')))
 await page.screenshot({ path: join(SHOTS, 'run-view-verdict-cn-success.png') })
 
-// B：同一张定义结算成「失败」——卡片 / 徽标 / 出边三处一起红。
+// B：同一张定义结算成「失败」——卡面与 A 逐字节一样（灰边 + 次数），只有边
+// 的强度换了。
 await mountCanvasRun(CN_EXPLICIT, [cnStage('a', '失败', 0)])
-await page.waitForSelector('.wf-stage-card--run-fail', { timeout: 5000 })
-check('中文词表：显式 failure（「失败」）→ 红', (await page.locator('.wf-stage-card--run-fail').count()) === 1)
-check('中文词表：失败徽标也红', (await page.locator('.wf-run-badge--fail').count()) === 1)
-check('中文词表：失败出边染红', (await page.locator('.wf-edge-taken--fail').count()) === 1)
+await page.waitForSelector('.wf-edge-taken', { timeout: 5000 })
+check('B 结算成失败：卡面同样无状态着色类（与 A 一样灰）', await noStatusClasses())
+check('B：次数徽标照旧（a 1 次），失败词不上卡',
+  (await cnBadge('a')) === '1 次' && (await page.locator('.wf-run-badge').count()) === 1)
+check('B：失败出边亮起（强度维度）',
+  (await edgeHasClass('edge:a|失败|DONE', 'wf-edge-taken')) && (await edgeHasClass('edge:a|成功|b', 'wf-edge-idle')))
 
-// C：旧定义零迁移——没有任何 verdictKinds，语义按拓扑推。
+// C：旧定义零迁移——没有任何 verdictKinds，语义按拓扑推；卡面同样不受影响。
 const CN_INFERRED = {
   id: 'wf_cn2',
   name: '推导向',
@@ -469,17 +514,18 @@ const CN_INFERRED = {
   ],
 }
 await mountCanvasRun(CN_INFERRED, [cnStage('a', '好的', 0), cnStage('b', '嗯', 1)])
-await page.waitForSelector('.wf-edge-taken--pass', { timeout: 5000 })
-check('推导向：连到结束的「好的」→ 绿（无声明）', (await page.locator('.wf-stage-card--run-pass').count()) === 1)
-check('推导向：一条出边都没有的「嗯」→ 红（引擎 fail-safe 同款）', (await page.locator('.wf-stage-card--run-fail').count()) === 1)
-check('推导向：→DONE 的边走绿', (await page.locator('.wf-edge-taken--pass').count()) === 1)
+await page.waitForSelector('.wf-edge-taken', { timeout: 5000 })
+check('C 推导向：卡面无状态着色类（灰边）', await noStatusClasses())
+check('C：次数徽标各 1 次', (await cnBadge('a')) === '1 次' && (await cnBadge('b')) === '1 次')
+check('C：→DONE 的边亮起、没走过的边弱化',
+  (await edgeHasClass('edge:a|好的|DONE', 'wf-edge-taken')) && (await edgeHasClass('edge:a|糟了|b', 'wf-edge-idle')))
 await page.screenshot({ path: join(SHOTS, 'run-view-verdict-inferred.png') })
 
-// ── §1d 徽标落位与缺省文案（user 2026-11-17「节点执行状态的标签放在节点的
-// 右上角，如果未自定义状态的，默认为成功」）──
+// ── §1d 次数徽标落位（user 2026-11-20 二刀「可以在节点右上角展示执行次数」，
+// 顶掉 2026-11-17 的执行状态徽标）──
 // 三臂：a 完全没声明 verdicts（normalize 补 ['pass']）、b 声明了两个状态（自
-// 定义词表）、c 只声明 ['pass']（= 缺省单状态）。前两者里的「未自定义」都读
-// 「成功」，自定义词表照旧展示原词；位置钉在卡右上角 6px（按 zoom 折回 CSS px）。
+// 定义词表）、c 只声明 ['pass']（= 缺省单状态）。无论词表怎么声明，徽标一律
+// 只读次数（各 1 次）；位置钉在卡右上角 6px（按 zoom 折回 CSS px）。
 const BADGE_DEF = {
   id: 'wf_badge',
   name: '徽标',
@@ -499,9 +545,9 @@ await mountCanvasRun(BADGE_DEF, [cnStage('a', 'pass', 0), cnStage('b', 'pass', 1
 await page.waitForSelector('.wf-run-badge', { timeout: 5000 })
 const badgeText = async (id) =>
   ((await page.locator(`.react-flow__node[data-id="node:${id}"] .wf-run-badge`).innerText()) || '').trim()
-check('未自定义状态（无 verdicts）→ 徽标读「成功」而不是内部词 pass', (await badgeText('a')) === '成功', await badgeText('a'))
-check('只声明单状态 pass 同样算未自定义 → 「成功」', (await badgeText('c')) === '成功', await badgeText('c'))
-check('自定义词表照旧展示原词', (await badgeText('b')) === 'pass', await badgeText('b'))
+check('次数徽标与结果状态声明无关（无 verdicts → 1 次）', (await badgeText('a')) === '1 次', await badgeText('a'))
+check('自定义双状态词表同样只读次数', (await badgeText('b')) === '1 次', await badgeText('b'))
+check('只声明单状态 pass 同样只读次数', (await badgeText('c')) === '1 次', await badgeText('c'))
 const badgeGeom = await page.evaluate(() => {
   const card = document.querySelector('.react-flow__node[data-id="node:a"] .wf-stage-card')
   const badge = document.querySelector('.react-flow__node[data-id="node:a"] .wf-run-badge')
@@ -523,6 +569,114 @@ check(
 )
 check('运行态标题给徽标让位（padding-right 72px）', badgeGeom?.titlePad === '72px', String(badgeGeom?.titlePad))
 await page.screenshot({ path: join(SHOTS, 'run-view-badge-corner.png') })
+
+// ── §1e 执行链导航（user 2026-11-20「右栏前进/后退顺着执行链路走」）──
+// 相位 0 的链 = code#1 → code#2 → test#1 → test#2（RETRY/重跑的多次执行各占
+// 一步）。判据不是「按钮画出来了」：每步要落到**正确的节点 + 正确的第几次**
+// （选择条的高亮跟着走），画布把聚焦描边挂在对应节点上并把视口对过去，两端
+// 禁用不回绕；画布点节点要把链位同步过去、没跑过的节点不动链位。
+// 重新挂一次页面拿干净状态：默认选中落链尾（链位只随导航走，前面几段的
+// 点选已经把它挪过位置了）。
+const navPos = () => page.locator('[data-run-nav-pos]').innerText()
+const navNodeText = () => page.locator('[data-run-nav-node]').innerText()
+const navBtnState = (attr) =>
+  page.evaluate((a) => {
+    const b = document.querySelector(`[data-run-nav-${a}]`)
+    return b ? { disabled: !!b.disabled } : null
+  }, attr)
+const navStep = (dir) => page.locator(`[data-run-nav-${dir}]`).click()
+/** 选择条当前高亮的那个 #i（primary 型按钮里的文本）。 */
+const activePick = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('[data-workflow-run-panel] button')]
+      .filter((b) => /^#\d/.test((b.textContent || '').trim()) && b.className.includes('ant-btn-primary'))
+      .map((b) => (b.textContent || '').trim())
+      .join(','),
+  )
+const focusNodeIds = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('.wf-stage-card--run-focus')]
+      .map((el) => el.closest('.react-flow__node')?.getAttribute('data-id'))
+      .join(','),
+  )
+await page.evaluate(() => window.__mountRunView())
+await page.waitForSelector('[data-workflow-run-nav]', { timeout: 8000 })
+await page.waitForTimeout(700)
+
+check('导航条常驻面板顶部（两颗钮 + 步数标签 + 节点名）',
+  (await page.locator('[data-workflow-run-nav]').count()) === 1 &&
+    (await navBtnState('prev')) !== null && (await navBtnState('next')) !== null &&
+    (await page.locator('[data-run-nav-pos]').count()) === 1)
+check('默认落链尾：第 4 / 4 步、next 禁用（两端不回绕）',
+  /第 4 \/ 4 步/.test(await navPos()) && (await navBtnState('next')).disabled === true,
+  `${await navPos()} next=${JSON.stringify(await navBtnState('next'))}`)
+await navStep('prev')
+await page.waitForTimeout(550) // fitView 有 300ms 动画
+check('后退一步 → 第 3 步 = 测试 #1（节点名 + 运行次数都在导航条上）',
+  /第 3 \/ 4 步/.test(await navPos()) && (await navNodeText()).includes('测试') && (await navNodeText()).includes('#1'),
+  `${await navPos()} · ${await navNodeText()}`)
+check('第 3 步：选择条高亮 #1（该节点第 1 次）', (await activePick()) === '#1 fail', await activePick())
+check('第 3 步：聚焦描边只挂在 test 上', (await focusNodeIds()) === 'node:test', await focusNodeIds())
+// 三刀（user 2026-11-20「选中节点效果只需要设为蓝色边框，不需要阴影扩散效果」）：
+// 描边 = 只换边框色到 --pm-link，**选中不新增任何 box-shadow**（双环/外晕退役；
+// 卡本身的基底投影不算——判据是与未选中卡同值，不是 none）；未选中的卡仍是
+// hairline 灰（灰底规则没有被聚焦规则误伤）。
+const focusStyle = await page.evaluate(() => {
+  const focused = document.querySelector('.wf-stage-card--run-focus')
+  const plain = [...document.querySelectorAll('.wf-stage-card--runview')].find((el) => el !== focused)
+  if (!focused || !plain) return null
+  const probe = document.createElement('span')
+  probe.style.color = 'var(--pm-link)'
+  document.body.appendChild(probe)
+  const link = getComputedStyle(probe).color
+  probe.remove()
+  const fs = getComputedStyle(focused)
+  const ps = getComputedStyle(plain)
+  return { border: fs.borderTopColor, shadow: fs.boxShadow, plainBorder: ps.borderTopColor, plainShadow: ps.boxShadow, link }
+})
+check('聚焦 = 纯蓝边框（选中不新增阴影，未选中仍是灰边）',
+  focusStyle !== null && focusStyle.border === focusStyle.link && focusStyle.shadow === focusStyle.plainShadow && focusStyle.plainBorder !== focusStyle.link,
+  JSON.stringify(focusStyle))
+await navStep('prev')
+await page.waitForTimeout(550)
+check('再退 → 第 2 步 = 编码 #2（RETRY 的第二次）',
+  /第 2 \/ 4 步/.test(await navPos()) && (await navNodeText()).includes('编码') && (await navNodeText()).includes('#2') && (await activePick()) === '#2 pass',
+  `${await navPos()} · ${await navNodeText()} · ${await activePick()}`)
+await navStep('prev')
+await page.waitForTimeout(550)
+check('退到链头：第 1 / 4 步、prev 禁用',
+  /第 1 \/ 4 步/.test(await navPos()) && (await navNodeText()).includes('编码') && (await navNodeText()).includes('#1') && (await navBtnState('prev')).disabled === true,
+  `${await navPos()} prev=${JSON.stringify(await navBtnState('prev'))}`)
+check('链头：选择条高亮 #1、聚焦描边在 code', (await activePick()) === '#1 fail' && (await focusNodeIds()) === 'node:code')
+await navStep('next')
+await page.waitForTimeout(400)
+check('链头前进恢复可用 → 回到第 2 步', /第 2 \/ 4 步/.test(await navPos()))
+// 画布点节点 → 链位同步到该节点**最后一次**执行（与「换节点回到最近一次」一致）
+await page.locator('.react-flow__node[data-id="node:code"]').click()
+await page.waitForTimeout(400)
+check('画布点 code → 链位同步到编码最后一次（第 2 / 4 步、#2）',
+  /第 2 \/ 4 步/.test(await navPos()) && (await navNodeText()).includes('#2'),
+  `${await navPos()} · ${await navNodeText()}`)
+// 没跑过的节点（相位 0 没有 review 行）不动链位——否则导航条被打成禁用的「—」
+await page.locator('.react-flow__node[data-id="node:review"]').click()
+await page.waitForTimeout(400)
+check('画布点未执行节点 → 链位保持（导航条仍指向编码 #2）',
+  /第 2 \/ 4 步/.test(await navPos()) && (await navNodeText()).includes('编码'),
+  `${await navPos()} · ${await navNodeText()}`)
+// 聚焦要把视口对过去：聚焦节点中心 ≈ 画布中心（容差 25% 画布宽高）
+await navStep('prev')
+await page.waitForTimeout(600)
+const focusCenter = await page.evaluate(() => {
+  const canvas = document.querySelector('[data-workflow-canvas]')
+  const node = document.querySelector('.wf-stage-card--run-focus')
+  if (!canvas || !node) return null
+  const c = canvas.getBoundingClientRect()
+  const n = (node.closest('.react-flow__node') ?? node).getBoundingClientRect()
+  return { dx: Math.abs(n.left + n.width / 2 - (c.left + c.width / 2)), dy: Math.abs(n.top + n.height / 2 - (c.top + c.height / 2)), w: c.width, h: c.height }
+})
+check('后退触发画布定位：聚焦节点居中于视口（容差 25%）',
+  focusCenter !== null && focusCenter.dx < focusCenter.w * 0.25 && focusCenter.dy < focusCenter.h * 0.25,
+  JSON.stringify(focusCenter))
 
 // ── §2：真实侧边栏路径（RoutineCenter → 点行直达详情页）──
 // 前缀键 bug（runViewKey 存了 `workflow:` 行键、查找用裸 id）就是这条路径上
@@ -548,7 +702,8 @@ check(
     framingReal.inside,
   `scale=${framingReal.scale} dx=${framingReal.dx.toFixed(1)} dy=${framingReal.dy.toFixed(1)}`,
 )
-check('真实路径：run 节点着色（前缀键 bug 已修）', (await page.locator('.wf-stage-card--run-running').count()) === 1)
+check('真实路径：次数徽标在（test 2 次，running 那次也计数）',
+  ((await page.locator('.react-flow__node[data-id="node:test"] .wf-run-badge').innerText()) || '').trim() === '2 次')
 check('真实路径：标题带状态', ((await page.evaluate(() => document.body.innerText)) || '').includes('运行中'))
 check('节点详情面板在（真实路径）', (await page.locator('[data-workflow-run-panel]').count()) === 1)
 // 默认选中 = 最后一个有执行记录的节点（夹具里是 test，执行了 2 次）——
@@ -676,10 +831,19 @@ await page.waitForTimeout(300)
 const startText = await page.locator('[data-workflow-run-panel]').innerText()
 check('点开始芯片 → 任务初始要求（目标）', startText.includes('任务初始要求') && startText.includes('把计划落地'))
 check('点开始芯片 → 运行变量', startText.includes('topic'))
+// 三刀：选中芯片同款蓝边（与任务卡同一语义），且只挂被选中的那一个。
+const chipFocus = async (kind) =>
+  page.locator(`.react-flow__node[data-id="terminal:${kind}"] .wf-terminal--run-focus`).count()
+check('点开始芯片 → START 亮选中蓝边（DONE 没有）',
+  (await chipFocus('START')) === 1 && (await chipFocus('DONE')) === 0,
+  `start=${await chipFocus('START')} done=${await chipFocus('DONE')}`)
 // 点结束芯片 → 最终结果（run 级结论优先）
 await page.locator('.react-flow__node[data-id="terminal:DONE"]').click()
 await page.waitForTimeout(300)
 check('点结束芯片 → 最终结果（run 级结论优先）', ((await page.locator('[data-workflow-run-panel]').innerText()) || '').includes('报告已生成：reports/weekly.md'))
+check('点结束芯片 → 蓝边换到 DONE（START 的已摘）',
+  (await chipFocus('DONE')) === 1 && (await chipFocus('START')) === 0,
+  `start=${await chipFocus('START')} done=${await chipFocus('DONE')}`)
 
 // ── §3.6 头部动作与产物点开（2026-11-18）──
 // 判据不是「按钮画出来了」，而是**真点到了哪条 IPC、参数是什么**：停止要打到
@@ -843,14 +1007,16 @@ await page.waitForTimeout(3600) // 跨一次 3s 轮询
 const edgesAdv1 = await edgeStats()
 check('执行推进（新节点进入运行中）后连线仍在', edgesAdv1.n === 4 && edgesAdv1.drawn === 4, JSON.stringify(edgesAdv1))
 check('执行推进后每条连线都看得见', edgesAdv1.faint === 0, JSON.stringify(edgesAdv1))
-check('执行推进确实换了着色（运行中换到 review）', (await page.locator('.wf-stage-card--run-running').count()) === 1)
-// 推进二档：全部结算（运行徽标整行退场，卡片又缩回一行）。
+check('执行推进后新节点亮出次数徽标（review 1 次）', ((await page.locator('.react-flow__node[data-id="node:review"] .wf-run-badge').innerText()) || '').trim() === '1 次')
+// 推进二档：全部结算（次数徽标保持、无状态色回潮）。
 await page.evaluate(() => window.__setStagePhase(2))
 await page.waitForTimeout(3600)
 const edgesAdv2 = await edgeStats()
 check('执行结束（全部结算）后连线仍在', edgesAdv2.n === 4 && edgesAdv2.drawn === 4, JSON.stringify(edgesAdv2))
 check('执行结束（全部结算）后每条连线都看得见', edgesAdv2.faint === 0, JSON.stringify(edgesAdv2))
-check('结算后运行中徽标退场', (await page.locator('.wf-stage-card--run-running').count()) === 0)
+check('全部结算后次数徽标保持（review 仍 1 次），且无状态色回潮',
+  ((await page.locator('.react-flow__node[data-id="node:review"] .wf-run-badge').innerText()) || '').trim() === '1 次' &&
+    (await page.locator('.wf-stage-card--run-pass,.wf-stage-card--run-fail,.wf-stage-card--run-running,.wf-stage-card--run-settled').count()) === 0)
 await page.evaluate(() => window.__setStagePhase(0))
 
 // ── §3：关闭路径——destroyOnHidden 的收尾动画仍在渲染子组件，run 置空后

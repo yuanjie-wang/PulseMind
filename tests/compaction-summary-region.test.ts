@@ -341,14 +341,16 @@ describe('lightCompact: the fit target never goes negative or under half the win
     expect(compacted.length).toBeLessThan(msgs.length)
   })
 
-  it('a 50K window keeps at least half the window (the 30K floor no longer under-shoots)', () => {
+  it('a 50K window keeps the proportional target (~58% of window)', () => {
     const msgs = asciiCycles(30) // ~60K tokens
     const { compactor } = makeCompactor(msgs)
     const compacted = compactor.lightCompact(msgs, 50_000, 0)
     const keptH = estimateMessagesTokens(compacted)
-    // Old target 50K − 30K = 20K (40% of window); floored to 25K (50%) → ~12 cycles.
+    // 30K 平底已删（PLAN-cache-wire-gates D5）：headroom = 0.3×50K = 15K →
+    // 触发线 35K；target = 50K − 15K − 6K(margin) = 29K（0.58×窗口）。
+    // 旧形态 target 被 max(·, 0.5×窗) 托到 25K、线被 30K 平底压到 55% used。
     expect(keptH).toBeGreaterThan(21_000)
-    expect(keptH).toBeLessThanOrEqual(28_000)
+    expect(keptH).toBeLessThanOrEqual(29_500)
   })
 })
 

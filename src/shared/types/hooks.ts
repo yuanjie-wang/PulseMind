@@ -45,6 +45,15 @@ export interface HookResult {
  * Context passed to the llm-request hook (~/.pulsemind/hooks/llm-request.js)
  * for every LLM API request right before it is sent. `body` is JSON-parsed
  * when the request body was JSON.
+ *
+ * Session identity (2026-11-20): `requestId` marks ONE wire request (fresh per
+ * request, stable across the proxy's HTTP-level retries); `sessionId` the
+ * conversation; `taskId`/`turnIndex` the Q&A turn (taskId minted at turn
+ * start, stable across every re-issue within the turn; turnIndex the 0-based
+ * position in the conversation). The triple is ABSENT (not undefined) on
+ * context-less calls — probes, title/memory sidecars — which have no turn.
+ * Identity rides the hook context ONLY: never headers/body (prefix-cache
+ * bytes are sensitive).
  */
 export interface LlmRequestHookContext {
   event: 'llm-request'
@@ -53,6 +62,16 @@ export interface LlmRequestHookContext {
   headers: Record<string, string>
   body: unknown
   profileId?: string
+  /** The conversation this request belongs to (the engine's conversationId:
+   *  desktop chat, hosted session, sub-agent, pipeline/routine run). */
+  sessionId?: string
+  /** Identity of one Q&A turn — minted at turn start, unchanged across every
+   *  re-issue inside the turn (HTTP retries AND engine continuations). */
+  taskId?: string
+  /** 0-based turn position in the conversation, derived from the transcript
+   *  at turn start (restart-stable; a mid-turn steer text counts as its own
+   *  input in the NEXT turn's index). */
+  turnIndex?: number
 }
 
 /** Result of the llm-request hook. Omitted fields keep their original values. */

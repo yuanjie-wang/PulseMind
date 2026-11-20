@@ -51,12 +51,19 @@ function loadHook(): CachedHook | null {
 export interface ApplyLlmHookOptions {
   requestId: string
   profileId?: string
+  /** Session identity (2026-11-20) — see LlmRequestHookContext. Present only
+   *  on agent-loop requests; one-shots (ns_/simple-/probe-) omit the triple
+   *  and the context keys stay absent, not undefined. */
+  sessionId?: string
+  taskId?: string
+  turnIndex?: number
 }
 
 /**
  * Run the llm-request hook over a request right before it is sent. The hook
- * receives { url, headers, body, profileId, requestId } (body JSON-parsed
- * when possible) and may return { url?, headers?, body? } to override them.
+ * receives { url, headers, body, profileId, requestId } plus the optional
+ * session triple { sessionId, taskId, turnIndex } (body JSON-parsed when
+ * possible) and may return { url?, headers?, body? } to override them.
  * Failures never block the request — the original values are used.
  *
  * Per-model switch (2026-11-10): a model entry with `llmHookEnabled: false`
@@ -94,6 +101,11 @@ export async function applyLlmRequestHook(
     body: parsedBody,
     profileId: opts.profileId,
   }
+  // Session identity: keys stay ABSENT (not undefined) when the caller has no
+  // session/turn, so `'taskId' in ctx` is honest in hook scripts.
+  if (opts.sessionId !== undefined) context.sessionId = opts.sessionId
+  if (opts.taskId !== undefined) context.taskId = opts.taskId
+  if (opts.turnIndex !== undefined) context.turnIndex = opts.turnIndex
 
   try {
     const result = await hook.fn(context)

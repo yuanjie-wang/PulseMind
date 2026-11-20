@@ -276,8 +276,9 @@ describe('the merged fit gate: one token-metered decision for nano and light', (
     expect(engine).toContain('nanoCompact(pipelineMessages, inputBudget, fixedOverhead)')
     // The prewarm simulation: a 0-overhead / windowless run would archive
     // later and less than the request does, which is exactly what
-    // compaction-prewarm exists to catch.
-    expect(compactor).toContain('this.nanoCompact(pipeline, contextLength, overhead)')
+    // compaction-prewarm exists to catch — and record=false, so a simulated
+    // decision never writes the archive ledger.
+    expect(compactor).toContain('this.nanoCompact(pipeline, contextLength, overhead, false)')
     // The ring needs the window too, else archived results price whole.
     expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1), contextLength, t)')
     expect(ring).toContain('estimateAfterNanoTokens(tailMsgs, contextLength, compaction.tokensAfter)')

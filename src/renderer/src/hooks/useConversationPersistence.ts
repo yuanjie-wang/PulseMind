@@ -173,7 +173,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     const firstText = msgs[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
     const existing = conversationsRef.current.find(c => String(c.key) === convId)
     const title = existing?.label && existing.label !== '新对话' ? existing.label : firstText || '新对话'
-    const conversation = agentMessagesToConversation(msgs, convId, title)
+    const conversation = agentMessagesToConversation(msgs, convId, title,
+      // 运行中回合的近似总章（2026-11-20）：快照周期把 TurnClock 锚点落进 DB，
+      // 关应用/崩溃终结的回合在重启后仍显示「到最后一次存档为止」的真实工作
+      // 时长；正常收口的回合有精确总章，此处不传（turnMs 缺席）零影响。
+      engine.turnMs)
     const hs = engine.getHistorySummary()
     if (hs) {
       conversation.historySummary = hs.text

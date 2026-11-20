@@ -71,13 +71,18 @@ describe('compaction fit units: the enforcement speaks the same units the trigge
       messages.push(...makeRound())
       const history = messages.slice()
 
-      const nano = compactor.nanoCompact(history)
+      // 生产管线的顶部：已裁剪周期不再回灌（见 applyPersistedDrops）。缺了这层，
+      // 剪掉的循环仍躺在 live 里、锚点在「压缩后 ↔ 全量」之间交替——正是该层
+      // 修掉的 ping-pong（conv_20261102222133）。
+      const pipeline = compactor.applyPersistedDrops(history)
+
+      const nano = compactor.nanoCompact(pipeline)
       const light = compactor.lightCompact(nano, WINDOW, OVERHEAD)
       const truncated = compactor.hardTruncate(light, WINDOW, OVERHEAD)
       const final = await compactor.injectHistorySummary(history, truncated)
 
-      // 触发输入（与 lightCompact 内部同款）：锚点单位
-      const est = compactor.contextTokens(nano, OVERHEAD)
+      // 触发输入（与 lightCompact 内部同款，2026-11-20 换锚）：wire 锚点 + 尾部
+      const est = compactor.requestTokens(nano, OVERHEAD)
       const dropped = light.length < nano.length
       if (dropped && firstDropPass < 0) firstDropPass = pass
 

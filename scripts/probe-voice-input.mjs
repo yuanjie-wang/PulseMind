@@ -234,6 +234,27 @@ const asrCalls = () => page.evaluate(() => window.__asrCalls)
 await page.evaluate(() => window.__mountComposer())
 await page.waitForTimeout(200)
 
+// ── 0 · 位置契约（user 2026-11-20：「语音输入按钮放到发送消息的左侧，模型选择的右侧」）──
+// footerLeft 的附件簇（+/文件夹）不再有麦克风；右侧簇按 [模型选择] [麦克风] [发送]
+// 排布，以三颗按钮的 x 坐标几何证明。
+console.log('== 位置契约：模型选择 < 麦克风 < 发送 ==')
+{
+  const pos = await page.evaluate(() => {
+    const scope = document.querySelector('[data-probe="composer"]')
+    const center = (el) => {
+      const r = el.getBoundingClientRect()
+      return r.left + r.width / 2
+    }
+    const mic = [...scope.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? '').includes('语音输入'))
+    const model = scope.querySelector('.pm-chat-model')
+    const send = scope.querySelector('.pm-send, .pm-accent-send')
+    return { mic: mic ? center(mic) : null, model: model ? center(model) : null, send: send ? center(send) : null }
+  })
+  check('麦克风在右侧簇（不在 footerLeft 附件簇旁）', pos.mic !== null && pos.send !== null && pos.mic < pos.send, JSON.stringify(pos))
+  check('模型选择在麦克风左侧', pos.model !== null && pos.model < pos.mic, JSON.stringify(pos))
+  check('发送按钮在麦克风右侧', pos.mic < pos.send, JSON.stringify(pos))
+}
+
 // ── 1 · 无模型首按 → 引导卡 ──
 console.log('== 无模型首按：引导卡 ==')
 check('麦克风按钮在 idle 态可点（aria-label 是「语音输入…」）', (await micInfo())?.label?.includes('语音输入'), (await micInfo())?.label)
@@ -255,6 +276,43 @@ await page.waitForTimeout(400)
     await page.evaluate(() => !window.__audioLog.includes('recorder.start')),
     JSON.stringify(await page.evaluate(() => window.__audioLog)),
   )
+}
+
+// ── 1.5 · 消失契约（user 2026-11-20：「没有消失的契机，不导入就一直在」）──
+// 受控 Popover 不会自己收：点卡外任意处 / Esc / 再按麦克风（toggle）三个
+// 契机都必须收卡；「装好模型广播」是唯一成功路径（§2）。
+console.log('== 消失契约：点外部 / Esc / 再按 ==')
+const guideOpen = async () => page.evaluate(() =>
+  [...document.querySelectorAll('.ant-popover.pm-voice-guide')].filter((p) => getComputedStyle(p).display !== 'none').length)
+{
+  // 点卡外（composer 上半部，不在麦克风/卡内）→ 收
+  await page.locator('[data-probe="composer"]').click({ position: { x: 450, y: 20 } })
+  await page.waitForTimeout(400)
+  check('点卡外任意处 → 引导卡收起', (await guideOpen()) === 0, `${await guideOpen()} still open`)
+
+  // 再按麦克风 → 重新弹出（无模型的每一次按都是引导）
+  await mic().click()
+  await page.waitForTimeout(300)
+  check('再按麦克风 → 卡重新弹出', (await guideOpen()) === 1, `${await guideOpen()} open`)
+
+  // Esc → 收
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check('Esc → 引导卡收起', (await guideOpen()) === 0, `${await guideOpen()} still open`)
+
+  // toggle：麦克风再按一次开、再按一次收
+  await mic().click()
+  await page.waitForTimeout(300)
+  check('toggle 第一按 → 卡弹出', (await guideOpen()) === 1, `${await guideOpen()} open`)
+  await mic().click()
+  await page.waitForTimeout(400)
+  check('toggle 第二按（卡开着时按麦克风）→ 收起', (await guideOpen()) === 0, `${await guideOpen()} still open`)
+  check('toggle 不进录音（recorder 未启动）', await page.evaluate(() => !window.__audioLog.includes('recorder.start')))
+
+  // 重新弹出，供导入节使用
+  await mic().click()
+  await page.waitForTimeout(300)
+  check('卡再次弹出（导入节的前置态）', (await guideOpen()) === 1)
 }
 
 // ── 2 · 导入成功广播 → 卡收起 ──

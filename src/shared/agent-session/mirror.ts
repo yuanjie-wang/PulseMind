@@ -28,6 +28,11 @@ export interface SessionState {
   fileChanges: SessionFileChange[]
   /** Resolved working directory (PLAN-0.4.0 M8), reported back on session create. */
   workspaceDir?: string
+  /** 运行中回合的 TurnClock 锚点（2026-11-20，StatusSnapshot.turnMs 的镜像）：
+   *  渲染端 live 总时长的基数。status 事件缺席该字段时清掉（undefined =
+   *  没有回合在跑），与 agentStatus 同一事件原子更新；外推读法见
+   *  useChatController 的 turnElapsedMs。 */
+  turnMs?: number
 }
 
 export function freshSessionState(): SessionState {
@@ -158,6 +163,11 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
     }
     case 'status': {
       state.agentStatus = mirroredStatus(data)
+      // turnMs 与状态词同源原子更新：带上 = 回合在跑（停靠等待也算，值是
+      // 排除等待段后的累计）；缺席 = 时钟停了，清掉。undefined 直接赋值即
+      // 清（键离开 state，持久化/比较语义与 PlanManager.clearCurrentMarker
+      // 同一条纪律）。
+      state.turnMs = data.turnMs
       return true
     }
     case 'plan_update': {
@@ -244,6 +254,9 @@ export function seedSessionState(state: SessionState, snapshot: {
 }): void {
   state.messages = snapshot.messages as AgentMessage[]
   state.agentStatus = mirroredStatus(snapshot.status)
+  // 快照与事件同一字段（session-manager 的 turnMsOf 两处 spread）：重连进
+  // 正在跑的回合，live 时长立刻有锚点。
+  state.turnMs = snapshot.status.turnMs
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
   state.fileChanges = Array.isArray(snapshot.fileChanges) ? (snapshot.fileChanges as SessionFileChange[]) : []

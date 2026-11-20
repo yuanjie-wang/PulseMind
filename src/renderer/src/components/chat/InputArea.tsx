@@ -318,6 +318,40 @@ function InputAreaImpl({
     return () => window.removeEventListener('keydown', onKey)
   }, [showVoice, voice])
 
+  // ── 引导卡的消失契约（user 2026-11-20：「没有消失的契机，不导入就一直在」）──
+  // 受控 Popover（trigger=[]）不会自己收，「装好模型广播」只是成功路径——
+  // 不想导入的用户此前没有任何关闭手段，浮窗就永远挂在麦克风旁边。三个
+  // 消失契机：点卡外任意处、Esc、再按一次麦克风（toggle）。受控 open 的
+  // antd Popover 不吃 onOpenChange 的外部点击语义（trigger=[] 时根本没有
+  // 内部机制），只能自己装 document 监听——pointerdown 走捕获相：先于
+  // 卡内按钮的 click，也不受任何 stopPropagation 影响。
+  const micBtnRef = useRef<HTMLButtonElement>(null)
+  const { dismissGuide: dismissVoiceGuide } = voice
+  useEffect(() => {
+    if (!voice.state.guideVisible) return
+    const onDocPointerDown = (e: PointerEvent): void => {
+      const target = e.target
+      if (!(target instanceof Node)) return
+      // 麦克风本体与卡内（含卡上的按钮/链接）都不算「外面」——点卡内的
+      // 导入按钮开文件对话框时卡不能塌。
+      if (micBtnRef.current?.contains(target)) return
+      if (target instanceof Element && target.closest('.pm-voice-guide')) return
+      dismissVoiceGuide()
+    }
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      dismissVoiceGuide()
+    }
+    document.addEventListener('pointerdown', onDocPointerDown, true)
+    document.addEventListener('keydown', onEsc, true)
+    return () => {
+      document.removeEventListener('pointerdown', onDocPointerDown, true)
+      document.removeEventListener('keydown', onEsc, true)
+    }
+  }, [voice.state.guideVisible, dismissVoiceGuide])
+
   // ── 选中文字引用（2026-11-06）──
   // 工具栏的「提问」不把选中文字塞进草稿：草稿里一段 markdown 引用块既看不出
   // 边界、也删不干净。改成输入框上沿的一枚引用 chip —— 与文件/文件夹引用同一
@@ -1463,52 +1497,6 @@ function InputAreaImpl({
                 />
               </>
             )}
-            {showVoice && (
-              <Popover
-                // 引导卡挂在麦克风按钮旁（场景 A：首按无模型）——不是全屏向导。
-                // open 完全受控：guideVisible 由 hook 置位（无模型首按 / 转写失败），
-                // 点其他地方/装好模型自动收。
-                open={voice.state.guideVisible}
-                placement="topLeft"
-                trigger={[]}
-                content={
-                  <VoiceGuideCard
-                    models={undefined}
-                    onChanged={() => voice.dismissGuide()}
-                  />
-                }
-              >
-                <Button
-                  size="small"
-                  type="text"
-                  aria-label={
-                    voice.state.phase === 'recording'
-                      ? t('voiceInput.micStop')
-                      : voice.state.phase === 'transcribing'
-                        ? t('voiceInput.micTranscribing')
-                        : t('voiceInput.micStart')
-                  }
-                  icon={
-                    voice.state.phase === 'transcribing'
-                      ? <LoadingOutlined style={{ fontSize: 14 }} spin />
-                      : <AudioOutlined style={{ fontSize: 14 }} />
-                  }
-                  onClick={() => {
-                    if (voice.state.phase === 'recording') voice.stop()
-                    else if (voice.state.phase === 'idle') voice.start()
-                  }}
-                  style={{
-                    fontSize: 12,
-                    // 录音中变红是「停止」的信号色（与发送态同源），不是装饰
-                    color: voice.state.phase === 'recording' ? 'var(--pm-error, #cf1322)' : 'var(--pm-text-secondary)'
-                  }}
-                >
-                  {voice.state.phase === 'recording' && (
-                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{voice.state.seconds}s</span>
-                  )}
-                </Button>
-              </Popover>
-            )}
             {showAuthorization && (
               <Dropdown
                 trigger={['click']}
@@ -1553,7 +1541,7 @@ function InputAreaImpl({
         }
         trailing={
           <>
-            {/* Right cluster order: compaction chip, context ring, model picker, send button. */}
+            {/* Right cluster order: compaction chip, context ring, model picker, mic, send button. */}
             {hasMessages && !!lastCompaction && (
               <Tooltip title={compactionHint}>
                 {/* pm-collapse-chip: Composer's first responsive stage — the
@@ -1612,6 +1600,59 @@ function InputAreaImpl({
                   <RobotOutlined className="pm-collapse-only" style={{ fontSize: 14 }} />
                 </Button>
               </Dropdown>
+            )}
+            {showVoice && (
+              <Popover
+                // 引导卡挂在麦克风按钮旁（场景 A：首按无模型）——不是全屏向导。
+                // 麦克风在右侧簇（2026-11-20 user：「语音输入按钮放到发送消息的
+                // 左侧，模型选择的右侧」），卡片贴按钮右缘向左展开。open 完全
+                // 受控：guideVisible 由 hook 置位（无模型首按 / 转写失败）；消失
+                // 契约在上方 effect（点外部/Esc/再按麦克风），「装好模型广播」是
+                // 唯一成功路径。overlayClassName 是外部点击判定的锚点——受控
+                // Popover 的内容挂在 body portal，靠 DOM 位置判内外必须给它命名。
+                open={voice.state.guideVisible}
+                placement="topRight"
+                trigger={[]}
+                overlayClassName="pm-voice-guide"
+                content={
+                  <VoiceGuideCard
+                    models={undefined}
+                    onChanged={() => voice.dismissGuide()}
+                  />
+                }
+              >
+                <Button
+                  ref={micBtnRef}
+                  size="small"
+                  type="text"
+                  aria-label={
+                    voice.state.phase === 'recording'
+                      ? t('voiceInput.micStop')
+                      : voice.state.phase === 'transcribing'
+                        ? t('voiceInput.micTranscribing')
+                        : t('voiceInput.micStart')
+                  }
+                  icon={
+                    voice.state.phase === 'transcribing'
+                      ? <LoadingOutlined style={{ fontSize: 14 }} spin />
+                      : <AudioOutlined style={{ fontSize: 14 }} />
+                  }
+                  onClick={() => {
+                    if (voice.state.phase === 'recording') voice.stop()
+                    else if (voice.state.guideVisible) voice.dismissGuide()
+                    else if (voice.state.phase === 'idle') voice.start()
+                  }}
+                  style={{
+                    fontSize: 12,
+                    // 录音中变红是「停止」的信号色（与发送态同源），不是装饰
+                    color: voice.state.phase === 'recording' ? 'var(--pm-error, #cf1322)' : 'var(--pm-text-secondary)'
+                  }}
+                >
+                  {voice.state.phase === 'recording' && (
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{voice.state.seconds}s</span>
+                  )}
+                </Button>
+              </Popover>
             )}
           </>
         }

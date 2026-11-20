@@ -19,7 +19,7 @@
 // 不随包，CI 传了才做真转写段）。
 'use strict'
 
-const { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } = require('node:fs')
+const { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } = require('node:fs')
 const { createHash } = require('node:crypto')
 const { tmpdir } = require('node:os')
 const { join, resolve } = require('node:path')
@@ -111,11 +111,36 @@ if (extras.length > 0) fail(`engine dir has unexpected native files: ${extras.jo
     }
     console.log(`  loader -> ${status.engine.dir} (v${status.engine.version}, verified manifest)`)
 
-    // 3b) 真转写段：CI 传了 --model-dir 才跑（模型 226MB 不随包）
+    // 3b) 打包态模型清单可达（review 20261120 H1 的回归钉）：产品的
+    //     readCatalog 必须经 resourcesPath 候选读到包内 asr/models.json——
+    //     清单没进包（只在 asar 里找）或候选梯断了时这里红。冒烟进程是
+    //     RUN_AS_NODE 的纯 Node 形态，手动摆出打包态的 resourcesPath。
+    writeFileSync(join(work, 'electron-stub.js'), "module.exports = { app: { isPackaged: true, getAppPath: () => process.cwd() } }\n")
+    esbuild.buildSync({
+      entryPoints: [join(__dirname, '..', 'src', 'main', 'services', 'model-manager.ts')],
+      outfile: join(work, 'model-manager.js'),
+      ...nodeTarget,
+      // model-manager 传递依赖 storage/index → electron 的 app：给一个假体
+      // （readCatalog 不触 getTemplatesDir，永不调用）。
+      alias: { electron: join(work, 'electron-stub.js') },
+    })
+    Object.defineProperty(process, 'resourcesPath', { value: resDir, configurable: true, writable: true, enumerable: true })
+    delete process.env.PULSEMIND_ASR_CATALOG // 只证打包候选梯，env 缝必须缺席
+    const mm = require(join(work, 'model-manager.js'))
+    const cat = mm.readCatalog('asr')
+    if (!cat.catalog || cat.error) {
+      fail(`packaged readCatalog failed: ${cat.error} — resources/asr 没进包（extraResources 缺条目？）或清单候选梯断了`)
+    }
+    if (cat.catalog.family !== 'asr' || cat.catalog.models.length === 0) {
+      fail(`packaged catalog invalid: family=${cat.catalog.family}, models=${cat.catalog.models.length}`)
+    }
+    console.log(`  catalog -> ${cat.catalog.models.length} model(s) via packaged resourcesPath`)
+
+    // 3c) 真转写段：CI 传了 --model-dir 才跑（模型 226MB 不随包）
     const modelDir = args['model-dir']
     if (!modelDir || !existsSync(join(modelDir, 'model.int8.onnx'))) {
       console.log('  --model-dir 缺省或无效：跳过真转写段（只验引擎加载）。CI 传缓存模型可覆盖。')
-      console.log('[smoke-packed-asr] OK (engine-load only)')
+      console.log('[smoke-packed-asr] OK (engine-load + catalog only)')
       return
     }
     const wav = args.wav || join(__dirname, '..', 'resources', 'asr', 'fixtures', 'zh.wav')
@@ -145,7 +170,7 @@ if (extras.length > 0) fail(`engine dir has unexpected native files: ${extras.jo
     if (r.ms > budget) fail(`transcription took ${r.ms}ms for ${seconds.toFixed(1)}s audio — beyond RTF budget`)
     const sha = createHash('sha256').update(text).digest('hex').slice(0, 12)
     console.log(`  transcribe ${seconds.toFixed(1)}s -> ${r.ms}ms "${text.slice(0, 40)}" (sha ${sha})`)
-    console.log('[smoke-packed-asr] OK (engine-load + real transcription)')
+    console.log('[smoke-packed-asr] OK (engine-load + catalog + real transcription)')
   } catch (e) {
     exitCode = 1
     console.error(`[smoke-packed-asr] FAIL: ${e && e.stack ? e.stack : String(e)}`)

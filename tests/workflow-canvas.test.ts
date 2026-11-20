@@ -882,18 +882,23 @@ describe('canvas toolbox & simple model', () => {
     expect(zhLocale).toContain("canvasVerdictNamePlaceholder: '状态名'")
   })
 
-  it('状态颜色不带语义（user 2026-11-19「不要对颜色进行定义」）：菜单只有 7 色、默认蓝，判词不认词面（user 2026-11-17）', () => {
+  it('状态颜色不带语义（user 2026-11-19「不要对颜色进行定义」）：菜单只有 7 色、默认蓝；2026-11-20 二刀后卡面连状态色都不再吃', () => {
     // 「你是不是写死了把 pass 作为成功态，failed 为失败态？」——结果状态是用户
     // 自定义词表，语义只能来自拓扑推导（run-view.ts 的 verdictKindOf）。2026-11-18
     // 起边不再做语义判词（跟状态色走）；2026-11-19 颜色菜单落地且**同日再裁定
-    // 颜色不带语义定义**——绿≠成功、红≠失败，kindForColor 耦合已删，判词只剩
-    // 卡片徽标/节点描边这一个消费面（其语义来自拓扑推导，与颜色无关）。
-    expect(canvas).toContain("import { runNodeStates, runTakenEdges, verdictKindOf } from")
-    expect(canvas).toMatch(/const kind = s\.verdict === undefined \? 'neutral' : verdictKindOf\(def, nodeId, s\.verdict\)/)
-    expect(canvas).not.toMatch(/const kind = verdictKindOf\(def, e\.from, e\.when\)/)
-    // 徽标颜色跟着画布下发的语义类走，不再自己判词面。
-    expect(card).toContain("runClass === 'run-pass' ? ' wf-run-badge--pass'")
-    expect(card).toContain("runClass === 'run-fail' ? ' wf-run-badge--fail'")
+    // 颜色不带语义定义**——绿≠成功、红≠失败，kindForColor 耦合已删；
+    // 2026-11-20 二刀（user「所有节点都是灰色边框…不用展示节点执行状态」）把
+    // 卡面状态色/状态徽标整个退役——verdictKindOf 在画布里的最后一个消费面
+    // 消失，语义辨读只剩右栏详情一处。
+    expect(canvas).toContain('import { runNodeStates, runTakenEdges, runVisitCounts } from')
+    // verdictKindOf 在画布代码里彻底退场（注释里的指路可以留）。
+    const semanticOnly = canvas.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(semanticOnly).not.toContain('verdictKindOf')
+    // 卡面不再产生任何 run 状态类（绿/红/蓝呼吸全部退场，基底边框即灰）。
+    expect(canvas).not.toContain('wf-stage-card--run-pass')
+    expect(canvas).not.toContain('wf-stage-card--run-fail')
+    expect(canvas).not.toContain('wf-stage-card--run-running')
+    expect(canvas).not.toContain('wf-stage-card--run-settled')
     const detail = read('src/renderer/src/components/routine/WorkflowRunViewPage.tsx')
     expect(detail).toContain("verdictKindOf(def, sel.nodeId, activeStage.verdict) === 'success'")
     // 反向扫描（去掉注释再扫）：源码里不许再出现「verdict 是不是 pass/fail」。
@@ -948,22 +953,29 @@ describe('canvas toolbox & simple model', () => {
     expect(enLocale).toContain('never affects scheduling')
   })
 
-  it('运行徽标钉在卡右上角，未自定义状态显示「成功」而不是内部词 pass（user 2026-11-17）', () => {
+  it('次数徽标钉在卡右上角；执行状态徽标已退役（user 2026-11-20 二刀）', () => {
     // ① 位置：徽标绝对定位在卡右上角（与编辑态两颗悬停钮同一个角落，两套
     //    互斥模式不会同屏）；标题在运行态让出 72px（6 + 60 + 6），不再被徽标
-    //    压住。徽标本身 max-width 60px + 省略号：自定义状态名可长到 24 字。
+    //    压住。
     expect(canvas).toContain('position: absolute; top: 6px; right: 6px; z-index: 2; max-width: 60px')
     expect(canvas).toContain('.wf-stage-card--runview .wf-stage-title { padding-right: 72px; }')
-    expect(card).toContain('wf-stage-card--runview wf-stage-card--')
-    // ② 文案：未声明词表（normalize 补的缺省单状态 pass）→ i18n「成功」；
-    //    自定义词表一律原词。判据只看「有没有声明过」，不看 verdict 字面。
-    expect(canvas).toMatch(/const badge = isDefaultVerdict \? t\('workflow\.runBadgeSuccess'\) : \(s\.verdict \?\? ''\)/)
-    expect(canvas).toMatch(/const isDefaultVerdict =\s*!declared \|\| declared\.length === 0 \|\| \(declared\.length === 1 && declared\[0\] === 'pass'\)/)
+    // ② 文案：徽标只承载执行次数（节点可能多次执行、每次结果不同，状态词是
+    //    误导）；文案由画布 i18n 下发（卡组件不持有 t），没跑过不给徽标。
+    expect(canvas).toMatch(/runCountLabel: \(visitCounts\.get\(n\.id\) \?\? 0\) > 0 \? t\('workflow\.runBadgeCount', \{ count: visitCounts\.get\(n\.id\) \?\? 0 \}\) : undefined/)
+    expect(card).toContain('{runCountLabel && (')
+    expect(card).toContain('className="wf-run-badge"')
+    expect(card).not.toContain('runClass')
+    expect(card).not.toContain('wf-run-badge--')
     const zhLocale = read('src/renderer/src/i18n/locales/zh.ts')
     const enLocale = read('src/renderer/src/i18n/locales/en.ts')
-    expect(zhLocale).toContain("runBadgeSuccess: '成功'")
-    expect(enLocale).toContain("runBadgeSuccess: 'Success'")
-    // 词面反扫仍成立（配色/徽标语义不认字面）。
+    expect(zhLocale).toContain("runBadgeCount: '{{count}} 次'")
+    expect(enLocale).toContain("runBadgeCount: '×{{count}}'")
+    // 状态词键随状态徽标一并退役（runBadgeRunning 例外：右栏面板标题的
+    // 「运行中」提示还在用）。
+    expect(zhLocale).not.toContain('runBadgeSuccess:')
+    expect(zhLocale).not.toContain('runBadgeFailed:')
+    expect(zhLocale).toContain('runBadgeRunning:')
+    // 词面反扫仍成立（画布里不认 verdict 字面）。
     const codeOnly = canvas.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     expect(codeOnly).not.toMatch(/verdict\s*===\s*'pass'/)
   })
@@ -1093,14 +1105,19 @@ describe('canvas toolbox & simple model', () => {
     expect(canvas.slice(start, loop)).not.toContain('altSides')
   })
 
-  it('运行视图的「没走过的边」必须读得到（user 2026-11-17 弱化底线 → 2026-11-18 改状态色弱化）', () => {
+  it('运行视图的「没走过的边」必须读得到（user 2026-11-17 弱化底线 → 2026-11-18 改状态色弱化 → 2026-11-20 提到 0.5）', () => {
     // 刚开跑时几乎所有边都还没走过，而 idle 是整张图的主体——它一淡就等于
     // 「连线没了」。历史上是 muted 灰换色 @0.8；状态色方案（user 2026-11-18
     // 「运行视图也跟状态色」）下改为纯透明度：颜色维度归 wf-edge-verdict-N，
-    // 运行类只控强度。0.35 对任何色相都保住「没走过」的可读性，彩色线又比
-    // 当年的 #cccccc 醒目。idle 不得再写 --xy-edge-stroke（那会把状态色洗掉）。
-    expect(canvas).toContain('.react-flow__edge.wf-edge-idle { opacity: 0.35; }')
+    // 运行类只控强度。0.35 的口径被七色调色打破——verdict-0 调到链接蓝
+    // #1677ff 后，0.35 在白底上的合成对比只剩 ~51（探针 §4c 的可见度门
+    // 实测抓到）；0.5 合成 ~74 过门，与走过边（1.0 全亮）仍拉开层级。
+    // idle 本体仍不得写 --xy-edge-stroke（那会把状态色洗掉）。
+    expect(canvas).toContain('.react-flow__edge.wf-edge-idle { opacity: 0.5; }')
     expect(canvas).not.toMatch(/\.wf-edge-idle \{ --xy-edge-stroke/)
+    // 无状态类的边（start-entry 派生边）不在透明度弱化的保护伞里——RF 默认
+    // 浅灰 #b1b1b7 叠 0.5 在白底上对比 ~39，同样过不了门；运行态回落主墨色。
+    expect(canvas).toContain(".wf-runmode .react-flow__edge:not([class*='wf-edge-verdict-']) { --xy-edge-stroke: var(--pm-text-strong); }")
     // 旧的三档语义 run 类必须退场（颜色跟状态走，不跟 pass/fail 走）。
     expect(canvas).not.toContain('.wf-edge-taken--pass')
     expect(canvas).not.toContain('.wf-edge-taken--fail')

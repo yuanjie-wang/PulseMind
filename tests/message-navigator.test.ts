@@ -6,9 +6,10 @@
 //
 //   - listUserPrompts 的过滤规则（哪些消息算「我发送的」）是纯函数，直接
 //     驱动真实消息数组断言；
-//   - 步进的目标选择是点击时的视口实测（不维护光标），属 DOM/布局事实，
-//     vitest 够不到，只按源码钉住算法的关键裁决（早退之前翻面、严格以视
-//     口中心为界、未挂载锚的 up 回落）；
+//   - 步进的目标选择是点击时的视口实测（不维护光标）。算法本体只摸
+//     window/document 两个全局（2026-11-20 迁入 message-navigator 纯逻辑
+//     层），node 环境注入桩 rect 即可直驱——布局事实仍是桩，被钉的是决策
+//     逻辑（居中参照、边缘最近、懒加载边界的 up 回落）；
 //   - 接线（统一跳转 effect 双源、topSlot 组合、回到底部重接跟随）按源码
 //     扫描断言——这些是「顺序/位置不变量」，挂载测试看不到。
 
@@ -16,7 +17,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentMessage } from '../src/renderer/src/types/agent'
-import { listUserPrompts } from '../src/renderer/src/components/chat/message-navigator'
+import { listUserPrompts, measureStepTarget, type UserPromptAnchor } from '../src/renderer/src/components/chat/message-navigator'
 
 const ROOT = join(__dirname, '..')
 
@@ -61,6 +62,99 @@ describe('listUserPrompts — 哪些消息算「我发送的」', () => {
   })
 })
 
+// measureStepTarget 只摸 window.innerHeight 与 document.getElementById 两个
+// 全局：node 环境下注入桩即可直驱算法。rect 由测试给定——被钉的是决策
+// 逻辑，不是布局事实。用完恢复，避免污染同文件其他用例的全局面。
+interface StepRect {
+  top: number
+  bottom: number
+}
+
+function withViewport(rects: Record<string, StepRect | null>, run: () => void): void {
+  const g = globalThis as Record<string, unknown>
+  const prevWindow = g.window
+  const prevDocument = g.document
+  g.window = { innerHeight: 800 }
+  g.document = {
+    getElementById: (id: string) => {
+      const rect = rects[id.replace(/^chat-msg-/, '')]
+      return rect ? { getBoundingClientRect: () => rect } : null
+    },
+  }
+  try {
+    run()
+  } finally {
+    if (prevWindow === undefined) delete g.window
+    else g.window = prevWindow
+    if (prevDocument === undefined) delete g.document
+    else g.document = prevDocument
+  }
+}
+
+describe('measureStepTarget — 视口实测选目标', () => {
+  const anchors: UserPromptAnchor[] = [
+    { id: 'u1', anchorId: 'u1' },
+    { id: 'u2', anchorId: 'u2' },
+    { id: 'u3', anchorId: 'u3' },
+    { id: 'u4', anchorId: 'u4' },
+    { id: 'u5', anchorId: 'u5' },
+  ]
+
+  it('视口内有可见用户消息：目标 = 最接近视口中心那条的同向邻位', () => {
+    withViewport({ u2: { top: 300, bottom: 360 }, u3: { top: 380, bottom: 440 }, u4: { top: 700, bottom: 760 } }, () => {
+      // u3 的元素中心 410 最接近视口中心 400 → up 取 u2、down 取 u4
+      expect(measureStepTarget(anchors, -1)).toBe(1)
+      expect(measureStepTarget(anchors, 1)).toBe(3)
+    })
+  })
+
+  it('居中那条已是第一条：up 到头置灰（-1），down 正常', () => {
+    withViewport({ u1: { top: 390, bottom: 450 }, u2: { top: 900, bottom: 960 } }, () => {
+      expect(measureStepTarget(anchors, -1)).toBe(-1)
+      expect(measureStepTarget(anchors, 1)).toBe(1)
+    })
+  })
+
+  it('懒加载边界（2026-11-20 实锤的置灰死态）：已挂载锚全在视口下方且上方还有未挂载历史 → up 命中首条已挂载锚的前一条', () => {
+    // u1、u2 在窗口之外（getElementById null），u3..u5 已挂载但全在视口
+    // 下方——视口停在渲染窗口顶部附近、新 prepend 的一页里没有用户消息。
+    // 旧算法三分支全落空（不可见 + 无边缘锚 + mountedSeen 堵死 fallback）
+    // → 恒 -1；现在目标指向未挂载的 u2，宿主扩窗机制负责挂载它再滚动。
+    withViewport({ u3: { top: 900, bottom: 960 }, u4: { top: 1200, bottom: 1260 }, u5: { top: 1500, bottom: 1560 } }, () => {
+      expect(measureStepTarget(anchors, -1)).toBe(1)
+      // down 不受影响：视口下方最近的是 u3
+      expect(measureStepTarget(anchors, 1)).toBe(2)
+    })
+  })
+
+  it('同上但首条已挂载锚就是第一条：up 真没有更早的用户消息，置灰', () => {
+    withViewport({ u1: { top: 900, bottom: 960 }, u2: { top: 1200, bottom: 1260 } }, () => {
+      expect(measureStepTarget(anchors, -1)).toBe(-1)
+    })
+  })
+
+  it('一条都没挂载（全部在窗口之上）：up 取最后一条，down 无处可去', () => {
+    withViewport({}, () => {
+      expect(measureStepTarget(anchors, -1)).toBe(4)
+      expect(measureStepTarget(anchors, 1)).toBe(-1)
+    })
+  })
+
+  it('视口内无可见、上方有已挂载锚：取刚越过视口顶最近的一条', () => {
+    withViewport({ u1: { top: -500, bottom: -440 }, u2: { top: -100, bottom: -40 }, u4: { top: 900, bottom: 960 } }, () => {
+      // u2 的 rect.bottom 最大（离视口顶最近）
+      expect(measureStepTarget(anchors, -1)).toBe(1)
+    })
+  })
+
+  it('down 对称：视口内无可见、下方有已挂载锚 → 取刚越过视口底最近的一条', () => {
+    withViewport({ u1: { top: -500, bottom: -440 }, u3: { top: 850, bottom: 910 }, u5: { top: 1300, bottom: 1360 } }, () => {
+      // u3 的 rect.top 最小（离视口底最近）
+      expect(measureStepTarget(anchors, 1)).toBe(2)
+    })
+  })
+})
+
 describe('接线扫描 — ChatView × 悬浮导航组', () => {
   const chatView = readFileSync(join(ROOT, 'src/renderer/src/components/layout/ChatView.tsx'), 'utf8')
   // PLAN-layout-modes：composer 的 topSlot 交付点（InputArea 挂载）随抽取搬进
@@ -95,12 +189,26 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
     expect(chatView).toContain('prompts={userPrompts}')
   })
 
-  it('步进目标测算住在组件里，点击与渲染共用一份', () => {
-    expect(controls).toContain('export function measureStepTarget')
-    expect(controls).toContain('targetIdx = currentIdx + dir')
-    expect(controls).toContain('targetIdx = edgeIdx')
-    expect(controls).toContain('targetIdx = prompts.length - 1')
-    expect(controls).toContain('const past = dir === -1 ? -rect.bottom : rect.top - window.innerHeight')
+  it('步进目标测算住在纯逻辑层，组件点击与置灰共用同一份（2026-11-20 迁出组件）', () => {
+    const nav = readFileSync(join(ROOT, 'src/renderer/src/components/chat/message-navigator.ts'), 'utf8')
+    expect(nav).toContain('export function measureStepTarget')
+    expect(nav).toContain('targetIdx = currentIdx + dir')
+    expect(nav).toContain('targetIdx = edgeIdx')
+    // 懒加载边界死态的修复分支：视口在全部已挂载锚之上时，up 指向首条
+    // 已挂载锚的前一条（未挂载历史，宿主扩窗兜底）；一条都没挂载回落末条
+    expect(nav).toContain('targetIdx = mountedSeen ? firstMountedIdx - 1 : prompts.length - 1')
+    expect(nav).toContain('const past = dir === -1 ? -rect.bottom : rect.top - window.innerHeight')
+    // 组件不再自带算法：四处调用（置灰重算 up/down + 两个点击处理器）吃同一份
+    expect(controls).toContain("import { measureStepTarget, type UserPromptAnchor } from './message-navigator'")
+    expect(controls).not.toContain('export function measureStepTarget')
+    expect(controls.match(/measureStepTarget\(prompts/g)?.length).toBe(4)
+  })
+
+  it('跳转请求先剥 __后缀再查锚点映射——带后缀的消息 id 才能走通扩窗/滚动路径', () => {
+    // msgIdToAnchorRef 的键与 DOM 锚都是剥后缀形态；navigator 递的是原始
+    // AgentMessage.id——不剥就 map、DOM 双双 miss，扩窗静默放弃（步进现在
+    // 会把点击送达未挂载目标，这条路径必须通）。
+    expect(chatView).toContain("msgIdToAnchorRef.current.get(requested.replace(/__\\w+$/, ''))")
   })
 
   it('到头置灰：可用性实时重算（捕获式滚动监听），点击不再走 ChatView', () => {

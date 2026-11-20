@@ -46,12 +46,18 @@ export interface WorkflowStageNodeData extends Record<string, unknown> {
   onDelete: (id: string) => void
   deleteLabel: string
   /** 运行视图（PLAN-workflow-run-view）：runMode = 画布处于运行查看态——
-   *  编辑/删除钮退场、卡片按运行状态着色。run = 该节点最新一次 stage 的
-   *  状态（run-view.ts 的推导；缺席 = 还没跑到，画布画成弱化底稿）。
-   *  runClass 由画布按 verdict 给出（pass 绿 / fail 红 / 其余中性）。 */
+   *  编辑/删除钮退场。2026-11-20 二刀后卡片**不再按运行状态着色**（一律灰边），
+   *  状态信息只剩右上角的执行次数徽标。 */
   runMode?: boolean
-  run?: { status: 'running' | 'settled' | 'failed'; verdict?: string; error?: string; badge: string }
-  runClass?: string
+  /** 执行次数（user 2026-11-20 二刀「右上角展示执行次数」——顶掉了执行状态
+   *  徽标：节点可能多次执行、每次结果不同，卡面单值状态是误导）。0 = 没跑过
+   *  （画 idle 弱化、不给徽标）。文案 runCountLabel 由画布带 i18n 下发。 */
+  runCount?: number
+  runCountLabel?: string
+  /** 选中的节点（user 2026-11-20 二刀「选中时变为蓝色边框」）：导航步与画布
+   *  点选都落到它，只有它挂 `wf-stage-card--run-focus` 蓝色边框（三刀去掉
+   *  阴影扩散，只换边框色）。 */
+  focused?: boolean
   /** 未接线的结果状态（2026-11-18）：这些状态一条出边都没有，引擎跑到
    *  它们时 outEdges 为空 → 整实例失败。编辑器里线头与别的长得一样，所以
    *  卡头挂一颗琥珀警示、多状态行给对应状态名加虚线底（一眼看出是哪根）。
@@ -64,26 +70,30 @@ export interface WorkflowStageNodeData extends Record<string, unknown> {
 export interface WorkflowTerminalNodeData extends Record<string, unknown> {
   kind: WorkflowTerminalKind
   label: string
-  /** 运行视图：DONE 芯片反映实例终态（缺席 = 定义视图，不着色）。 */
-  runStatus?: 'running' | 'success' | 'failed'
+  /** 运行视图：选中的芯片（user 2026-11-20 三刀「开始和结束节点也设为灰色」）
+   *  ——芯片与任务卡同灰，选中时同款蓝边框。缺席 = 定义视图（保留芯片身份
+   *  色：开始蓝、结束绿）。 */
+  focused?: boolean
 }
 
 export type WorkflowStageFlowNode = Node<WorkflowStageNodeData, typeof STAGE_NODE_TYPE>
 export type WorkflowTerminalFlowNode = Node<WorkflowTerminalNodeData, typeof TERMINAL_NODE_TYPE>
 
 export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): React.ReactElement {
-  const { node, onEdit, editLabel, onDelete, deleteLabel, runMode, run, runClass, unwired, unwiredHint, unwiredTitle } = data
+  const { node, onEdit, editLabel, onDelete, deleteLabel, runMode, runCount, runCountLabel, focused, unwired, unwiredHint, unwiredTitle } = data
   // `verdicts` 缺席兜底（2026-11-17）：盘上手写/旧版定义可以没有这个字段，
   // 裸解引用会整张卡抛错（画布白屏、连带所有连线消失）。运行视图已过
   // normalizeSimpleWorkflow 补齐，这里是第二道门（编辑器加载路径同吃）。
   const verdicts = node.verdicts && node.verdicts.length > 0 ? node.verdicts : ['pass']
   const multi = verdicts.length > 1
   const unwiredSet = new Set(unwired ?? [])
-  // 运行视图的卡面状态类由画布下发（verdict 感知：pass 绿 / fail 红 / 其余
-  // 中性），缺席（还没跑到）= idle 弱化——底稿一眼可辨「哪些还没发生」。
-  // `--runview` 是运行态的总开关（与具体状态无关）：徽标绝对定位到卡右上角、
-  // 标题让出右侧空间（user 2026-11-17「节点执行状态的标签放在节点的右上角」）。
-  const cardClass = runMode ? ` wf-stage-card--runview wf-stage-card--${runClass ?? 'run-idle'}` : ''
+  // 运行视图（user 2026-11-20 二刀）：卡面一律灰边（基底边框就是灰），不按
+  // 执行状态着色；没跑过（runCount 0）= idle 弱化，一眼可辨「哪些还没发生」。
+  // `--runview` 是运行态的总开关：次数徽标绝对定位到卡右上角、标题让出右侧
+  // 空间；选中的节点加蓝色聚焦描边。
+  const cardClass = runMode
+    ? ` wf-stage-card--runview${(runCount ?? 0) === 0 ? ' wf-stage-card--run-idle' : ''}${focused ? ' wf-stage-card--run-focus' : ''}`
+    : ''
   return (
     <div className={(multi ? 'wf-stage-card has-verdicts' : 'wf-stage-card') + cardClass}>
       {/* 三个入线头各带唯一 id：React Flow 的 handle 身份是 (nodeId, type, id)，
@@ -140,15 +150,13 @@ export function WorkflowStageCard({ data }: NodeProps<WorkflowStageFlowNode>): R
             <WarningOutlined />
           </span>
         )}
-        {/* 运行视图的状态徽标：运行中（呼吸）/ 结算出的 verdict 原词 / 失败。
-            verdict 是用户自定义词表，徽标只做展示不做语义翻译；**颜色**跟着
-            画布给出的语义类走（runClass），不认词面（user 2026-11-17）。 */}
-        {run && (
-          <span
-            className={`wf-run-badge wf-run-badge--${run.status}${runClass === 'run-pass' ? ' wf-run-badge--pass' : runClass === 'run-fail' ? ' wf-run-badge--fail' : ''}`}
-            title={run.error ?? run.verdict ?? undefined}
-          >
-            {run.badge}
+        {/* 运行视图的执行次数徽标（user 2026-11-20 二刀「右上角展示执行次数」
+            ——顶掉了执行状态徽标：节点可能多次执行、每次结果不一样，卡面单值
+            状态是误导；次数是唯一无歧义的信息，成败辨读在右栏详情）。没跑过
+            不给徽标。 */}
+        {runCountLabel && (
+          <span className="wf-run-badge" title={runCountLabel}>
+            {runCountLabel}
           </span>
         )}
       </div>
@@ -209,13 +217,11 @@ export function WorkflowTerminalCard({ data }: NodeProps<WorkflowTerminalFlowNod
   // 结束的线头**必须可连**（user 2026-11-09「结束图标连线连不上」）：`type="target"`
   // 已经挡住了从芯片起拖，再给 Handle 加一个 isConnectable 关掉连通性，只会把唯一的
   // 落点判死——任务卡的流出口拖过来会被 React Flow 当非法连接静默丢弃，结束永远连不上。
+  // 运行视图（user 2026-11-20 三刀）：芯片同灰、实例终态色退役，选中的芯片
+  // 与任务卡同款蓝边框（focused 由画布下发）。
   return (
     <div
-      className={
-        (TERMINAL_CLASS[data.kind] ?? 'wf-terminal') +
-        // 运行视图：DONE 芯片反映实例终态（user 2026-11-15 运行视图）。
-        (data.runStatus ? ` wf-terminal--run-${data.runStatus}` : '')
-      }
+      className={(TERMINAL_CLASS[data.kind] ?? 'wf-terminal') + (data.focused ? ' wf-terminal--run-focus' : '')}
     >
       {data.kind === 'START' ? (
         <Handle type="source" position={Position.Bottom} className="wf-handle-source" />

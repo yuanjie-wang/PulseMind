@@ -40,6 +40,7 @@ import { InputArea, type SendAck } from './InputArea'
 import { SelectionToolbar } from './SelectionToolbar'
 import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
 import { useTranslation } from '../../i18n/useTranslation'
+import { formatDuration } from '../../../../shared/ui/message-stats'
 import type { NewTaskMode } from '../../stores/newTaskStore'
 import type { TailFollow } from '../../../../shared/ui/useTailFollow'
 import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
@@ -94,6 +95,10 @@ interface ChatBodyProps {
   workspaceDir?: string
   // ── status banners ──
   agentStatus: AgentStatus
+  /** 运行中回合的 live 总时长（null = 没有回合在跑）：引擎 TurnClock 锚点 +
+   *  运行段外推（useChatController），等待/暂停冻结，收口后由消息上的总章
+   *  接替（2026-11-20「处理时间偏差太大」）。 */
+  turnElapsedMs?: number | null
   isError: boolean
   isRetrying: boolean
   retryCountdown: number
@@ -167,6 +172,7 @@ export function ChatBody({
   showCursor,
   workspaceDir,
   agentStatus,
+  turnElapsedMs,
   isError,
   isRetrying,
   retryCountdown,
@@ -431,6 +437,16 @@ export function ChatBody({
           {/* 160 = the floating composer's own band (root padding + card).
               aboveCardReserve = the above-card slot's persistent height + gap
               — without it the stage strip paints over the newest message. */}
+          {/* 运行中回合的 live 总时长：就是用户要在「处理时间」位置看到的那个
+              诚实的数字——运行时跟着走、等人时冻结、收口后被总章原位接替
+              （2026-11-20「处理时间偏差太大，会让用户觉得我们在欺骗」）。 */}
+          {turnElapsedMs != null && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '0 24px 4px' }}>
+              <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }} data-pm-turn-elapsed>
+                {t('chatView.turnElapsed', { time: formatDuration(turnElapsedMs) })}
+              </span>
+            </div>
+          )}
           {/* The single cursor of a run: at the foot while nothing streams as
               text, otherwise at the end of the live text (SegmentView's tail). */}
           <StreamingCursor show={showCursor} />

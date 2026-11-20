@@ -32,6 +32,14 @@ export class StreamRunner {
     // cancelledRequestIds check must see a definite string even if the try
     // body throws before the engine ever saw the id.
     const requestId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    // llm-request hook 身份三元组（2026-11-20）：会话/轮次随请求交给主进程，
+    // 只进 hook 的 context，不进 headers/body（前缀缓存字节敏感）。轮内重发
+    // 重新走 run() 会重铸 requestId，但 currentTurnId/Index 仍指向同一轮。
+    const hookIdentity = {
+      sessionId: opts.conversationId,
+      taskId: this.engine.currentTurnId ?? undefined,
+      turnIndex: this.engine.currentTurnIndex ?? undefined,
+    }
     let streamError: string | null = null
     let unsubChunk: () => void
     let unsubError: () => void
@@ -350,7 +358,7 @@ export class StreamRunner {
 
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
-      await this.engine.getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody as string | object, profileId: this.engine.opts.profileId })
+      await this.engine.getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody as string | object, profileId: this.engine.opts.profileId, ...hookIdentity })
 
       // A dead request (steer/stop/retry/dispose aborted it) exits HERE: its
       // ERROR event was a dead letter above, and the invoke resolved normally —

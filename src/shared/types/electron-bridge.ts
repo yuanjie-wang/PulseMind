@@ -335,7 +335,16 @@ export interface ElectronAPI {
   apiFetchStream: (
     requestId: string,
     url: string,
-    options?: { method?: string; headers?: Record<string, string>; body?: string | object; profileId?: string },
+    options?: {
+      method?: string
+      headers?: Record<string, string>
+      body?: string | object
+      profileId?: string
+      /** Session identity (2026-11-20) — llm-request hook context only. */
+      sessionId?: string
+      taskId?: string
+      turnIndex?: number
+    },
   ) => Promise<void>
   apiAbortStream: (requestId: string) => Promise<void>
   onApiStreamChunk: (callback: (data: ApiStreamChunkEvent) => void) => () => void

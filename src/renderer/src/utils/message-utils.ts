@@ -22,14 +22,20 @@ function sanitizeContentBlocks(blocks: ContentBlock[]): ContentBlock[] {
   })
 }
 
-/** Convert AgentMessage[] to Conversation for storage. */
+/** Convert AgentMessage[] to Conversation for storage. `turnElapsedMs` 是运行中
+ *  回合的 TurnClock 累计（useConversationPersistence 快照传入）：落成最后一条
+ *  assistant 消息上的**近似总章**——关应用/崩溃终结的回合没有终局盖章机会，
+ *  重启后至少显示「到最后一次存档为止」的真实工作时长；正常收口的回合由
+ *  stampTurnDuration 的精确总章覆盖（Math.max 兜 parked-banked 与末轮单值
+ *  的极端倒挂）。不传 = 行为逐字节不变（子代理存档、hosted 等其余调用方）。 */
 export function agentMessagesToConversation(
   msgs: AgentMessage[],
   convId: string,
-  title: string
+  title: string,
+  turnElapsedMs?: number
 ): Conversation {
   const now = new Date().toISOString()
-  return {
+  const conversation: Conversation = {
     id: convId,
     title,
     messages: msgs.map((m, i) => {
@@ -56,6 +62,14 @@ export function agentMessagesToConversation(
     createdAt: now,
     updatedAt: now
   }
+  if (turnElapsedMs != null) {
+    for (let i = conversation.messages.length - 1; i >= 0; i--) {
+      if (conversation.messages[i].role !== 'assistant') continue
+      conversation.messages[i].processingMs = Math.max(conversation.messages[i].processingMs ?? 0, turnElapsedMs)
+      break
+    }
+  }
+  return conversation
 }
 
 /** Convert stored Message[] to AgentMessage[]. */

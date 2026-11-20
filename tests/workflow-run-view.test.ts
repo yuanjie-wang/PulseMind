@@ -3,7 +3,7 @@
 // when」匹配（fan-out 同状态多目标一起亮）、键格式与画布 edgeIdOf 同源。
 
 import { describe, expect, it } from 'vitest'
-import { runNodeStates, runTakenEdges, runEdgeKey, verdictKindOf } from '../src/shared/workflow/run-view'
+import { runExecutionChain, runNodeStates, runVisitCounts, runTakenEdges, runEdgeKey, verdictKindOf } from '../src/shared/workflow/run-view'
 import type { PipelineStageRun, WorkflowDefinition, WorkflowEdge, WorkflowNode } from '../src/shared/workflow/types'
 
 const stage = (patch: Partial<PipelineStageRun> & { id: string; nodeId: string }): PipelineStageRun => ({
@@ -48,6 +48,66 @@ describe('runNodeStates', () => {
 
   it('没跑到的节点不进表（画布据此画 idle 弱化）', () => {
     expect(runNodeStates([stage({ id: 's1', nodeId: 'a', verdict: 'pass' })]).has('b')).toBe(false)
+  })
+})
+
+// 执行链（user 2026-11-20「右栏前进/后退顺着执行链路走」）：stage 行按开始
+// 时间正序 = 执行序，逐行编「该节点第几次」。导航条拿它定位节点与运行次数。
+describe('runExecutionChain', () => {
+  it('按 startedAt 正序编排，visit 从 1 起', () => {
+    const chain = runExecutionChain([
+      stage({ id: 's2', nodeId: 'b', startedAt: '2026-11-15T10:05:00.000Z' }),
+      stage({ id: 's1', nodeId: 'a', startedAt: '2026-11-15T10:00:00.000Z' }),
+    ])
+    expect(chain).toEqual([
+      { stageId: 's1', nodeId: 'a', visit: 1 },
+      { stageId: 's2', nodeId: 'b', visit: 1 },
+    ])
+  })
+
+  it('同节点多次执行各占一步、visit 递增（RETRY/回边）', () => {
+    const chain = runExecutionChain([
+      stage({ id: 's1', nodeId: 'a', startedAt: '2026-11-15T10:00:00.000Z' }),
+      stage({ id: 's2', nodeId: 'b', startedAt: '2026-11-15T10:01:00.000Z' }),
+      stage({ id: 's3', nodeId: 'a', startedAt: '2026-11-15T10:02:00.000Z' }),
+      stage({ id: 's4', nodeId: 'a', startedAt: '2026-11-15T10:03:00.000Z' }),
+    ])
+    expect(chain.map((s) => `${s.nodeId}#${s.visit}`)).toEqual(['a#1', 'b#1', 'a#2', 'a#3'])
+  })
+
+  it('startedAt 同刻按数组序（stable sort，落库顺序兜底）', () => {
+    const chain = runExecutionChain([
+      stage({ id: 's1', nodeId: 'a', startedAt: '2026-11-15T10:00:00.000Z' }),
+      stage({ id: 's2', nodeId: 'a', startedAt: '2026-11-15T10:00:00.000Z' }),
+    ])
+    expect(chain.map((s) => s.stageId)).toEqual(['s1', 's2'])
+    expect(chain.map((s) => s.visit)).toEqual([1, 2])
+  })
+
+  it('空输入 → 空链；入参数组不被改动（纯函数）', () => {
+    const input = [stage({ id: 's2', nodeId: 'b', startedAt: '2026-11-15T10:05:00.000Z' }), stage({ id: 's1', nodeId: 'a', startedAt: '2026-11-15T10:00:00.000Z' })]
+    expect(runExecutionChain([])).toEqual([])
+    runExecutionChain(input)
+    expect(input.map((s) => s.id)).toEqual(['s2', 's1'])
+  })
+})
+
+// 次数徽标的数据面（user 2026-11-20 二刀「右上角展示执行次数」）：stage 行数
+// = 该节点跑过的次数（含正在跑的那次），没跑过不进表（卡上不给徽标）。
+describe('runVisitCounts', () => {
+  it('按行数累加，重入节点多计；没跑过不进表', () => {
+    const counts = runVisitCounts([
+      stage({ id: 's1', nodeId: 'a' }),
+      stage({ id: 's2', nodeId: 'b' }),
+      stage({ id: 's3', nodeId: 'a' }),
+    ])
+    expect(counts.get('a')).toBe(2)
+    expect(counts.get('b')).toBe(1)
+    expect(counts.has('c')).toBe(false)
+  })
+
+  it('空输入 → 空表', () => {
+    expect(runVisitCounts([]).size).toBe(0)
   })
 })
 

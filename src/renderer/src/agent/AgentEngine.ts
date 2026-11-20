@@ -38,6 +38,7 @@ import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { effectiveInputWindow } from './engine/window-budget'
 import { TurnClock, stampTurnDuration, isWaitingOnUserStatus } from './engine/turn-clock'
+import { mintTurnId, countUserTurns } from './engine/turn-identity'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, dropStaleThinkingOnlyTurns, type CompactTracking } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
@@ -414,6 +415,12 @@ export class AgentEngine implements EngineCore {
   isAutoExecuting = false
   /** @internal */
   currentRequestId: string | null = null
+  /** @internal llm-request hook identity (2026-11-20): minted by prepareTurn —
+   *  taskId stable across every re-issue within the turn, turnIndex the
+   *  0-based transcript position. StreamRunner forwards both (plus
+   *  opts.conversationId) into the hook context; never into headers/body. */
+  currentTurnId: string | null = null
+  currentTurnIndex: number | null = null
   /** @internal True while continueLoop awaits prepareLoopRequest — the request
    *  build phase (compaction summary included) the watchdog must count as
    *  in-flight. See EngineCore.prepareLoopInProgress. */
@@ -1082,6 +1089,12 @@ export class AgentEngine implements EngineCore {
       userMessage = userMessage.slice(0, MAX_USER_INPUT_CHARS)
     }
 
+    // llm-request hook 身份（2026-11-20）：一轮一铸 taskId；turnIndex 取转录里
+    // 已有的真实用户输入数（须在下方 append 用户消息之前数）。轮内一切重发
+    // （continueLoop / retryLastTurn / steer / HTTP 层重试）都绕开 prepareTurn，
+    // 所以这两个值天然「重试期间不变」。
+    this.currentTurnId = mintTurnId()
+    this.currentTurnIndex = countUserTurns(this.messages)
     this.loopCount = 0
     this.maxLoopCount = getLoopIterationLimit()
     // 输入了新消息 = 旧回合终止（user ruling 2026-09-29）：停在 awaiting_continue
@@ -1652,7 +1665,11 @@ export class AgentEngine implements EngineCore {
     // on every request.
     const compactStrategies: string[] = []
     if (emergencyChanged) compactStrategies.push('emergency')
-    if (nanoCompacted.some((m, i) => m !== pipelineMessages[i])) compactStrategies.push('nano')
+    // The archive ledger re-mints carried placeholders every build (reference
+    // identity changes on every request once the gate has bitten), so the
+    // event rides the snapshot's FRESH-take count, not the identity scan
+    // (PLAN-cache-wire-gates D8).
+    if ((nanoArchive?.archived ?? 0) > 0) compactStrategies.push('nano')
     // The strip rebuilds the same objects every build, so reference identity
     // would name it on every request — only a NEWLY stripped turn counts.
     if (this.compactor.lastThinkingStripNew > 0) compactStrategies.push('thinking')
@@ -2025,6 +2042,9 @@ export class AgentEngine implements EngineCore {
     this.compactor.clearStrippedThinkingIds()
     // The persistent light holes named this history's messages too.
     this.compactor.clearLightDrops()
+    // The nano archive ledger and the strip latch are per-conversation state
+    // the same way (PLAN-cache-wire-gates D2/D3).
+    this.compactor.clearGateState()
     // A fresh conversation has changed no files yet: the ledger (and the tree
     // rows it paints) go with the history. Emits only if there was anything.
     this.toolExecutor.fileChanges.clear()
@@ -2052,6 +2072,8 @@ export class AgentEngine implements EngineCore {
     // set would only bloat — but the frontier must also start clean so the
     // first post-resume build re-derives its own, exactly once).
     this.compactor.clearLightDrops()
+    // The nano ledger and strip latch name/price this history too.
+    this.compactor.clearGateState()
     // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
     // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
     // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /

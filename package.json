@@ -1,6 +1,6 @@
 {
   "name": "pulsemind",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "PulseMind Desktop AI Chat Application",
   "author": {
     "name": "wangyuanjie",
@@ -211,6 +211,13 @@
         "to": "ocr-models",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "resources/asr",
+        "to": "asr",
+        "filter": [
+          "models.json"
         ]
       },
       {

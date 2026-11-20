@@ -126,7 +126,7 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'MODEL_BYTES', 'tokens.txt': 'TOKENS' })
-      const r = mm.importModelZip('asr', zipPath)
+      const r = await mm.importModelZip('asr', zipPath)
       expect(r).toMatchObject({ ok: true, status: 'imported', modelId: MODEL_ID })
       const installed = mm.listInstalledModels('asr')
       expect(installed).toHaveLength(1)
@@ -149,7 +149,7 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'random.bin': 'x' })
-      const r = mm.importModelZip('asr', zipPath)
+      const r = await mm.importModelZip('asr', zipPath)
       expect(r.ok).toBe(false)
       expect(r.ok === false && r.status).toBe('wrong-family')
       expect(r.ok === false && r.message).toContain('model.int8.onnx')
@@ -163,7 +163,7 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'WRONG_BYTES!!', 'tokens.txt': 'TOKENS' })
-      const r = mm.importModelZip('asr', zipPath)
+      const r = await mm.importModelZip('asr', zipPath)
       expect(r.ok).toBe(false)
       expect(r.ok === false && r.status).toBe('hash-mismatch')
       expect(r.ok === false && r.message).toContain('期望')
@@ -201,7 +201,7 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'x', 'tokens.txt': 'y' })
-      const r = mm.importModelZip('asr', zipPath)
+      const r = await mm.importModelZip('asr', zipPath)
       expect(r.ok).toBe(false)
       expect(r.ok === false && r.status).toBe('version-mismatch')
       expect(r.ok === false && r.message).toContain('>=99.0.0')
@@ -216,7 +216,7 @@ describe('模型导入三道门', () => {
     try {
       const notZip = join(dir, 'fake.zip')
       writeFileSync(notZip, 'this is not a zip file')
-      const r = mm.importModelZip('asr', notZip)
+      const r = await mm.importModelZip('asr', notZip)
       expect(r.ok).toBe(false)
       expect(r.ok === false && r.status).toBe('invalid-zip')
     } finally {
@@ -229,8 +229,8 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'MODEL_BYTES', 'tokens.txt': 'TOKENS' })
-      expect(mm.importModelZip('asr', zipPath).ok).toBe(true)
-      expect(mm.importModelZip('asr', zipPath).ok).toBe(true)
+      expect((await mm.importModelZip('asr', zipPath)).ok).toBe(true)
+      expect((await mm.importModelZip('asr', zipPath)).ok).toBe(true)
       expect(mm.listInstalledModels('asr')).toHaveLength(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -242,7 +242,7 @@ describe('模型导入三道门', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'wrapped/model.int8.onnx': 'MODEL_BYTES', 'wrapped/tokens.txt': 'TOKENS' })
-      const r = mm.importModelZip('asr', zipPath)
+      const r = await mm.importModelZip('asr', zipPath)
       expect(r).toMatchObject({ ok: true, status: 'imported' })
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -256,7 +256,7 @@ describe('删除与清扫', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
     try {
       const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'MODEL_BYTES', 'tokens.txt': 'TOKENS' })
-      mm.importModelZip('asr', zipPath)
+      await mm.importModelZip('asr', zipPath)
       const modelDir = join(home, '.pulsemind', 'models', 'asr', MODEL_ID)
       expect(existsSync(modelDir)).toBe(true)
       expect(mm.removeModel('asr', MODEL_ID)).toBe(true)
@@ -299,5 +299,24 @@ describe('随包清单', () => {
       expect(m.files.length).toBeGreaterThan(0)
       for (const f of m.files) expect(f.sha256).toMatch(/^[0-9a-f]{64}$/)
     }
+  })
+
+  it('清单候选梯：env 缝在位即命中（读时求值，不依赖模块加载时序）', async () => {
+    const mm = await boot()
+    // PULSEMIND_ASR_CATALOG 在 beforeEach 已指向自建清单——候选梯必须读到它
+    const { catalog, error } = mm.readCatalog('asr')
+    expect(error).toBeNull()
+    expect(catalog?.models.map((m) => m.modelId)).toContain(MODEL_ID)
+  })
+
+  it('清单候选梯全落空 → 空清单 + 列出全部候选的可读错误（H1 失败面，不崩）', async () => {
+    const mm = await boot()
+    // vitest 是纯 Node：resourcesPath 不存在、env 缝摘掉后 dev 候选也缺席
+    delete process.env.PULSEMIND_ASR_CATALOG
+    const { catalog, error } = mm.readCatalog('asr')
+    expect(catalog).toBeNull()
+    expect(error).toContain('随包支持清单缺失')
+    expect(error).toContain('候选：')
+    expect(error).toContain('models.json')
   })
 })

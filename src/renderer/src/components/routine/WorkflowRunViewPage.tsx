@@ -12,7 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App as AntdApp, Button, Tooltip } from 'antd'
-import { ArrowLeftOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { RUN_STATUS_TAG } from './RoutineWorkspace'
@@ -23,7 +23,7 @@ import { storedMessagesToAgentMessages } from '../../utils/message-utils'
 import { COLUMN_DRAG_HANDLE_WIDTH, IMMERSIVE_CARD_RADIUS } from '../../../../shared/ui/layout-widths'
 import type { AgentMessage } from '../../types/agent'
 import type { PipelineRun, PipelineStageRun, WorkflowDefinition } from '../../../../shared/workflow/types'
-import { verdictKindOf } from '../../../../shared/workflow/run-view'
+import { runExecutionChain, verdictKindOf } from '../../../../shared/workflow/run-view'
 import { normalizeSimpleWorkflow } from '../../../../shared/workflow/simplify'
 import { autoWorkflowLayout } from '../../../../shared/workflow/layout'
 import { artifactAbsPath } from './run-artifact'
@@ -175,6 +175,13 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
   const [sel, setSel] = useState<PanelSelection | null>(null)
   /** 选中节点的第几次执行（0 起；null = 最近一次）。 */
   const [execPick, setExecPick] = useState<number | null>(null)
+  // ── 执行链导航（user 2026-11-20「右栏前进/后退顺着执行链路走」）──
+  /** 链上位置（0 起；null = 链还没落/没初始化）。执行链 = stage 行按开始
+   *  时间排序，RETRY/回边的多次执行各占一步。 */
+  const [chainIndex, setChainIndex] = useState<number | null>(null)
+  /** 画布定位指令（nonce 变化即重定位，同节点连续导航也要再动）。 */
+  const [runFocus, setRunFocus] = useState<{ nodeId: string; nonce: number } | null>(null)
+  const focusNonce = useRef(0)
   /** 头部动作的在飞状态（停止 / 重跑 / 续跑，同一时刻只跑一件）。 */
   const [busy, setBusy] = useState<null | 'stop' | 'fresh' | 'resume'>(null)
   /** 面板宽度（分隔条拖拽，user 2026-11-16「允许调整宽度」）。会话内记忆，
@@ -249,6 +256,8 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
     setMissing(false)
     setSel(null)
     setExecPick(null)
+    setChainIndex(null)
+    setRunFocus(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [runId])
 
@@ -298,12 +307,16 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
   // 完成阶段的摘要 → 成功但两者皆无（conclusion 字段上线前的历史运行，user
   // 2026-11-17 实锤）⇒ 完成态文案 + 末阶段交付物；失败 ⇒ 引擎错误。
   const orderedStages = useMemo(() => [...stages].sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1)), [stages])
+  // 执行链（user 2026-11-20「前进/后退顺着执行链路走」）：同一把尺子再给每步
+  // 编上「该节点第几次」——RETRY/回边的多次执行各占链上独立一步。
+  const chain = useMemo(() => runExecutionChain(stages), [stages])
   const settledStages = orderedStages.filter((s) => s.verdict)
   const finalStage = settledStages[settledStages.length - 1]
   const titleOf = new Map((def?.nodes ?? []).map((n) => [n.id, n.title || n.id]))
 
   // 默认选中（user 2026-11-17「进入页面后，默认选中最后一个有执行记录的
   // 节点」）：每个 runId 只设一次——运行中不自动跟随（用户点谁看谁）。
+  // 链位同步落到链尾，导航条从「最后一步」起步。
   const lastStageKey = orderedStages.length > 0 ? orderedStages[orderedStages.length - 1].id : ''
   const defaultedRef = useRef<string | null>(null)
   useEffect(() => {
@@ -312,18 +325,66 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
     defaultedRef.current = runId
     setSel({ kind: 'node', nodeId: orderedStages[orderedStages.length - 1].nodeId })
     setExecPick(null)
+    setChainIndex(orderedStages.length - 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- lastStageKey 是 stages 的稳定指纹
   }, [lastStageKey, runId])
 
+  /** (节点, 0 起的执行序) → 链位；节点不在链上 = null（不该发生，防御）。 */
+  const chainIndexFor = useCallback(
+    (nodeId: string, execIdx: number): number | null => {
+      const count = (visits: number, s: { nodeId: string }): number => visits + (s.nodeId === nodeId ? 1 : 0)
+      let seen = 0
+      for (let i = 0; i < chain.length; i += 1) {
+        seen = count(seen, chain[i])
+        if (chain[i].nodeId === nodeId && seen === execIdx + 1) return i
+      }
+      return null
+    },
+    [chain],
+  )
+
+  /** 该节点在链上的**最后一次**执行位（点节点 = 看最近一次，与既有语义一致）。 */
+  const lastChainIndexFor = useCallback(
+    (nodeId: string): number | null => {
+      for (let i = chain.length - 1; i >= 0; i -= 1) if (chain[i].nodeId === nodeId) return i
+      return null
+    },
+    [chain],
+  )
+
+  /** 链上导航（user 2026-11-20）：落到第 i 步 = 选中该节点 + 该次执行 +
+   *  画布定位（居中 + 聚焦描边）。 */
+  const goToStep = useCallback(
+    (i: number) => {
+      const step = chain[i]
+      if (!step) return
+      setChainIndex(i)
+      setSel({ kind: 'node', nodeId: step.nodeId })
+      setExecPick(step.visit - 1)
+      focusNonce.current += 1
+      setRunFocus({ nodeId: step.nodeId, nonce: focusNonce.current })
+    },
+    [chain],
+  )
+
   // 画布点击 → 右栏切换（runMode 下 WorkflowCanvas 的 onRunNodeClick 穿透）。
-  const onRunNodeClick = useCallback((target: { kind: 'stage'; nodeId: string } | { kind: 'start' } | { kind: 'done' }) => {
-    if (target.kind === 'stage') {
-      setSel({ kind: 'node', nodeId: target.nodeId })
-      setExecPick(null) // 换节点回到最近一次
-    } else {
-      setSel(target)
-    }
-  }, [])
+  const onRunNodeClick = useCallback(
+    (target: { kind: 'stage'; nodeId: string } | { kind: 'start' } | { kind: 'done' }) => {
+      if (target.kind === 'stage') {
+        setSel({ kind: 'node', nodeId: target.nodeId })
+        setExecPick(null) // 换节点回到最近一次
+        // 链位同步到该节点最后一次执行——导航条的步数/节点名与面板同源。
+        // 还没跑过的节点（链上没有它）不动链位：与开始/结束芯片同一裁定，
+        // 否则点一个未执行节点会把导航条打成一坨禁用的「—」。
+        const idx = lastChainIndexFor(target.nodeId)
+        if (idx !== null) setChainIndex(idx)
+      } else {
+        // 开始/结束芯片不动链位：导航条保持原步，前进/后退随时可用
+        setSel(target)
+      }
+    },
+    [lastChainIndexFor],
+  )
 
   // ── 选中目标的派生数据 ──
   const nodeStages = useMemo(
@@ -331,6 +392,8 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
     [sel, orderedStages],
   )
   const activeStage = nodeStages.length > 0 ? nodeStages[execPick !== null ? Math.min(execPick, nodeStages.length - 1) : nodeStages.length - 1] : undefined
+  // 链上当前步：选中开始/结束芯片时链位保持原值，导航条仍指向它——前进/后退随时可用。
+  const currentStep = chainIndex !== null && chain.length > 0 ? chain[Math.min(chainIndex, chain.length - 1)] : undefined
 
   // ── 头部动作（2026-11-18）：停止 / 重跑本次 / 从失败节点续跑 ──
   const onStop = useCallback(async () => {
@@ -449,6 +512,10 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
               mutate={() => undefined}
               runView={runView}
               onRunNodeClick={onRunNodeClick}
+              runFocus={runFocus ?? undefined}
+              runSelectedNodeId={sel?.kind === 'node' ? sel.nodeId : undefined}
+              // 三刀：芯片同灰后，选中开始/结束也亮蓝边（与任务卡同一语义）
+              runSelectedTerminal={sel?.kind === 'start' ? 'start' : sel?.kind === 'done' ? 'done' : undefined}
             />
           </div>
           {/* 分隔条（骑在面板左缘、向左拖变宽，与任务向导的助手栏分隔条同一
@@ -482,6 +549,46 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
               overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, padding: 12,
             }}
           >
+            {/* 执行链导航（user 2026-11-20「前进/后退顺着执行链路走」）：常驻
+                面板顶部（选中开始/结束芯片也在），每步 = 选中对应节点 + 该次
+                运行 + 画布定位（居中 + 聚焦描边）。两端禁用不回绕。置灰的
+                antd Button 不派发鼠标事件——Tooltip 挂外层 span（与头部动作簇
+                同一份纪律）。 */}
+            <div data-workflow-run-nav style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, background: 'var(--pm-fill)', borderRadius: 8, padding: '6px 10px' }}>
+              <Tooltip title={t('workflow.runPanelNavPrev')}>
+                <span>
+                  <Button
+                    size="small"
+                    icon={<LeftOutlined />}
+                    aria-label={t('workflow.runPanelNavPrev')}
+                    data-run-nav-prev
+                    disabled={!currentStep || (chainIndex ?? 0) <= 0}
+                    onClick={() => goToStep((chainIndex ?? 1) - 1)}
+                  />
+                </span>
+              </Tooltip>
+              <span data-run-nav-pos style={{ fontSize: 12, color: 'var(--pm-text-secondary)', fontVariantNumeric: 'tabular-nums', minWidth: 64, textAlign: 'center' }}>
+                {currentStep ? t('workflow.runPanelNavPos', { index: (chainIndex ?? 0) + 1, total: chain.length }) : '—'}
+              </span>
+              <Tooltip title={t('workflow.runPanelNavNext')}>
+                <span>
+                  <Button
+                    size="small"
+                    icon={<RightOutlined />}
+                    aria-label={t('workflow.runPanelNavNext')}
+                    data-run-nav-next
+                    disabled={!currentStep || (chainIndex ?? 0) >= chain.length - 1}
+                    onClick={() => goToStep((chainIndex ?? -1) + 1)}
+                  />
+                </span>
+              </Tooltip>
+              {currentStep && (
+                <span style={{ fontSize: 12, color: 'var(--pm-text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} data-run-nav-node>
+                  {titleOf.get(currentStep.nodeId) ?? currentStep.nodeId}
+                  <span style={{ color: 'var(--pm-text-muted)' }}> · #{currentStep.visit}</span>
+                </span>
+              )}
+            </div>
             {sel === null ? (
               <div style={{ fontSize: 12, color: 'var(--pm-text-quiet)', padding: '8px 2px' }}>
                 {t('workflow.runPanelPickHint')}
@@ -590,7 +697,12 @@ export function WorkflowRunViewPage({ runId }: WorkflowRunViewPageProps): React.
                           size="small"
                           type={active ? 'primary' : 'default'}
                           style={{ padding: '0 8px', height: 22 }}
-                          onClick={() => setExecPick(i)}
+                          onClick={() => {
+                            setExecPick(i)
+                            // 链位跟着手选的执行次数走（导航条与面板同源）
+                            const idx = chainIndexFor(sel.nodeId, i)
+                            if (idx !== null) setChainIndex(idx)
+                          }}
                         >
                           #{i + 1}
                           {s.verdict ? ` ${s.verdict}` : ''}

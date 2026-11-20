@@ -128,8 +128,14 @@ export function registerAsrHandlers(): void {
     },
   )
 
-  ipcMain.handle(IPC_CHANNELS.ASR_IMPORT_MODEL, (_event, zipPath: string) => {
-    const result = importModelZip(ASR_FAMILY, zipPath)
+  ipcMain.handle(IPC_CHANNELS.ASR_IMPORT_MODEL, async (_event, zipPath: string) => {
+    // 换装前必须先释放 worker（review 20261120 M1）：转写过至少一次后 worker
+    // 活着，Windows 上 ONNX Runtime 保持 model.int8.onnx 打开/映射，
+    // importModelZip 的整目录删除会 EBUSY/EPERM 且递归删中途死、无回滚——
+    // 重导同一模型（升级场景）反而把能用的安装搞坏。同 remove 臂的纪律；
+    // await 到 terminate 真完成（句柄已放）才动盘；worker 重建成本仅一次 init。
+    await disposeAsr()
+    const result = await importModelZip(ASR_FAMILY, zipPath)
     if (result.ok) {
       logMain('INFO', 'asr', `model imported: ${result.modelId}`)
       broadcastModelsChanged()

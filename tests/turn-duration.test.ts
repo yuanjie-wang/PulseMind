@@ -14,6 +14,7 @@ const { TurnClock, stampTurnDuration } = await import('../src/renderer/src/agent
 const { setHost } = await import('../src/renderer/src/agent/host')
 const { applySessionEvent, freshSessionState } = await import('../src/shared/agent-session/mirror')
 const { ToolManager } = await import('../src/renderer/src/tools/ToolManager')
+const { agentMessagesToConversation } = await import('../src/renderer/src/utils/message-utils')
 const { SkillManager } = await import('../src/renderer/src/skills/SkillManager')
 
 import type { AgentEngineOptions } from '../src/renderer/src/agent/AgentEngine'
@@ -351,5 +352,51 @@ describe('turn duration: user send → last output character', () => {
     expect(flow.match(/stampTurnDuration\(this\.engine\.messages/g)).toHaveLength(3)
     expect(read('../src/renderer/src/agent/AgentEngine.ts'))
       .toContain('stampTurnDuration(this.messages, this.turnClock)')
+  })
+
+  // ── live 总时长 + 近似总章（2026-11-20，用户「时间偏差太大，会让用户觉得
+  // 我们在欺骗」）：引擎在主进程托管，TurnClock 锚点经 status 事件走线
+  // （StatusSnapshot.turnMs）；渲染端外推显示；存档快照落近似总章兜异常退出。──
+
+  it('the wire carries turnMs on the status event and the mirror folds it atomically', () => {
+    // 渲染端镜像：status 事件带上 turnMs → 折进 state；缺席 → 清掉。
+    // （发射面 session-manager turnMsOf 不独立驱动——真跑要建全会话，wiring 扫描盖住。）
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'executing', turnMs: 125_000 } as AgentEventData)
+    expect(state.turnMs).toBe(125_000)
+    applySessionEvent(state, { type: 'status', status: 'streaming' } as AgentEventData)
+    expect(state.turnMs).toBeUndefined() // 缺席 = 时钟停了，键离开 state
+  })
+
+  it('the persistence snapshot stamps the near-total on the last assistant message', () => {
+    const msgs = [user(), assistant('a1', 12_000)]
+    // 运行中快照：TurnClock 累计 42s 落在末条 assistant 上（Math.max 盖过单轮值）。
+    expect(agentMessagesToConversation(msgs, 'c1', 't', 42_000).messages[1].processingMs).toBe(42_000)
+    // 不传（子代理/hosted 调用方）= 行为逐字节不变。
+    expect(agentMessagesToConversation(msgs, 'c1', 't').messages[1].processingMs).toBe(12_000)
+    // 极端倒挂（锚点小于单轮值）不缩水。
+    expect(agentMessagesToConversation(msgs, 'c1', 't', 3_000).messages[1].processingMs).toBe(12_000)
+    // 没有 assistant 消息（第一轮运行中）只安静跳过，不抛。
+    expect(agentMessagesToConversation([user()], 'c1', 't', 5_000).messages[0].processingMs).toBeUndefined()
+  })
+
+  it('the live-elapsed path is wired end to end (wiring scan)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8')
+    // 发射面：session-manager 的 turnMsOf 在 status 事件与重连快照两处 spread。
+    const smSrc = read('../src/main/agent/session-manager.ts')
+    expect(smSrc.match(/turnMsOf\(this\.sessions, sessionId\)/g)).toHaveLength(2)
+    expect(smSrc).toContain('clock?.isActive()') // 桩引擎无时钟 → 诚实缺席
+    // 协议字段存在。
+    expect(read('../src/shared/agent-protocol/payloads.ts')).toContain('turnMs?: number')
+    // 消费面：控制器外推（等待态冻结谓词 + 1s tick）与脚部渲染。
+    const ctl = read('../src/renderer/src/hooks/useChatController.ts')
+    expect(ctl).toContain('isWaitingOnUserStatus(anchor.status.status)')
+    expect(ctl).toContain('window.setInterval(')
+    expect(ctl).toContain('isWaitingOnUserStatus(anchor.status.status)')
+    const body = read('../src/renderer/src/components/chat/ChatBody.tsx')
+    expect(body).toContain("t('chatView.turnElapsed'")
+    // 存档面：快照传入 turnMs。
+    expect(read('../src/renderer/src/hooks/useConversationPersistence.ts')).toContain('engine.turnMs)')
   })
 })

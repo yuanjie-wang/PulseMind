@@ -158,12 +158,14 @@ describe('stripStaleThinking: block-level strip beside nano', () => {
     expect(out[3].contentBlocks).toEqual([text('y')])
   })
 
-  it('floors the corrected anchor at 1 so the full-heuristic guard takes over instead of a stale earlier report', () => {
-    // 报告 3K < 被剥的 5K 启发式重量；门控靠 fixedOverhead 把 max-guard 抬过线
-    const a0 = assistant([think(5000), text('x')])
-    const a1 = assistant([text('y')], { inputTokens: 3_000 })
+  it('floors the corrected anchor at 1 instead of letting it go negative', () => {
+    // 报告恰在门线上（WINDOW×0.5）< 被剥的启发式重量；修正落地时钳到 1 而不是
+    // 负数。旧形态的门靠 fixedOverhead 把 max-guard 抬过线（wire 锚定读数删除
+    // 了那条保守分支），现在门由诚实的锚点本身打开。
+    const a0 = assistant([think(WINDOW / 2 + 1_000), text('x')])
+    const a1 = assistant([text('y')], { inputTokens: WINDOW / 2 })
     const msgs = [user('一'), a0, user('二'), a1, user('三')]
-    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW, 60_000)
+    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)
     expect(out[3].inputTokens).toBe(1)
   })
 

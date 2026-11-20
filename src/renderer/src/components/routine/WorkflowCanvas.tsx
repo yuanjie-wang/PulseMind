@@ -31,7 +31,7 @@ import { routeEdges, type RouteEdgeSpec, type RouteRect, type RouteResult, type 
 import { STAGE_PLACEHOLDER_GROUPS, type RenderVars } from '../../../../shared/workflow/render'
 import { composeStagePrompt, type EnvelopeContext, type EnvelopeUpstream } from '../../../../shared/workflow/envelope'
 import { resolveWorkflowHandoff } from '../../../../shared/workflow/handoff'
-import { runNodeStates, runTakenEdges, verdictKindOf } from '../../../../shared/workflow/run-view'
+import { runNodeStates, runTakenEdges, runVisitCounts } from '../../../../shared/workflow/run-view'
 import { VERDICT_PALETTE_SIZE, resolveVerdictColorIndex, verdictColorVar } from '../../../../shared/workflow/verdict-colors'
 import { WORKFLOW_RESERVED_TARGETS, type WorkflowDefinition, type WorkflowNode, type PipelineStageRun } from '../../../../shared/workflow/types'
 import {
@@ -54,6 +54,8 @@ type FlowEdge = WorkflowFlowEdge
 
 const stageNodeId = (id: string): string => `node:${id}`
 const terminalNodeId = (kind: string): string => `terminal:${kind}`
+/** 编辑态（runView 缺席）的次数表占位：全部节点 0 次 → 无徽标、不吃 idle 类的分支也不必判 undefined。 */
+const EMPTY_VISIT_COUNTS: Map<string, number> = new Map()
 const edgeIdOf = (e: { from: string; when: string; to: string }): string => `edge:${e.from}|${e.when}|${e.to}`
 
 const parseEdgeId = (id: string): { from: string; when: string; to: string } | null => {
@@ -180,31 +182,19 @@ function buildFlowNodes(
   onEdit: (id: string) => void,
   onDelete: (id: string) => void,
   runView?: { status: 'running' | 'success' | 'failed'; stages: PipelineStageRun[] },
+  /** 选中节点（user 2026-11-20 二刀「选中时变为蓝色边框」）：导航步与画布
+   *  点选都落到它，只有它挂蓝色聚焦描边。 */
+  highlightNodeId?: string,
+  /** 选中的终态芯片（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：
+   *  芯片也在灰边族里，选中时同样亮蓝边（sel 的 start/done 两臂）。 */
+  highlightTerminal?: 'start' | 'done',
 ): FlowNode[] {
-  // 运行视图（PLAN-workflow-run-view）：节点按最新 stage 着色，没跑到的弱化；
-  // 编辑/删除钮整体退场（运行期的定义是死的）。
-  const runStates = runView ? runNodeStates(runView.stages) : undefined
-  const badgeOf = (nodeId: string): { status: 'running' | 'settled' | 'failed'; verdict?: string; error?: string; badge: string; cls: string } | undefined => {
-    const s = runStates?.get(nodeId)
-    if (!s) return undefined
-    if (s.status === 'running') return { ...s, badge: t('workflow.runBadgeRunning'), cls: 'run-running' }
-    if (s.status === 'failed') return { ...s, badge: t('workflow.runBadgeFailed'), cls: 'run-fail' }
-    // settled 的描边跟着 verdict 的**语义**走（success 绿 / failure 红 / neutral
-    // 中性）——结果状态是用户自定义词表，颜色不认词面（user 2026-11-17），
-    // 语义来自声明或拓扑推导，见 verdictKindOf。
-    const kind = s.verdict === undefined ? 'neutral' : verdictKindOf(def, nodeId, s.verdict)
-    const cls = kind === 'success' ? 'run-pass' : kind === 'failure' ? 'run-fail' : 'run-settled'
-    // 未自定义结果状态的节点（normalize 补的缺省单状态 `pass`）不展示内部词
-    // ——用户从没写过「pass」，徽标读「成功」（user 2026-11-17「如果未自定义
-    // 状态的，默认为成功」）。自定义词表一律展示原词，哪怕它就叫 pass。
-    // 判据只问「有没有声明过词表」，不认 verdict 的字面（词面判断归
-    // verdictKindOf，见上面的配色注释）。
-    const declared = def.nodes.find((n) => n.id === nodeId)?.verdicts
-    const isDefaultVerdict =
-      !declared || declared.length === 0 || (declared.length === 1 && declared[0] === 'pass')
-    const badge = isDefaultVerdict ? t('workflow.runBadgeSuccess') : (s.verdict ?? '')
-    return { ...s, badge, cls }
-  }
+  // 运行视图（user 2026-11-20 二刀裁定「所有节点都是灰色边框，选中时变蓝色；
+  // 右上角不再展示执行状态——节点可能执行多次、每次结果不一样，改展示执行
+  // 次数」）：卡面不再吃任何状态色/状态词（绿红蓝的单值状态对多次执行的
+  // 节点是误导），唯一信息 = 执行次数徽标（没跑过的节点保持 idle 弱化）。
+  // 成功/失败的辨读全部收敛到右栏详情（verdictKindOf 只活在面板）。
+  const visitCounts = runView ? runVisitCounts(runView.stages) : EMPTY_VISIT_COUNTS
   // 未接线结果状态（user 2026-11-18：「没连出口线的状态，在画布上要能看见」）：
   // 引擎跑到这个状态时 outEdges 为空 → 整实例失败，但编辑器里那颗出口线头
   // 和别的线头长得一模一样，用户只有真跑一次才知道漏了。判定与运行视图
@@ -232,13 +222,24 @@ function buildFlowNodes(
               unwiredTitle: t('workflow.canvasUnwiredTitle', { states: unwired.join(' / ') }),
             }
           : {}),
-        ...(runView ? { runMode: true, run: badgeOf(n.id), runClass: badgeOf(n.id)?.cls } : {}),
+        ...(runView
+          ? {
+              runMode: true,
+              runCount: visitCounts.get(n.id) ?? 0,
+              runCountLabel: (visitCounts.get(n.id) ?? 0) > 0 ? t('workflow.runBadgeCount', { count: visitCounts.get(n.id) ?? 0 }) : undefined,
+              focused: n.id === highlightNodeId,
+            }
+          : {}),
       },
     }
   })
   // 终态芯片可拖动（user 2026-11-08）：落点持久在 def.terminalLayout，缺席
   // 时派生（开始在入口上方、结束在最深一层下方）——首次打开即有合理位置，
-  // 拖过之后用户坐标赢。selectable 保持 false：芯片是固定身份，不吃选中态。
+  // 拖过之后用户坐标赢。selectable 保持 false：芯片不吃 RF 的选中态（它的
+  // 蓝边由运行视图的 focused 自己画，见 WorkflowTerminalCard）。
+  // 运行视图芯片同灰（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：
+  // 实例终态色（wf-terminal--run-*）退役——画布上只剩一种节点外观，成败
+  // 辨读在右栏；这里只多下发 selected（开始/结束各自的选中蓝边）。
   const terminals = terminalPositions(def)
   const terminalNodes: FlowNode[] = [
     {
@@ -246,14 +247,14 @@ function buildFlowNodes(
       type: TERMINAL_NODE_TYPE,
       position: terminals.start,
       selectable: false,
-      data: { kind: 'START', label: t('workflow.canvasStart') },
+      data: { kind: 'START', label: t('workflow.canvasStart'), ...(runView ? { focused: highlightTerminal === 'start' } : {}) },
     },
     {
       id: terminalNodeId('DONE'),
       type: TERMINAL_NODE_TYPE,
       position: terminals.done,
       selectable: false,
-      data: { kind: 'DONE', label: t('workflow.canvasEnd'), ...(runView ? { runStatus: runView.status } : {}) },
+      data: { kind: 'DONE', label: t('workflow.canvasEnd'), ...(runView ? { focused: highlightTerminal === 'done' } : {}) },
     },
   ]
   return [...stageNodes, ...terminalNodes]
@@ -295,8 +296,8 @@ function buildFlowEdges(
   // neutral 原色但全亮），没走过的弱化——「过程」在读图语言里就是哪些边亮了。
   // 用户裁定（2026-11-18「运行视图也跟状态色」）：运行视图的边不再按 pass/fail
   // 语义换色——颜色维度归状态类（wf-edge-verdict-N），运行类只控强度（走过
-  // 全亮、没走弱化）；成功/失败的辨读由卡片上的运行徽标承担（verdictKindOf
-  // 仍为卡面 runClass 服务，见 buildFlowNodes）。
+  // 全亮、没走弱化）；2026-11-20 二刀后节点卡也不吃状态色（一律灰边），
+  // 成功/失败的辨读只剩右栏详情一处（verdictKindOf 只活在面板）。
   const taken = runView ? runTakenEdges(def.edges, runView.stages) : undefined
   const runClassOf = (id: string): string | undefined => {
     if (!taken) return undefined
@@ -462,9 +463,19 @@ export interface WorkflowCanvasProps {
   /** 运行查看态的节点点击（user 2026-11-17「点谁看谁」）：点任务节点看它的
    *  处理详情，点开始/结束芯片看初始要求/最终结果。编辑态不触发。 */
   onRunNodeClick?: (target: { kind: 'stage'; nodeId: string } | { kind: 'start' } | { kind: 'done' }) => void
+  /** 运行查看态的**节点定位**（user 2026-11-20「右栏前进/后退顺着执行链路走」）：
+   *  nonce 一变就把视口对到该节点（同节点连续导航也要再动）。编辑态不触发。 */
+  runFocus?: { nodeId: string; nonce: number }
+  /** 运行查看态的**选中节点**（user 2026-11-20 二刀「选中时变为蓝色边框」）：
+   *  导航步与画布点选都落到它——只有它挂蓝色聚焦描边；定位（视口移动）归
+   *  runFocus，两者分离：点选不动视口（用户已经在看它）。 */
+  runSelectedNodeId?: string
+  /** 运行查看态的**选中芯片**（user 2026-11-20 三刀）：开始/结束芯片与任务卡
+   *  同一灰边族，点选它们（sel 的 start/done 两臂）同样亮蓝边。 */
+  runSelectedTerminal?: 'start' | 'done'
 }
 
-const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate, onUndo, onRedo, canUndo, canRedo, runView, onRunNodeClick }) => {
+const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate, onUndo, onRedo, canUndo, canRedo, runView, onRunNodeClick, runFocus, runSelectedNodeId, runSelectedTerminal }) => {
   const runMode = runView !== undefined
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
@@ -520,6 +531,27 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate, onUndo, onRedo
       ro.disconnect()
     }
   }, [runMode, fitRunView])
+
+  // ── 节点定位（user 2026-11-20「右栏前进/后退顺着执行链路走」）──
+  // nonce 是唯一触发源（同节点连续导航也要再动），nodes 在 deps 里只为等
+  // 目标节点的测量落地——首帧导航时 RF 还没量出尺寸，fitView(nodes) 会空转；
+  // appliedFocusNonce 记账保证同一 nonce 只拍一次，轮询重建 nodes 不会把视口
+  // 反复拽回。聚焦是显式用户动作，赢过自动取景：落定后标记视口已被接管，
+  // resize 的全图 fitView 不再把视口拽回去。节点不在画布上（定义运行后被改）
+  // 就静默跳过。
+  const appliedFocusNonce = useRef(0)
+  const runFocusNodeId = runFocus?.nodeId
+  const runFocusNonce = runFocus?.nonce
+  useEffect(() => {
+    if (!runMode || !runFocusNonce || !runFocusNodeId) return
+    if (runFocusNonce === appliedFocusNonce.current) return
+    const id = stageNodeId(runFocusNodeId)
+    const target = nodes.find((n) => n.id === id)
+    if (!target?.measured?.width) return // 测量未落：nodes 下一拍重建时这里会再进来
+    appliedFocusNonce.current = runFocusNonce
+    userMovedViewport.current = true
+    void rfFitView({ nodes: [{ id }], duration: 300, padding: 0.2, maxZoom: 1 })
+  }, [runMode, runFocusNonce, runFocusNodeId, nodes, rfFitView])
 
   /** 卡片右上角编辑钮的回调（user 2026-11-09：点节点本体不再开面板，只有这颗
    *  钮能开）。setEditingNodeId 是稳定引用，给 buildFlowNodes 传下去不引起重排。 */
@@ -586,13 +618,13 @@ const CanvasBody: React.FC<WorkflowCanvasProps> = ({ def, mutate, onUndo, onRedo
     setNodes((prev) => {
       const selectedIds = new Set(prev.filter((n) => n.selected).map((n) => n.id))
       const measured = new Map(prev.map((n) => [n.id, n.measured]))
-      return buildFlowNodes(def, t, openNode, requestDeleteNode, runView).map((n) => {
+      return buildFlowNodes(def, t, openNode, requestDeleteNode, runView, runSelectedNodeId, runSelectedTerminal).map((n) => {
         const sized = measured.has(n.id) ? { ...n, measured: measured.get(n.id) } : n
         return selectedIds.has(n.id) ? { ...sized, selected: true } : sized
       })
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只在 def 重建时取用
-  }, [def, setNodes, openNode, requestDeleteNode, runView])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只在 def 重建时取用；定位归 runFocus 的 nonce effect 管
+  }, [def, setNodes, openNode, requestDeleteNode, runView, runSelectedNodeId, runSelectedTerminal])
 
   // 线头 id 的指纹（节点 id + 结果状态名）。改名会换掉出口线头的 id
   // （`out:<verdict>`），而 RF 的 handleBounds **只在节点尺寸变化时重测**——Handle
@@ -1558,28 +1590,38 @@ const CANVAS_STYLES = `
   .react-flow__controls { box-shadow: var(--pm-shadow-soft); border-radius: 8px; overflow: hidden; }
   .react-flow__controls-button { background: var(--pm-elevated); border-bottom: 1px solid var(--pm-border-hairline); }
   .react-flow__controls-button svg { fill: var(--pm-text-strong); }
-  /* ── 运行视图（PLAN-workflow-run-view）──
-     节点描边跟着 stage 状态走（running 主题色呼吸、pass 绿、fail 红、其余中性、
-     未到达弱化）；边的**颜色**维度归状态类（wf-edge-verdict-N），运行类只控
-     强度（user 2026-11-18「运行视图也跟状态色」）：走过的全亮、没走弱化，
-     不再按 pass/fail 换色——成功/失败的辨读由卡片徽标承担（语义色只留在
-     徽标与节点描边上）。 */
+  /* ── 运行视图（PLAN-workflow-run-view；user 2026-11-20 二刀裁定翻案）──
+     节点**一律灰边**——描边不再跟着 stage 状态走（running 蓝 / pass 绿 /
+     fail 红的口径退役：节点可能执行多次、每次结果不一样，卡面上的单值状态
+     是误导）；三刀后开始/结束芯片也并入灰边族。唯一的状态信息 = 右上角的
+     执行次数徽标（没跑过的节点保持 idle 弱化），成功/失败的辨读全部收敛到
+     右栏详情（verdictKindOf 只活在面板）。选中（导航步/画布点选，含芯片）
+     → 蓝色边框（三刀：不再有阴影扩散）。边的**颜色**维度归状态类
+     （wf-edge-verdict-N），运行类只控强度（user 2026-11-18「运行视图也跟状态
+     色」）：走过的全亮、没走弱化。 */
   /* 未走的边要「弱化」而不是「消失」（user 2026-11-17「连接线看不到了」→ 同日
-     「在执行过程中，连接线没了」）。历史上用过 muted 灰换色 + 0.8 的口径；现
-     状态色方案下改纯透明度弱化：0.35 对任何色相都保持「这条还没走过」的可读
-     性，彩色线本身又比当年的 #cccccc 醒目，任何一屏上都看得到线。 */
-  .react-flow__edge.wf-edge-idle { opacity: 0.35; }
-  .wf-stage-card--run-running { border-color: var(--pm-link); box-shadow: 0 0 0 2px var(--pm-link); }
-  .wf-stage-card--run-pass { border-color: var(--pm-success, #52c41a); }
-  .wf-stage-card--run-fail { border-color: var(--pm-error); }
-  .wf-stage-card--run-settled { border-color: var(--pm-border); }
+     「在执行过程中，连线没了」）。历史上用过 muted 灰换色 + 0.8 的口径；现
+     状态色方案下改纯透明度弱化。0.5（不是更早的 0.35）：verdict-0 调到了
+     链接蓝 #1677ff，0.35 在白底上的合成对比只剩 ~51——探针 §4c 的可见度门
+     （合成亮度差 ≥ 70）抓到的正是这个回归；0.5 合成 ~74 过门，且与走过边
+     （1.0 全亮）仍拉开明显的层级。 */
+  .react-flow__edge.wf-edge-idle { opacity: 0.5; }
+  /* 无状态类的边（start-entry 派生边——它不挂 wf-edge-verdict-N）在运行态给
+     主墨色描边，不用 RF 默认浅灰 #b1b1b7：默认灰叠 0.5 弱化在白底上合成对比
+     只剩 ~39，两主题下 text-strong 合成对比都 >100——「刚开跑全 idle」的
+     起始线不能又被可见性修掉（与上面 0.5 口径同一门）。 */
+  .wf-runmode .react-flow__edge:not([class*='wf-edge-verdict-']) { --xy-edge-stroke: var(--pm-text-strong); }
   .wf-stage-card--run-idle { opacity: 0.45; }
-  /* 执行状态徽标钉在卡右上角（user 2026-11-17「节点执行状态的标签放在节点的
-     右上角」）：绝对定位、脱离 head 的 flex 流——标题再长也不会把徽标挤到第二
-     行。编辑态的编辑/删除钮占的是同一个角落（top/right 6px），但两套钮与徽标
-     分属编辑/运行两个互斥模式，不会同屏。max-width 60px + 省略号：自定义状态
-     名可长到 24 字，不封顶会把徽标撑出卡外；4 个汉字（10.5px 字号 + 14px
-     内边距 ≈ 56px）以内完整显示，更长走省略号、原文在 title 里。 */
+  /* 选中的蓝色描边（user 2026-11-20 二刀「所有节点都是灰色边框，当选中时变为
+     蓝色边框」；三刀「只需要设为蓝色边框，不需要阴影扩散效果」——双环/外晕
+     已撤，只剩边框换色）：导航定位与点选共用这一个语义。基底卡边框本来就是
+     var(--pm-border-hairline) 灰，无需另立「灰边」规则。 */
+  .wf-stage-card--run-focus { border-color: var(--pm-link); }
+  /* 执行次数徽标钉在卡右上角（user 2026-11-20 二刀「可以在节点右上角展示执行
+     次数」——顶掉了 2026-11-17 的执行状态徽标）：绝对定位、脱离 head 的 flex
+     流——标题再长也不会把徽标挤到第二行。编辑态的编辑/删除钮占的是同一个
+     角落（top/right 6px），但两套钮与徽标分属编辑/运行两个互斥模式，不会
+     同屏。中性灰底：次数无成败语义，不上色。 */
   .wf-run-badge {
     position: absolute; top: 6px; right: 6px; z-index: 2; max-width: 60px;
     overflow: hidden; text-overflow: ellipsis;
@@ -1590,24 +1632,23 @@ const CANVAS_STYLES = `
   /* 运行态的标题给右上角徽标让位（72 > 6 + 60 + 6）：编辑态那句 44px 是给
      两颗悬停钮留的，运行态没有钮，唯一占角的是徽标。 */
   .wf-stage-card--runview .wf-stage-title { padding-right: 72px; }
-  .wf-run-badge--running { color: var(--pm-link); animation: wf-run-pulse 1.4s ease-in-out infinite; }
-  .wf-run-badge--pass { color: var(--pm-success, #52c41a); }
-  .wf-run-badge--failed { color: var(--pm-error); }
-  /* settled 但语义是 failure（「失败」这个词表名不叫 fail）：徽标同样红。 */
-  .wf-run-badge--fail { color: var(--pm-error); }
-  .wf-terminal--run-success { border-color: var(--pm-success, #52c41a); color: var(--pm-success, #52c41a); }
-  .wf-terminal--run-failed { border-color: var(--pm-error); color: var(--pm-error); }
-  .wf-terminal--run-running { border-color: var(--pm-link); color: var(--pm-link); }
-  @keyframes wf-run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* 开始/结束芯片同灰（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：
+     实例终态色（wf-terminal--run-*）与编辑态的身份色在运行视图里一并让位，
+     与任务卡同一个 hairline 灰、标签走次级灰。编辑视图的蓝「开始」/绿
+     「结束」不动（那是定义视图的芯片身份）。 */
+  .wf-runmode .wf-terminal { border-color: var(--pm-border-hairline); color: var(--pm-text-secondary); }
+  /* 选中芯片的蓝边（与任务卡同一语义）：选择器特异性必须压过上面那条
+     （.wf-runmode .wf-terminal 是 0,2,0；这里 0,3,0），否则点了芯片没有反应。 */
+  .wf-runmode .wf-terminal.wf-terminal--run-focus { border-color: var(--pm-link); }
   /* 运行查看态不画端口圆点（user 2026-11-16「不用展示连接端点的灰色圆圈」，
      路由的 tailGap:0 让箭头尖直接贴到节点边框）。**opacity 0 而不是
      display:none**——display 会把 handleBounds 从 RF 的测量里抽掉，
      getEdgePosition 查不到线头，整条边直接不渲染。 */
   .wf-runmode .wf-handle-source, .wf-runmode .wf-handle-target { opacity: 0; pointer-events: none; }
   /* 运行查看态节点/芯片可点（user 2026-11-17「点谁看谁」）：光标给 pointer
-     提示可点，芯片悬停描边微亮。 */
+     提示可点。悬停不再换色（三刀后蓝边 = 选中语义，悬停变蓝会与选中混淆），
+     芯片与任务卡同款：只有 cursor 一个可点线索。 */
   .wf-runmode .wf-stage-card, .wf-runmode .wf-terminal { cursor: pointer; }
-  .wf-runmode .wf-terminal:hover { border-color: var(--pm-link); }
 `
 
 /** 外层 Provider：useReactFlow 需要（组件自包含，向导无需再包）。 */

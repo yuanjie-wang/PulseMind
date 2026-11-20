@@ -26,7 +26,8 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
 import { DATA_DIR } from '../storage/index'
@@ -82,8 +83,16 @@ export interface FamilySpec {
   family: string
   /** 家族期望的模型文件：zip 里缺任一件 → wrong-family */
   requiredFiles: string[]
-  /** 内置支持清单（随包 resources/<...>/models.json）的仓库相对路径 */
-  catalogPath: string
+  /**
+   * 随包支持清单（models.json）候选梯，调用时求值（与 resolveAsrEngineDir
+   * 同纪律——review 20261120 H1：单路径在打包态解析进 asar 内部，而清单根本
+   * 不在包里，导入在正式包上必死）：
+   *   1. PULSEMIND_ASR_CATALOG env —— 测试缝（TEMP HOME / 单测 / 冒烟自建清单）
+   *   2. process.resourcesPath/asr/models.json —— 打包态（全局 extraResources）
+   *   3. <repo>/resources/asr/models.json —— dev 态（esbuild 主 bundle 在
+   *      out/main，向上两级到仓库根）
+   */
+  catalogCandidates: () => string[]
   /** 引擎定位（版本配对用）；ocr 家族未来换成自己的定位器 */
   engineVersion: () => string | null
 }
@@ -91,8 +100,17 @@ export interface FamilySpec {
 const ASR_FAMILY: FamilySpec = {
   family: 'asr',
   requiredFiles: ['model.int8.onnx', 'tokens.txt'],
-  // 测试缝：TEMP HOME / 冒烟需要指向自建的清单（默认随包 resources/asr/models.json）
-  catalogPath: process.env.PULSEMIND_ASR_CATALOG ?? join(__dirname, '..', '..', 'resources', 'asr', 'models.json'),
+  catalogCandidates: (): string[] => {
+    const out: string[] = []
+    // 测试缝：TEMP HOME / 单测 / 冒烟需要指向自建的清单
+    if (process.env.PULSEMIND_ASR_CATALOG) out.push(process.env.PULSEMIND_ASR_CATALOG)
+    // 打包态：全局 extraResources 把 resources/asr/models.json 拷到 <Resources>/asr/
+    const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    if (resourcesPath) out.push(join(resourcesPath, 'asr', 'models.json'))
+    // dev 态：esbuild 主 bundle 在 out/main，向上两级到仓库根的 resources/
+    out.push(join(__dirname, '..', '..', 'resources', 'asr', 'models.json'))
+    return out
+  },
   engineVersion: () => {
     try {
       return resolveAsrEngineDir().version
@@ -115,22 +133,34 @@ export function familyModelsDir(family: string): string {
   return modelsRoot(family)
 }
 
-/** 读取随包支持清单。清单缺失/损坏 = 空清单 + 错误说明（不让设置页崩）。 */
+/** 读取随包支持清单。候选梯取第一个存在的路径；全缺席/损坏 = 空清单 +
+ *  错误说明（不让设置页崩），错误里列出全部候选（P1：失败可解释）。 */
 export function readCatalog(family: string): { catalog: ModelCatalog | null; error: string | null } {
   const spec = getModelFamilySpec(family)
+  const candidates = spec.catalogCandidates()
+  const path = candidates.find((p) => existsSync(p))
+  if (!path) {
+    return { catalog: null, error: `随包支持清单缺失（候选：${candidates.join(' → ')}）` }
+  }
   try {
-    const raw = JSON.parse(readFileSync(spec.catalogPath, 'utf8')) as ModelCatalog
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as ModelCatalog
     if (raw.family !== family) {
       return { catalog: null, error: `支持清单的 family（${raw.family}）与请求（${family}）不一致` }
     }
     return { catalog: raw, error: null }
   } catch (e) {
-    return { catalog: null, error: `读取随包支持清单失败（${spec.catalogPath}）：${e instanceof Error ? e.message : String(e)}` }
+    return { catalog: null, error: `读取随包支持清单失败（${path}）：${e instanceof Error ? e.message : String(e)}` }
   }
 }
 
-function sha256File(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex')
+/** 流式 sha256（1MB 块）：模型包 240MB 级，整文件 readFileSync 进 Buffer 是
+ *  主进程上的一整块瞬时内存 + 数秒冻结（review 20261120 M2）；流在块间天然
+ *  让出事件循环，每片 hash 只占毫秒级。 */
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  const stream = createReadStream(path, { highWaterMark: 1024 * 1024 })
+  for await (const chunk of stream) hash.update(chunk)
+  return hash.digest('hex')
 }
 
 function readManifest(dir: string): (InstalledModelInfo & { files?: CatalogModelFile[] }) | null {
@@ -197,8 +227,13 @@ function engineSatisfies(engineVersion: string | null, engineReq: string): boole
 /**
  * 导入一个模型 zip。zipPath 来自渲染端 dialog（DIALOG_SHOW_OPEN），主进程
  * 全程不落盘音频类数据、不打开 zip 内可执行内容——只做字节校验与拷贝。
+ *
+ * 全链路异步（review 20261120 M2）：hash 走流式、大文件写/改名/删除走
+ * fs/promises 的线程池——240MB 级模型包不再把主进程事件循环压住数秒。
+ * 残留的主进程同步片只有 AdmZip 载入与 entry.getData() 的解压拷贝
+ * （亚秒级）；整段挪 worker_threads 是后续活（引擎版本需显式传参）。
  */
-export function importModelZip(family: string, zipPath: string): ImportModelResult {
+export async function importModelZip(family: string, zipPath: string): Promise<ImportModelResult> {
   const spec = getModelFamilySpec(family)
   const { catalog, error } = readCatalog(family)
   if (!catalog) {
@@ -216,7 +251,7 @@ export function importModelZip(family: string, zipPath: string): ImportModelResu
   }
 
   // ── 门 1a：清单匹配（按期望文件名或 zipSha256 找条目；找不到 → wrong-family）──
-  const zipSha = sha256File(zipPath)
+  const zipSha = await sha256File(zipPath)
   const entries = zip.getEntries()
   const entryNames = entries.map((e) => e.entryName)
   const containsAll = (model: CatalogModel): boolean => {
@@ -269,7 +304,7 @@ export function importModelZip(family: string, zipPath: string): ImportModelResu
         }
       }
       mkdirSync(join(target, '..'), { recursive: true })
-      writeFileSync(target, entry.getData())
+      await writeFile(target, entry.getData())
     }
     // 逐文件 hash 门
     const bad: string[] = []
@@ -279,7 +314,7 @@ export function importModelZip(family: string, zipPath: string): ImportModelResu
         bad.push(`${f.path}（缺失）`)
         continue
       }
-      const actual = sha256File(p)
+      const actual = await sha256File(p)
       if (f.sha256 && actual !== f.sha256) {
         bad.push(`${f.path}（期望 ${f.sha256.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…）`)
       }
@@ -294,12 +329,15 @@ export function importModelZip(family: string, zipPath: string): ImportModelResu
 
     // ── 原子安装：tmp → 正式目录 ──
     const finalDir = join(modelsRoot(family), matched.modelId)
-    rmSync(finalDir, { recursive: true, force: true })
-    renameSync(tmpRoot, finalDir)
-    const installedFiles: CatalogModelFile[] = matched.files.map((f) => {
+    // Windows：重导入的旧目录必须整目录可删——换装前释放 worker 的纪律在
+    // handler（ASR_IMPORT_MODEL 先 await disposeAsr()），这里只负责原子换装
+    await rm(finalDir, { recursive: true, force: true })
+    await rename(tmpRoot, finalDir)
+    const installedFiles: CatalogModelFile[] = []
+    for (const f of matched.files) {
       const p = join(finalDir, f.path)
-      return { path: f.path, sha256: sha256File(p), bytes: statSync(p).size }
-    })
+      installedFiles.push({ path: f.path, sha256: await sha256File(p), bytes: statSync(p).size })
+    }
     const manifest = {
       modelId: matched.modelId,
       displayName: matched.displayName,
@@ -316,13 +354,13 @@ export function importModelZip(family: string, zipPath: string): ImportModelResu
     if (!manifestPath) {
       return { ok: false, status: 'io-error', message: '内部错误：manifest 路径非法' }
     }
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
     return { ok: true, status: 'imported', modelId: matched.modelId }
   } catch (e) {
     return { ok: false, status: 'io-error', message: `安装失败：${e instanceof Error ? e.message : String(e)}` }
   } finally {
     // rename 成功后 tmpRoot 已不存在；失败路径清残留
-    rmSync(tmpRoot, { recursive: true, force: true })
+    await rm(tmpRoot, { recursive: true, force: true })
   }
 }
 

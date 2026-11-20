@@ -89,3 +89,33 @@ export function runTakenEdges(edges: WorkflowEdge[], stages: PipelineStageRun[])
   }
   return taken
 }
+
+/** 执行链（user 2026-11-20「右栏前进/后退顺着执行链路走」）：stage 行按开始
+ *  时间正序 = 执行序（与运行页 orderedStages 同一把尺子），逐行给该节点的
+ *  第 N 次出现编号（visit 1 起）——RETRY/回边让同节点出现多行时，每行都是
+ *  链上独立的一步。返回新数组，不重排入参。 */
+export interface RunChainStep {
+  stageId: string
+  nodeId: string
+  /** 该节点第几次执行（1 起）。 */
+  visit: number
+}
+
+export function runExecutionChain(stages: PipelineStageRun[]): RunChainStep[] {
+  const visits = new Map<string, number>()
+  return [...stages]
+    .sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1))
+    .map((s) => {
+      const visit = (visits.get(s.nodeId) ?? 0) + 1
+      visits.set(s.nodeId, visit)
+      return { stageId: s.id, nodeId: s.nodeId, visit }
+    })
+}
+
+/** 节点执行次数（user 2026-11-20 二刀「右上角展示执行次数」）：stage 行数 =
+ *  该节点跑过的次数（含正在跑的那次）——RETRY/回边的重入直接累加。 */
+export function runVisitCounts(stages: PipelineStageRun[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const s of stages) counts.set(s.nodeId, (counts.get(s.nodeId) ?? 0) + 1)
+  return counts
+}

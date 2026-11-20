@@ -180,6 +180,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
     abort,
     steer,
     agentStatus,
+    turnElapsedMs,
     streamingBlocks,
     approveTool,
     rejectTool,
@@ -849,6 +850,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       isLoadingConversation={isLoadingConversation || !booted}
       lastCompaction={lastCompaction as CompactionEvent | null}
       agentStatus={agentStatus}
+      turnElapsedMs={turnElapsedMs}
       streamingBlocks={streamingBlocks}
       hasApiKey={hasApiKey}
       contextLength={displayContextLength}

@@ -7,9 +7,18 @@
  */
 import type { AgentMessage, ContentBlock, ToolResultBlock, TextBlock, ToolUseBlock } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol/payloads'
-import { contextTokensOf, estimateMessagesTokens, estimateTextTokens } from './context-estimate'
+import { contextTokensOf, estimateMessagesTokens, estimateTextTokens, requestTokensOf } from './context-estimate'
 
-const LIGHT_COMPACT_MIN_REMAINING = 30_000
+// Light's trigger headroom, PROPORTIONAL to the input budget. The retired
+// flat 30K floor (conv_20261117170141, 2026-11-20) pinned small budgets into
+// chronic churn: on a 67K budget (100K window minus a 32K output ask) the
+// line sat at 55% used with a 3.6K-wide band, so light re-dropped every few
+// requests and re-broke the provider's prefix cache each time — even after
+// the gates themselves moved to honest wire-anchored readings. The headroom
+// never has to be absolute: `inputBudget` already reserved the full output
+// ask, so at the trigger point wire + ask = budget − 0.3·budget ≤ window by
+// construction, and hard's 0.9× line plus emergencyTruncate keep the backstop.
+const LIGHT_REMAIN_HEADROOM_RATIO = 0.3
 // The reclaim margin (PLAN-context-zcode-benchmarks P1): the light walk below
 // stops at the FIRST fit, so a fit-based compactor drops only the minimum that
 // clears the line — and in a long tool loop that means one or two more cycles
@@ -92,10 +101,15 @@ export const POST_TURN_COMPACT_USED_RATIO = 0.75
 // rode every request of the conversation from then on. Both providers' own
 // contracts only need the CURRENT turn's reasoning (DeepSeek's thinking-mode
 // tool loop; Anthropic's signed blocks inside the live loop), so thinking
-// behind the last text user message is dead weight. Gated on usage: below the
-// line a short conversation never pays the once-per-turn prefix re-bill the
-// strip costs at a turn boundary (the previous turn's residual content
-// changes bytes, so the cache breaks there once, then stabilizes).
+// behind the last text user message is dead weight. Gated on WIRE usage
+// (requestTokensOf — see requestTokens()) and LATCHED: below the line a short
+// conversation never pays the once-per-turn prefix re-bill the strip costs at
+// a turn boundary; once the conversation's real usage crosses the line the
+// strip runs every build for the conversation's life (a non-latched gate
+// would oscillate — strip shrinks the wire below the line, thinking re-enters,
+// reopen — flipping the prefix every request). The retired max-guarded reader
+// priced the pre-transform copy and held the gate open from a third of the
+// window on (conv_20261117170141, 2026-11-20).
 export const THINKING_STRIP_USED_RATIO = 0.5
 
 // ── Refill breaker (PLAN-context-zcode-benchmarks P1) ───────────────────
@@ -172,11 +186,12 @@ const NANO_TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
 // planNanoArchival) — the same "keep the newest batch" promise, no longer a
 // reason to break the cache on its own.
 /** Where the fit gate opens. Deliberately BELOW light's own line (light fires
- *  while remaining ≥ max(30%·window, 30K) ⇒ usage ≤ 70%): the archive arm has
- *  to fire first, because archiving is reversible (`tool_result_search` can
- *  fetch the text back) while light's head drop is not. Gating nano without
- *  that ordering would hand light the weight sooner — 80% breaks turned into
- *  25% breaks. */
+ *  while remaining ≥ 30%·budget ⇒ usage ≤ 70%): the archive arm has to fire
+ *  first, because archiving is reversible (`tool_result_search` can fetch the
+ *  text back) while light's head drop is not. Gating nano without that
+ *  ordering would hand light the weight sooner — 80% breaks turned into 25%
+ *  breaks. Both gates read the WIRE (requestTokensOf); the ledger below is
+ *  what keeps an honest gate from bouncing. */
 export const FIT_GATE_USED_RATIO = 0.60
 /** Where an open gate lands the copy. The band between this and the gate is
  *  the hysteresis that keeps a marathon tool loop from re-breaking the prefix
@@ -212,6 +227,10 @@ interface NanoArchivalPlan {
   ids: Set<string>
   /** Heuristic tokens the pass takes off the copy. */
   reclaimedTokens: number
+  /** Per-id reclaim, so the caller can split this pass's FRESH takes from
+   *  ids the archive ledger carried in (their placeholders re-mint every
+   *  build but they are not a new cache break). */
+  savings: Map<string, number>
 }
 
 /** What the last nano pass decided. The request build logs one line from this
@@ -219,14 +238,17 @@ interface NanoArchivalPlan {
  *  post-hoc DB query (W3 of PLAN-nano-light-trigger-merge): the gate's own
  *  inputs (used/target) and its verdict sit next to what light then dropped. */
 export interface NanoArchiveStats {
-  /** Whole-copy usage the gate judged (wire anchor + fixed overhead), in the
-   *  same units light/hard use. 0 when no window was known. */
+  /** Whole-copy usage the gate judged (WIRE anchor + tail estimate —
+   *  requestTokensOf, see requestTokens()), in the same units light/hard use.
+   *  0 when no window was known. */
   used: number
   /** 'legacy' = no window ⇒ the pre-merge quota walk, no gate involved. 'open'
    *  can still mean archived=0 (below the min-reclaim floor, nothing takeable
    *  under the caps) — that is the deferred case the log must not hide. */
   gate: 'open' | 'closed' | 'legacy'
-  /** Results this pass archived, and the heuristic tokens they took off. */
+  /** Results THIS pass took FRESH — ids the archive ledger carried in re-mint
+   *  their placeholders every build but are not a new cache break, so they
+   *  must not read as one. */
   archived: number
   reclaimed: number
   /** Where an open gate bites down to (window × FIT_ARCHIVE_TARGET_RATIO); 0
@@ -265,7 +287,12 @@ function planNanoArchival(
     estimatedTokens?: number
   } = {},
 ): NanoArchivalPlan {
-  const plan: NanoArchivalPlan = { ids: new Set<string>(), reclaimedTokens: 0 }
+  const plan: NanoArchivalPlan = { ids: new Set<string>(), reclaimedTokens: 0, savings: new Map() }
+  const take = (id: string, saving: number): void => {
+    plan.ids.add(id)
+    plan.reclaimedTokens += saving
+    plan.savings.set(id, saving)
+  }
 
   // Protect the newest N user messages carrying tool_results — the live tail
   // the model is still reasoning over.
@@ -307,8 +334,7 @@ function planNanoArchival(
         if (!name || NANO_TIER3_NAMES.has(name)) continue
         const content = (block as ToolResultBlock).content || ''
         if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => content.startsWith(p))) continue
-        plan.ids.add(id)
-        plan.reclaimedTokens += nanoReclaimableTokens(content)
+        take(id, nanoReclaimableTokens(content))
       }
     }
   }
@@ -346,8 +372,7 @@ function planNanoArchival(
       if (!target || target <= 0) continue
       if ((taken[c.tier] || 0) >= target) continue
       taken[c.tier] = (taken[c.tier] || 0) + 1
-      plan.ids.add(c.id)
-      plan.reclaimedTokens += c.saving
+      take(c.id, c.saving)
     }
     return plan
   }
@@ -355,8 +380,15 @@ function planNanoArchival(
   // ── Fit gate ──────────────────────────────────────────────────────────
   const used = opts.estimatedTokens ?? 0
   if (used < window * FIT_GATE_USED_RATIO) return plan
-  let budget = used - window * FIT_ARCHIVE_TARGET_RATIO
-  if (budget <= 0) return plan
+  // Carried mandates (the archive ledger, model picks) already hold
+  // placeholders in the plan being built, so their reclaim counts toward the
+  // bite — otherwise the walk would re-spend their share of the budget on
+  // extra candidates every pass and the archived set would creep up toward
+  // the caps (PLAN-cache-wire-gates: the hysteresis this fixes is "the pass
+  // after a bite changes nothing").
+  const gap = Math.max(0, used - window * FIT_ARCHIVE_TARGET_RATIO - plan.reclaimedTokens)
+  if (gap <= 0) return plan
+  let budget = gap
   // The old quota's "keep the newest batch" promise, in cap form: a pass may
   // take at most count − size results per tier, so the newest full batch of
   // every tracked tier stays whole however far over the target the copy is (a
@@ -385,8 +417,7 @@ function planNanoArchival(
     if (c.saving <= 0) continue
     if (!((capLeft[c.tier] || 0) > 0)) continue
     capLeft[c.tier] = (capLeft[c.tier] || 0) - 1
-    plan.ids.add(c.id)
-    plan.reclaimedTokens += c.saving
+    take(c.id, c.saving)
     budget -= c.saving
   }
   return plan
@@ -810,6 +841,25 @@ export class ContextCompactor {
   clearMandatedToolResultIds(): void {
     this.mandatedCompressIds.clear()
   }
+  /** The nano archive ledger (PLAN-cache-wire-gates D2): tool_use ids the fit
+   *  gate archived at least once, re-fed as mandates so their placeholders
+   *  survive the gate closing (an honest wire-anchored gate lands below its
+   *  own line after a bite; without the ledger the plan would empty and the
+   *  full text would re-inflate — W2's bounce). Unlike the model's own picks
+   *  above, this set is written by the gate itself; cleared per conversation
+   *  with everything else that names message ids. */
+  private gateArchivedIds = new Set<string>()
+  /** The thinking-strip latch (D3): once the conversation's WIRE usage
+   *  crosses THINKING_STRIP_USED_RATIO the strip runs on every build for the
+   *  life of the conversation. One-way — a non-latched gate oscillates
+   *  (strip → wire shrinks below the line → thinking re-enters → re-open). */
+  private thinkingStripLatched = false
+  /** Conversation reset — the ledger named another history's tool_use ids,
+   *  and the latch belongs to a usage curve this history never lived. */
+  clearGateState(): void {
+    this.gateArchivedIds.clear()
+    this.thinkingStripLatched = false
+  }
   /** History-summary cache. `firstKeptId` is the persisted COVERAGE FRONTIER
    *  (the newest message the text covers — historical field name, opaque to
    *  every consumer). `covered` is the in-memory id set the text actually
@@ -866,6 +916,27 @@ export class ContextCompactor {
     // a real inputTokens report anchors the number, the tail appended since is
     // estimated CJK-aware, and the full heuristic guards a stale baseline.
     return contextTokensOf(messages ?? this.deps.getMessages(), fixedOverhead)
+  }
+
+  /** The WIRE reader (requestTokensOf) — what the NEXT request would weigh:
+   *  the last real request's priced size plus the appended tail at full
+   *  (pre-transform) price. The trigger chain — strip latch, nano's fit gate,
+   *  light's trigger — reads THIS, not contextTokens(). The max-guard's
+   *  whole-transcript branch prices the PRE-TRANSFORM copy, which
+   *  structurally over-reads the wire by exactly what strip/nano are about to
+   *  remove: on thinking/tool-output-heavy DeepSeek traffic it ran 2.0–2.65×
+   *  the real wire (conv_20261117170141, 2026-11-20: estimate 90–97K against
+   *  a 35–42K wire), holding all three gates permanently open from a third of
+   *  the window on and re-breaking the provider's prefix cache every few
+   *  requests — the session hit rate's 63%-vs-ZCode's-~90% gap. The anchor is
+   *  one request stale by design and the tail's raw pricing is the
+   *  conservative direction (gates fire early, never late). Overflow recovery
+   *  (hardTruncate / emergencyTruncate) deliberately KEEPS the conservative
+   *  reader — there inflation is the safe side. Absent an anchor (no request
+   *  yet) this falls back to heuristic + overhead, byte-identical to
+   *  contextTokens()'s fallback. */
+  requestTokens(messages?: AgentMessage[], fixedOverhead = 0): number {
+    return requestTokensOf(messages ?? this.deps.getMessages(), fixedOverhead)
   }
 
   /** Largest keepStart whose kept tail fits `thresholdTokens` under the
@@ -1380,27 +1451,49 @@ export class ContextCompactor {
    * The decision itself lives in planNanoArchival, shared with the ring
    * projection so the two cannot drift.
    */
-  nanoCompact(messages: AgentMessage[], contextLength?: number, fixedOverhead = 0): AgentMessage[] {
+  nanoCompact(messages: AgentMessage[], contextLength?: number, fixedOverhead = 0, record = true): AgentMessage[] {
     // `contextLength <= 0` and absent are the same thing (no window): the
     // planner's own guard already says so, and the stats below must read the
     // gate the same way the decision did.
     const window = typeof contextLength === 'number' && contextLength > 0 ? contextLength : undefined
-    const used = window ? this.contextTokens(messages, fixedOverhead) : 0
+    // The gate reads the WIRE (requestTokensOf): the anchor prices the last
+    // shipped copy (placeholders already in), the tail prices raw. The old
+    // max-guarded reader priced the pre-transform copy and ran 2.0-2.65× the
+    // real wire on thinking-heavy traffic (conv_20261117170141), holding the
+    // gate open from a third of the window on.
+    const used = window ? this.requestTokens(messages, fixedOverhead) : 0
+    const mandates = this.gateArchivedIds.size > 0
+      ? new Set<string>([...this.mandatedCompressIds, ...this.gateArchivedIds])
+      : this.mandatedCompressIds
     const plan = planNanoArchival(messages, {
-      mandatedIds: this.mandatedCompressIds,
+      mandatedIds: mandates,
       contextLength: window,
-      // The gate reads the total light reads: the wire-anchored usage plus the
-      // fixed overhead the build prices — the same units lightCompact's own
-      // threshold is expressed in.
       estimatedTokens: window ? used : undefined,
     })
+    // The archive ledger (PLAN-cache-wire-gates D2): the honest gate CLOSES
+    // after a bite (the shipped wire lands at the 50% target, below the 60%
+    // line), and a closed gate means an empty plan — the placeholders would
+    // revert to full text and re-break the prefix every other request (W2's
+    // bounce, which the max-guard's never-coming-down reading used to suppress
+    // by accident). Ledgered ids ride the mandate channel, which bypasses
+    // gate/caps/floor: once archived, always archived. The same source still
+    // re-derives the same placeholder bytes, so the copy stays byte-stable
+    // between frontier advances.
+    let fresh = 0
+    let freshReclaim = 0
+    for (const id of plan.ids) {
+      if (this.gateArchivedIds.has(id)) continue
+      fresh++
+      freshReclaim += plan.savings.get(id) ?? 0
+      if (record && window !== undefined) this.gateArchivedIds.add(id)
+    }
     // Recorded on EVERY path (the early return below included): a stale record
     // would report the previous request's gate as this one's.
     this.lastNanoArchive = {
       used,
       gate: window === undefined ? 'legacy' : used >= window * FIT_GATE_USED_RATIO ? 'open' : 'closed',
-      archived: plan.ids.size,
-      reclaimed: Math.round(plan.reclaimedTokens),
+      archived: fresh,
+      reclaimed: Math.round(freshReclaim),
       target: window === undefined ? 0 : Math.round(window * FIT_ARCHIVE_TARGET_RATIO),
     }
     if (plan.ids.size === 0) return messages
@@ -1468,7 +1561,23 @@ export class ContextCompactor {
   stripStaleThinking(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, record = true): AgentMessage[] {
     if (record) this.lastThinkingStripNew = 0
     if (!contextLength) return messages
-    if (this.contextTokens(messages, fixedOverhead) < contextLength * THINKING_STRIP_USED_RATIO) return messages
+    // The gate reads the WIRE (requestTokensOf) and LATCHES (PLAN-cache-wire-gates
+    // D3). A non-latched honest gate would bounce: stripping shrinks the wire
+    // back below the line, the gate closes, thinking re-enters the copy, the
+    // gate reopens — flipping the prefix every request. The latch makes the
+    // crossing one-way, and the strip itself is already turn-anchored
+    // (idempotent within a turn; exactly one new message crosses behind the
+    // anchor per turn boundary), so a latched strip costs one partial re-bill
+    // per turn and nothing between. The old reader was the max-guarded
+    // transcript estimate, whose inflated branch held the gate open from a
+    // third of the window on (conv_20261117170141) — the churn this replaces.
+    // The latch is written from the prewarm simulation too (record=false):
+    // it is a property of the conversation's usage curve, not a per-build
+    // decision, and prewarm reads the same live history the next request will.
+    if (!this.thinkingStripLatched) {
+      if (this.requestTokens(messages, fixedOverhead) < contextLength * THINKING_STRIP_USED_RATIO) return messages
+      this.thinkingStripLatched = true
+    }
     const anchor = lastTextUserMessageIndex(messages)
     if (anchor < 0) return messages
 
@@ -1637,11 +1746,18 @@ export class ContextCompactor {
     this.lastLightDropRounds = 0
     if (!contextLength) return messages
 
-    const estimatedTokens = this.contextTokens(messages, fixedOverhead)
-    // Trigger on remaining window, not usage ratio: floor the headroom at 30K so
-    // light compaction still fires early on small model windows.
+    // The trigger reads the WIRE (requestTokensOf — see requestTokens()): the
+    // anchor prices the last shipped copy, the tail prices raw. The old
+    // max-guarded reader priced the pre-transform copy and ran 2.0–2.65× the
+    // real wire on thinking-heavy traffic (conv_20261117170141), firing light
+    // from a third of the window on.
+    const estimatedTokens = this.requestTokens(messages, fixedOverhead)
+    // Trigger on remaining window, not usage ratio. Headroom is proportional
+    // to the budget (LIGHT_REMAIN_HEADROOM_RATIO); the retired flat 30K floor
+    // pinned sub-100K budgets into a 3.6K-wide trigger band — chronic drops
+    // even on honest readings.
     const remainingWindow = contextLength - estimatedTokens
-    if (!force && remainingWindow >= Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING)) return messages
+    if (!force && remainingWindow >= contextLength * LIGHT_REMAIN_HEADROOM_RATIO) return messages
 
     // Fit target, same units as the walk below (heuristic + fixed overhead):
     // once triggered, drop only the OLDEST cycles needed to bring the kept copy
@@ -1663,7 +1779,7 @@ export class ContextCompactor {
     // takes no margin: there the only goal is to get under the hard line.
     const reclaimMargin = force ? 0 : contextLength * LIGHT_RECLAIM_MARGIN_RATIO
     const targetTokens = Math.max(
-      force ? contextLength * 0.6 : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING) - reclaimMargin,
+      force ? contextLength * 0.6 : contextLength - contextLength * LIGHT_REMAIN_HEADROOM_RATIO - reclaimMargin,
       contextLength * 0.5,
     )
 
@@ -1681,8 +1797,18 @@ export class ContextCompactor {
     // climbed 140K → 161K with zero compaction events. Unanchored, the gap is
     // exactly fixedOverhead, so honest-reporting sessions are byte-identical.
     const overhead = Math.max(0, estimatedTokens - totalH)
+    // When the trigger input sits BELOW the raw heuristic price (an
+    // over-reading heuristic on thinking-heavy transcripts — the
+    // conv_20261117170141 2.0–2.65× shape), the additive gap above clamps to
+    // 0 and a bare `totalH - droppedH <= target` would compare heuristic
+    // units against a wire-unit target and over-drop by exactly the
+    // inflation. Scale instead: the post-drop wire is predicted as
+    // (totalH − droppedH) × scale. est ≥ totalH keeps scale 1, which reduces
+    // to the additive form above byte for byte — the under-reading gateway's
+    // protection (模块11) is untouched.
+    const scale = totalH > 0 && estimatedTokens < totalH ? estimatedTokens / totalH : 1
     let droppedH = 0
-    const fits = (): boolean => totalH - droppedH + overhead <= targetTokens
+    const fits = (): boolean => (totalH - droppedH) * scale + overhead <= targetTokens
 
     // Find the last text-containing user message (protected)
     let lastTextUserMsgId: string | null = null
@@ -1761,7 +1887,10 @@ export class ContextCompactor {
     // let the ordinary trigger fire again when acting is actually worth it. A
     // forced pass skips the test — it is recovering from a real rejection, and
     // there the tail is already doomed.
-    if (!force && droppedH < contextLength * LIGHT_MIN_RECLAIM_RATIO) {
+    // The floor speaks the walk's calibrated units too: droppedH × scale is
+    // the wire the pass actually reclaims, so an over-reading heuristic must
+    // drop proportionally more before a break is worth it.
+    if (!force && droppedH * scale < contextLength * LIGHT_MIN_RECLAIM_RATIO) {
       this.lastLightDropRounds = 0
       return messages
     }
@@ -1785,7 +1914,7 @@ export class ContextCompactor {
 
     console.log(
       `[AgentEngine] lightCompact: dropped ${roundsDeleted} tool cycles ` +
-      `(context ~${Math.round(estimatedTokens)} → ~${Math.round(totalH - droppedH + overhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
+      `(context ~${Math.round(estimatedTokens)} → ~${Math.round((totalH - droppedH) * scale + overhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
     )
     return newMessages
   }
@@ -1866,7 +1995,10 @@ export class ContextCompactor {
     // 0-overhead simulation would archive later and less than the request
     // actually does, and `compaction-prewarm` exists to catch exactly that.
     const overhead = this.lastRequestOverhead
-    const nano = this.nanoCompact(pipeline, contextLength, overhead)
+    // record=false: the simulation must not write the archive ledger (same
+    // discipline as light's record=false below — a simulated decision must
+    // not persist past the copy it shaped).
+    const nano = this.nanoCompact(pipeline, contextLength, overhead, false)
     // The simulation must run the SAME force bits the next real request will:
     // manual sticks (manualCompactActive on both layers), tool's one-shot
     // force bypasses ONLY light (hard stays passive, its 0.9× trigger
@@ -1891,7 +2023,9 @@ export class ContextCompactor {
       summary.firstKeptId !== summaryBefore.firstKeptId ||
       summary.text !== summaryBefore.text
     const strategies: string[] = []
-    if (nano.some((m, i) => m !== pipeline[i])) strategies.push('nano')
+    // Fresh-take count, not identity: ledger-carried ids re-mint their
+    // placeholders every build (see the request path's event detection).
+    if ((this.lastNanoArchive?.archived ?? 0) > 0) strategies.push('nano')
     if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
     if (light.length !== stripped.length) strategies.push('light')
     strategies.push('hard')

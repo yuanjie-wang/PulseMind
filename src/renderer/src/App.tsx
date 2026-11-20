@@ -220,6 +220,7 @@ function AppContent(): React.ReactElement {
     saveCurrentConversation,
     saveAllConversationsSync,
     agentStatus,
+    turnElapsedMs,
     streamingBlocks,
     approveTool,
     rejectTool,
@@ -849,6 +850,7 @@ function AppContent(): React.ReactElement {
                     isLoadingConversation={isLoadingConversation}
                     lastCompaction={lastCompaction}
                     agentStatus={agentStatus}
+                    turnElapsedMs={turnElapsedMs}
                     streamingBlocks={streamingBlocks}
                     hasApiKey={hasApiKey}
                     contextLength={displayContextLength}

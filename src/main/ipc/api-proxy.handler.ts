@@ -281,6 +281,13 @@ export interface LlmStreamOptions {
   headers?: Record<string, string>
   body?: string | object
   profileId?: string
+  /** Session identity (2026-11-20) — rides ONLY into the llm-request hook's
+   *  context, never into headers/body (prefix-cache bytes are sensitive).
+   *  Present on agent-loop requests; the renderer's non-streaming one-shots
+   *  (ns_) omit it. */
+  sessionId?: string
+  taskId?: string
+  turnIndex?: number
 }
 
 /** The response dump's capture cap: a runaway generation stops being recorded
@@ -342,6 +349,9 @@ export async function performLlmStream(
     const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
       profileId: options.profileId,
       requestId,
+      sessionId: options.sessionId,
+      taskId: options.taskId,
+      turnIndex: options.turnIndex,
     })
     const finalUrl = hookApplied.url
     const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : (hookApplied.body as string | undefined)
