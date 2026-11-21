@@ -126,8 +126,11 @@ describe('elideTodoWritePairs', () => {
     expect(useIds(out).filter(id => id.startsWith('r'))).toEqual(['r1', 'r2', 'r3', 'r4', 'r5'])
   })
 
-  it('wired into the prepareLoopRequest transform chain, before regroup', () => {
-    const src = readFileSync(join(__dirname, '../src/renderer/src/agent/AgentEngine.ts'), 'utf8')
-    expect(src).toMatch(/regroupToolResults\(elideTodoWritePairs\(/)
+  it('wired into the structural wedge, before regroup', () => {
+    // 2026-11-21 epoch：整条 transform 链从 prepareLoopRequest 搬进
+    // ContextCompactor.structuralWedge（每铸新 base 与每次装配尾部各走一次），
+    // 顺序纪律不变：elision 先于 regroup。
+    const src = readFileSync(join(__dirname, '../src/renderer/src/agent/engine/context-compactor.ts'), 'utf8')
+    expect(src).toMatch(/regroupToolResults\(\s*elideTodoWritePairs\(/)
   })
 })

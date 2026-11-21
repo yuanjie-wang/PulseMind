@@ -776,12 +776,17 @@ function buildClockSection(): string {
 }
 
 /**
- * The context-window gauge. Numbers are the REQUEST-side estimate
- * (requestTokensOf): the last real request's wire size plus the tail since —
- * the same reading the UI ring shows, and the only unit where "~N% used" is
- * a true sentence about this window. Below the 55% line a context_compact
- * call is refused; the force target is 0.6×. Exported for the section's math
- * pins.
+ * The context-window gauge. The number arrives from the engine already
+ * computed: `copyTokensOf(finalMessages, fixedOverhead)` — the POST-PIPELINE
+ * copy's content price plus this request's overhead — the same quantity the
+ * CompactionEvent's tokensAfter carries, so the ring's projection
+ * (projectContextUsed) reads the same unit after a cut. It is deliberately
+ * NOT an anchor reader (requestTokensOf/contextTokensOf): both key on the
+ * last wire report riding the messages, and after a compaction pass that
+ * report prices the PRE-cut request — a 110,535-token report kept every
+ * anchor reading at ~74% of the window while the copy shipped 54,005 (36%),
+ * which is how the gauge, the ring and the model's own answers diverged
+ * (conv_20261120152212, 2026-11-21). Exported for the section's math pins.
  */
 /** The `## Background Tasks` wake-up section (2026-10-28). Exported pure for
  *  the format pins; prepareLoopRequest drains the engine's queue into the

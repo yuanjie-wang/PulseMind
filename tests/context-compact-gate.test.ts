@@ -113,16 +113,18 @@ function makeEngine(_host: StreamHost) {
   return engine
 }
 
-/** Long tool history past the 0.55 worthwhileness line: assistant (narration
- *  text + tool_use) → user collector, repeated. The text blocks are the weight
- *  nano CANNOT eat (it only rewrites tool_results) — light deletes whole
- *  cycles including them, so a tool-sourced compact has something real to
- *  drop even after the nano pass collapses the old results. Deliberately NOT
- *  thinking blocks (the fixture's original shape): since 2026-10-25 the
- *  stale-thinking strip removes old turns' thinking before light runs, and a
- *  history whose only weight is stale thinking legitimately has nothing left
- *  for context_compact to archive — the tool's refusal there is correct. */
-function bigToolHistory(rounds = 40, heavyChars = 2_000): AgentMessage[] {
+/** Long tool history past the epoch's cut target: on a 100K window the cold
+ *  start gives `T − Δ` = 0.70b ≈ 69K, and this fixture prices ~85K — the tool
+ *  call must land a real cut, not answer 「无需压缩」 (the retired 0.55×
+ *  worthwhileness line is gone; gate ③ now reads the same epoch target the
+ *  cut lands on). The text blocks are the weight nano CANNOT eat (it only
+ *  rewrites tool_results) — light deletes whole cycles including them, so a
+ *  tool-sourced compact has something real to drop. Deliberately NOT thinking
+ *  blocks (the fixture's original shape): the wedge elides bare-thinking turns
+ *  before pricing, and a history whose only weight is stale thinking
+ *  legitimately has nothing left for context_compact to archive — the tool's
+ *  refusal there is correct. */
+function bigToolHistory(rounds = 40, heavyChars = 2_400): AgentMessage[] {
   const msgs: AgentMessage[] = [
     { id: 'u0', role: 'user', contentBlocks: [{ type: 'text', text: '开始校对合同译本' }], createdAt: '2026-10-21T08:00:00.000Z' },
   ]

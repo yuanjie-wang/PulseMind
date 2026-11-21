@@ -196,6 +196,13 @@ export class StreamRunner {
             console.log(
               `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'} stop=${stopReason ?? '?'}${sessionPart}`
             )
+            // The measured wire is the ground truth the copy estimator learns
+            // from: ratio = wire / the raw price quoted at build time. Without
+            // this the heuristic's tokenizer slop (±2–5%, drifting with the
+            // content mix) permanently separates the gauge/ring from what the
+            // provider actually counted (conv_20261120152212: told 112K
+            // against a 117,168 wire).
+            this.engine.noteCopyCalibration(usage.inputTokens)
           }
 
           const toolUses = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')

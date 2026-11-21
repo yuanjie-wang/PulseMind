@@ -7,31 +7,93 @@
  */
 import type { AgentMessage, ContentBlock, ToolResultBlock, TextBlock, ToolUseBlock } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol/payloads'
-import { contextTokensOf, estimateMessagesTokens, estimateTextTokens, requestTokensOf } from './context-estimate'
+import { contextTokensOf, copyTokensOf, estimateMessagesTokens, estimateTextTokens } from './context-estimate'
+import { regroupToolResults } from '../../llm/regroup-tool-results'
+import { elideTodoWritePairs } from '../../llm/elide-todo-pairs'
+import { stripToolResultImages } from '../strip-tool-results'
 
-// Light's trigger headroom, PROPORTIONAL to the input budget. The retired
-// flat 30K floor (conv_20261117170141, 2026-11-20) pinned small budgets into
-// chronic churn: on a 67K budget (100K window minus a 32K output ask) the
-// line sat at 55% used with a 3.6K-wide band, so light re-dropped every few
-// requests and re-broke the provider's prefix cache each time — even after
-// the gates themselves moved to honest wire-anchored readings. The headroom
-// never has to be absolute: `inputBudget` already reserved the full output
-// ask, so at the trigger point wire + ask = budget − 0.3·budget ≤ window by
-// construction, and hard's 0.9× line plus emergencyTruncate keep the backstop.
-const LIGHT_REMAIN_HEADROOM_RATIO = 0.3
-// The reclaim margin (PLAN-context-zcode-benchmarks P1): the light walk below
-// stops at the FIRST fit, so a fit-based compactor drops only the minimum that
-// clears the line — and in a long tool loop that means one or two more cycles
-// fall away on essentially EVERY request. Each of those edits rewrites the
-// prefix, and a rewritten prefix invalidates every cached token downstream of
-// the hole, so the cheap-looking minimum is the most expensive shape available.
-// Dropping to a line BELOW the trigger makes one drop cover a stretch of
-// requests: the same total reclaim, a fraction of the cache breaks.
-const LIGHT_RECLAIM_MARGIN_RATIO = 0.12
-// A drop that cannot reclaim a meaningful slice is pure cache churn — it
-// rewrites the prefix for a gain the next round eats. Below this floor the copy
-// is left untouched and the ordinary trigger fires again when acting is worth it.
-const LIGHT_MIN_RECLAIM_RATIO = 0.02
+// ── Epoch: ONE decision point + a frozen base (PLAN-compaction-epoch) ───
+// The four old gates (nano fit / thinking strip / light / hard) each decided
+// on their OWN ratio line, so any request crossing ANY of them rewrote a slice
+// of the head — and a rewritten head invalidates every cached byte behind it.
+// The session-level hit rate is governed by exactly two numbers: how often the
+// head moves, and how much survives each move. The copy is therefore FROZEN
+// between cuts (`epochBase`, materialized bytes), one predicate (`price > T`)
+// decides whether to cut at all, and a cut goes deep in one shot (lands at
+// `T − Δ`). No request below the line touches a single byte.
+//
+//   g = p75 of the recent per-request copy growth (samples capped at 8)
+//   T = b − max(1.5·g, 0.08·b)          // cut when the copy crosses this
+//   Δ = clamp(1.5·g, 0.15·b, 0.30·b)    // depth: land at T − Δ
+//   cold start (<4 samples): g = 0.10·b ⇒ T = 0.85b, land at 0.70b
+//
+// b is `effectiveInputWindow(contextLength, maxTokens)` — the output reserve
+// is never spendable. `contextTokensOf` survives only as a backstop reader
+// (provider-400 recast, emergencyTruncate, the final hard insurance).
+const EPOCH_SAMPLE_CAP = 8
+const EPOCH_MIN_SAMPLES = 4
+const EPOCH_COLD_GROWTH_RATIO = 0.10
+/** Safety pad: never wait until the window is nearly full to act. */
+const EPOCH_TRIGGER_PAD_RATIO = 0.08
+/** `1.5·g` reads "one cut must still buy a turn and a half". */
+const EPOCH_GROWTH_MULTIPLE = 1.5
+/** Cut depth floor/ceiling as a share of the budget. */
+const EPOCH_DEPTH_MIN_RATIO = 0.15
+const EPOCH_DEPTH_MAX_RATIO = 0.30
+/** `/compact` materializes immediately and goes deeper than a passive cut
+ *  (`T − Δ` sits near 0.70b on a cold start): the user asked for a cut, so
+ *  land where the retired forced-light pass landed — 60% of the budget. */
+export const EPOCH_MANUAL_TARGET_RATIO = 0.60
+
+export interface EpochLines {
+  /** p75 growth the lines were derived from (tokens). */
+  growth: number
+  /** `price > trigger` ⇒ cut. */
+  trigger: number
+  /** Required depth: a cut lands at or below `target`. */
+  depth: number
+  /** `trigger − depth`, floored at 0. */
+  target: number
+}
+
+/** What one directed cut did — the request path turns this into the epoch log
+ *  line and the compaction event. */
+export interface DirectCutResult {
+  /** The new copy (when `cut` is false: the priced copy, unchanged). */
+  messages: AgentMessage[]
+  /** Steps that actually fired, plus `epoch` when a new base materialized. */
+  strategies: string[]
+  cut: boolean
+  priceBefore: number
+  priceAfter: number
+  targetTokens: number
+  droppedMessages: number
+}
+
+/** Nearest-rank percentile over a small sample set (the caller sorts). */
+function upperQuantile(samples: readonly number[], q: number): number {
+  const sorted = [...samples].sort((a, b) => a - b)
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))
+  return sorted[idx]
+}
+
+/**
+ * The two lines, from the budget and the observed growth. Pure: the request
+ * log prints its inputs so a T/Δ that "feels wrong" is traceable to samples.
+ *
+ * Cold start is deliberately WIDE (`0.85b` trigger / `0.70b` floor): with no
+ * growth history the safe assumption is "nothing much will grow", so the first
+ * cut happens late enough to be rare and deep enough to last.
+ */
+export function epochLines(budget: number, samples: readonly number[]): EpochLines {
+  const b = Math.max(0, budget)
+  const enough = samples.length >= EPOCH_MIN_SAMPLES
+  const growth = enough ? upperQuantile(samples, 0.75) : b * EPOCH_COLD_GROWTH_RATIO
+  const headroom = Math.max(EPOCH_GROWTH_MULTIPLE * growth, b * EPOCH_TRIGGER_PAD_RATIO)
+  const trigger = Math.max(0, b - headroom)
+  const depth = Math.min(b * EPOCH_DEPTH_MAX_RATIO, Math.max(b * EPOCH_DEPTH_MIN_RATIO, EPOCH_GROWTH_MULTIPLE * growth))
+  return { growth, trigger, depth, target: Math.max(0, trigger - depth) }
+}
 const SUMMARY_TEXT_CAP = 2000
 const SUMMARY_INPUT_CAP = 40000
 const SUMMARY_RESULT_CAP = 400
@@ -51,14 +113,20 @@ const DROPPED_READ_REMINDER_CAP = 10
 const TOOL_RESULT_PLACEHOLDER_PREFIXES = ['⟨archived:', '[tool_result_id:', '[Tool Result:']
 // Frontier-advance accrual line for the history-summary cache: a frontier that
 // moved forward re-summarizes only once the pending slice behind the cached
-// frontier is worth an LLM call. A fit-based lightCompact advances the frontier
-// on essentially every request of a long tool loop (the copy is re-derived from
-// the live transcript each time), so without this line the request path would
-// fire one summary call per request. Below the line the cached text is reused
-// as-is and the slice keeps accruing behind the cached frontier — an uncovered
-// hole bounded by the line itself, closed by the next crossing (the post-turn
-// prewarm absorbs most of them at idle).
+// frontier is worth an LLM call. A cut drops a whole region at once, but the
+// protected tail (the last text turn and the 8K hot zone) can hand the SAME
+// slice back on consecutive cuts, and a cut landing on top of a cached summary
+// often uncovers only a few messages — below the line the cached text rides and
+// the slice keeps accruing. This is the "not worth rewriting the prefix" bar
+// (D6), not a rate limiter: at most one summary lands per epoch by construction.
 const SUMMARY_EXTEND_MIN_CHARS = 12_000
+// Hard cap on the accrued-dropped carrier (see `droppedSinceSummary`). The
+// region BUILDER caps at SUMMARY_INPUT_CAP chars anyway, so this only bounds
+// memory; in practice absorption fires long before it (~12K chars of region
+// text ≈ 30 tool cycles), and a list that reaches the cap means the dropped
+// messages carry almost no summarizable text (thinking-only turns are elided
+// by the wedge before they can ever be dropped).
+const SUMMARY_ACCRUED_MESSAGES_CAP = 200
 // The accumulated history-summary text is CAPPED, and past the cap it is
 // ROLLED (re-summarized) rather than concatenated forever: the summary message
 // is injected AFTER hardTruncate, so no pipeline layer ever compresses it and
@@ -90,27 +158,15 @@ const OVERFLOW_TOOL_PARAM_CHARS = 20_000
 // reserves a dedicated "All User Messages" section — same judgement: user
 // intent is the one thing a lossy summary must not own alone.
 const USER_REPLAY_BUDGET_TOKENS = 10_000
-// Post-turn prewarm trigger: usage at/above this share of the window warms the
-// history summary at turn end, so the expensive LLM summary runs while the
-// engine is idle instead of blocking the next turn's first request.
-export const POST_TURN_COMPACT_USED_RATIO = 0.75
-// Stale-thinking strip (2026-10-25, conv_20261025172138 「飞行棋」 88% 复盘): the
-// OpenAI adapter maps EVERY thinking block in history back onto the wire as
-// reasoning_content and the gateway bills it as input — one 18.6K-token
-// reasoning turn re-entered the next request as +19.7K prompt tokens and
-// rode every request of the conversation from then on. Both providers' own
-// contracts only need the CURRENT turn's reasoning (DeepSeek's thinking-mode
-// tool loop; Anthropic's signed blocks inside the live loop), so thinking
-// behind the last text user message is dead weight. Gated on WIRE usage
-// (requestTokensOf — see requestTokens()) and LATCHED: below the line a short
-// conversation never pays the once-per-turn prefix re-bill the strip costs at
-// a turn boundary; once the conversation's real usage crosses the line the
-// strip runs every build for the conversation's life (a non-latched gate
-// would oscillate — strip shrinks the wire below the line, thinking re-enters,
-// reopen — flipping the prefix every request). The retired max-guarded reader
-// priced the pre-transform copy and held the gate open from a third of the
-// window on (conv_20261117170141, 2026-11-20).
-export const THINKING_STRIP_USED_RATIO = 0.5
+// Post-turn prewarm used to open at a fixed 0.75 share of the window; it is
+// now PREDICTIVE — it materializes the next base as soon as the copy crosses
+// `T − Δ` (see epochLines), because a base minted "before it is needed" costs
+// an idle LLM call where one minted at request time blocks the turn.
+// Stale-thinking strip used to be latched behind a 0.5 usage line (a
+// non-latched gate oscillated: strip shrank the wire below the line, thinking
+// re-entered, reopen). Inside a cut it is unconditional — there is no gate
+// left to oscillate, and the strip's cost is paid by a head move that was
+// happening anyway.
 
 // ── Refill breaker (PLAN-context-zcode-benchmarks P1) ───────────────────
 // The fit-based layers (light/hard) drop on the pass that crosses the line;
@@ -160,53 +216,24 @@ export function makeCompactTracking(): CompactTracking {
  *  high, never low). "Correcting" it to the char-true token count would make
  *  the ring reading silently sag — re-derive the direction note above in the
  *  same change or leave it alone. (review_20261025 低3) */
-const NANO_PLACEHOLDER_COST = 45
+export const NANO_PLACEHOLDER_COST = 45
 /** nano tier quotas, shared by nanoCompact and the ring-side projection
  *  (estimateAfterNanoTokens) — ONE constant: a drifted copy in the projection
  *  would silently misprice every ring reading. */
 const NANO_TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
 
-// ── Merged fit gate (PLAN-nano-light-trigger-merge W1) ─────────────────
-// nano used to archive on a pure COUNT quota — "two full tier batches exist,
-// so archive all but one" — with no idea how much of the window was actually
-// in use. In a long tool loop that quota fires again and again while the copy
-// sits far below the point where anything MUST be given up, and every fire
-// re-breaks the provider's prefix cache at the oldest archived result:
-// everything after that byte re-bills at full price. light then pays the real
-// weight — it drops from messages[0], so the cached prefix collapses to the
-// system prompt (the 24–33% hit class in conv_20261109101329: 45 of 137 rounds
-// under 50%, ≈70% of that conversation's uncached input).
-//
-// One gate, sized in tokens, replaces the quota as the driver:
-//   used < FIT_GATE_USED_RATIO · window  → archive nothing
-//   once open                            → archive down to the target ratio
-//   unless the pass would reclaim < NANO_MIN_RECLAIM_TOKENS (the break is not
-//   worth it)
-// The tier quota survives as the CAP on how much one pass may take (see
-// planNanoArchival) — the same "keep the newest batch" promise, no longer a
-// reason to break the cache on its own.
-/** Where the fit gate opens. Deliberately BELOW light's own line (light fires
- *  while remaining ≥ 30%·budget ⇒ usage ≤ 70%): the archive arm has to fire
- *  first, because archiving is reversible (`tool_result_search` can fetch the
- *  text back) while light's head drop is not. Gating nano without that
- *  ordering would hand light the weight sooner — 80% breaks turned into 25%
- *  breaks. Both gates read the WIRE (requestTokensOf); the ledger below is
- *  what keeps an honest gate from bouncing. */
-export const FIT_GATE_USED_RATIO = 0.60
-/** Where an open gate lands the copy. The band between this and the gate is
- *  the hysteresis that keeps a marathon tool loop from re-breaking the prefix
- *  every round: one bite per ~10% of the window (≈10K tokens ≈ 20 tool rounds
- *  on a 100K window) rather than one bite per tier batch. */
-export const FIT_ARCHIVE_TARGET_RATIO = 0.50
-/** Minimum reclaim worth a cache break. Below it the pass defers to the next
- *  crossing — in fit mode this replaces the old "≥2 full tier batches" guard,
- *  doing the same job (don't break the cache for a token win) in the currency
- *  that actually matters. */
-export const NANO_MIN_RECLAIM_TOKENS = 4_000
-
+// ── Nano's role inside a cut ───────────────────────────────────────────
+// nano used to run on its own fit gate (open at 0.60·window, archive down to
+// 0.50·window, defer under a 4K reclaim floor) with a ledger (`gateArchivedIds`)
+// carrying placeholders across requests so an honest gate could not bounce.
+// All of that is gone: nano is now step 2 of a cut whose target the epoch
+// predicate already chose, and the placeholders live in the FROZEN base —
+// there is nothing to bounce back, because the copy is not re-derived from the
+// transcript. The tier quota survives unchanged as the CAP on how much one
+// pass may take: the newest full batch of a tier stays whole.
 /** One tool_result's reclaimable weight: its priced text minus the placeholder
  *  that replaces it, floored at 0 (a result shorter than the placeholder has
- *  nothing to give; fit mode leaves it alone rather than break the cache). */
+ *  nothing to give). */
 function nanoReclaimableTokens(content: string): number {
   return Math.max(0, estimateTextTokens(content) - NANO_PLACEHOLDER_COST)
 }
@@ -227,71 +254,54 @@ interface NanoArchivalPlan {
   ids: Set<string>
   /** Heuristic tokens the pass takes off the copy. */
   reclaimedTokens: number
-  /** Per-id reclaim, so the caller can split this pass's FRESH takes from
-   *  ids the archive ledger carried in (their placeholders re-mint every
-   *  build but they are not a new cache break). */
-  savings: Map<string, number>
 }
 
-/** What the last nano pass decided. The request build logs one line from this
- *  so "break frequency × break depth" is measurable without waiting for a
- *  post-hoc DB query (W3 of PLAN-nano-light-trigger-merge): the gate's own
- *  inputs (used/target) and its verdict sit next to what light then dropped. */
+/** What the last nano pass decided. The cut log prints one line from this so
+ *  "how deep did the cut go" is measurable without a post-hoc DB query. */
 export interface NanoArchiveStats {
-  /** Whole-copy usage the gate judged (WIRE anchor + tail estimate —
-   *  requestTokensOf, see requestTokens()), in the same units light/hard use.
-   *  0 when no window was known. */
+  /** Heuristic copy usage the directed walk priced. 0 when nothing was
+   *  priced (no window / no cut). */
   used: number
-  /** 'legacy' = no window ⇒ the pre-merge quota walk, no gate involved. 'open'
-   *  can still mean archived=0 (below the min-reclaim floor, nothing takeable
-   *  under the caps) — that is the deferred case the log must not hide. */
-  gate: 'open' | 'closed' | 'legacy'
-  /** Results THIS pass took FRESH — ids the archive ledger carried in re-mint
-   *  their placeholders every build but are not a new cache break, so they
-   *  must not read as one. */
+  /** Results this pass took. */
   archived: number
   reclaimed: number
-  /** Where an open gate bites down to (window × FIT_ARCHIVE_TARGET_RATIO); 0
-   *  without a window. */
+  /** Where the pass was aiming (heuristic units); 0 when it had no target. */
   target: number
 }
 
 /**
  * THE archival decision, for both consumers: nanoCompact (live, with the
- * model's mandates) and estimateAfterNanoTokens (ring projection, without
- * them — it may over-read, never under). ONE implementation, for the same
- * reason NANO_TIER_SIZES' comment gives for the quotas: a drifted copy in the
- * projection silently misprices every ring reading.
+ * model's mandates) and estimateAfterNanoTokens (ring projection, without them
+ * — it may over-read, never under). ONE implementation; a drifted copy in the
+ * projection would silently misprice every ring reading.
  *
- * The plan is a PURE function of the input copy: the same source re-derives
- * the same ids and the same placeholder bytes on every request (W2 of
- * PLAN-nano-light-trigger-merge retired the one-shot marks whose "compressed
- * once → skip → re-inflate next request" bounce made each archive live
- * exactly one request and broke the prefix cache every round above the gate).
+ * Two modes, picked by `targetTokens`:
+ *  - ABSENT → the pre-merge quota walk (byte-for-byte the old behavior):
+ *    callers with no target keep taking whole tier batches. Kept because the
+ *    walk is also the only rule that means anything without a budget.
+ *  - PRESENT → directed: take oldest-first until `usedTokens − reclaimed`
+ *    reaches the target, stopping at the tier caps. No ratio gate and no
+ *    min-reclaim floor — the caller only calls this when it has decided to
+ *    cut, and the cut's own target is the floor.
  *
- * `contextLength` ABSENT keeps the pre-merge quota walk byte-for-byte —
- * callers that do not know the window (tests, and anything not yet threaded
- * through) keep yesterday's behavior rather than silently archiving nothing.
- *
- * The walk stays OLDEST-FIRST in both modes, so the cache break lands as deep
- * as the archival frontier allows instead of at the head, and the newest batch
- * stays readable (the cap) — the policy the quota encoded.
+ * The walk stays OLDEST-FIRST in both modes, so the cut lands as deep as the
+ * archival frontier allows and the newest batch stays readable (the cap).
  */
 function planNanoArchival(
   messages: AgentMessage[],
   opts: {
-    /** Explicit model picks: compress regardless of gate, caps and min-reclaim. */
+    /** Explicit model picks: count toward the bite regardless of caps. */
     mandatedIds?: ReadonlySet<string>
-    contextLength?: number
-    /** Wire-anchored usage the gate reads (fit mode only). */
-    estimatedTokens?: number
+    /** Directed mode: current copy usage in heuristic units. */
+    usedTokens?: number
+    /** Directed mode: the usage to reach. */
+    targetTokens?: number
   } = {},
 ): NanoArchivalPlan {
-  const plan: NanoArchivalPlan = { ids: new Set<string>(), reclaimedTokens: 0, savings: new Map() }
+  const plan: NanoArchivalPlan = { ids: new Set<string>(), reclaimedTokens: 0 }
   const take = (id: string, saving: number): void => {
     plan.ids.add(id)
     plan.reclaimedTokens += saving
-    plan.savings.set(id, saving)
   }
 
   // Protect the newest N user messages carrying tool_results — the live tail
@@ -355,9 +365,9 @@ function planNanoArchival(
     }
   }
 
-  const window = opts.contextLength
-  if (typeof window !== 'number' || window <= 0) {
-    // ── Pre-merge quota walk (no window known) ─────────────────────────
+  const target = opts.targetTokens
+  if (typeof target !== 'number') {
+    // ── Quota walk (no target known) ────────────────────────────────────
     const targets: Record<number, number> = {}
     for (const [tierStr, count] of Object.entries(counts)) {
       const tier = Number(tierStr)
@@ -377,23 +387,15 @@ function planNanoArchival(
     return plan
   }
 
-  // ── Fit gate ──────────────────────────────────────────────────────────
-  const used = opts.estimatedTokens ?? 0
-  if (used < window * FIT_GATE_USED_RATIO) return plan
-  // Carried mandates (the archive ledger, model picks) already hold
-  // placeholders in the plan being built, so their reclaim counts toward the
-  // bite — otherwise the walk would re-spend their share of the budget on
-  // extra candidates every pass and the archived set would creep up toward
-  // the caps (PLAN-cache-wire-gates: the hysteresis this fixes is "the pass
-  // after a bite changes nothing").
-  const gap = Math.max(0, used - window * FIT_ARCHIVE_TARGET_RATIO - plan.reclaimedTokens)
-  if (gap <= 0) return plan
-  let budget = gap
-  // The old quota's "keep the newest batch" promise, in cap form: a pass may
-  // take at most count − size results per tier, so the newest full batch of
-  // every tracked tier stays whole however far over the target the copy is (a
-  // genuinely over-full copy is light's problem, not a reason to archive what
-  // the model is still reading).
+  // ── Directed walk ─────────────────────────────────────────────────────
+  // Mandates already count toward the bite: their reclaim is part of what the
+  // caller asked for, so the walk must not spend that share on extra
+  // candidates.
+  let budget = Math.max(0, (opts.usedTokens ?? 0) - Math.max(0, target) - plan.reclaimedTokens)
+  if (budget <= 0) return plan
+  // The quota's "keep the newest batch" promise, in cap form: a pass may take
+  // at most count − size results per tier, so the newest full batch of every
+  // tracked tier stays whole however far over the target the copy is.
   const capLeft: Record<number, number> = {}
   for (const [tierStr, count] of Object.entries(counts)) {
     const tier = Number(tierStr)
@@ -401,17 +403,6 @@ function planNanoArchival(
     if (!size) continue
     capLeft[tier] = Math.max(0, count - size)
   }
-  // Is the pass worth a break at all? Measure under the caps first so the
-  // answer matches what the take loop can actually reach.
-  const probe: Record<number, number> = { ...capLeft }
-  let available = 0
-  for (const c of candidates) {
-    if (c.saving <= 0) continue
-    if (!((probe[c.tier] || 0) > 0)) continue
-    probe[c.tier] = (probe[c.tier] || 0) - 1
-    available += c.saving
-  }
-  if (Math.min(available, budget) < NANO_MIN_RECLAIM_TOKENS) return plan
   for (const c of candidates) {
     if (budget <= 0) break
     if (c.saving <= 0) continue
@@ -426,10 +417,12 @@ function planNanoArchival(
 /**
  * Price a message list AS THE NEXT REQUEST WILL CARRY IT: planned tool_results
  * become placeholders at `NANO_PLACEHOLDER_COST`, everything else prices raw.
- * `contextLength` + `baselineTokens` open the fit gate — a tail-only caller
- * passes the anchor it priced the tail against, because the gate compares the
- * WHOLE copy's usage to the window; passing the slice's own length would leave
- * the gate shut forever. Absent window ⇒ the pre-merge quota walk.
+ * This is the ring's projection — it must over-read the shipped copy, never
+ * under. With `contextLength` the projection aims at the COLD-START epoch
+ * target (`0.70b`): that is the depth a cut would reach today, so the ring
+ * never claims less headroom than the pipeline will actually create. Absent
+ * window ⇒ the quota walk. `baselineTokens` is the anchor a tail-only caller
+ * priced its slice against (the target is whole-copy, the slice is not).
  */
 export function estimateAfterNanoTokens(
   messages: AgentMessage[],
@@ -439,8 +432,8 @@ export function estimateAfterNanoTokens(
   let raw = 0
   for (const msg of messages) for (const block of msg.contentBlocks) raw += nanoBlockPrice(block)
   const plan = planNanoArchival(messages, {
-    contextLength,
-    estimatedTokens: contextLength ? baselineTokens + raw : undefined,
+    usedTokens: contextLength ? baselineTokens + raw : undefined,
+    targetTokens: contextLength ? epochLines(contextLength, []).target : undefined,
   })
   if (plan.ids.size === 0) return raw
   // Planned blocks price at the constant (the deliberate over-read documented
@@ -707,6 +700,72 @@ export function buildDroppedReadReminder(
   ].join('\n')
 }
 
+/** Merge a reminder carried from the PREVIOUS frozen base with the one this
+ *  cut re-derives. A new base is built from the old one, so reads archived two
+ *  epochs ago are no longer in `dropped` — without the carry arm their pointer
+ *  lines would silently disappear the first time a cut lands on top of an
+ *  older cut. Fresh entries come first (newest reads), carried ones fill in
+ *  behind, dedupe is by file path, and the shared cap still holds. */
+export function mergeReminderText(
+  carried: string | null,
+  fresh: string | null,
+  cap = DROPPED_READ_REMINDER_CAP
+): string | null {
+  if (!carried) return fresh
+  if (!fresh) return carried
+  const parse = (text: string): { header: string; entries: string[]; overflow: number } => {
+    const lines = text.split('\n')
+    const entries: string[] = []
+    let overflow = 0
+    for (const line of lines.slice(1)) {
+      const m = /^（另有 (\d+) 个更早的已归档读取未列出）$/.exec(line)
+      if (m) {
+        overflow += Number(m[1])
+        continue
+      }
+      if (line.startsWith('- ')) entries.push(line)
+    }
+    return { header: lines[0], entries, overflow }
+  }
+  const pathOf = (line: string): string => line.slice(2).split('（tool_result_id')[0]
+  const f = parse(fresh)
+  const c = parse(carried)
+  const seen = new Set<string>()
+  const entries: string[] = []
+  let overflow = f.overflow + c.overflow
+  for (const line of [...f.entries, ...c.entries]) {
+    const path = pathOf(line)
+    if (seen.has(path)) continue
+    seen.add(path)
+    if (entries.length >= cap) {
+      overflow++
+      continue
+    }
+    entries.push(line)
+  }
+  if (entries.length === 0) return null
+  const trailer = overflow > 0 ? [`（另有 ${overflow} 个更早的已归档读取未列出）`] : []
+  return [f.header, ...entries, ...trailer].join('\n')
+}
+
+/** Reminder text already baked into a frozen base, if any — the carry source
+ *  for the next cut (see mergeReminderText). */
+export function reminderTextOf(messages: AgentMessage[]): string | null {
+  for (const msg of messages) {
+    if (!msg.id.startsWith('read_reminder_')) continue
+    const text = msg.contentBlocks.find((b) => b.type === 'text')
+    if (text && text.type === 'text') return text.text
+  }
+  return null
+}
+
+/** Synthetic messages a cut synthesizes itself. They carry no transcript
+ *  identity: their text is re-derived (summary) or carried (reminder), so a
+ *  new base must never treat them as droppable source material. */
+export function isSyntheticMessage(msg: AgentMessage): boolean {
+  return msg.id.startsWith('summary_') || msg.id.startsWith('read_reminder_')
+}
+
 function makeDroppedReadReminderMessage(text: string): AgentMessage {
   return {
     id: `read_reminder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -841,24 +900,119 @@ export class ContextCompactor {
   clearMandatedToolResultIds(): void {
     this.mandatedCompressIds.clear()
   }
-  /** The nano archive ledger (PLAN-cache-wire-gates D2): tool_use ids the fit
-   *  gate archived at least once, re-fed as mandates so their placeholders
-   *  survive the gate closing (an honest wire-anchored gate lands below its
-   *  own line after a bite; without the ledger the plan would empty and the
-   *  full text would re-inflate — W2's bounce). Unlike the model's own picks
-   *  above, this set is written by the gate itself; cleared per conversation
-   *  with everything else that names message ids. */
-  private gateArchivedIds = new Set<string>()
-  /** The thinking-strip latch (D3): once the conversation's WIRE usage
-   *  crosses THINKING_STRIP_USED_RATIO the strip runs on every build for the
-   *  life of the conversation. One-way — a non-latched gate oscillates
-   *  (strip → wire shrinks below the line → thinking re-enters → re-open). */
-  private thinkingStripLatched = false
-  /** Conversation reset — the ledger named another history's tool_use ids,
-   *  and the latch belongs to a usage curve this history never lived. */
-  clearGateState(): void {
-    this.gateArchivedIds.clear()
-    this.thinkingStripLatched = false
+  // ── Epoch state (PLAN-compaction-epoch) ──────────────────────────────
+  // The frozen base IS the product: its bytes are what ships, request after
+  // request, until one predicate (`price > T`) cuts. Everything the retired
+  // ledgers bought by re-deriving ("once archived, always archived") is now
+  // structural: a placeholder baked into `epochBase` can never be re-inflated
+  // because the base is never re-derived from the live transcript.
+  private epochBase: AgentMessage[] | null = null
+  /** How much of the live transcript `epochBase` covers; the copy is
+   *  `epochBase ++ live[epochStart..]` (with the structural wedge reapplied to
+   *  the seam so regroup/elide/thinking rules hold across it). */
+  private epochStart = 0
+  /** The live message id that closed the base at bake time. The id anchor (not
+   *  the index) is the integrity check: a list that shifted under us (rewind,
+   *  delete) breaks the anchor and forces a rebuild instead of silently
+   *  concatenating the wrong tail. */
+  private epochAnchorId: string | null = null
+  /** Request ordinal of the last cut — observation only (the log line). */
+  private epochCutAt = -1
+  private epochCounter = 0
+  /** Per-request copy growth samples (capped at EPOCH_SAMPLE_CAP). Feeds the
+   *  p75 that positions T and sizes Δ. */
+  private growthSamples: number[] = []
+  /** The last priced copy, so the next request's growth is a subtraction. */
+  private lastCopyPrice = 0
+
+  /** Conversation reset — the base was another history's bytes, and the growth
+   *  samples described a curve this history never lived. */
+  clearEpoch(): void {
+    this.epochBase = null
+    this.epochStart = 0
+    this.epochAnchorId = null
+    this.epochCutAt = -1
+    this.growthSamples = []
+    this.lastCopyPrice = 0
+  }
+
+  /** The structural wedge: zero-information-loss normalizations that every
+   *  request applies at assembly time (images, thinking-only turns, todo
+   *  pairs, tool_result adjacency). Cheap enough to run unconditionally, and
+   *  it is what makes the seam between a frozen base and the live tail legal
+   *  on the wire. */
+  private structuralWedge(messages: AgentMessage[]): AgentMessage[] {
+    if (messages.length === 0) return messages
+    return regroupToolResults(
+      elideTodoWritePairs(dropStaleThinkingOnlyTurns(messages.map(stripToolResultImages))),
+    )
+  }
+
+  /** The copy this request will ship: the frozen base plus the live tail.
+   *  Identity when nothing was appended — the SAME array, so the bytes the
+   *  provider sees are literally the bytes it saw last time.
+   *
+   *  The base's last element is always a real live message (synthetics ride at
+   *  the FRONT of the compensation block), so the seam is re-wedged as
+   *  `[base.last, ...tail]` and the result spliced back — that keeps regroup's
+   *  adjacency rule and the thinking anchor spanning the boundary. Accepted
+   *  slack: the base may keep one todo_write pair that the tail's newer pair
+   *  supersedes; that is a one-time byte change when a new pair lands, not
+   *  per-request churn. */
+  assembleCopy(): AgentMessage[] {
+    const live = this.deps.getMessages()
+    if (this.epochBase !== null) {
+      const shifted = live.length < this.epochStart
+        || (this.epochStart > 0 && live[this.epochStart - 1]?.id !== this.epochAnchorId)
+      if (shifted) this.clearEpoch()
+    }
+    if (this.epochBase === null) {
+      const base = this.structuralWedge(live)
+      this.epochBase = base
+      this.epochStart = live.length
+      this.epochAnchorId = live.length > 0 ? live[live.length - 1].id : null
+      return base
+    }
+    if (live.length === this.epochStart) return this.epochBase
+    const head = this.epochBase.slice(0, -1)
+    const boundary = this.epochBase[this.epochBase.length - 1]
+    const tail = live.slice(this.epochStart)
+    const wedged = this.structuralWedge(
+      boundary === undefined ? tail : [boundary, ...tail],
+    )
+    return boundary === undefined ? wedged : [...head, ...wedged]
+  }
+
+  /** Price the copy and (optionally) book the growth sample. Growth is a
+   *  POSITIVE difference against the last priced copy — a cut resets the
+   *  baseline to the new base's price, so the samples measure "what one turn
+   *  costs", never "how much the cut freed". */
+  private priceCopy(copy: AgentMessage[], overhead: number, record: boolean): number {
+    const price = this.copyTokens(copy, overhead)
+    if (record) {
+      if (this.lastCopyPrice > 0) {
+        const growth = price - this.lastCopyPrice
+        if (growth > 0) {
+          this.growthSamples.push(growth)
+          if (this.growthSamples.length > EPOCH_SAMPLE_CAP) this.growthSamples.shift()
+        }
+      }
+      this.lastCopyPrice = price
+    }
+    return price
+  }
+
+  /** THE request-path reader: price the copy and book this request's growth
+   *  sample. Called on EVERY request, cut or not — the curve is what positions
+   *  T and sizes Δ, so booking only the cut requests would pin the lines at
+   *  the cold-start defaults forever. */
+  priceRequest(copy: AgentMessage[], overhead: number): number {
+    return this.priceCopy(copy, overhead, true)
+  }
+
+  /** The two lines for the current budget, from the observed growth. */
+  epochLines(budget: number): EpochLines {
+    return epochLines(budget, this.growthSamples)
   }
   /** History-summary cache. `firstKeptId` is the persisted COVERAGE FRONTIER
    *  (the newest message the text covers — historical field name, opaque to
@@ -868,6 +1022,21 @@ export class ContextCompactor {
    *  covered from new — only the set can. Not persisted (the frontier id is);
    *  a rehydrate rebuilds it positionally from the frontier. */
   private historySummary: { firstKeptId: string; text: string; covered?: Set<string> } | null = null
+  /** Dropped-but-unrepresented transcript, carried ACROSS cuts (D6's 跨切割
+   *  累积). Under the epoch a cut derives the next base from the previous one,
+   *  so a message an earlier cut dropped is GONE from the copy — `dropped` can
+   *  only ever describe this cut's slice. The pre-epoch pipeline got the
+   *  accrual for free: lightCompact re-dropped the transcript's older half on
+   *  every request, so its `dropped` grew monotonically and the
+   *  `SUMMARY_EXTEND_MIN_CHARS` gate eventually opened. Without this carrier
+   *  the gate can never open after the first epoch and every later drop is
+   *  silently unrepresented (only user-text replays survive).
+   *
+   *  Read (never written) by injectHistorySummaryInto; committed by directCut
+   *  AFTER the cut is judged to have landed — a cut that no-ops ships the
+   *  untruncated copy, so nothing was really dropped and nothing may accrue.
+   *  Cleared when the cache is reset (seedHistorySummary). */
+  private droppedSinceSummary: AgentMessage[] = []
   /** User messages the last injectHistorySummary pass replayed verbatim —
    *  read by the engine to populate the compaction event's counter. */
   lastInjectReplayCount = 0
@@ -875,21 +1044,10 @@ export class ContextCompactor {
    *  otherwise — the request path reads it to tag the compaction event's
    *  strategies without re-derving the composition from array lengths. */
   lastReminderCount = 0
-  /** The memoized compensation block (user replays + dropped-read reminder) and
-   *  the identity that produced it — see injectHistorySummaryInto. Cross-request
-   *  prefix stability does NOT come from this memo (the tail grows every
-   *  request, so the key churns); it comes from the builders being pure, which
-   *  makes re-derivation byte-identical. The memo serves the same-shape
-   *  rebuilds — continuation bounces, failed-request retries — where the whole
-   *  pipeline reruns over an unchanged transcript. */
-  private compensationMemo: { key: string; replays: AgentMessage[]; reminderText: string | null } | null = null
   /** The last nanoCompact decision (W3 observability). Written on every pass —
    *  prewarm's simulation included — and read by the engine IMMEDIATELY after
    *  its own synchronous call, so the two can never interleave. */
   lastNanoArchive: NanoArchiveStats | null = null
-  /** Tool cycles the last lightCompact pass dropped. Set to 0 when the pass
-   *  no-ops, so the request log never reports a previous pass's cut. */
-  lastLightDropRounds = 0
   /** Whether the last inject pass landed the model's handover note
    *  (context_compact's `notes`) — read by the engine for the tool envelope's
    *  notesKept. Reset at every inject; a `notes`-less pass always reads false. */
@@ -918,25 +1076,40 @@ export class ContextCompactor {
     return contextTokensOf(messages ?? this.deps.getMessages(), fixedOverhead)
   }
 
-  /** The WIRE reader (requestTokensOf) — what the NEXT request would weigh:
-   *  the last real request's priced size plus the appended tail at full
-   *  (pre-transform) price. The trigger chain — strip latch, nano's fit gate,
-   *  light's trigger — reads THIS, not contextTokens(). The max-guard's
-   *  whole-transcript branch prices the PRE-TRANSFORM copy, which
-   *  structurally over-reads the wire by exactly what strip/nano are about to
-   *  remove: on thinking/tool-output-heavy DeepSeek traffic it ran 2.0–2.65×
-   *  the real wire (conv_20261117170141, 2026-11-20: estimate 90–97K against
-   *  a 35–42K wire), holding all three gates permanently open from a third of
-   *  the window on and re-breaking the provider's prefix cache every few
-   *  requests — the session hit rate's 63%-vs-ZCode's-~90% gap. The anchor is
-   *  one request stale by design and the tail's raw pricing is the
-   *  conservative direction (gates fire early, never late). Overflow recovery
-   *  (hardTruncate / emergencyTruncate) deliberately KEEPS the conservative
-   *  reader — there inflation is the safe side. Absent an anchor (no request
-   *  yet) this falls back to heuristic + overhead, byte-identical to
-   *  contextTokens()'s fallback. */
-  requestTokens(messages?: AgentMessage[], fixedOverhead = 0): number {
-    return requestTokensOf(messages ?? this.deps.getMessages(), fixedOverhead)
+  // ── Copy-price calibration ───────────────────────────────────────────
+  // copyTokensOf's heuristic misprices the provider's tokenizer by a few
+  // percent, and the slant MOVES with the content mix — CJK-dense AGENTS.md
+  // under-priced ~1.7% on one request and ~4.4% on the next
+  // (conv_20261120152212: the model was told 112K against a 117,168 wire).
+  // Every estimated surface (the gauge, the compaction event's before/after)
+  // then disagrees with every measured one (the ring's anchor, the message
+  // stats row) by that slop. The provider's own usage report is the ground
+  // truth, and it lands after every request — so the LAST report calibrates
+  // the next estimate: ratio = wire / raw estimate, clamped, applied by
+  // copyTokens(). One request to converge, self-correcting on every content
+  // shift; not persisted (the first request of a session estimates uncalibrated
+  // and immediately re-learns).
+
+  /** wire / raw-copy-estimate from the most recent measured request. */
+  private copyCalibration = 1
+
+  /** Absorb the latest measured wire against the raw copy estimate that was
+   *  shipped (engine: lastBuildCopyEstimate). Non-finite / non-positive ratios
+   *  are ignored — a request without a usage report must not reset a learned
+   *  factor. Clamped: a single outlier request (one huge image the heuristic
+   *  prices at 0, say) must not throw the next gauge at 2×. */
+  setCopyCalibration(ratio: number): void {
+    if (!Number.isFinite(ratio) || ratio <= 0) return
+    this.copyCalibration = Math.min(1.6, Math.max(0.6, ratio))
+  }
+
+  /** The copy's price IN WIRE UNITS: copyTokensOf scaled by the learned
+   *  factor. This is the number every display surface quotes — the gauge
+   *  section, the compaction event's before/after — so "what the model is
+   *  told", "what the ring projects after a cut" and "what the provider
+   *  measures" converge on one value instead of straddling a 2–5% slop. */
+  copyTokens(messages: AgentMessage[], fixedOverhead = 0): number {
+    return Math.round(copyTokensOf(messages, fixedOverhead) * this.copyCalibration)
   }
 
   /** Largest keepStart whose kept tail fits `thresholdTokens` under the
@@ -946,9 +1119,16 @@ export class ContextCompactor {
    *  MIN_KEEP messages, and when even that floor cannot fit the threshold the
    *  floor still wins (cut to it anyway; whatever remains over the line is the
    *  emergency strip's problem, never a reason to no-op the whole pass).
-   *  Shared by hardTruncate (threshold 0.9× the window) and emergencyTruncate
-   *  (threshold 0.6× the provider's named limit). */
-  private fitKeepStart(messages: AgentMessage[], thresholdTokens: number, overhead: number): number {
+   *  Shared by hardTruncate (a directed step inside a cut) and
+   *  emergencyTruncate (threshold 0.6× the provider's named limit).
+   *
+   *  `scale` converts the heuristic suffix sum into the threshold's units. A
+   *  cut's target is priced in CALIBRATED copy units (copyTokens), while the
+   *  contributions are raw char-heuristics; when the heuristic over-reads (the
+   *  thinking-heavy shape) a bare comparison drops more than needed. scale=1
+   *  reduces to the additive form emergencyTruncate relies on — its overhead
+   *  already carries the gap. */
+  private fitKeepStart(messages: AgentMessage[], thresholdTokens: number, overhead: number, scale = 1): number {
     // Guards are a MINIMUM retention, so the LARGEST keepStart they permit is
     // the more restrictive of the two floors. The old Math.max made MIN_KEEP a
     // maximum retention and let a long tool tail evict both last user turns.
@@ -976,7 +1156,7 @@ export class ContextCompactor {
     const contributions = messages.map((m) => this.contributionOf(m))
     let tail = contributions.reduce((a, b) => a + b, 0)
     let keepStart = 0
-    while (keepStart < guardMax && tail + overhead > thresholdTokens) {
+    while (keepStart < guardMax && tail * scale + overhead > thresholdTokens) {
       tail -= contributions[keepStart]
       keepStart++
     }
@@ -1007,48 +1187,34 @@ export class ContextCompactor {
     return keepStart
   }
 
-  /** `record` = persist this pass's cut (see lightCompact's parameter). */
-  hardTruncate(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false, record = true): AgentMessage[] {
-    // A forced cut (explicit /compact) targets a slimmer window than the
-    // passive 0.9× — the user asked for headroom, not for barely passing the
-    // next trigger.
-    const THRESHOLD = contextLength * (force ? 0.6 : 0.9)
-
+  /** Directed step: drop the oldest prefix until the copy fits `targetTokens`
+   *  (calibrated copy units). No trigger of its own — the epoch predicate
+   *  already decided a cut is happening, and this step only runs when nano +
+   *  thinking + light could not reach the target. */
+  hardTruncate(messages: AgentMessage[], targetTokens: number, fixedOverhead = 0): AgentMessage[] {
     if (messages.length <= MIN_KEEP) return messages
 
-    const estimatedTokens = this.contextTokens(messages, fixedOverhead)
-    // Trigger on remaining window, not usage ratio: when the model window is
-    // small (e.g. 26K), 10% of it is only ~2.6K of headroom — too tight to be
-    // useful. Floor the remaining headroom at a fixed 10K so truncation still
-    // kicks in early enough on small windows.
-    const remainingWindow = contextLength - estimatedTokens
-    if (!force && remainingWindow >= Math.max(contextLength * 0.1, ContextCompactor.HARD_TRUNCATE_MIN_REMAINING)) return messages
+    const price = this.copyTokens(messages, fixedOverhead)
+    if (price <= targetTokens) return messages
 
     // The walk below estimates the remaining content in char-heuristic units,
     // which never counts the fixed overhead (system prompt + tool schemas).
     // Re-add that overhead so the kept window actually lands under the
-    // real-token threshold instead of over-retaining.
+    // real-token target instead of over-retaining — and scale the heuristic
+    // suffix into the calibrated units the target speaks.
     const heuristicTotal = this.estimateTokens(messages)
-    const overhead = Math.max(0, estimatedTokens - heuristicTotal)
+    const overhead = Math.max(0, price - heuristicTotal)
+    const scale = heuristicTotal > 0 && price < heuristicTotal ? price / heuristicTotal : 1
 
-    const keepStart = this.fitKeepStart(messages, THRESHOLD, overhead)
+    const keepStart = this.fitKeepStart(messages, targetTokens, overhead, scale)
     if (keepStart === 0) return messages
 
     const pairedStart = this.includePairedToolUses(messages, keepStart)
-
     const truncated = messages.slice(pairedStart)
-    // Same persistent frontier as light's cycle drops (see lightDroppedIds):
-    // hard cuts the OLDEST prefix, and without recording it the very next
-    // request re-derives the cut from the full transcript — the giant
-    // tool_results it just shed ride straight back in and the wire ping-pongs
-    // (conv_20261102222133: 18K → 121K on consecutive requests, driven by
-    // hard's 1-3 drops, not light's). Ids are added before the slice is
-    // returned so the engine's copy and the frontier can never disagree.
-    if (record) for (let i = 0; i < pairedStart; i++) this.lightDroppedIds.add(messages[i].id)
     const dropped = messages.length - truncated.length
     console.log(
       `[AgentEngine] hardTruncate: dropped ${dropped}/${messages.length} oldest messages ` +
-      `(context ${estimatedTokens} → keep under ${THRESHOLD} of ${contextLength})`
+      `(copy ${price} → target ${Math.round(targetTokens)})`
     )
     return truncated
   }
@@ -1193,6 +1359,10 @@ export class ContextCompactor {
 
   seedHistorySummary(text?: string, frontierId?: string): void {
     this.historySummary = text && frontierId ? { firstKeptId: frontierId, text, covered: undefined } : null
+    // The accrued drops belonged to the previous cache's ledger: a rehydrated
+    // text covers an unknown region (positionally rebuilt), so carrying the
+    // old list would double-count regions the new text may already describe.
+    this.droppedSinceSummary = []
   }
 
   /** Request-path entry (prepareLoopRequest). If a prewarm is in flight, wait
@@ -1210,6 +1380,36 @@ export class ContextCompactor {
   ): Promise<AgentMessage[]> {
     if (this.prewarmPromise) await this.prewarmPromise.catch(() => {})
     return this.injectHistorySummaryInto(original, truncated, instruction)
+  }
+
+  /** The summary REGION a cut must consider: the carrier's older drops first
+   *  (chronological), then this cut's newly-dropped messages. Read-only — the
+   *  carrier is committed by directCut once the cut is known to have landed. */
+  private accruedRegion(dropped: AgentMessage[]): AgentMessage[] {
+    if (this.droppedSinceSummary.length === 0) return dropped
+    const seen = new Set(this.droppedSinceSummary.map((m) => m.id))
+    const fresh = dropped.filter((m) => !seen.has(m.id))
+    return fresh.length > 0 ? [...this.droppedSinceSummary, ...fresh] : this.droppedSinceSummary
+  }
+
+  /** Commit a LANDED cut's drops into the carrier: everything the shipped copy
+   *  no longer holds, minus what the summary text really covers (the same
+   *  ledger discipline as the coverage claim — an id may only leave the
+   *  carrier when an LLM actually saw it). Synthetics carry no transcript
+   *  identity and never accrue. */
+  private commitDroppedAccrual(copy: AgentMessage[], shipped: AgentMessage[]): void {
+    const kept = new Set(shipped.map((m) => m.id))
+    const covered = this.historySummary?.covered ?? new Set<string>()
+    const seen = new Set<string>()
+    const next: AgentMessage[] = []
+    for (const m of [...this.droppedSinceSummary, ...copy]) {
+      if (kept.has(m.id) || covered.has(m.id) || seen.has(m.id) || isSyntheticMessage(m)) continue
+      seen.add(m.id)
+      next.push(m)
+    }
+    this.droppedSinceSummary = next.length > SUMMARY_ACCRUED_MESSAGES_CAP
+      ? next.slice(-SUMMARY_ACCRUED_MESSAGES_CAP)
+      : next
   }
 
   /** Land a summary text, rolling it (one re-summarization of the whole text)
@@ -1250,7 +1450,15 @@ export class ContextCompactor {
     truncated: AgentMessage[],
     instruction?: string,
     notes?: string,
-    opts?: { bypassBreaker?: boolean }
+    opts?: {
+      bypassBreaker?: boolean
+      carryReminder?: string | null
+      /** The cut's landing promise. When set, the replay arm is sized to the
+       *  room the steps actually left (`target − price(truncated)`) instead of
+       *  the flat budget, so the block cannot undo the cut's depth. */
+      targetTokens?: number
+      overhead?: number
+    }
   ): Promise<AgentMessage[]> {
     const notesSection = notes?.trim() ? `【交接笔记】\n${notes.trim()}` : null
     // Read by the engine's compactForTool envelope (notesKept): did the note
@@ -1264,10 +1472,32 @@ export class ContextCompactor {
     // AND the user replays were both skipped wholesale: the model lost the region
     // with zero compensation (conv_20260927170026, 2026-09-29).
     const keptIds = new Set(truncated.map((m) => m.id))
-    const dropped = original.filter((m) => !keptIds.has(m.id))
+    // Synthetic messages are not droppable material: a new base is derived from
+    // the previous one, so the old summary/reminder ride in `original`. The
+    // summary text is re-derived from `this.historySummary` and the reminder is
+    // carried explicitly (opts.carryReminder) — letting either fall into
+    // `dropped` would summarize a summary and re-count pointer lines as reads.
+    const dropped = original.filter((m) => !keptIds.has(m.id) && !isSyntheticMessage(m))
+    // Cross-cut accrual (D6): the summary REGION is this cut's drops PLUS the
+    // drops earlier cuts could not absorb. `dropped` alone is always just one
+    // cut's slice under the epoch (the next base is derived from the previous
+    // one), so building the region from it would leave every later drop
+    // unrepresented forever — see `droppedSinceSummary`. Replays, the read
+    // reminder and the frontier stay on `dropped`: those are per-cut
+    // compensation and the base already carries the older ones.
+    const region = this.accruedRegion(dropped)
     this.lastInjectReplayCount = 0
     this.lastReminderCount = 0
-    if (dropped.length === 0) return truncated
+    if (dropped.length === 0) {
+      // Nothing of the transcript left the copy — but a base carries its own
+      // compensation block, and those messages are synthetic (excluded from
+      // `dropped` above). A cut that cannot move the price (hard off, or the
+      // floors hit) still has to ship them: filtering them out here would
+      // silently delete the record of every region an earlier cut removed.
+      // Re-prepending the SAME objects also keeps the bytes stable.
+      const carried = original.filter((m) => isSyntheticMessage(m) && !keptIds.has(m.id))
+      return carried.length > 0 ? [...carried, ...truncated] : truncated
+    }
 
     // The coverage frontier is the NEWEST dropped message: the cached text
     // covers everything dropped so far, and the next pass's newly-dropped slice
@@ -1282,41 +1512,30 @@ export class ContextCompactor {
     // The compensation block (user replays + read reminder) is injected as the
     // copy's PREFIX, so any drift in it shifts every kept message behind it and
     // invalidates the cached tail — a far larger penalty than the block's own
-    // size. Two facts keep the prefix stable across requests:
-    //   · the builders are PURE functions of (dropped, truncated) — re-deriving
-    //     them for an unchanged dropped region yields byte-identical output, so
-    //     the between-drop requests (the regime LIGHT_RECLAIM_MARGIN_RATIO buys)
-    //     stay prefix-stable WITHOUT this memo;
-    //   · this memo reuses the derived block when the key recurs — which, since
-    //     `truncated.length` grows with every appended message, means only the
-    //     same-shape rebuilds (continuation bounces, request retries).
-    // The truncated terms are staleness-load-bearing, not just shape pins: a
-    // regroup flip can re-carry a dropped read's result into the KEPT tail via
-    // a synthetic carrier (see applyPersistedDrops's block-level closure),
-    // changing the reminder's visibleInTail input without touching the dropped
-    // region's identity — the tail length is what catches that flip.
-    const compensationKey = [frontierId, dropped[0].id, truncated[0]?.id ?? '', dropped.length, truncated.length].join('|')
-    let replays: AgentMessage[]
-    let reminderText: string | null
-    if (this.compensationMemo?.key === compensationKey) {
-      replays = this.compensationMemo.replays
-      reminderText = this.compensationMemo.reminderText
-    } else {
-      // The dropped region's user words ride the copy verbatim (budget-capped) —
-      // the summary paraphrases, the intent stays quotable.
-      replays = collectUserReplays(dropped)
-      // The dropped region's successful reads ride back as pointer lines — the
-      // discovery half of the compensation (the retrieval half is the persisted
-      // tool_results table + tool_result_search).
-      reminderText = buildDroppedReadReminder(dropped, truncated)
-      this.compensationMemo = { key: compensationKey, replays, reminderText }
-    }
+    // size. In the epoch design the block is baked into the frozen base, so the
+    // stability question is answered structurally: a base is built once and
+    // never re-derived, and the next cut carries the prior pointer lines
+    // forward (mergeReminderText) instead of recomputing the whole set.
+    //
+    // The dropped region's user words ride the copy verbatim (budget-capped) —
+    // the summary paraphrases, the intent stays quotable. The budget is the
+    // room the cut left when a target is known (directCut aims the steps lower
+    // by the same reserve, so the two agree); the legacy callers pass none and
+    // keep the flat budget.
+    const replayBudget = opts?.targetTokens == null
+      ? USER_REPLAY_BUDGET_TOKENS
+      : Math.max(0, Math.min(USER_REPLAY_BUDGET_TOKENS, Math.round(opts.targetTokens) - this.copyTokens(truncated, opts.overhead ?? 0)))
+    const replays = collectUserReplays(dropped, replayBudget)
+    // The dropped region's successful reads ride back as pointer lines — the
+    // discovery half of the compensation (the retrieval half is the persisted
+    // tool_results table + tool_result_search).
+    const reminderText = mergeReminderText(opts?.carryReminder ?? null, buildDroppedReadReminder(dropped, truncated))
     this.lastInjectReplayCount = replays.length
     this.lastReminderCount = reminderText !== null ? 1 : 0
     const withCompensation = (summaryText: string | null, covered?: Set<string>): AgentMessage[] => [
       ...replays,
       ...(summaryText !== null
-        ? [makeHistorySummaryMessage(summaryText, covered ? buildSummaryCoverageHeader(dropped, covered) : null)]
+        ? [makeHistorySummaryMessage(summaryText, covered ? buildSummaryCoverageHeader(region, covered) : null)]
         : []),
       ...(reminderText !== null ? [makeDroppedReadReminderMessage(reminderText)] : []),
       ...truncated,
@@ -1331,8 +1550,8 @@ export class ContextCompactor {
     const cacheCovered = (): Set<string> | undefined => {
       if (!cache) return undefined
       if (cache.covered) return cache.covered
-      const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
-      return new Set(dropped.slice(0, j + 1).map((m) => m.id))
+      const j = region.findIndex((m) => m.id === cache.firstKeptId)
+      return new Set(region.slice(0, j + 1).map((m) => m.id))
     }
 
     // Refill breaker active: reuse whatever summary state exists WITHOUT
@@ -1353,7 +1572,7 @@ export class ContextCompactor {
     // the frontier unpinned (the falsy guard in seedHistorySummary drops the
     // cache at persistence, so a rehydrate re-summarizes honestly).
     if (!cache) {
-      const built = buildDroppedRegionText(dropped)
+      const built = buildDroppedRegionText(region)
       if (!built.text.trim() && !notesSection) return withCompensation(null)
       const summary = built.text.trim() ? await this.deps.runHistorySummary(built.text, instruction, 'region') : null
       const text = await this.composeWithNotes(summary, notesSection, instruction)
@@ -1379,7 +1598,7 @@ export class ContextCompactor {
     // user message ceding to a newer turn, the hot zone sliding) drop messages
     // BEHIND the frontier, and those must be absorbed like any other new drop.
     const covered = cache.covered ?? cacheCovered() ?? new Set<string>()
-    const uncovered = dropped.filter((m) => !covered.has(m.id))
+    const uncovered = region.filter((m) => !covered.has(m.id))
     if (uncovered.length === 0) {
       // Everything currently dropped is already covered — the cached text rides
       // as-is. The one exception: a tool call's notes still land (D5 — the model
@@ -1440,71 +1659,51 @@ export class ContextCompactor {
   }
 
   /**
-   * In-place tool_result archival. `contextLength` opens the merged fit gate
-   * (PLAN-nano-light-trigger-merge W1): with a window the pass archives
-   * nothing below FIT_GATE_USED_RATIO and then bites down to
-   * FIT_ARCHIVE_TARGET_RATIO, instead of burning a tier quota every batch and
-   * breaking the provider's prefix cache for a reclaim the copy did not need.
-   * Without a window the pre-merge quota walk runs unchanged — callers that
-   * have not been threaded through keep yesterday's behavior.
+   * Step 2 of a cut: archive old tool_results toward `targetTokens`
+   * (calibrated copy units). No gate of its own — the epoch predicate already
+   * decided the head is moving, so this step takes as much as the directed
+   * walk allows and hands the result back. The placeholders live in the FROZEN
+   * base, so there is no ledger to carry them across requests: planNanoArchival
+   * skips blocks that already carry a placeholder, which makes every id it
+   * returns genuinely fresh by construction (`gateArchivedIds` retired with
+   * the re-derive-every-request pipeline it existed to stabilize).
    *
-   * The decision itself lives in planNanoArchival, shared with the ring
-   * projection so the two cannot drift.
+   * Units: the planner walks in char heuristics, the target speaks calibrated
+   * wire. `scale` converts one into the other, and `overhead` is the fixed
+   * part the heuristic never sees — scale 1 with zero overhead reduces to the
+   * additive form byte for byte.
    */
-  nanoCompact(messages: AgentMessage[], contextLength?: number, fixedOverhead = 0, record = true): AgentMessage[] {
-    // `contextLength <= 0` and absent are the same thing (no window): the
-    // planner's own guard already says so, and the stats below must read the
-    // gate the same way the decision did.
-    const window = typeof contextLength === 'number' && contextLength > 0 ? contextLength : undefined
-    // The gate reads the WIRE (requestTokensOf): the anchor prices the last
-    // shipped copy (placeholders already in), the tail prices raw. The old
-    // max-guarded reader priced the pre-transform copy and ran 2.0-2.65× the
-    // real wire on thinking-heavy traffic (conv_20261117170141), holding the
-    // gate open from a third of the window on.
-    const used = window ? this.requestTokens(messages, fixedOverhead) : 0
-    const mandates = this.gateArchivedIds.size > 0
-      ? new Set<string>([...this.mandatedCompressIds, ...this.gateArchivedIds])
-      : this.mandatedCompressIds
+  nanoCompact(messages: AgentMessage[], targetTokens: number, fixedOverhead = 0): AgentMessage[] {
+    const price = this.copyTokens(messages, fixedOverhead)
+    const totalH = this.estimateTokens(messages)
+    const overhead = Math.max(0, price - totalH)
+    const scale = totalH > 0 && price < totalH ? price / totalH : 1
+    // The planner's budget is `usedTokens − targetTokens`, so both sides go
+    // into heuristic units; the mandate share is subtracted inside it (a cut
+    // must not spend the same budget twice).
+    const targetH = Math.max(0, (targetTokens - overhead) / scale)
     const plan = planNanoArchival(messages, {
-      mandatedIds: mandates,
-      contextLength: window,
-      estimatedTokens: window ? used : undefined,
+      mandatedIds: this.mandatedCompressIds,
+      usedTokens: totalH,
+      targetTokens: targetH,
     })
-    // The archive ledger (PLAN-cache-wire-gates D2): the honest gate CLOSES
-    // after a bite (the shipped wire lands at the 50% target, below the 60%
-    // line), and a closed gate means an empty plan — the placeholders would
-    // revert to full text and re-break the prefix every other request (W2's
-    // bounce, which the max-guard's never-coming-down reading used to suppress
-    // by accident). Ledgered ids ride the mandate channel, which bypasses
-    // gate/caps/floor: once archived, always archived. The same source still
-    // re-derives the same placeholder bytes, so the copy stays byte-stable
-    // between frontier advances.
-    let fresh = 0
-    let freshReclaim = 0
-    for (const id of plan.ids) {
-      if (this.gateArchivedIds.has(id)) continue
-      fresh++
-      freshReclaim += plan.savings.get(id) ?? 0
-      if (record && window !== undefined) this.gateArchivedIds.add(id)
-    }
-    // Recorded on EVERY path (the early return below included): a stale record
-    // would report the previous request's gate as this one's.
+    // Written on EVERY path (the early return below included): a stale record
+    // would report the previous cut's depth as this one's.
     this.lastNanoArchive = {
-      used,
-      gate: window === undefined ? 'legacy' : used >= window * FIT_GATE_USED_RATIO ? 'open' : 'closed',
-      archived: fresh,
-      reclaimed: Math.round(freshReclaim),
-      target: window === undefined ? 0 : Math.round(window * FIT_ARCHIVE_TARGET_RATIO),
+      used: price,
+      archived: plan.ids.size,
+      reclaimed: Math.round(plan.reclaimedTokens * scale),
+      target: Math.round(targetTokens),
     }
     if (plan.ids.size === 0) return messages
 
-    // Re-derive, never remember: the same source yields the same plan and the
-    // same placeholder bytes on EVERY request (the tool_result_id is minted
-    // once onto the source block and survives the DB roundtrip), so between
-    // frontier advances the wire copy is byte-stable and the provider's prefix
-    // cache holds. The retired one-shot marks made each archive live exactly
-    // one request — the next build re-shipped the full text and broke the
-    // cache again (W2, PLAN-nano-light-trigger-merge).
+    // The placeholder bytes are stable for the life of the base: the
+    // tool_result_id is minted once onto the SOURCE block (the one property
+    // this pass still writes through, so the id survives the DB roundtrip and
+    // the rehydrated base mints the same glyph), and the placeholder text
+    // itself is baked into the frozen epoch — no request below the next cut
+    // re-derives it, which is the structural replacement for the retired
+    // "re-derive, never remember" ledger dance.
     return messages.map(msg => {
       if (msg.role !== 'user') return msg
       let modified = false
@@ -1520,64 +1719,26 @@ export class ContextCompactor {
     })
   }
 
-  /** Message ids whose stale thinking the REQUEST path has already stripped.
-   *  Reporting state only — the strip itself is a pure function of
-   *  (messages, anchor) and never consults this set. It exists so the
-   *  compaction event names 'thinking' only on the request that strips
-   *  something NEW (a turn just closed), not on every request: the strip
-   *  rebuilds the same objects each build, so reference identity (nano's
-   *  footprint) would read as a fresh compaction every time. The prewarm
-   *  simulation passes record=false — it must not consume the request path's
-   *  "new" signal. */
-  private strippedThinkingIds = new Set<string>()
-  /** Messages the last recording stripStaleThinking pass stripped for the
-   *  first time. */
-  lastThinkingStripNew = 0
-
-  /** Conversation reset — a new history has no stripped ids to remember. */
-  clearStrippedThinkingIds(): void {
-    this.strippedThinkingIds.clear()
-    this.lastThinkingStripNew = 0
-  }
-
-  /** Strip thinking off assistant messages behind the turn anchor (see
-   *  THINKING_STRIP_USED_RATIO). Runs beside nano at BOTH pipeline sites —
-   *  prepareLoopRequest and prewarmBody — so the prewarm simulation prices the
-   *  copy the next request will actually build. Deliberately NOT nano's
-   *  one-shot compress → skip → re-inflate shape: the same block is stripped on
-   *  every build, because a bouncing block would flip the cache prefix every
-   *  request. Two bookkeeping corrections ride along, both in heuristic units:
+  /** Strip thinking off assistant messages behind the turn anchor. Step 3 of a
+   *  cut and deliberately UNCONDITIONAL there: the retired usage gate existed
+   *  to decide whether a per-request pass was worth a head move, and it needed
+   *  a latch because a non-latched gate oscillated (strip shrank the reading
+   *  below the line, thinking re-entered, the gate reopened). A cut moves the
+   *  head exactly once by definition, so there is nothing to oscillate and no
+   *  gate to hold — the strip just runs.
+   *
+   *  Two bookkeeping corrections ride along, both in heuristic units:
    *  `outputTokens` is cleared on a stripped message (that report priced the
    *  thinking now gone — estimateMessagesTokens would otherwise keep billing
    *  the message at the report alone, the 模块11 underprice rule inverted),
    *  and the report anchor's `inputTokens` loses the weight of every block
    *  stripped BEFORE it (its prompt held them; left alone the anchor over-reads
-   *  by exactly that weight on the turn's first request, and an over-read fires
-   *  light into dropping cycles the next summary pass may absorb for good). The
-   *  CJK-heavy heuristic over-prices DeepSeek's thinking by ~30%, so the
-   *  corrected anchor UNDER-reads for that one request until the next real
-   *  report — the safer error, and the max-guard's full heuristic backstops it.
-   *  Untouched messages keep their identity. */
-  stripStaleThinking(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, record = true): AgentMessage[] {
-    if (record) this.lastThinkingStripNew = 0
-    if (!contextLength) return messages
-    // The gate reads the WIRE (requestTokensOf) and LATCHES (PLAN-cache-wire-gates
-    // D3). A non-latched honest gate would bounce: stripping shrinks the wire
-    // back below the line, the gate closes, thinking re-enters the copy, the
-    // gate reopens — flipping the prefix every request. The latch makes the
-    // crossing one-way, and the strip itself is already turn-anchored
-    // (idempotent within a turn; exactly one new message crosses behind the
-    // anchor per turn boundary), so a latched strip costs one partial re-bill
-    // per turn and nothing between. The old reader was the max-guarded
-    // transcript estimate, whose inflated branch held the gate open from a
-    // third of the window on (conv_20261117170141) — the churn this replaces.
-    // The latch is written from the prewarm simulation too (record=false):
-    // it is a property of the conversation's usage curve, not a per-build
-    // decision, and prewarm reads the same live history the next request will.
-    if (!this.thinkingStripLatched) {
-      if (this.requestTokens(messages, fixedOverhead) < contextLength * THINKING_STRIP_USED_RATIO) return messages
-      this.thinkingStripLatched = true
-    }
+   *  by exactly that weight on the turn's first request). The CJK-heavy
+   *  heuristic over-prices DeepSeek's thinking by ~30%, so the corrected anchor
+   *  UNDER-reads for that one request until the next real report — the safer
+   *  error, and the backstop readers absorb it. Untouched messages keep their
+   *  identity. */
+  stripStaleThinking(messages: AgentMessage[]): AgentMessage[] {
     const anchor = lastTextUserMessageIndex(messages)
     if (anchor < 0) return messages
 
@@ -1588,14 +1749,9 @@ export class ContextCompactor {
 
     let strippedBeforeReport = 0
     let changed = false
-    let fresh = 0
     const out = messages.map((m, i) => {
       if (i >= anchor || m.role !== 'assistant' || !m.contentBlocks.some(isThinkingBlock)) return m
       changed = true
-      if (record && !this.strippedThinkingIds.has(m.id)) {
-        this.strippedThinkingIds.add(m.id)
-        fresh++
-      }
       if (i < reportIdx) {
         for (const b of m.contentBlocks) {
           if (isThinkingBlock(b)) strippedBeforeReport += estimateTextTokens(thinkingTextOf(b))
@@ -1604,7 +1760,6 @@ export class ContextCompactor {
       return { ...m, contentBlocks: m.contentBlocks.filter((b) => !isThinkingBlock(b)), outputTokens: undefined }
     })
     if (!changed) return messages
-    if (record) this.lastThinkingStripNew = fresh
     if (reportIdx >= 0 && strippedBeforeReport > 0) {
       const r = out[reportIdx]
       out[reportIdx] = { ...r, inputTokens: Math.max(1, (r.inputTokens ?? 0) - strippedBeforeReport) }
@@ -1631,182 +1786,25 @@ export class ContextCompactor {
     return total
   }
 
-  /** Messages an earlier light/hard pass already shed, and the user messages it
-   *  kept as text-only (the mixed text + tool_result arm). MONOTONE within a
-   *  conversation: an id never leaves the set, so a dropped cycle can never
-   *  ride back into the copy.
+  /** Step 4 of a cut: drop the OLDEST tool cycles until the copy fits
+   *  `targetTokens` (calibrated copy units). No trigger and no reclaim floor of
+   *  its own — the epoch predicate already decided a cut is happening and Δ
+   *  already decided how deep; a pass that reclaims little simply stops at the
+   *  first cycle that lands the copy under the line.
    *
-   *  Why this must exist (conv_20261102222133, 2026-11-02): light re-derived
-   *  its cut from the FULL transcript on every request, and the copy it built
-   *  was discarded — `this.messages` keeps everything. After a heavy pass the
-   *  gateway honestly reported the COMPACTED wire size (~19.5K), which became
-   *  the next pass's `contextTokensOf` anchor; the max-guard then fell back to
-   *  the full-transcript heuristic (~82K), `fits()` read "only a little over",
-   *  and the walk dropped 8 cycles — the previous pass's ~114 holes all
-   *  re-inflated, the wire jumped back to ~120K, and the next pass dropped 114
-   *  again. That 20K ↔ 120K ping-pong ran for the whole session (every request
-   *  re-billed a prefix that had already been shed, and the summary frontier
-   *  never advanced because the same region kept being re-dropped).
-   *
-   *  hardTruncate feeds the same set (its cut is the oldest prefix, so it is
-   *  monotone for the same reason) — the real replay showed hard's 1-3 giant
-   *  tool_results were the bigger swing, and light's frontier alone left the
-   *  18K ↔ 121K alternation intact. */
-  private lightDroppedIds = new Set<string>()
-  private lightStrippedIds = new Set<string>()
-
-  /** Conversation reset — the ids named a history that no longer exists. */
-  clearLightDrops(): void {
-    this.lightDroppedIds.clear()
-    this.lightStrippedIds.clear()
-  }
-
-  /** Re-apply the persistent light decisions to the copy being built. Runs at
-   *  the TOP of both pipelines (prepareLoopRequest / prewarmBody), BEFORE
-   *  nano/light, so the fit walks price what will actually be sent and a
-   *  dropped cycle never re-inflates. Deliberately NOT inside lightCompact:
-   *  its length delta is the engine's "a NEW drop happened" signal, and folding
-   *  historical drops into it would report a light compaction on every request
-   *  (and trip the refill breaker against a rhythm that never happened).
-   *  Identity when nothing was dropped yet — byte-identical requests for
-   *  sessions that never compacted. */
-  applyPersistedDrops(messages: AgentMessage[]): AgentMessage[] {
-    if (this.lightDroppedIds.size === 0 && this.lightStrippedIds.size === 0) return messages
-    let changed = false
-    const out: AgentMessage[] = []
-    // Pairing bookkeeping (review_20261103 高1): the frontier keys MESSAGE ids,
-    // but regroupToolResults re-carriers every tool_result under a synthetic
-    // `regroup_<assistantId>` message whenever the history's wire legality
-    // flips — so an id recorded in one shape half-matches the replayed copy in
-    // the other: the shed call survives (its carrier id is gone) while its
-    // results stay, or the mirror image. Track what the frontier actually shed
-    // at BLOCK level so the sweep below can close both directions.
-    const shedUseIds = new Set<string>()
-    const shedResultUseIds = new Set<string>()
-    for (const msg of messages) {
-      if (this.lightDroppedIds.has(msg.id)) {
-        changed = true
-        for (const b of msg.contentBlocks) {
-          if (b.type === 'tool_use') shedUseIds.add((b as { id: string }).id)
-          else if (b.type === 'tool_result') shedResultUseIds.add(b.tool_use_id)
-        }
-        continue
-      }
-      // The strip arm keeps the user's own words; only the tool_results go.
-      // Same rule as lightCompact's own toStrip branch (text blocks only).
-      if (this.lightStrippedIds.has(msg.id) && msg.contentBlocks.some((b) => b.type !== 'text')) {
-        changed = true
-        for (const b of msg.contentBlocks) {
-          if (b.type === 'tool_result') shedResultUseIds.add(b.tool_use_id)
-        }
-        out.push({ ...msg, contentBlocks: msg.contentBlocks.filter((b) => b.type === 'text') })
-        continue
-      }
-      out.push(msg)
-    }
-    if (!changed) return messages
-    // Pairing closure: strip results whose call the frontier shed, and calls
-    // whose result the frontier shed (a message left with no blocks goes too).
-    // Exact SET membership — never bare absence — so a live in-flight call
-    // (its result simply has not arrived yet) is untouched: its tool_use_id is
-    // in neither set.
-    let mutated = false
-    const closed: AgentMessage[] = []
-    for (const msg of out) {
-      if (!msg.contentBlocks.some((b) => b.type === 'tool_use' || b.type === 'tool_result')) {
-        closed.push(msg)
-        continue
-      }
-      const blocks = msg.contentBlocks.filter((b) => {
-        if (b.type === 'tool_result') return !shedUseIds.has(b.tool_use_id)
-        if (b.type === 'tool_use') return !shedResultUseIds.has((b as { id: string }).id)
-        return true
-      })
-      if (blocks.length === 0) {
-        mutated = true
-        continue
-      }
-      if (blocks.length !== msg.contentBlocks.length) {
-        mutated = true
-        closed.push({ ...msg, contentBlocks: blocks })
-      } else {
-        closed.push(msg)
-      }
-    }
-    return mutated ? closed : out
-  }
-
-  /** `record` = write this pass's decisions into the persistent frontier. A
-   *  real request build records; prewarm's discarded simulation must NOT (its
-   *  force bits cut deeper than the request that follows, and persisting a
-   *  simulated forced cut would permanently deepen the copy every turn). */
-  lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false, record = true): AgentMessage[] {
-    // Reset first: the request log reads this beside nano's stats, and a
-    // no-op pass must not inherit the previous request's cut.
-    this.lastLightDropRounds = 0
-    if (!contextLength) return messages
-
-    // The trigger reads the WIRE (requestTokensOf — see requestTokens()): the
-    // anchor prices the last shipped copy, the tail prices raw. The old
-    // max-guarded reader priced the pre-transform copy and ran 2.0–2.65× the
-    // real wire on thinking-heavy traffic (conv_20261117170141), firing light
-    // from a third of the window on.
-    const estimatedTokens = this.requestTokens(messages, fixedOverhead)
-    // Trigger on remaining window, not usage ratio. Headroom is proportional
-    // to the budget (LIGHT_REMAIN_HEADROOM_RATIO); the retired flat 30K floor
-    // pinned sub-100K budgets into a 3.6K-wide trigger band — chronic drops
-    // even on honest readings.
-    const remainingWindow = contextLength - estimatedTokens
-    if (!force && remainingWindow >= contextLength * LIGHT_REMAIN_HEADROOM_RATIO) return messages
-
-    // Fit target, same units as the walk below (heuristic + fixed overhead):
-    // once triggered, drop only the OLDEST cycles needed to bring the kept copy
-    // back under the line that fired — passive target is exactly the trigger
-    // line, forced (/compact) aligns with hardTruncate's 0.6× window. The old
-    // shape had no target at all: one trigger wiped EVERY droppable cycle down
-    // to the 8K hot zone, and because the live transcript stays over the line
-    // forever (the copy is re-derived per request), a long tool session ran
-    // with the model seeing ~11-18% of its window (conv_20260927170026, 618 of
-    // 806 messages dropped per request).
-    //
-    // Floored at half the window: on a small model the trigger's 30K headroom
-    // subtracts PAST zero (26K window → −4K), fits() went always-false and the
-    // walk degenerated back into the wipe-to-hot-zone this target exists to
-    // prevent (review_20260929 中2) — and the log printed a negative target.
-    // Half the window is the smallest number that still means "fit".
-    // Land BELOW the trigger by the reclaim margin rather than exactly on it —
-    // see LIGHT_RECLAIM_MARGIN_RATIO. A forced pass (prompt-too-long recovery)
-    // takes no margin: there the only goal is to get under the hard line.
-    const reclaimMargin = force ? 0 : contextLength * LIGHT_RECLAIM_MARGIN_RATIO
-    const targetTokens = Math.max(
-      force ? contextLength * 0.6 : contextLength - contextLength * LIGHT_REMAIN_HEADROOM_RATIO - reclaimMargin,
-      contextLength * 0.5,
-    )
+   *  The walk speaks heuristic units (per-message contributions) while the
+   *  target speaks wire units, so the same conversion the other steps use
+   *  applies: `overhead = price − totalH` and `scale = price/totalH` when the
+   *  heuristic over-reads. `scale = 1` reduces to the plain additive form. */
+  lightCompact(messages: AgentMessage[], targetTokens: number, fixedOverhead = 0): AgentMessage[] {
+    const price = this.copyTokens(messages, fixedOverhead)
+    if (price <= targetTokens) return messages
 
     const contributions = messages.map((m) => this.contributionOf(m))
     const totalH = contributions.reduce((a, b) => a + b, 0)
-    // hardTruncate/emergencyTruncate's own rule: the char heuristic never sees
-    // the fixed overhead, and when a real report anchors `estimatedTokens` the
-    // gap also carries every token the heuristic mis-priced — a gateway whose
-    // completion_tokens excludes reasoning underprices each assistant message
-    // (模块11 replay: 126 reported vs ~1.5K of thinking+tool_use per message,
-    // ~26K accumulated over 50 rounds). Deriving the overhead from that gap is
-    // what makes fits() speak the units the trigger above fired in. Without it
-    // the walk believed the copy already fit (112K heuristic + assumed overhead
-    // ≤ 140K) and dropped nothing for several requests while the real wire
-    // climbed 140K → 161K with zero compaction events. Unanchored, the gap is
-    // exactly fixedOverhead, so honest-reporting sessions are byte-identical.
-    const overhead = Math.max(0, estimatedTokens - totalH)
-    // When the trigger input sits BELOW the raw heuristic price (an
-    // over-reading heuristic on thinking-heavy transcripts — the
-    // conv_20261117170141 2.0–2.65× shape), the additive gap above clamps to
-    // 0 and a bare `totalH - droppedH <= target` would compare heuristic
-    // units against a wire-unit target and over-drop by exactly the
-    // inflation. Scale instead: the post-drop wire is predicted as
-    // (totalH − droppedH) × scale. est ≥ totalH keeps scale 1, which reduces
-    // to the additive form above byte for byte — the under-reading gateway's
-    // protection (模块11) is untouched.
-    const scale = totalH > 0 && estimatedTokens < totalH ? estimatedTokens / totalH : 1
+    const overhead = Math.max(0, price - totalH)
+    const scale = totalH > 0 && price < totalH ? price / totalH : 1
+
     let droppedH = 0
     const fits = (): boolean => (totalH - droppedH) * scale + overhead <= targetTokens
 
@@ -1825,8 +1823,6 @@ export class ContextCompactor {
     // message(s) with the matching tool_results.
     const toDelete = new Set<number>()
     const toStrip: Map<number, ContentBlock[]> = new Map()
-    const droppedIds: string[] = []
-    const strippedIds: string[] = []
 
     let roundsDeleted = 0
     for (let i = 0; i < messages.length - 1; i++) {
@@ -1865,41 +1861,17 @@ export class ContextCompactor {
       if (!userHasText) {
         toDelete.add(i)
         toDelete.add(i + 1)
-        // Persist the decision (see lightDroppedIds): next build starts from
-        // this hole instead of re-deriving it out of existence.
-        droppedIds.push(current.id, next.id)
         droppedH += contributions[i] + contributions[i + 1]
         roundsDeleted++
       } else {
         toDelete.add(i)
         toStrip.set(i + 1, next.contentBlocks.filter(b => b.type === 'text'))
-        droppedIds.push(current.id)
-        strippedIds.push(next.id)
         droppedH += contributions[i] + contributions[i + 1] - this.textContributionOf(next)
         roundsDeleted++
       }
     }
 
     if (roundsDeleted === 0) return messages
-
-    // A drop that reclaims less than the floor is pure cache churn: the prefix
-    // gets rewritten for a gain the next round eats. Leave the copy alone and
-    // let the ordinary trigger fire again when acting is actually worth it. A
-    // forced pass skips the test — it is recovering from a real rejection, and
-    // there the tail is already doomed.
-    // The floor speaks the walk's calibrated units too: droppedH × scale is
-    // the wire the pass actually reclaims, so an over-reading heuristic must
-    // drop proportionally more before a break is worth it.
-    if (!force && droppedH * scale < contextLength * LIGHT_MIN_RECLAIM_RATIO) {
-      this.lastLightDropRounds = 0
-      return messages
-    }
-
-    this.lastLightDropRounds = roundsDeleted
-    if (record) {
-      for (const id of droppedIds) this.lightDroppedIds.add(id)
-      for (const id of strippedIds) this.lightStrippedIds.add(id)
-    }
 
     const newMessages: AgentMessage[] = []
     for (let i = 0; i < messages.length; i++) {
@@ -1914,47 +1886,204 @@ export class ContextCompactor {
 
     console.log(
       `[AgentEngine] lightCompact: dropped ${roundsDeleted} tool cycles ` +
-      `(context ~${Math.round(estimatedTokens)} → ~${Math.round((totalH - droppedH) * scale + overhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
+      `(copy ${price} → ${Math.round((totalH - droppedH) * scale + overhead)}, target ${Math.round(targetTokens)})`
     )
     return newMessages
   }
 
+  /** Upper bound on what the compensation block's replay arm can spend: the
+   *  user-role TEXT in the copy (the only thing collectUserReplays replays),
+   *  capped by its budget. An upper bound over-reserves when a cut drops only
+   *  part of that text — the safe direction: the copy lands lower, never
+   *  higher. */
+  private replayReserveTokens(messages: AgentMessage[]): number {
+    let total = 0
+    for (const msg of messages) {
+      if (msg.role !== 'user') continue
+      for (const block of msg.contentBlocks) {
+        if (block.type === 'text') total += estimateTextTokens(block.text)
+      }
+    }
+    return Math.min(USER_REPLAY_BUDGET_TOKENS, total)
+  }
+
+  /** Materialize one directed cut on the current COPY (PLAN-compaction-epoch
+   *  D5). The steps run cheapest-first and stop as soon as the copy fits
+   *  `targetTokens`:
+   *
+   *    1. synthetic messages dropped (summary is re-derived, reminder carried)
+   *    2. nano archive        — old tool_results toward the target
+   *    3. stale reasoning     — unconditional inside a cut
+   *    4. light drop          — whole tool cycles, oldest first
+   *    5. hard truncate       — oldest prefix (skipped when allowHard is false)
+   *    6. one summary + compensation block, baked into the new base
+   *
+   *  The steps aim at `targetTokens` MINUS the replay reserve (the block is
+   *  prepended afterwards — see replayReserveTokens), so the landing price is
+   *  the promise D4 asks for plus the summary's own size.
+   *
+   *  The epoch ALWAYS materializes: a cut that did not become the base would
+   *  have to be re-derived next request, which is exactly the churn this design
+   *  retires. `record` is a separate concern — it books the growth sample, and
+   *  only the request path does that (prewarm passes false: it runs between
+   *  requests, so its "growth" would read the cut's own shrink, and the curve
+   *  belongs to the request path).
+   *
+   *  Cutting from the copy (never the transcript) is load-bearing: the new base
+   *  is derived from the old one, so a region dropped two epochs ago cannot
+   *  ride back in. */
+  async directCut(targetTokens: number, opts: {
+    /** Book the growth sample (request path). See priceRequest. */
+    record?: boolean
+    instruction?: string
+    notes?: string
+    /** context_compact asks for light-depth only (D8's two-power split). */
+    allowHard?: boolean
+    bypassBreaker?: boolean
+    overhead?: number
+    /** Priced instead of assembling a fresh copy (prewarm prices its own). */
+    copy?: AgentMessage[]
+  } = {}): Promise<DirectCutResult> {
+    const record = opts.record ?? true
+    const overhead = opts.overhead ?? this.lastRequestOverhead
+    const copy = opts.copy ?? this.assembleCopy()
+    const priceBefore = this.priceCopy(copy, overhead, record)
+    const target = Math.max(0, Math.round(targetTokens))
+    const strategies: string[] = []
+    if (priceBefore <= target) {
+      return {
+        messages: copy, strategies, cut: false,
+        priceBefore, priceAfter: priceBefore, targetTokens: target,
+        droppedMessages: 0,
+      }
+    }
+
+    // The compensation block is prepended AFTER the steps, so its weight has to
+    // come out of the steps' aim or the landing promise (D4: price ≤ T − Δ) is
+    // fiction: a 10K verbatim replay block on a 15K Δ leaves the next cut one
+    // turn away — exactly the small-step churn this design retires. Reserve what
+    // the dropped region can actually replay (user TEXT in the copy, capped by
+    // the budget); the summary rides ON TOP of the promise instead, because it
+    // is the record of what was dropped rather than a discretionary luxury, and
+    // it is bounded by HISTORY_SUMMARY_MAX_CHARS.
+    const stepTarget = Math.max(0, target - this.replayReserveTokens(copy))
+
+    // Synthetics carry no transcript identity (see isSyntheticMessage): the
+    // summary is re-derived from `this.historySummary` and the reminder is
+    // carried below, so neither may be summarized or re-counted as a read.
+    const carryReminder = reminderTextOf(copy)
+    let working = copy.filter((m) => !isSyntheticMessage(m))
+
+    working = this.nanoCompact(working, stepTarget, overhead)
+    if ((this.lastNanoArchive?.archived ?? 0) > 0) strategies.push('nano')
+
+    if (this.copyTokens(working, overhead) > stepTarget) {
+      const stripped = this.stripStaleThinking(working)
+      if (stripped !== working) strategies.push('thinking')
+      working = stripped
+    }
+
+    if (this.copyTokens(working, overhead) > stepTarget) {
+      const light = this.lightCompact(working, stepTarget, overhead)
+      if (light !== working) strategies.push('light')
+      working = light
+    }
+
+    if (this.copyTokens(working, overhead) > stepTarget && opts.allowHard !== false) {
+      const hard = this.hardTruncate(working, stepTarget, overhead)
+      if (hard !== working) strategies.push('hard')
+      working = hard
+    }
+
+    // One summary per epoch, covering everything this cut dropped. `copy` is
+    // the pre-wedge input so the dropped set is exactly "what the base held and
+    // the kept tail does not".
+    const summaryBefore = this.historySummary
+    const final = await this.injectHistorySummaryInto(copy, working, opts.instruction, opts.notes, {
+      bypassBreaker: opts.bypassBreaker,
+      carryReminder,
+      targetTokens: target,
+      overhead,
+    })
+    // `summary` means the landed TEXT moved in this pass — a cache carried over
+    // from an earlier epoch is not a strategy this cut exercised (its presence
+    // must not be read as "something happened", see the no-op gate below).
+    if (this.historySummary !== summaryBefore) strategies.push('summary')
+    if (this.lastReminderCount > 0) strategies.push('reminder')
+
+    // A cut that freed nothing is NOT a cut. Every step can no-op while the
+    // price still sits above the target (a text-only copy with hard off, or
+    // steps whose floors are all hit), and the compensation block re-prepends
+    // the base's own synthetics — bytes and price unchanged. Reporting
+    // `cut: true` there would trip the refill breaker on a head that never
+    // moved, emit a compaction event that freed nothing, and freeze a base
+    // identical to the copy it was derived from.
+    if (strategies.length === 0) {
+      return {
+        messages: copy, strategies, cut: false,
+        priceBefore, priceAfter: priceBefore, targetTokens: target,
+        droppedMessages: 0,
+      }
+    }
+    strategies.push('epoch')
+
+    // Read the live list AFTER the await: a message appended meanwhile puts
+    // `epochStart` past it (it belongs to the tail, not the base), and the id
+    // anchor is what catches a list that shifted under us.
+    const live = this.deps.getMessages()
+    this.epochBase = final
+    this.epochStart = live.length
+    this.epochAnchorId = live.length > 0 ? live[live.length - 1].id : null
+    this.epochCutAt = ++this.epochCounter
+    this.growthSamples = []
+    const priceAfter = this.copyTokens(final, overhead)
+    // Baseline reset rides the cut even when the sample is not booked: the next
+    // request's growth must measure "one turn", not "the bytes the cut freed".
+    this.lastCopyPrice = priceAfter
+    // The drops are real now, so the unrepresented region accrues — the next
+    // cut's summary region is this slice plus whatever the cached text does not
+    // cover yet (D6). Committed only here: a cut that no-opped ships the
+    // untruncated copy and must not accrue anything.
+    this.commitDroppedAccrual(copy, final)
+    console.log(
+      `[AgentEngine] directCut: ${strategies.join('+')} — copy ${priceBefore} → ${priceAfter} ` +
+      `(target ${target}, dropped ${copy.length - final.length} messages)`
+    )
+    return {
+      messages: final, strategies, cut: true,
+      priceBefore, priceAfter, targetTokens: target,
+      droppedMessages: copy.length - final.length,
+    }
+  }
+
   /**
-   * Run the compaction pipeline OUTSIDE a request to warm the history-summary
-   * cache (PLAN context-management P0: the LLM summary is the expensive part
-   * of compaction, and at request time it blocks the turn's next round — the
-   * post-turn idle window is where it belongs). Mirrors prepareLoopRequest's
-   * nano → light → hard order so the seeded frontier is the one the real
-   * request will ask for; hard is FORCED in both sources because the summary
-   * only exists when hard actually drops, and the cache's re-key branch
-   * absorbs the frontier drifting to a less aggressive natural cut later.
-   * Operates on the live list only through the same read-only pipeline the
-   * request path uses — this.messages is never replaced, the prewarmed copy is
-   * discarded, and the archive plan is a pure function of the copy, so the
-   * simulated pass leaves nothing behind that could change a real one.
-   * Returns the compaction event for the caller to emit, or null when there
-   * was nothing to drop (conversation too small, another prewarm in flight).
+   * Predictive base materialization (PLAN-compaction-epoch D8/M3): run the SAME
+   * directed cut the next request would run, at idle, so the request path ships
+   * an already-frozen copy instead of paying for a summary mid-turn.
+   *
+   *   · post-turn — target `T − Δ` (the passive cut); fires only when the copy
+   *     has already crossed that line, i.e. the next request WOULD cut.
+   *   · manual (/compact) — target 0.60b, hard allowed: the user asked for it.
+   *   · tool (context_compact) — `T − Δ` like post-turn but hard is OFF: the
+   *     model gets light-depth only, and the hard backstop stays the engine's.
+   *
+   * Growth samples are not booked here (directCut record=false): the curve
+   * belongs to the request path. Returns the event for the caller to emit, or
+   * null when the copy already fits (nothing to cut).
    */
   async prewarm(options: {
     contextLength: number
     source: 'post-turn' | 'manual' | 'tool'
     instruction?: string
     /** The model's handover note (context_compact), composed verbatim onto the
-     *  summary text and into the cache — see injectHistorySummaryInto. */
+     *  summary text and into the base — see injectHistorySummaryInto. */
     notes?: string
-    /** hardTruncate's force bit INSIDE the simulation. manual/post-turn keep
-     *  the historical always-true (the cache only exists when hard drops, and
-     *  the re-key branch absorbs the drift); the tool source passes false so
-     *  the simulation matches what the next request will actually build
-     *  (PLAN-context-compact-tool D3: the tool force bypasses ONLY light). */
-    hardForce?: boolean
   }): Promise<CompactionEvent | null> {
-    const { contextLength, source, instruction, notes, hardForce = true } = options
+    const { contextLength, source, instruction, notes } = options
     if (!contextLength || this.prewarmInFlight) return null
-    const original = this.deps.getMessages()
-    if (original.length <= MIN_KEEP) return null
+    if (this.deps.getMessages().length <= MIN_KEEP) return null
     this.prewarmInFlight = true
-    const run = this.prewarmBody(original, contextLength, source, instruction, notes, hardForce).finally(() => {
+    const run = this.prewarmBody(contextLength, source, instruction, notes).finally(() => {
       this.prewarmInFlight = false
       this.prewarmPromise = null
     })
@@ -1962,89 +2091,64 @@ export class ContextCompactor {
     return run
   }
 
-  /** The in-flight prewarm's promise, if any. The request path reads it (via
-   *  injectHistorySummary) to wait out a running summary instead of racing a
-   *  second concurrent LLM call — review0924 M2. */
+  /** The in-flight prewarm's promise, if any. The request path waits it out
+   *  (awaitPrewarm) instead of racing a second concurrent summary call —
+   *  review0924 M2, restated for the epoch: the cut a prewarm materializes IS
+   *  the base the next build should ship. */
   private prewarmPromise: Promise<CompactionEvent | null> | null = null
 
+  /** Request-path gate: an in-flight prewarm is about to freeze a base, so the
+   *  build must assemble AFTER it lands. Without this wait the build prices a
+   *  copy that is already obsolete, cuts it a second time and pays two
+   *  summarization calls for one head move. Idle is a no-op; a failed prewarm
+   *  swallows its own error (the request path cuts on its own). */
+  async awaitPrewarm(): Promise<void> {
+    if (this.prewarmPromise) await this.prewarmPromise.catch(() => {})
+  }
+
   private async prewarmBody(
-    original: AgentMessage[],
     contextLength: number,
     source: 'post-turn' | 'manual' | 'tool',
     instruction?: string,
-    notes?: string,
-    hardForce = true
+    notes?: string
   ): Promise<CompactionEvent | null> {
-    // The simulation carries no compaction state of its own anymore: the
-    // archive plan is a pure function of the copy (W2 retired the one-shot
-    // marks this body used to quarantine), light/hard run with record=false,
-    // and the only live state it writes is the summary cache — which is
-    // exactly what it exists to seed.
-    const tokensBefore = contextTokensOf(original)
-    // Same persistent holes the next request will start from (see
-    // applyPersistedDrops) — the simulation must price and summarize the
-    // copy the request actually builds, not re-inflate shed cycles.
-    // It READS the frontier and must never extend it: light/hard below pass
-    // record=false, because a simulated forced cut (hardForce, manual/tool
-    // light force) goes deeper than the passive request that follows and
-    // would permanently deepen the copy every turn.
-    const pipeline = this.applyPersistedDrops(original)
-    // Same units too: the fit walks are overhead-sensitive, so the
-    // simulation prices the last real request's fixed overhead, not 0. The
-    // archive arm is one of those walks now (the merged fit gate) — a
-    // 0-overhead simulation would archive later and less than the request
-    // actually does, and `compaction-prewarm` exists to catch exactly that.
+    const lines = this.epochLines(contextLength)
+    const target = source === 'manual'
+      ? contextLength * EPOCH_MANUAL_TARGET_RATIO
+      : lines.target
+    // tokensBefore/tokensAfter are the COPY's own units (copyTokens), not the
+    // wire anchor: after a cut the anchor prices the PRE-cut request, and the
+    // ring's re-base on tokensAfter could never drop below the cut it is
+    // announcing (conv_20261120152212).
     const overhead = this.lastRequestOverhead
-    // record=false: the simulation must not write the archive ledger (same
-    // discipline as light's record=false below — a simulated decision must
-    // not persist past the copy it shaped).
-    const nano = this.nanoCompact(pipeline, contextLength, overhead, false)
-    // The simulation must run the SAME force bits the next real request will:
-    // manual sticks (manualCompactActive on both layers), tool's one-shot
-    // force bypasses ONLY light (hard stays passive, its 0.9× trigger
-    // untouched), post-turn runs fully passive on light. A mismatched
-    // simulation would promise a drop the request never materializes (or
-    // cover ids the real copy keeps).
-    // record=false: the simulation must not consume the request path's
-    // "newly stripped" signal (see strippedThinkingIds).
-    const stripped = this.stripStaleThinking(nano, contextLength, overhead, false)
-    const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool', false)
-    const truncated = this.hardTruncate(light, contextLength, overhead, hardForce, false)
-    // Light's cycle drops count too — they are the main dropper once the
-    // transcript outgrows the window, and the summary exists to cover
-    // everything the copy loses, not just hard's share.
-    const droppedCount = stripped.length - truncated.length
-    if (droppedCount <= 0) return null
-    const summaryBefore = this.historySummary ? { ...this.historySummary } : null
-    const final = await this.injectHistorySummaryInto(original, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
+    const copy = this.assembleCopy()
+    const tokensBefore = this.copyTokens(copy, overhead)
+    const result = await this.directCut(target, {
+      record: false,
+      instruction,
+      notes,
+      allowHard: source !== 'tool',
+      bypassBreaker: source === 'tool',
+      overhead,
+      copy,
+    })
+    if (!result.cut) return null
     const summary = this.historySummary
-    const summaryChanged =
-      !summary || !summaryBefore ||
-      summary.firstKeptId !== summaryBefore.firstKeptId ||
-      summary.text !== summaryBefore.text
-    const strategies: string[] = []
-    // Fresh-take count, not identity: ledger-carried ids re-mint their
-    // placeholders every build (see the request path's event detection).
-    if ((this.lastNanoArchive?.archived ?? 0) > 0) strategies.push('nano')
-    if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
-    if (light.length !== stripped.length) strategies.push('light')
-    strategies.push('hard')
-    if (summary) strategies.push('summary')
     console.log(
-      `[AgentEngine] prewarm (${source}): dropped ${droppedCount}, replays ${this.lastInjectReplayCount}, ` +
-      `tokens ~${tokensBefore} → ~${Math.round(contextTokensOf(final))}`
+      `[AgentEngine] prewarm (${source}): dropped ${result.droppedMessages}, ` +
+      `replays ${this.lastInjectReplayCount}, tokens ~${tokensBefore} → ~${Math.round(result.priceAfter)}`
     )
     return {
       ts: Date.now(),
       source,
-      strategies,
-      droppedMessages: original.length - final.length,
+      strategies: result.strategies,
+      droppedMessages: result.droppedMessages,
       replayedUserMessages: this.lastInjectReplayCount,
       tokensBefore,
-      tokensAfter: contextTokensOf(final),
+      tokensAfter: result.priceAfter,
       // Pick the wire fields explicitly — the cache carries the internal
       // covered-id Set, which must not ride the IPC event.
-      summary: summaryChanged ? (summary ? { firstKeptId: summary.firstKeptId, text: summary.text } : null) : undefined,
+      summary: summary ? { firstKeptId: summary.firstKeptId, text: summary.text } : undefined,
     }
   }
 

@@ -1,6 +1,6 @@
 // ── Context-size estimation: one shared contract ──
-// Two readers hang off these numbers and they measure DIFFERENT quantities on
-// purpose (conv_20260927170026, 2026-09-28): the compactor's trigger chain
+// Three readers hang off these numbers and they measure DIFFERENT quantities
+// on purpose (conv_20260927170026, 2026-09-28): the compactor's trigger chain
 // (lightCompact / hardTruncate decide whether the outgoing copy fits) must
 // price the WHOLE transcript — it is the only thing standing between an
 // append-only history and a provider overflow — while the composer's ring
@@ -11,7 +11,10 @@
 // shown against an 88K wire request) and stayed there across restarts, while
 // the compactor — which NEEDS that transcript-pressure number — kept working.
 // `contextTokensOf` remains the trigger-chain contract; `requestTokensOf` is
-// the ring's.
+// the ring's; `copyTokensOf` prices the POST-PIPELINE copy itself — the gauge
+// section and the compaction event's before/after — because both anchor
+// readers key on the last wire report, which after a cut prices the PRE-cut
+// request and poisons every reading downstream of it (2026-11-21).
 //
 // The estimator itself is CJK-aware (the 0.4.1 ring froze at 35% on a
 // chars/3.5 estimate while real Chinese is ~1-1.7 chars per token). One more
@@ -118,6 +121,28 @@ export function requestTokensOf(messages: AgentMessage[], fixedOverhead = 0): nu
       return t + estimateMessagesTokens(messages.slice(i + 1))
     }
   }
+  return estimateMessagesTokens(messages) + fixedOverhead
+}
+
+/** The shipped copy's own price: the CJK-aware content estimate of the
+ *  post-pipeline array plus the request's fixed overhead (system prompt +
+ *  tools + state block). NO wire anchor — and that absence is the contract.
+ *  Both anchor readers (`contextTokensOf`, `requestTokensOf`) key on the last
+ *  wire report RIDING the messages, and after a compaction pass that report
+ *  prices the PRE-cut request while the copy now ships the post-cut one: a
+ *  110,535-token report anchored every reading at ~74% of the window while
+ *  the next request carried 54,005 (36%) — the gauge told the model a number
+ *  2× its real context, and the CompactionEvent's tokensAfter, guarded by the
+ *  same anchor, could never drop below it, so the ring's projection channel
+ *  stayed poisoned (conv_20261120152212, 2026-11-21 00:24 local).
+ *
+ *  Surfaces that must describe THE COPY — the state block's gauge section and
+ *  the compaction event's tokensBefore/tokensAfter — read this. Surfaces that
+ *  must price transcript pressure (the fit gates, guard ③) keep
+ *  `contextTokensOf`; the ring's anchor-plus-tail keeps `requestTokensOf` via
+ *  estimateContextUsed. Estimate slop vs the measured wire is the tokenizer's
+ *  ~3% — reports on the copy still price their own message whole. */
+export function copyTokensOf(messages: AgentMessage[], fixedOverhead = 0): number {
   return estimateMessagesTokens(messages) + fixedOverhead
 }
 

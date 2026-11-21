@@ -173,6 +173,11 @@ export interface EngineCore {
 
   // ── Loop control & collaborators ──
   compactor: ContextCompactor
+  /** The raw copy price of the last build (calibration denominator); the
+   *  stream-runner feeds each usage report through this so the copy
+   *  estimator learns the provider's tokenizer factor. */
+  lastBuildCopyEstimate: number
+  noteCopyCalibration: (measuredTokens: number) => void
   continueLoop: () => Promise<void>
   cancelLoop: () => void
   resumeExecution: () => void

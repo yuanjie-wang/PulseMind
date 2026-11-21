@@ -159,10 +159,16 @@ function makeEngine(contextLength: number, onCompaction?: (e: CompactionEvent) =
   } as unknown as AgentEngineOptions, { onCompaction })
 }
 
-function stubCompactor(engine: InstanceType<typeof AgentEngine>, usage: number, event: CompactionEvent | null) {
+function stubCompactor(engine: InstanceType<typeof AgentEngine>, price: number, event: CompactionEvent | null, target = 700) {
   const prewarm = vi.fn(async () => event)
+  // 2026-11-21 epoch：post-turn 门不再是「用量占比」——引擎读 compactor 的
+  // 同一个 epoch 谓词（copyTokens(assembleCopy()) > lines.target），所以桩要
+  // 提供三件：两条线、价格、预热入口。
   ;(engine as unknown as { compactor: unknown }).compactor = {
-    contextTokens: () => usage,
+    epochLines: () => ({ growth: 50, trigger: target + 50, depth: 100, target }),
+    assembleCopy: () => [],
+    copyTokens: (copy: unknown[], overhead: number) => price,
+    lastRequestOverhead: 0,
     prewarm,
   }
   return prewarm
@@ -175,23 +181,21 @@ const compactionEvent = (): CompactionEvent => ({
 })
 
 // The window is 2_000 and maxTokens 1_024, so the engine's INPUT budget — the
-// denominator every ratio below is written against — is 1_000. The reserve may
-// not take more than half the window (engine/window-budget.ts), which is what
-// pins it to exactly 1_000 here.
+// denominator every epoch line below is written against — is 1_000.
 describe('engine: post-turn prewarm trigger', () => {
-  it('prewarms and emits when usage crosses the post-turn ratio', async () => {
+  it('prewarms and emits when the copy is already over the next cut target', async () => {
     const seen: CompactionEvent[] = []
     const engine = makeEngine(2_000, (e) => seen.push(e))
-    const prewarm = stubCompactor(engine, 800, compactionEvent()) // 800 ≥ 750
+    const prewarm = stubCompactor(engine, 800, compactionEvent()) // 800 > 700
     engine.schedulePostTurnCompaction()
     await vi.waitFor(() => expect(seen).toHaveLength(1))
-    expect(prewarm).toHaveBeenCalledWith({ contextLength: 1000, source: 'post-turn', instruction: undefined })
+    expect(prewarm).toHaveBeenCalledWith({ contextLength: 1000, source: 'post-turn' })
     expect(seen[0].droppedMessages).toBe(12)
   })
 
-  it('stays idle below the ratio, for spawned sub-agents, and while manual is armed', async () => {
+  it('stays idle at/below the cut target, for spawned sub-agents, and while manual is armed', async () => {
     const engine = makeEngine(2_000)
-    const below = stubCompactor(engine, 700, compactionEvent()) // 700 < 750
+    const below = stubCompactor(engine, 700, compactionEvent()) // 700 ≤ 700
     engine.schedulePostTurnCompaction()
     await new Promise((r) => setTimeout(r, 0))
     expect(below).not.toHaveBeenCalled()

@@ -1,19 +1,20 @@
-// 旧回合 thinking 剥离（2026-10-25，conv_20261025172138「飞行棋」88% 复盘钉死）。
+// 旧回合 thinking 剥离（2026-10-25，conv_20261025172138「飞行棋」88% 复盘钉死；
+// 2026-11-21 随 epoch 重写：用量门与「新剥账本」退役，剥离成为切割的第 3 步）。
 // OpenAIAdapter 把历史里所有 thinking 块无条件映射回 reasoning_content，网关按
 // input 计费：一个 18.6K-token 的推理回合在下一次请求里原样变成 +19.7K prompt，
 // 并且从此每个请求都随行。两家 provider 的契约都只需要当前回合的推理（DeepSeek
 // 思考模式工具循环内回传；Anthropic 活循环里带 signature 的块），所以规则是：
 //   锚点 = 最后一条带正文的用户消息；锚点之前的 assistant 消息剥掉 thinking，
 //   之后的一根手指不碰。
-// 两层落点：块级剥离在压缩器（stripStaleThinking，与 nano 同阶段，prewarm 可见，
-// 50% 用量门控）；thinking-only 整轮移除在 apiMessages 派生层
-// （dropStaleThinkingOnlyTurns，与 elideTodoWritePairs 并列，无条件，不进丢弃区算术）。
+// 两层落点：块级剥离在压缩器（stripStaleThinking，directCut 的第 3 步，与
+// nano/light 同一次头移动，因此无条件、无闩锁、无账本）；thinking-only 整轮移除
+// 在 apiMessages 派生层（dropStaleThinkingOnlyTurns，与 elideTodoWritePairs
+// 并列，由 assembleCopy 的结构楔子每次组装时重推导）。
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   ContextCompactor,
-  THINKING_STRIP_USED_RATIO,
   dropStaleThinkingOnlyTurns,
   lastTextUserMessageIndex,
 } from '../src/renderer/src/agent/engine/context-compactor'
@@ -42,9 +43,9 @@ function makeCompactor(messages: AgentMessage[]): ContextCompactor {
   return new ContextCompactor({ runHistorySummary: async () => '摘要', getMessages: () => messages })
 }
 
-/** 锚定在 WINDOW × ratio 的 inputTokens 报告，让门控按需开合。 */
-function anchored(ratio: number): Partial<AgentMessage> {
-  return { inputTokens: Math.round(WINDOW * ratio) }
+/** 一个报告锚点：inputTokens 就是那个请求的 prompt 读数。 */
+function report(tokens: number): Partial<AgentMessage> {
+  return { inputTokens: tokens }
 }
 
 describe('lastTextUserMessageIndex: the turn anchor', () => {
@@ -87,18 +88,18 @@ describe('dropStaleThinkingOnlyTurns: apiMessages-layer elision', () => {
   })
 })
 
-describe('stripStaleThinking: block-level strip beside nano', () => {
-  function scenario(ratio: number) {
+describe('stripStaleThinking: block-level strip, step 3 of a cut', () => {
+  function scenario() {
     const oldMixed = assistant([think(1000), text('上一回合的回答')], { outputTokens: 1800 })
     const oldTool = assistant([redacted(), think(300), toolUse('t1')], { outputTokens: 400 })
-    const live = assistant([think(2000), toolUse('t2')], { outputTokens: 2500, ...anchored(ratio) })
+    const live = assistant([think(2000), toolUse('t2')], { outputTokens: 2500, ...report(80_000) })
     const msgs = [user('一'), oldMixed, user('二'), oldTool, collector('t1'), user('三'), live, collector('t2')]
     return { msgs, oldMixed, oldTool, live }
   }
 
-  it('above the gate: strips thinking + redacted_thinking behind the anchor, keeps text/tool_use, clears outputTokens', () => {
-    const { msgs, oldMixed, oldTool, live } = scenario(0.8)
-    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)
+  it('strips thinking + redacted_thinking behind the anchor, keeps text/tool_use, clears outputTokens', () => {
+    const { msgs, oldMixed, oldTool, live } = scenario()
+    const out = makeCompactor(msgs).stripStaleThinking(msgs)
     expect(out).not.toBe(msgs)
     expect(out.length).toBe(msgs.length)
     const m1 = out[1], m3 = out[3]
@@ -121,100 +122,93 @@ describe('stripStaleThinking: block-level strip beside nano', () => {
     expect(out[7]).toBe(msgs[7])
   })
 
-  it('below the gate: identity (a short conversation never pays the turn-boundary re-bill)', () => {
-    const { msgs } = scenario(THINKING_STRIP_USED_RATIO - 0.05)
-    expect(makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)).toBe(msgs)
+  it('needs no usage reading: a transcript with zero reports still strips', () => {
+    // 门退役的直接证据——旧形态在「没有 inputTokens 报告」时读不到用量，
+    // 短会话一律恒等；切割既然已经决定动手，剥离就无条件执行。
+    const old = assistant([think(1_000), text('旧回答')])
+    const msgs = [user('一'), old, user('二'), assistant([text('新回答')])]
+    const out = makeCompactor(msgs).stripStaleThinking(msgs)
+    expect(out).not.toBe(msgs)
+    expect(out[1].contentBlocks).toEqual([text('旧回答')])
   })
 
-  it('exactly at the gate strips (>= is the line)', () => {
-    const { msgs } = scenario(THINKING_STRIP_USED_RATIO)
-    expect(makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)).not.toBe(msgs)
+  it('is arity 1 and stateless — no window, no ledger, no latch', () => {
+    const { msgs } = scenario()
+    const c = makeCompactor(msgs)
+    expect(c.stripStaleThinking.length).toBe(1)
+    const first = c.stripStaleThinking(msgs)
+    const second = makeCompactor(msgs).stripStaleThinking(msgs)
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first))
+    // 无账本可清：同一份输入再剥一次得到同一份输出，而不是「已剥过就恒等」
+    expect(JSON.stringify(c.stripStaleThinking(msgs))).toBe(JSON.stringify(first))
   })
 
-  it('no anchor / no contextLength: identity', () => {
-    const noAnchor = [assistant([think(1000)], anchored(0.9)), collector('t1')]
-    expect(makeCompactor(noAnchor).stripStaleThinking(noAnchor, WINDOW)).toBe(noAnchor)
-    const { msgs } = scenario(0.9)
-    expect(makeCompactor(msgs).stripStaleThinking(msgs, 0)).toBe(msgs)
+  it('no anchor: identity', () => {
+    const noAnchor = [assistant([think(1000)], report(90_000)), collector('t1')]
+    expect(makeCompactor(noAnchor).stripStaleThinking(noAnchor)).toBe(noAnchor)
   })
 
   it('is idempotent: a second pass over the stripped copy is identity', () => {
-    const { msgs } = scenario(0.8)
+    const { msgs } = scenario()
     const c = makeCompactor(msgs)
-    const once = c.stripStaleThinking(msgs, WINDOW)
-    const twice = c.stripStaleThinking(once, WINDOW)
-    expect(twice).toBe(once)
+    const once = c.stripStaleThinking(msgs)
+    expect(c.stripStaleThinking(once)).toBe(once)
   })
 
   it('corrects the report anchor by the weight of thinking stripped BEFORE it, not at/after it', () => {
     // 报告在 a1 上（上一回合的最后一次请求），其 prompt 含 a0 的 thinking；a1 自己的
     // thinking 是它的输出，不在那个 prompt 里，不扣。
     const a0 = assistant([think(1000), text('x')])
-    const a1 = assistant([think(500, '想'), text('y')], { inputTokens: 80_000 })
+    const a1 = assistant([think(500, '想'), text('y')], report(80_000))
     const msgs = [user('一'), a0, user('二'), a1, user('三')]
-    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)
+    const out = makeCompactor(msgs).stripStaleThinking(msgs)
     expect(out[3].inputTokens).toBe(80_000 - estimateTextTokens('思'.repeat(1000)))
     expect(out[1].contentBlocks).toEqual([text('x')])
     expect(out[3].contentBlocks).toEqual([text('y')])
   })
 
   it('floors the corrected anchor at 1 instead of letting it go negative', () => {
-    // 报告恰在门线上（WINDOW×0.5）< 被剥的启发式重量；修正落地时钳到 1 而不是
-    // 负数。旧形态的门靠 fixedOverhead 把 max-guard 抬过线（wire 锚定读数删除
-    // 了那条保守分支），现在门由诚实的锚点本身打开。
+    // 报告读数小于被剥的启发式重量：修正落地时钳到 1 而不是负数。
     const a0 = assistant([think(WINDOW / 2 + 1_000), text('x')])
-    const a1 = assistant([text('y')], { inputTokens: WINDOW / 2 })
+    const a1 = assistant([text('y')], report(WINDOW / 2))
     const msgs = [user('一'), a0, user('二'), a1, user('三')]
-    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)
+    const out = makeCompactor(msgs).stripStaleThinking(msgs)
     expect(out[3].inputTokens).toBe(1)
   })
 
-  it('reports newly stripped turns once (the compaction event signal), and the prewarm pass does not consume it', () => {
-    const { msgs } = scenario(0.8)
-    const c = makeCompactor(msgs)
-    c.stripStaleThinking(msgs, WINDOW, 0, false) // prewarm 模拟
-    expect(c.lastThinkingStripNew).toBe(0)
-    c.stripStaleThinking(msgs, WINDOW)
-    expect(c.lastThinkingStripNew).toBe(2)
-    c.stripStaleThinking(msgs, WINDOW)
-    expect(c.lastThinkingStripNew).toBe(0)
-    // 新一回合关闭：锚点后移，原活循环消息成为可剥 → 再报一次
-    const next = [...msgs, user('四')]
-    c.stripStaleThinking(next, WINDOW)
-    expect(c.lastThinkingStripNew).toBe(1)
-    c.clearStrippedThinkingIds()
-    c.stripStaleThinking(next, WINDOW)
-    expect(c.lastThinkingStripNew).toBe(3)
-  })
-
   it('the stripped copy prices lower in the shared estimator (what light/hard then fit on)', () => {
-    const { msgs } = scenario(0.8)
-    const out = makeCompactor(msgs).stripStaleThinking(msgs, WINDOW)
+    const { msgs } = scenario()
+    const out = makeCompactor(msgs).stripStaleThinking(msgs)
     // 原副本：剥前消息按 outputTokens 报告独占计价（1800 + 400）；剥后报告已清，
     // 按剩余块直计 —— 差值必须体现 thinking 真的从拟合单位里消失了。
     expect(estimateMessagesTokens(out)).toBeLessThan(estimateMessagesTokens(msgs) - 1000)
   })
 })
 
-describe('wiring: both pipeline sites and the apiMessages layer carry the strip', () => {
+describe('wiring: the strip rides inside directCut and nowhere else', () => {
   const engine = readFileSync(resolve(__dirname, '../src/renderer/src/agent/AgentEngine.ts'), 'utf8')
   const compactor = readFileSync(resolve(__dirname, '../src/renderer/src/agent/engine/context-compactor.ts'), 'utf8')
 
-  it('prepareLoopRequest: apiMessages chain elides stale thinking-only turns before the copy is fixed', () => {
-    expect(engine).toMatch(/const apiMessages = regroupToolResults\(elideTodoWritePairs\(dropStaleThinkingOnlyTurns\(/)
+  it('directCut runs it between nano and light, and only when still over the step target', () => {
+    expect(compactor).toMatch(/if \(this\.copyTokens\(working, overhead\) > stepTarget\) \{\n\s+const stripped = this\.stripStaleThinking\(working\)/)
+    expect(compactor).toMatch(/if \(stripped !== working\) strategies\.push\('thinking'\)/)
   })
-  it('prepareLoopRequest: nano → stripStaleThinking → light, and light consumes the stripped copy', () => {
-    expect(engine).toMatch(/const thinkingStripped = this\.compactor\.stripStaleThinking\(nanoCompacted,/)
-    expect(engine).toMatch(/this\.compactor\.lightCompact\(thinkingStripped,/)
-    expect(engine).toMatch(/lastThinkingStripNew > 0\) compactStrategies\.push\('thinking'\)/)
-    expect(engine).toMatch(/lightCompacted\.length !== thinkingStripped\.length\) compactStrategies\.push\('light'\)/)
+
+  it('the engine never strips on its own — one cut, one head move', () => {
+    expect(engine).not.toContain('stripStaleThinking(')
   })
-  it('prewarmBody runs the same strip (record=false) so the simulation prices the real copy', () => {
-    expect(compactor).toMatch(/const stripped = this\.stripStaleThinking\(nano, contextLength, overhead, false\)/)
-    expect(compactor).toMatch(/const light = this\.lightCompact\(stripped,/)
-    expect(compactor).toMatch(/const droppedCount = stripped\.length - truncated\.length/)
+
+  it('apiMessages is the assembled copy, whose wedge elides stale thinking-only turns', () => {
+    expect(engine).toContain('const apiMessages = this.compactor.assembleCopy()')
+    expect(compactor).toMatch(/elideTodoWritePairs\(dropStaleThinkingOnlyTurns\(/)
   })
-  it('conversation reset clears the newly-stripped ledger', () => {
-    expect(engine).toMatch(/this\.compactor\.clearStrippedThinkingIds\(\)/)
+
+  it('the retired usage gate and the stripped-id ledger are gone', () => {
+    for (const src of [engine, compactor]) {
+      expect(src).not.toContain('THINKING_STRIP_USED_RATIO')
+      expect(src).not.toContain('clearStrippedThinkingIds')
+      expect(src).not.toContain('lastThinkingStripNew')
+      expect(src).not.toContain('thinkingStripLatched')
+    }
   })
 })

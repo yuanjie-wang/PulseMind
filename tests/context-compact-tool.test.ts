@@ -1,21 +1,22 @@
 // context_compact — the model-initiated compaction tool (PLAN-context-compact-tool,
-// user rulings 2026-10-01 ×2). Two-power split: the model drives nano (free_results
-// mandated picks) and light (main action = prewarm with instruction/notes); hard +
-// emergency stay agent-side. The pins below are the ones the plan calls out by name:
+// user rulings 2026-10-01 ×2; epoch rewrite 2026-11-21). Two-power split: the model
+// drives nano (free_results mandated picks) and the packing pass (main action =
+// prewarm with instruction/notes); hard stays agent-side and the tool arm never gets
+// it. The pins below are the ones the plan calls out by name:
 //   - guard matrix ①in-flight markers (currentRequestId/prepareLoopInProgress —
-//     agentStatus is a stale proxy, see the ① case) ②once-per-turn ③<55% (with
-//     the just-above-line pass) ④nothing-to-drop — and free_results-only
-//     exempt from ②③
-//   - success: event source='tool', the one-shot force bypasses ONLY light
-//     (lightCompact sees force=true, hardTruncate force=false, consumed exactly once),
-//     notes verbatim in the summary message AND the cache text, notes survive a
-//     failed summarizer (notesKept)
-//   - mandated and gate picks are both byte-stable across builds: the archive is
-//     re-derived from the full-text source every request (W2 retired the one-shot
-//     marks whose bounce re-inflated a gate pick on the next build); TIER3 /
-//     protection window / unknown ids are skipped and reported; idempotent
-//   - simulation == materialization: the prewarm's droppedCount pairs with the next
-//     request build's actual drop
+//     agentStatus is a stale proxy, see the ① case) ②once-per-turn ③copy at/below
+//     the epoch cut target (with the just-above-line pass) ④nothing-to-drop — and
+//     free_results-only exempt from ②③
+//   - success: event source='tool', the prewarm packs to the epoch target with
+//     `allowHard:false`, the next build's cut is armed (force ⇒ that same target
+//     even below the trigger line) and consumed exactly once; notes verbatim in the
+//     summary message AND the cache text, notes survive a failed summarizer
+//   - mandated picks land INSIDE a cut: the epoch retired the "every request
+//     re-derives the archive" arm (the base is frozen bytes), so below the target a
+//     mandate stays full text — that honest negative is pinned next to the
+//     over-target positive where the mandated id ships ⟨archived: …⟩
+//   - the prewarm's summary is computed ONCE, off the request path: the next build
+//     reuses it (zero extra summary calls) and ships it in the wire copy
 //   - live history untouched (the compaction only ever sees API copies)
 //   - reset / prepareTurn clear the per-turn bit and the mandated ids
 import { mkdtempSync } from 'node:fs'
@@ -48,10 +49,10 @@ function userText(id: string, text: string): AgentMessage {
 }
 
 /** One read cycle: assistant tool_use → user tool_result. Tier 2 in nanoCompact's
- *  map (read), so the per-pass cap is TIER_SIZES[2]=20 results (the newest
- *  batch is kept). Since the merged fit gate (W1) the cap is a CAP, not a
- *  trigger: the copy also has to cross 60% of the window before anything is
- *  archived — see the band note on the mandated case below. */
+ *  map (read), so the per-pass cap is TIER_SIZES[2]=20 results (the newest batch
+ *  is kept). Since the epoch the cap is a CAP, not a trigger: the copy also has
+ *  to cross the trigger line (T = b − headroom) before a cut runs at all, and the
+ *  cut packs to T − Δ — see epochLines in context-compactor.ts. */
 function toolCycle(i: number, resultChars = RESULT_CHARS): [AgentMessage, AgentMessage] {
   const tu: ToolUseBlock = { type: 'tool_use', id: `tu_${i}`, name: 'read', input: { file_path: `f${i}.txt` }, status: 'completed' }
   const tr: ToolResultBlock = { type: 'tool_result', tool_use_id: `tu_${i}`, content: 'x'.repeat(resultChars), tool_result_id: `tr_${i}`, is_error: false }
@@ -81,7 +82,8 @@ function makeEngine(o: MakeEngineOpts = {}): InstanceType<typeof AgentEngine> {
     apiKey: 'test-key', baseURL: 'https://example.invalid', model: 'test-model', maxTokens: 1024,
     // 101_024 rather than 100_000: the engine divides by the INPUT budget, i.e.
     // the window minus maxTokens (1024) — see engine/window-budget.ts. This way
-    // that budget is exactly 100_000 and the 55% guard's line stays at 55_000.
+    // that budget is exactly 100_000, so guard ③'s line (the epoch cut target,
+    // cold start = 0.70 × b) sits at 70_000.
     contextLength: o.contextLength ?? 101_024,
     myName: 'tester', soul: '', yourName: 'user',
     // buildRequest captures the built copy; nothing streams (continueLoop stubbed).
@@ -107,6 +109,18 @@ const engineBodies: AgentMessage[][] = []
 
 function resultContentOf(copy: AgentMessage[], tuId: string): string | undefined {
   return copy.flatMap(m => m.contentBlocks).find((b): b is ToolResultBlock => b.type === 'tool_result' && b.tool_use_id === tuId)?.content
+}
+
+function archivedIdsOf(copy: AgentMessage[]): string[] {
+  return copy
+    .flatMap(m => m.contentBlocks)
+    .filter((b): b is ToolResultBlock => b.type === 'tool_result' && (b.content ?? '').startsWith('⟨archived:'))
+    .map(b => b.tool_use_id)
+}
+
+/** One request build — the path previews every gate the tool's force rides. */
+function prepareLoop(engine: InstanceType<typeof AgentEngine>): Promise<unknown> {
+  return (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
 }
 
 beforeEach(() => { engineBodies.length = 0 })
@@ -147,15 +161,18 @@ describe('guards ①—④ (main action only; free_results exempt from ②③)',
     expect(out).toMatchObject({ ok: false, reason: 'already_this_turn' })
   })
 
-  it('③ below 55% refuses with readings; exactly at the line passes the guard', async () => {
+  it('③ a copy at/below the epoch cut target refuses with readings; just above it passes the guard', async () => {
     const engine = makeEngine({ cycles: 2 })
-    const spy = vi.spyOn(engine.compactor, 'contextTokens').mockReturnValue(549)
+    // Cold start (no growth samples yet) puts the cut target at 0.70 × 100_000
+    // and the trigger line at 0.85 × 100_000 — ③ reads the copy price against
+    // the TARGET, because that is where a cut would land.
+    const spy = vi.spyOn(engine.compactor, 'copyTokens').mockReturnValue(69_000)
     const out = await engine.compactForTool({})
-    expect(out).toMatchObject({ ok: false, reason: 'not_worthwhile', tokens: 549, window: 100_000 })
-    // Just above the line — note 100_000 * 0.55 is 55000.000…007 in floats, so
-    // "exactly at the line" needs one token over: the guard passes and the
-    // failure below is a DIFFERENT guard (nothing to drop on a tiny history).
-    spy.mockReturnValue(55_001)
+    expect(out).toMatchObject({ ok: false, reason: 'not_worthwhile', tokens: 69_000, window: 100_000 })
+    // One token over the target the guard opens; the failure below is a
+    // DIFFERENT guard (nothing to drop on a 5-message history — prewarm's
+    // MIN_KEEP floor).
+    spy.mockReturnValue(70_001)
     const out2 = await engine.compactForTool({})
     expect(out2.reason).toBe('nothing_to_drop')
     spy.mockRestore()
@@ -169,25 +186,35 @@ describe('guards ①—④ (main action only; free_results exempt from ②③)',
     expect(out).toMatchObject({ ok: false, reason: 'nothing_to_drop' })
   })
 
-  it('free_results-only is exempt from ②③: low context + used-this-turn still mandates', async () => {
+  it('free_results-only is exempt from ②③: used-this-turn still mandates', async () => {
     const engine = makeEngine({ cycles: 8 })
     engine.toolCompactUsedThisTurn = true
     const out = await engine.compactForTool({ freeResults: ['tu_0'] })
+    // The exemption lives at the `mainAction` early return — both ② and ③ sit
+    // after it, so neither can refuse a light action.
     expect(out).toMatchObject({ ok: true, freedResults: ['tu_0'], skippedIds: [] })
-    // The next request's nano pass materializes the placeholder (quota never
-    // fires at 8 uses — only the mandated channel could have compressed it).
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)
+    expect((engine.compactor as unknown as { mandatedCompressIds: Set<string> }).mandatedCompressIds.has('tu_0')).toBe(true)
+    // The mandate lands INSIDE a cut, not as a per-request re-derivation: this
+    // copy prices ~4.9K against a 70K target, so the honest outcome is "booked
+    // for the next cut" — tu_0 ships verbatim until one actually runs.
+    await prepareLoop(engine)
+    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^x{1500}$/)
   })
 })
 
-describe('success path: event, one-shot light-only force, notes', () => {
-  it('prewarm runs with source tool, arms the force, and the next build consumes it on light only', async () => {
+describe('success path: event, one-shot cut force, notes', () => {
+  it('prewarm runs with source tool, arms the force, and the next build spends it on the epoch target once', async () => {
     const events: CompactionEvent[] = []
     // 6_000 is the INPUT budget the assertions below name; the window it is
-    // derived from is 6_000 + maxTokens (1024).
+    // derived from is 6_000 + maxTokens (1024). Cold epoch lines for it:
+    // trigger 5_100, depth 900, target 4_200.
     const engine = makeEngine({ contextLength: 7_024, onCompaction: (e) => events.push(e) })
-    const lightSpy = vi.spyOn(engine.compactor, 'lightCompact')
+    let summaryCalls = 0
+    ;(engine as unknown as { runHistorySummary: unknown }).runHistorySummary = async () => {
+      summaryCalls++
+      return '【摘要】测试摘要文本'
+    }
+    const cutSpy = vi.spyOn(engine.compactor, 'directCut')
     const hardSpy = vi.spyOn(engine.compactor, 'hardTruncate')
     const before = engine.messages
 
@@ -202,18 +229,33 @@ describe('success path: event, one-shot light-only force, notes', () => {
     // The notes ride the cache text verbatim (20K roll applies to the merge).
     expect(engine.getHistorySummary()?.text).toContain('【交接笔记】\n当前进度：探索完成；下一步：写报告')
 
-    // The next request build: light forced (0.6× target), hard NOT (the
-    // model's force bypasses ONLY light — D3 two-powers split), consumed once.
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    expect(lightSpy).toHaveBeenLastCalledWith(expect.anything(), 6000, expect.anything(), true)
-    expect(hardSpy).toHaveBeenLastCalledWith(expect.anything(), 6000, expect.anything(), false)
+    // The prewarm packs to the epoch target with hard off (the tool arm never
+    // gets the hard layer — D3 two-powers split) and books no growth sample
+    // (the request path owns the curve; record:false).
+    expect(cutSpy).toHaveBeenCalledTimes(1)
+    expect(cutSpy.mock.calls[0]![0]).toBe(4_200)
+    expect(cutSpy.mock.calls[0]![1]).toMatchObject({ allowHard: false, record: false })
+    expect(hardSpy).not.toHaveBeenCalled()
+    expect(summaryCalls).toBe(1)
+
+    // The next request build consumes the one-shot force. A tool mando is
+    // UNCONDITIONAL — the pass is aimed at the epoch target even though the
+    // copy sits below the trigger line — and it happens exactly once; whether
+    // it drops anything depends on what is left (the prewarm already packed
+    // everything droppable, so here it is a structural no-op — spent, not
+    // sticky).
+    await prepareLoop(engine)
     expect(engine.pendingToolCompactForce).toBe(false)
-    // Second build: the one-shot force is gone — light back to passive.
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    expect(lightSpy).toHaveBeenLastCalledWith(expect.anything(), 6000, expect.anything(), false)
+    expect(cutSpy.mock.calls).toHaveLength(2)
+    expect(cutSpy.mock.calls[1]![0]).toBe(4_200)
+    expect(cutSpy.mock.calls[1]![1]).toMatchObject({ allowHard: false })
+    expect(((await cutSpy.mock.results[1]!.value) as { cut: boolean }).cut).toBe(false)
+    expect(hardSpy).not.toHaveBeenCalled()
+    // Zero extra LLM calls: the prewarm's text IS the epoch base.
+    expect(summaryCalls).toBe(1)
 
     // The built copy carries the summary message with the notes section.
-    const summaryMsg = engineBodies[1].find(m => m.role === 'user' && m.contentBlocks.some(b => b.type === 'text' && (b as { text: string }).text.includes('【历史对话摘要】')))
+    const summaryMsg = engineBodies[0]!.find(m => m.role === 'user' && m.contentBlocks.some(b => b.type === 'text' && (b as { text: string }).text.includes('【历史对话摘要】')))
     expect((summaryMsg!.contentBlocks[0] as { text: string }).text).toContain('【交接笔记】')
 
     // Live history untouched — the compaction only ever sees API copies.
@@ -234,31 +276,25 @@ describe('success path: event, one-shot light-only force, notes', () => {
     expect((engine.compactor as unknown as { historySummary: { covered: Set<string> } }).historySummary.covered.size).toBe(0)
   })
 
-  it('simulation == materialization: the prewarm drop pairs with the next build\'s actual drop', async () => {
-    const events: CompactionEvent[] = []
-    const engine = makeEngine({ contextLength: 6000, onCompaction: (e) => events.push(e) })
-    // Production sequence: context_compact only fires mid-loop, AFTER real
-    // requests — and the prewarm's simulation truncates in the LAST request's
-    // fixed-overhead units (lastRequestOverhead; the fit walks are
-    // overhead-sensitive). Seed the memo with one real build first, or the
-    // simulation prices 0 overhead against a build that prices the real thing.
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    // Production shape: context_compact fires mid-loop, so NEW tool results
-    // arrived after the last build — the copy that build fitted no longer fits.
-    // (Over a byte-identical history the persistent frontier already holds
-    // every droppable cycle, so `nothing_to_drop` is the honest answer: the
-    // next request would have nothing new to shed either.)
-    engine.messages = [...engine.messages, ...toolCycle(100), ...toolCycle(101)]
+  it('the prewarm lands REAL numbers: tokensAfter is the frozen base, and the next build reuses its summary', async () => {
+    const engine = makeEngine({ contextLength: 7_024 })
+    let summaryCalls = 0
+    ;(engine as unknown as { runHistorySummary: unknown }).runHistorySummary = async () => {
+      summaryCalls++
+      return '【摘要】测试摘要文本'
+    }
     const out = await engine.compactForTool({})
     expect(out.ok).toBe(true)
-    const prewarmEvent = events.find(e => e.source === 'tool')!
-    // The next request build emits its own 'request' event over the same,
-    // unchanged history — the copy it sheds must match what the tool promised.
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    const requestEvent = events.filter(e => e.source === 'request' && !e.strategies.includes('refill_breaker')).pop()
-    expect(requestEvent).toBeDefined()
-    expect(requestEvent!.droppedMessages).toBe(prewarmEvent.droppedMessages)
-    expect(out.tokensAfter).toBe(prewarmEvent.tokensAfter)
+    expect(out.tokensAfter!).toBeLessThan(out.tokensBefore!)
+    // The reported price is the materialized base's own — not a simulation of
+    // a future pass (that arm retired with the ledger and its re-derivation).
+    expect(engine.compactor.copyTokens(engine.compactor.assembleCopy(), engine.compactor.lastRequestOverhead)).toBe(out.tokensAfter)
+    // The text it paid for is also the cache: the next build spends zero extra
+    // summary calls and ships that very message.
+    await prepareLoop(engine)
+    expect(summaryCalls).toBe(1)
+    const summaryMsg = engineBodies[0]!.find(m => m.contentBlocks.some(b => b.type === 'text' && (b as { text: string }).text.includes('【历史对话摘要】')))
+    expect((summaryMsg!.contentBlocks[0] as { text: string }).text).toContain('【摘要】测试摘要文本')
   })
 })
 
@@ -269,38 +305,30 @@ describe('free_results: mandated picks and gate picks are both stable across bui
     return out
   }
 
-  it('a mandated id and a fit-gate pick both keep their placeholders (byte-stable archive)', async () => {
-    // The merged fit gate (W1) only archives above 60% of the window, so this
-    // case has to run an over-gate copy or the "gate pick" half is vacuous:
-    // 45 × 5600 latin chars ≈ 63K tokens against a 100K window sits inside the
-    // [60%, 70%] band — gate open, light still passive (it fires above 70%).
-    // The cap then keeps the newest batch of 20, so the 20 OLDEST eligible
-    // results are the archivable set. tu_30 sits inside that set and OUTSIDE
-    // the protection window (the last 4 result-bearing user messages are
-    // 41..44).
-    const engine = makeEngine({ resultChars: 5_600 })
+  it('a mandated id and a cut pick both keep their placeholders (byte-stable archive)', async () => {
+    // 60 × 5600 latin chars ≈ 69K tokens against a 100K budget: over the 70K
+    // cut target, under the fresh-truth trigger — the cut fires and packs the
+    // base, which is where both kinds of pick materialize.
+    const engine = makeEngine({ cycles: 60, resultChars: 5_600 })
     const out = await buildWithMandates(engine, ['tu_30'])
     expect(out.freedResults).toEqual(['tu_30'])
 
-    const copy1 = engineBodies[0]
-    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated: compressed regardless of the gate
-    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/) // gate pick
-    expect(resultContentOf(copy1, 'tu_44')).toMatch(/^x{5600}$/) // protection window
+    const copy1 = engineBodies[0]!
+    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated: packed by the cut regardless of nano's own pick
+    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/) // nano's own pick inside the same cut
+    expect(resultContentOf(copy1, 'tu_59')).toMatch(/^x{5600}$/) // protection window / kept tail
 
-    // Second build over the SAME full-text history: the archive is re-derived,
-    // never remembered — the gate re-measures the source (still over 60%, the
-    // archive lives only in the wire copy), picks the same ids and emits the
-    // same placeholder bytes. This byte-stability is what lets the provider
-    // prefix cache hold between frontier advances (W2 of
-    // PLAN-nano-light-trigger-merge retired the one-shot marks whose
-    // "compressed once → re-inflate" bounce broke the cache every round).
-    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    const copy2 = engineBodies[1]
-    expect(resultContentOf(copy2, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/) // gate pick: re-derived, byte-stable
-    expect(resultContentOf(copy2, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated → stable
+    // Second build over the SAME history: no growth, so no new cut — the copy
+    // is the frozen base (same array), and the archive bytes are unchanged.
+    // This byte-stability is what lets the provider prefix cache hold between
+    // frontier advances.
+    const frozen = engine.compactor.assembleCopy()
+    await prepareLoop(engine)
+    expect(engine.compactor.assembleCopy()).toBe(frozen)
+    expect(archivedIdsOf(engineBodies[1]!)).toEqual(archivedIdsOf(copy1))
   })
 
-  it('skips and reports TIER3 / protection-window / unknown ids; idempotent on repeats', async () => {
+  it('skips and reports TIER3 / protection-window / unknown ids; accepted picks are registered', async () => {
     const engine = makeEngine({ cycles: 8 })
     // Append a tier-3 cycle (ask_user is never compressed) and a fresh one.
     const askTu: ToolUseBlock = { type: 'tool_use', id: 'tu_ask', name: 'ask_user', input: {}, status: 'completed' }
@@ -319,9 +347,15 @@ describe('free_results: mandated picks and gate picks are both stable across bui
       { id: 'missing_id', reason: 'unknown_id' },
       { id: 'tu_ask', reason: 'tier3_protected' },
     ])
-    expect(resultContentOf(engineBodies[0], 'tu_ask')).toBe('答')
-    expect(resultContentOf(engineBodies[0], 'tu_7')).toMatch(/^x{1500}$/)
-    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)
+    // The accepted pick is BOOKED (a free_results-only call returns before the
+    // main action, so no cut ran here) …
+    expect([...(engine.compactor as unknown as { mandatedCompressIds: Set<string> }).mandatedCompressIds]).toEqual(['tu_0'])
+    // … the skipped ones stay untouched …
+    expect(resultContentOf(engineBodies[0]!, 'tu_ask')).toBe('答')
+    expect(resultContentOf(engineBodies[0]!, 'tu_7')).toMatch(/^x{1500}$/)
+    // … and the booked one stays full text too: this copy prices ~4.9K against
+    // a 70K target, so nothing was cut — the honest below-target negative.
+    expect(resultContentOf(engineBodies[0]!, 'tu_0')).toMatch(/^x{1500}$/)
   })
 })
 

@@ -163,8 +163,12 @@ describe('compactor reads the same contract', () => {
     for (let i = 0; i < 60; i++) msgs.push(...round(`u${i}`, 1000))
     // 60k CJK chars ≈ 60k real tokens; the old estimate read ~17k and left a
     // 64k window alone until the provider rejected the request.
+    // 2026-11-21 epoch：两个数都出自 epochLines——60k 的 copy 越过触发线
+    // （冷启动 T = 0.85b ≈ 54.4K），切割目标 T − Δ = 0.70b ≈ 44.8K。
     const compactor = makeCompactor(msgs)
-    const compacted = compactor.lightCompact(msgs, 64_000, 0)
+    const lines = compactor.epochLines(64_000)
+    expect(compactor.copyTokens(msgs)).toBeGreaterThan(lines.trigger)
+    const compacted = compactor.lightCompact(msgs, lines.target, 0)
     expect(compacted.length).toBeLessThan(msgs.length)
   })
 
@@ -172,7 +176,8 @@ describe('compactor reads the same contract', () => {
     const msgs: AgentMessage[] = []
     for (let i = 0; i < 40; i++) msgs.push(...round(`h${i}`, 1500))
     const compactor = makeCompactor(msgs)
-    const truncated = compactor.hardTruncate(msgs, 64_000, 0)
+    // Directed step：目标由调用方给（epoch 的 T − Δ），没有内建的触发线。
+    const truncated = compactor.hardTruncate(msgs, compactor.epochLines(64_000).target, 0)
     expect(truncated.length).toBeLessThan(msgs.length)
   })
 })
@@ -247,13 +252,15 @@ describe('emergencyTruncate', () => {
 // whole pass. The rewrite keeps the MOST history that fits, bounded by the
 // minimum-retention guards (Math.min), and the floor wins over infeasibility.
 describe('fitKeepStart retention semantics', () => {
-  it('keeps the MOST history that fits the 0.9× threshold, not the guard floor', () => {
-    // 60 rounds ≈ 90.4K tokens against a 100K window: hard's threshold is 90K
-    // and the old shape kept 4 messages (~3K) — a utilization cliff.
+  it('keeps the MOST history that fits the directed target, not the guard floor', () => {
+    // 61 rounds ≈ 91.6K tokens against a 90K target: the old shape kept 4
+    // messages (~3K) — a utilization cliff. 61 (not 60) so the cut lands two
+    // messages in: a one-message cut would be pulled back to index 0 by the
+    // tool_result→tool_use pairing repair and no-op.
     const msgs: AgentMessage[] = []
-    for (let i = 0; i < 60; i++) msgs.push(...round(`k${i}`, 1_500))
+    for (let i = 0; i < 61; i++) msgs.push(...round(`k${i}`, 1_500))
     const compactor = makeCompactor(msgs)
-    const out = compactor.hardTruncate(msgs, 100_000, 0)
+    const out = compactor.hardTruncate(msgs, 90_000, 0)
     expect(out.length).toBeGreaterThan(100)
     expect(compactor.estimateTokens(out)).toBeLessThanOrEqual(90_000)
   })
@@ -344,8 +351,9 @@ describe('cut-boundary pairing & text-bearing cycle strip', () => {
     const total = compactor.estimateTokens(msgs)
     const cum20 = compactor.estimateTokens(msgs.slice(0, 20))
     const threshold = total - cum20 - 20 // first fitting tail starts at index 21 (odd → a result message)
-    const window = Math.ceil(threshold / 0.9)
-    const out = compactor.hardTruncate(msgs, window, 0)
+    // hardTruncate 自 2026-11-21 起是 DIRECTED step：第二参即切割目标本身
+    // （旧的「窗口 × 0.9」内乘法已随四门流水线退役，目标由 epoch 的 T − Δ 给）。
+    const out = compactor.hardTruncate(msgs, threshold, 0)
     // The repair pulled the cut back to the tool_use of round 10 (index 20).
     expect(out.length).toBe(msgs.length - 20)
     expect((out[0].contentBlocks[0] as { type: string }).type).toBe('tool_use')

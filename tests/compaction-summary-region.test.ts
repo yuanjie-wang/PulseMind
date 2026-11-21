@@ -105,23 +105,25 @@ describe('injectHistorySummaryInto: the dropped region spans light AND hard', ()
   })
 })
 
-// ── B：lightCompact 按目标拟合，不再清仓 ─────────────────────────────
+// ── B：lightCompact 是按目标的步长（触发线/margin/下限/账本随 epoch 退役）──
+//
+// 2026-11-20 的形态里 light 自带 0.7 触发线、0.12 回收 margin、0.02 地板、
+// 0.5×窗托底与「丢弃账本」；epoch 之后这些都是 `directCut` 的事，light 只回答
+// 「按这个目标丢到哪」：最老优先、整周期、连续后缀、落点 ≤ 目标。
 
-describe('lightCompact: proportional to the window, not a wipe', () => {
-  it('lands BELOW the trigger by the reclaim margin, so one drop covers a stretch of requests', () => {
-    const msgs = makeCycles(80, 5000) // 400K vs 200K → trigger line 140K, land at 116K
+describe('lightCompact: a step that lands just under the named target', () => {
+  it('lands under the target, dropping whole old cycles only', () => {
+    const msgs = makeCycles(80, 5000) // ~341K vs a 200K target
     const { compactor } = makeCompactor(msgs)
     const compacted = compactor.lightCompact(msgs, 200_000, 0)
 
     const keptH = estimateMessagesTokens(compacted)
-    // The walk used to stop at the FIRST fit (140K). In a long tool loop that
-    // means another cycle falls away on essentially EVERY request — and each of
-    // those edits rewrites the prefix, invalidating every cached token behind it.
-    // The reclaim margin spends the same reclaim in ONE drop instead
-    // (PLAN-context-zcode-benchmarks P1). One-cycle granularity, so +5K slack.
-    expect(keptH).toBeLessThanOrEqual(140_000 - 200_000 * 0.12 + 5_000)
-    // …but never a wipe: the 50%-of-window floor still bounds the deep cut.
-    expect(keptH).toBeGreaterThanOrEqual(100_000)
+    expect(keptH).toBeLessThanOrEqual(200_000)
+    // 整周期粒度（3K 思考 + 5K 结果 ≈ 8K/轮）：落点在一轮之内，不再有 margin
+    // 预先多丢。
+    expect(keptH).toBeGreaterThan(190_000)
+    // …but never a wipe: light 不会退化成清仓。
+    expect(keptH).toBeGreaterThan(100_000)
 
     const survivors = compacted
       .flatMap((m) => m.contentBlocks)
@@ -131,16 +133,12 @@ describe('lightCompact: proportional to the window, not a wipe', () => {
 
     // What must hold is a CONTINUOUS SUFFIX: the cut only ever eats from the old
     // end, so nothing is missing from the middle and the newest work always
-    // survives. The exact boundary is policy — the reclaim margin deliberately
-    // moved it one cycle older than the old minimal-fit walk — so it is not
-    // hardcoded here.
+    // survives.
     expect(keptIds.at(-1)).toBe(79)
     expect(keptIds).toEqual(Array.from({ length: keptIds.length }, (_, i) => keptIds[0] + i))
     expect(keptIds.length).toBeGreaterThanOrEqual(10)
 
-    // …and the retained cycles are WHOLE, not halved by a partial trim — under
-    // the old wipe the copy collapsed to the 8K hot zone (~30K tokens) and the
-    // model ran on 11-18% of the window.
+    // …and the retained cycles are WHOLE, not halved by a partial trim.
     for (const id of keptIds) {
       const block = byId.get(`tu${id}`) as Extract<ContentBlock, { type: 'tool_result' }>
       expect(block.content).toContain(`result-${id}-`)
@@ -151,19 +149,16 @@ describe('lightCompact: proportional to the window, not a wipe', () => {
     expect(byId.has('tu40')).toBe(false)
   })
 
-  it('is a no-op when the transcript already fits (the anchor-hot case must not wipe)', () => {
-    const msgs = makeCycles(10, 5000) // 50K on a 200K window
+  it('is a no-op when the transcript already fits', () => {
+    const msgs = makeCycles(10, 5000) // 50K on a 200K target
     const { compactor } = makeCompactor(msgs)
     expect(compactor.lightCompact(msgs, 200_000, 0)).toBe(msgs)
   })
 
-  // LIGHT_MIN_RECLAIM_RATIO (0.02)：可丢区回收不足窗口 2% 的丢弃是纯缓存抖动
-  // ——前缀被重写，换来的增量下一轮就被吃掉。这类 pass 必须整体回退（原 copy
-  // 原样返回、决策不落账），让普通触发线等值得动手时再开。
-  it('reverts a sub-floor drop: the copy comes back untouched and nothing is recorded', () => {
+  it('lands even a tiny cut — no floor, no revert, no ledger', () => {
     // 形态：一个 ~3K token 的微小工具循环 + 141K 的纯文本巨块（文本消息不是
     // 任何 (tool_use, tool_result) 循环的一半，永远不会成为候选）——walk 把
-    // 唯一的候选丢完后无路可走，回收 ~3K < 4K 地板（0.02 × 200K）。
+    // 唯一的候选丢完就停，回收 ~3K 也照落（旧形态的 0.02 地板会整体回退）。
     const giant = (chars: number) => '巨'.repeat(chars)
     const msgs: AgentMessage[] = [
       ...cycle(0, 50),
@@ -171,31 +166,15 @@ describe('lightCompact: proportional to the window, not a wipe', () => {
       { id: 'g-a1', role: 'assistant', createdAt: AT, contentBlocks: [text(giant(70_000))] },
       { id: 'g-u2', role: 'user', createdAt: AT, contentBlocks: [text(giant(1_000))] },
     ]
-    // 前置自证：转写确实越过了触发线（0.7×200K），且可丢区确实低于地板。
+    // 前置自证：目标确实够不到（可丢区只有那一个循环）。
     expect(estimateMessagesTokens(msgs)).toBeGreaterThan(140_000)
-    expect(estimateMessagesTokens(msgs.slice(0, 2))).toBeLessThan(200_000 * 0.02)
+    expect(estimateMessagesTokens(msgs.slice(0, 2))).toBeLessThan(5_000)
 
     const { compactor } = makeCompactor(msgs)
-    expect(compactor.lightCompact(msgs, 200_000, 0)).toBe(msgs) // 原 copy 引用返回
-    expect(compactor.lastLightDropRounds).toBe(0) // fit-gate 日志读它：回退不是丢弃
-    expect(compactor.applyPersistedDrops(msgs)).toBe(msgs) // 决策没有落进持久前沿
-  })
-
-  it('a forced pass skips the floor — prompt-too-long recovery must land even a tiny cut', () => {
-    const giant = (chars: number) => '巨'.repeat(chars)
-    const msgs: AgentMessage[] = [
-      ...cycle(0, 50),
-      { id: 'g-u1', role: 'user', createdAt: AT, contentBlocks: [text(giant(70_000))] },
-      { id: 'g-a1', role: 'assistant', createdAt: AT, contentBlocks: [text(giant(70_000))] },
-      { id: 'g-u2', role: 'user', createdAt: AT, contentBlocks: [text(giant(1_000))] },
-    ]
-    const { compactor } = makeCompactor(msgs)
-    const compacted = compactor.lightCompact(msgs, 200_000, 0, true)
-
+    const compacted = compactor.lightCompact(msgs, 140_000, 0)
     expect(compacted).not.toBe(msgs)
     expect(compacted.length).toBe(msgs.length - 2) // 唯一候选循环被丢
     expect(compacted.some((m) => m.contentBlocks.some((b) => b.type === 'tool_result'))).toBe(false)
-    expect(compactor.lastLightDropRounds).toBe(1)
   })
 })
 
@@ -310,15 +289,17 @@ describe('history-summary coverage: the 40K input cap does not stamp what it nev
   })
 })
 
-// ── F：小窗口的 fit 目标有下限，不再把「拟合」静默退化成清仓（review_20260929 中2）──
-// 旧形态 target = contextLength − max(0.3×窗口, 30K)：26K 窗口 → −4000，fits()
-// 恒假 → 丢弃游标一路删到三条保护为止；30K–43K 区间目标不足窗口一半。
+// ── F：light 没有自己的下限——目标由调用方给，它只负责落到目标下 ─────────
+// 旧形态 target = contextLength − max(0.3×窗口, 30K) 并自带 0.5×窗托底：26K
+// 窗口算出 −4000，fits() 恒假、丢弃游标一路删到三条保护为止（清仓）；epoch 之后
+// 窗/线/托底全在 `epochLines` 与 `directCut`，light 拿到的就是一个 token 目标，
+// 于是「小目标也只丢到目标为止、永不退化成清仓」成了它唯一的性质。
 
-describe('lightCompact: the fit target never goes negative or under half the window', () => {
+describe('lightCompact: honors the caller target at any size, never wipes to the protections', () => {
   /** ASCII-only cycles so tokens ≈ chars/4: an 8,000-char tool_result prices
    *  ~2,000 tokens and the 8K-char hot zone prices ~7K tokens — comfortably
    *  below the target, so the FIT (not the hot-zone protection) is the
-   *  binding stop and the assertion measures exactly the target change. */
+   *  binding stop and the assertion measures exactly the target. */
   function asciiCycle(i: number): AgentMessage[] {
     return [
       { id: `ba${++seq}`, role: 'assistant', createdAt: AT, contentBlocks: [{ type: 'tool_use', id: `btu${i}`, name: 'read', input: { file_path: `f-${i}.txt` } } as ContentBlock] },
@@ -327,30 +308,27 @@ describe('lightCompact: the fit target never goes negative or under half the win
   }
   const asciiCycles = (n: number): AgentMessage[] => Array.from({ length: n }, (_, i) => asciiCycle(i)).flat()
 
-  it('a 26K window keeps ~half the transcript instead of wiping to the protections', () => {
-    const msgs = asciiCycles(20) // ~40K tokens on a 26K window — the review's measured shape
+  it('a small target (26K) lands just under it — the transcript keeps most of its bulk', () => {
+    const msgs = asciiCycles(20) // ~40K tokens, target 26K
     const { compactor } = makeCompactor(msgs)
     const compacted = compactor.lightCompact(msgs, 26_000, 0)
     const keptH = estimateMessagesTokens(compacted)
-    // Old shape: target = 26000 − 30000 = −4000 → fits() never fired → the
-    // walk ran to the protections (~4 cycles ≈ 8K tokens = 31% of window).
-    // The 0.5×window floor makes the target 13K → ~6 cycles ≈ 12K = 46%.
-    expect(keptH).toBeGreaterThan(10_000)
-    expect(keptH).toBeLessThanOrEqual(15_000)
+    // 落在目标下、一轮之内；旧形态在此会删到保护线（~8K，31%）。
+    expect(keptH).toBeLessThanOrEqual(26_000)
+    expect(keptH).toBeGreaterThan(20_000)
     // The walk still drops the oldest cycles — the mechanism, just proportional.
     expect(compacted.length).toBeLessThan(msgs.length)
   })
 
-  it('a 50K window keeps the proportional target (~58% of window)', () => {
+  it('a caller-computed depth (29K on a 50K window) is honored as-is', () => {
+    // 0.58×50K 那类「一次丢够一段」的目标由 `epochLines` 算，light 不再自己
+    // 托底/加 margin：给 29K 就落 29K，而不是被 0.5×窗抬回 25K。
     const msgs = asciiCycles(30) // ~60K tokens
     const { compactor } = makeCompactor(msgs)
-    const compacted = compactor.lightCompact(msgs, 50_000, 0)
+    const compacted = compactor.lightCompact(msgs, 29_000, 0)
     const keptH = estimateMessagesTokens(compacted)
-    // 30K 平底已删（PLAN-cache-wire-gates D5）：headroom = 0.3×50K = 15K →
-    // 触发线 35K；target = 50K − 15K − 6K(margin) = 29K（0.58×窗口）。
-    // 旧形态 target 被 max(·, 0.5×窗) 托到 25K、线被 30K 平底压到 55% used。
+    expect(keptH).toBeLessThanOrEqual(29_000)
     expect(keptH).toBeGreaterThan(21_000)
-    expect(keptH).toBeLessThanOrEqual(29_500)
   })
 })
 

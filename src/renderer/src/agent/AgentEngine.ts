@@ -40,17 +40,14 @@ import { effectiveInputWindow } from './engine/window-budget'
 import { TurnClock, stampTurnDuration, isWaitingOnUserStatus } from './engine/turn-clock'
 import { mintTurnId, countUserTurns } from './engine/turn-identity'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
-import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, dropStaleThinkingOnlyTurns, type CompactTracking } from './engine/context-compactor'
+import { ContextCompactor, EPOCH_MANUAL_TARGET_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, type CompactTracking, type DirectCutResult } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
-import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
+import { estimateTextTokens as estimateTokens, copyTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
 import { promoteForegroundExec } from './executors/foreground-exec'
 import { RepeatCallGuard, formatRepeatHint, toolCallSignature } from './engine/loop-guard'
 import type { CompactionEvent, SessionFileChange } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
-import { stripToolResultImages } from './strip-tool-results'
-import { regroupToolResults } from '../llm/regroup-tool-results'
-import { elideTodoWritePairs } from '../llm/elide-todo-pairs'
 
 // ── Tool-result guardrail ─────────────────────────────────────────────
 // Every tool result funnels through addToolResult; executors do NOT truncate
@@ -342,6 +339,13 @@ export class AgentEngine implements EngineCore {
    *  character, excluding time parked on the user (held approval / ask_user /
    *  loop-limit prompt / manual pause). See engine/turn-clock.ts. */
   turnClock = new TurnClock()
+  /** The RAW copy price of the most recent build (copyTokensOf, before the
+   *  compactor's calibration factor): the denominator of the calibration
+   *  ratio when this request's usage report lands (noteCopyCalibration).
+   *  0 until the first gauge swap — a report arriving before any build must
+   *  not calibrate against nothing. */
+  /** @internal */
+  lastBuildCopyEstimate = 0
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
@@ -611,12 +615,13 @@ export class AgentEngine implements EngineCore {
 
   // ── Explicit compaction (PLAN context-management P0) ────────────────
 
-  /** Sticks after an explicit /compact until reset(): the trigger chain is
-   *  stateless per request — it re-reads the LIVE history every time — so a
-   *  one-request force would re-inflate the very next copy to the same
-   *  estimate. While set, lightCompact/hardTruncate bypass their thresholds
-   *  (hard targets 0.6× instead of 0.9×). Post-turn prewarm does NOT set it:
-   *  above the post-turn ratio the natural thresholds fire on their own. */
+  /** One-shot re-aim for /compact (epoch D8). `compactNow` already materializes
+   *  the base at the manual target (0.60b) before returning, so on the normal
+   *  path the next build prices BELOW that target and cuts nothing. The flag
+   *  matters only when the materialization could not run (below the keep floor,
+   *  or a build raced the prewarm): the next build then runs the same cut
+   *  itself. Consumed at build — a sticky flag would re-cut every turn, which
+   *  is the churn this design exists to remove. */
   private manualCompactActive = false
   private postTurnPrewarmInFlight = false
 
@@ -628,9 +633,23 @@ export class AgentEngine implements EngineCore {
     this.callbacks.onCompaction?.(event)
   }
 
-  /** Explicit /compact [指示词]: force-compact from the next request on, and
-   *  prewarm the summary now (one LLM call at idle instead of blocking the
-   *  next turn). Resolves with the compaction event for UI feedback, or null
+  /** The usage report of a just-shipped request calibrates the copy estimator
+   *  (compactor.copyTokens): ratio = measured wire / the raw price this
+   *  engine quoted at build time (lastBuildCopyEstimate). stream-runner calls
+   *  this on every main-turn completion; sidecar one-shots (title, memory,
+   *  probes) never ride it, so their usage cannot teach the factor. Guarded:
+   *  no report or no prior build is a no-op. */
+  /** @internal */
+  noteCopyCalibration(measuredTokens: number): void {
+    if (!(measuredTokens > 0) || !(this.lastBuildCopyEstimate > 0)) return
+    this.compactor.setCopyCalibration(measuredTokens / this.lastBuildCopyEstimate)
+  }
+
+  /** Explicit /compact [指示词]: materialize the cut NOW — the manual target is
+   *  deeper than a passive cut (0.60b vs `T − Δ` ≈ 0.70b), and doing it at idle
+   *  means one LLM call the next turn does not wait on. `manualCompactActive`
+   *  only re-aims the next build if this materialization could not run.
+   *  Resolves with the compaction event for UI feedback, or null
    *  when there was nothing to drop (conversation below the keep-window
    *  floor) or a turn is in flight — compacting mid-turn would race the loop
    *  on the shared summary cache. No isCancelled gate on purpose: that flag
@@ -660,14 +679,15 @@ export class AgentEngine implements EngineCore {
     return event
   }
 
-  /** Post-turn prewarm (Codex's PostTurn phase, adapted to the API-copy
-   *  design): at turn end, with usage at/above the ratio, warm the history
-   *  summary while the engine is idle so the next turn's first request hits
-   *  the cache instead of blocking on an LLM summarization call. Fire-and-
-   *  forget by contract — the turn is already closed when this runs, and a
-   *  failure costs nothing (the request path falls back to its own summary).
-   *  Spawned sub-agents are skipped: their engines die with the task, so the
-   *  warmed cache would never be read. */
+  /** Post-turn prewarm (Codex's PostTurn phase, adapted to the frozen-epoch
+   *  design): at turn end, materialize the SAME cut the next request would run
+   *  — one line early — so the next build ships an already-frozen copy instead
+   *  of paying for a summary mid-turn. The condition is the request path's own
+   *  (`price > T − Δ`, i.e. the copy would have to shrink before it can grow
+   *  again), not a fixed ratio. Fire-and-forget by contract — the turn is
+   *  already closed when this runs, and a failure costs nothing (the request
+   *  path cuts on its own). Spawned sub-agents are skipped: their engines die
+   *  with the task, so the warmed base would never be read. */
   schedulePostTurnCompaction = (): void => {
     if (this.isSpawnedSubAgent || this.isCancelled) return
     if (this.postTurnPrewarmInFlight || this.manualCompactActive) return
@@ -675,7 +695,9 @@ export class AgentEngine implements EngineCore {
     // Gate AND payload take the input budget: a prewarm that compressed against
     // a different denominator than the request build would summarize too late.
     const contextLength = this.inputWindow
-    if (this.compactor.contextTokens() < contextLength * POST_TURN_COMPACT_USED_RATIO) return
+    const lines = this.compactor.epochLines(contextLength)
+    const price = this.compactor.copyTokens(this.compactor.assembleCopy(), this.compactor.lastRequestOverhead)
+    if (price <= lines.target) return
     this.postTurnPrewarmInFlight = true
     void this.compactor.prewarm({ contextLength, source: 'post-turn' })
       .then((event) => { if (event) this.emitCompaction(event) })
@@ -685,14 +707,16 @@ export class AgentEngine implements EngineCore {
 
   // ── Model-initiated compaction (PLAN-context-compact-tool) ──────────
 
-  /** context_compact's one-shot force: the NEXT request build's lightCompact
-   *  bypasses its threshold (0.6× target) so the drop the tool's prewarm
-   *  promised actually materializes in that copy. Consumed by
-   *  prepareLoopRequest right after the build and deliberately separate from
-   *  manualCompactActive (which sticks until reset) — the model asked for ONE
-   *  slimming, then the passive fit-based rhythm takes over. NOT cleared by
-   *  prepareTurn: the drop must land on the next built copy whenever it comes.
-   *  @internal */
+  /** context_compact's one-shot registration: the next request build runs the
+   *  directed cut itself, at `T − Δ` with hard OFF (D8's two-powers split), if
+   *  the tool's own prewarm could not materialize the base (below the keep floor
+   *  or a build-phase race). Consumed by prepareLoopRequest, so exactly one
+   *  build re-aims; on the normal path the prewarm already froze the copy and
+   *  this flag prices below the target and cuts nothing. Separately from
+   *  manualCompactActive (which re-aims to the deeper manual target) — the
+   *  model asked for ONE slimming, then the passive rhythm takes over. NOT
+   *  cleared by prepareTurn: the cut must land on the next built copy whenever
+   *  it comes. @internal */
   pendingToolCompactForce = false
   /** Per-turn cap on the main compaction action (user ruling 2026-10-01):
    *  a compacted copy whose live-history estimate did not change invites an
@@ -795,11 +819,14 @@ export class AgentEngine implements EngineCore {
     if (this.toolCompactUsedThisTurn) {
       return { ok: false, reason: 'already_this_turn', freedResults, skippedIds }
     }
-    // ③ cheap pre-check: the force target is 0.6× the window — below 0.55×
-    // there is provably nothing to drop and the pipeline would idle.
+    // ③ cheap pre-check in the SAME units the prewarm will use: a copy already
+    // at or below the cut target (`T − Δ`) has nothing to shed, and the pass
+    // would idle. The old 0.55× window ratio was the retired force-light
+    // target's proxy — under one decision point the target IS the line.
     const contextLength = this.inputWindow
-    const tokens = this.compactor.contextTokens()
-    if (tokens < contextLength * 0.55) {
+    const target = this.compactor.epochLines(contextLength).target
+    const tokens = this.compactor.copyTokens(this.compactor.assembleCopy(), this.compactor.lastRequestOverhead)
+    if (tokens <= target) {
       return { ok: false, reason: 'not_worthwhile', tokens, window: contextLength, freedResults, skippedIds }
     }
     const event = await this.compactor.prewarm({
@@ -807,7 +834,6 @@ export class AgentEngine implements EngineCore {
       source: 'tool',
       instruction,
       notes,
-      hardForce: false, // D3 two-powers split: the model's force bypasses ONLY light
     })
     // ④ nothing droppable (light-only semantics: what remains is text the
     // automatic layers only cut under real pressure)
@@ -1184,10 +1210,13 @@ export class AgentEngine implements EngineCore {
       createdAt: new Date().toISOString()
     }
     this.messages = [...this.messages, userMsg]
+    // 时钟先于状态播报启动（2026-11-21 user「发送后徽章有空窗期」）：notify 经
+    // turnMsOf 捎带 turnMs，时钟没启动就不带字段——streaming 状态宣布时若表还
+    // 没开，徽章只能等首个 SSE delta 的下一次状态事件，模型首 token 延迟整段
+    // 空窗无任何运行指示。
+    this.turnClock.start()
     this.agentStatus = { status: 'streaming' }
     this.notify()
-
-    this.turnClock.start()
     opts.adapter.reconcileMessages?.(this.messages)
     return userMessage
   }
@@ -1547,161 +1576,143 @@ export class AgentEngine implements EngineCore {
       await persistUnsavedToolResults(this)
     }
 
-    // Strip image data from tool_results before sending to LLM (keep originals
-    // for UI). The transform itself lives in `./strip-tool-results` — extracted
-    // verbatim so this per-iteration O(tool_result bytes) cost is measurable on
-    // the real function (scripts/probe-loop-iteration-perf.mjs).
-    // Then repair adjacency for the wire (2026-09-30): chained plan dispatch
-    // interleaves assistant messages with a live batch's results, and both
-    // providers require each tool_result next to its own tool_use message.
-    // Identity on legal histories, so sessions that never chain are
-    // byte-identical and the compaction pipeline below sees a legal shape.
-    // Elide settled todo_write pairs first (2026-10-25): the list's
-    // authoritative state rides the <session-state> block, so an old
-    // todo_write pair in history is a pure echo — the API copy keeps only the
-    // most recent call (its result carries the delta/cautions exactly once).
-    // Store/mirrors untouched; unpaired calls survive for the adapters'
-    // reconcile; elided pairs never enter the dropped-region arithmetic below.
-    // Same layer, same reason (2026-10-25): an old thinking-only assistant turn
-    // (a max_tokens-truncated reasoning turn) leaves nothing to ship once its
-    // turn is over — see dropStaleThinkingOnlyTurns. Block-level stripping of
-    // thinking on mixed messages is the compactor's (stripStaleThinking, beside
-    // nano below), because the prewarm simulation must see it too.
-    const apiMessages = regroupToolResults(elideTodoWritePairs(dropStaleThinkingOnlyTurns(this.messages.map(stripToolResultImages))))
-
-    // ── Compaction pipeline (operates on API copy; this.messages untouched) ──
-    // Fixed overhead the char heuristic never sees: system prompt + tool schemas.
-    // Injected into the fallback estimate so compaction still fires at the right
-    // pressure point before the first API token report arrives.
+    // The zero-loss wire normalizations (image data out of tool_results, todo
+    // pair elision, stale thinking-only turn removal, tool_result adjacency)
+    // moved into `ContextCompactor.structuralWedge` at the epoch seam: they are
+    // applied once per new base AND to the live tail at every assembly, so the
+    // wire shape stays legal without this build touching the base's bytes.
+    // Nothing here may re-shape the copy — a per-request transform IS a head
+    // move, and head moves are the one cost the epoch design exists to amortize.
+    // ── Epoch copy (PLAN-compaction-epoch) ──────────────────────────────
+    // `assembleCopy()` is the frozen base plus the live tail, with the
+    // structural wedge (images, thinking-only turns, todo pairs, tool_result
+    // adjacency) applied at the seam. Below the trigger line the copy ships
+    // byte-identical to the previous request — same base object, same tail —
+    // so the provider's cached prefix survives untouched. That is the whole
+    // mechanism: no per-request strip/nano/light/hard gates to churn the head.
+    //
+    // Fixed overhead the char heuristic never sees: system prompt + tool
+    // schemas. Every price below carries it, so the lines, the cut depths and
+    // the gauge all speak the wire's units.
     const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools)) + (spResult.stateBlock ? estimateTokens(spResult.stateBlock) : 0)
-    // The compactor's off-request simulations (prewarm / context_compact) must
-    // truncate in these units or their frontier diverges from what the next
-    // build materializes — see lastRequestOverhead.
+    // The compactor's off-request cuts (prewarm / context_compact) must price
+    // in these units or their base diverges from what the next build ships —
+    // see lastRequestOverhead.
     this.compactor.lastRequestOverhead = fixedOverhead
-    // A provider just rejected this conversation as context-overflow: the
-    // estimates missed it once (that is why the oversized request went out),
-    // so ignore their thresholds and force the API copy under the limit the
-    // provider named. Cleared when a request is accepted again (stream-runner).
-    // Cycles an earlier light pass shed stay shed (see applyPersistedDrops):
-    // without this, a compaction pass's honest post-cut report becomes the
-    // next pass's anchor, the max-guard falls back to the full-transcript
-    // heuristic, and the copy ping-pongs 20K ↔ 120K for the life of the
-    // session (conv_20261102222133). Not a new-drop signal — the strategies
-    // below still count only THIS pass's light/hard cuts.
-    let pipelineMessages = this.compactor.applyPersistedDrops(apiMessages)
+    // The denominator is the INPUT budget, not the total window
+    // (engine/window-budget.ts — the output reservation is not spendable).
+    // `inputBudget` rather than `this.inputWindow` because `opts` here is this
+    // build's own copy, which may carry a re-aimed window.
+    const inputBudget = effectiveInputWindow(opts.contextLength || 128_000, opts.maxTokens)
+    // A prewarm in flight is about to freeze a base (review0924 M2's rule,
+    // restated structurally): wait it out BEFORE assembling, or this build
+    // prices a copy that is already obsolete, then cuts a second time and pays
+    // two summarization calls for one head move.
+    await this.compactor.awaitPrewarm()
+    const epochLines = this.compactor.epochLines(inputBudget)
+    const apiMessages = this.compactor.assembleCopy()
+    // Price + book this request's growth sample — on EVERY request, cut or
+    // not: the curve is what positions T and sizes Δ.
+    const price = this.compactor.priceRequest(apiMessages, fixedOverhead)
+    const summaryBefore = this.compactor.getHistorySummary()
+
+    // Four force sources, resolved into ONE directed cut (D8):
+    //   · provider overflow — recast the base under the provider's own number
+    //     (first line of defence; the per-request emergency follows only if
+    //     the recast can't move anything, see below);
+    //   · /compact — the user asked for depth: land at the manual target,
+    //     deeper than a passive cut;
+    //   · context_compact — the model's one-shot, light depth only (no hard:
+    //     D3's two-powers split kept alive — the model can't force a hard cut);
+    //   · the passive predicate — `price > T` → cut to `T − Δ`.
+    // Both force flags are one-shot for THIS copy: prewarm already materialized
+    // their base, so a flag only re-aims one build when that materialization
+    // failed (or raced the build).
+    const toolForce = this.pendingToolCompactForce
+    const manualForce = this.manualCompactActive
+    this.pendingToolCompactForce = false
+    this.manualCompactActive = false
+    const overflowLimit = this.contextOverflowLimit
+    let cutTarget: number | null = null
+    if (overflowLimit != null) cutTarget = overflowLimit
+    else if (manualForce) cutTarget = inputBudget * EPOCH_MANUAL_TARGET_RATIO
+    else if (toolForce) cutTarget = epochLines.target
+    else if (price > epochLines.trigger) cutTarget = epochLines.target
+
+    let pipelineMessages = apiMessages
+    let cut: DirectCutResult | null = null
+    if (cutTarget != null) {
+      cut = await this.compactor.directCut(cutTarget, {
+        allowHard: overflowLimit != null || !toolForce,
+        overhead: fixedOverhead,
+        copy: apiMessages,
+      })
+      if (cut.cut) pipelineMessages = cut.messages
+    }
+    // The recast left the copy above the provider's own number (nothing
+    // droppable, or the calibration under-reads): exactly the case D12 keeps
+    // emergencyTruncate for. The test is the PRICE, not `cut.cut` — a cut that
+    // materialized without moving anything (hard off, or hard's floors hit)
+    // must not swallow the backstop, and a copy that already prices under the
+    // limit needs no backstop at all. Per-request only (it is NOT the base):
+    // the next build re-prices from the frozen copy and the flag stays set
+    // until a request is accepted.
     let emergencyChanged = false
-    if (this.contextOverflowLimit != null) {
+    const afterRecast = cut?.cut ? cut.priceAfter : price
+    if (overflowLimit != null && afterRecast > overflowLimit) {
       const before = pipelineMessages
-      pipelineMessages = this.compactor.emergencyTruncate(pipelineMessages, this.contextOverflowLimit, fixedOverhead)
-      emergencyChanged = pipelineMessages.length !== before.length ||
-        pipelineMessages.some((m, i) => m !== before[i])
+      pipelineMessages = this.compactor.emergencyTruncate(pipelineMessages, overflowLimit, fixedOverhead)
+      emergencyChanged = pipelineMessages !== before
       if (emergencyChanged) {
-        console.log(`[AgentEngine] emergencyTruncate (provider limit ${this.contextOverflowLimit}): ${before.length} → ${pipelineMessages.length} messages`)
+        console.log(`[AgentEngine] emergencyTruncate (provider limit ${overflowLimit}): ${before.length} → ${pipelineMessages.length} messages`)
       }
     }
-    // The archive arm's gate (PLAN-nano-light-trigger-merge W1): it archives
-    // only once the copy crosses 60% of the window, then bites down to 50% —
-    // in the same wire-anchored units (and with the same fixed overhead) the
-    // light/hard walks below use, so the layers cannot disagree about how
-    // full the request is.
-    // One conversion for the whole pipeline: nano / strip / light / hard must
-    // agree on the denominator, and that denominator is the INPUT budget, not
-    // the total window (engine/window-budget.ts — the output reservation is not
-    // spendable). `inputBudget` rather than `this.inputWindow` because `opts`
-    // here is this build's own copy, which may carry a re-aimed window.
-    const inputBudget = effectiveInputWindow(opts.contextLength || 128_000, opts.maxTokens)
-    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages, inputBudget, fixedOverhead)
-    // Snapshot the pass's own verdict immediately: the field is rewritten by
-    // every nanoCompact (prewarm's simulation too), so a later read could
-    // describe a different copy.
-    const nanoArchive = this.compactor.lastNanoArchive
-    // Stale-thinking strip beside nano (THINKING_STRIP_USED_RATIO): old turns'
-    // reasoning_content off the wire. Runs here AND in prewarmBody.
-    const thinkingStripped = this.compactor.stripStaleThinking(nanoCompacted, inputBudget, fixedOverhead)
-    // Two force sources, two scopes (keep them separate — see the field
-    // comments): manualCompactActive (/compact) sticks until reset and drives
-    // BOTH layers; pendingToolCompactForce (context_compact) is one-shot for
-    // THIS copy and bypasses ONLY light — hard's passive 0.9× trigger stays
-    // armed against the model's own misjudgement (D3 two-powers split).
-    const lightForce = this.manualCompactActive || this.pendingToolCompactForce
-    const lightCompacted = this.compactor.lightCompact(thinkingStripped, inputBudget, fixedOverhead, lightForce)
-    const truncatedMessages = this.compactor.hardTruncate(lightCompacted, inputBudget, fixedOverhead, this.manualCompactActive)
-    // The tool force armed the drop this copy just materialized — consume it
-    // here, after the build, so exactly one request runs slimmed.
-    this.pendingToolCompactForce = false
-    // ── One line per request: break frequency × break depth (W3) ──
-    // Without it the only way to see whether the merged gate is working is a
-    // post-hoc DB query on cached_tokens, which cannot distinguish "the gate
-    // opened and paid a break" from "light still owns the floor". `used` and
-    // `target` are the gate's own numbers; `archived` is the pass's verdict
-    // (gate=open with archived=0 = deferred under the min-reclaim floor);
-    // `light`/`hard` are this request's irreversible cuts; `→` is where the
-    // truncated copy lands, including the fixed overhead the estimator never
-    // sees.
-    if (nanoArchive) {
-      const landed = Math.round(this.compactor.estimateTokens(truncatedMessages) + fixedOverhead)
-      console.log(
-        `[AgentEngine] fit-gate used=${Math.round(nanoArchive.used)}/${opts.contextLength || 128000} gate=${nanoArchive.gate} ` +
-        `archived=${nanoArchive.archived}/${nanoArchive.reclaimed} target=${nanoArchive.target} ` +
-        `light=${this.compactor.lastLightDropRounds} hard=${thinkingStripped.length - truncatedMessages.length} ` +
-        `→ ~${landed}`,
-      )
-    }
-    // After truncation, inject an LLM summary of the dropped region into the API
-    // copy so the model keeps the gist. Synthetic message never leaves this scope.
-    // The summarizer source is the PRE-PIPELINE copy (before emergency/nano):
-    // nanoCompact has already replaced old tool_results with ⟨archived:⟩
-    // placeholders, so summarizing lightCompacted would hide what the tools
-    // actually returned (incl. failures) and let the summary fabricate outcomes;
-    // and the dropped-region arithmetic inside (original.length - truncated.length)
-    // must span emergency's drops too when the overflow flag is parked.
-    const summaryBefore = this.compactor.getHistorySummary()
-    const finalMessages = await this.compactor.injectHistorySummary(apiMessages, truncatedMessages)
+    // ── One line per request: the predicate's verdict and the cut's depth ──
+    // `price/T/Δ` is everything needed to reconstruct why this request did or
+    // did not move its head; without it the only way to see the rhythm is a
+    // post-hoc DB query on cached_tokens.
+    console.log(
+      `[AgentEngine] epoch price=${Math.round(price)}/T=${Math.round(epochLines.trigger)} Δ=${Math.round(epochLines.trigger - epochLines.target)} ` +
+      `cut=${cut?.cut ? 'yes' : 'no'}${manualForce ? '(manual)' : toolForce ? '(tool)' : overflowLimit != null ? '(overflow)' : ''} ` +
+      `target=${Math.round(cutTarget ?? epochLines.target)} → ${Math.round(this.compactor.copyTokens(pipelineMessages, fixedOverhead))}` +
+      (cut?.cut ? ` [${cut.strategies.join('+')}]` : ''),
+    )
+    const finalMessages = pipelineMessages
 
     // ── Compaction event: the pass is otherwise invisible ──
-    // Detect per layer by reference/length (nano is 1:1, so reference identity
-    // is its only footprint). The summary ships only when the cache changed,
-    // so the mirror's persisted copy stays fresh without re-sending the text
-    // on every request.
+    // A cut names its own steps (DirectCutResult.strategies), so there is no
+    // per-layer reference sniffing left to do: either this request cut its base
+    // (and the steps say how deep it went) or it shipped the previous bytes
+    // untouched. `emergency` stays separate — it is the per-request backstop
+    // that did NOT become the base (D8), so it can never appear optimistic.
+    // The summary rides `cut.strategies` ('summary'), and the mirror still
+    // gets the text only when it changed (summaryChanged below).
     const compactStrategies: string[] = []
     if (emergencyChanged) compactStrategies.push('emergency')
-    // The archive ledger re-mints carried placeholders every build (reference
-    // identity changes on every request once the gate has bitten), so the
-    // event rides the snapshot's FRESH-take count, not the identity scan
-    // (PLAN-cache-wire-gates D8).
-    if ((nanoArchive?.archived ?? 0) > 0) compactStrategies.push('nano')
-    // The strip rebuilds the same objects every build, so reference identity
-    // would name it on every request — only a NEWLY stripped turn counts.
-    if (this.compactor.lastThinkingStripNew > 0) compactStrategies.push('thinking')
-    if (lightCompacted.length !== thinkingStripped.length) compactStrategies.push('light')
-    if (truncatedMessages.length !== lightCompacted.length) compactStrategies.push('hard')
-    // The reminder's own synthetic message would read as a summary landed —
-    // exclude it so 'summary' keeps meaning "a summary message is in the copy".
-    const reminderInjected = this.compactor.lastReminderCount > 0
-    if (finalMessages.length > truncatedMessages.length + (reminderInjected ? 1 : 0)) compactStrategies.push('summary')
-    if (reminderInjected) compactStrategies.push('read_reminder')
+    if (cut?.cut) compactStrategies.push(...cut.strategies)
 
-    // ── Refill breaker (PLAN-context-zcode-benchmarks P1) ──
+    // ── Refill breaker (PLAN-context-zcode-benchmarks P1 / epoch D9) ──
     // Runs on EVERY request build (the un-trip path needs it even when nothing
-    // was dropped): a fit-based drop landing within REFILL_TOOL_TURN_THRESHOLD
-    // tool rounds of the previous one is a refill; REFILL_BREAKER_LIMIT in a
-    // row suspends summary absorption until the rhythm normalizes. nano is 1:1
-    // and emergency is the reactive backstop — neither is a refill signal.
+    // was cut): a NEW BASE materializing within REFILL_TOOL_TURN_THRESHOLD tool
+    // rounds of the previous one is a refill; REFILL_BREAKER_LIMIT in a row
+    // suspends summary absorption until the rhythm normalizes. Under one
+    // decision point the cut IS the signal — nothing else can move the head —
+    // and an emergency pass is the reactive backstop (it does not materialize a
+    // base), so it re-bases the clock without counting as a refill.
     const roundsAtEntry = this.compactTracking.toolRoundsSinceDrop
     const refill = evaluateRefillBreaker(
       this.compactTracking,
       roundsAtEntry,
-      compactStrategies.includes('light') || compactStrategies.includes('hard'),
+      cut?.cut === true,
       // An emergency-only pass isn't a refill signal, but its drops still
       // re-base the round clock (see evaluateRefillBreaker).
-      compactStrategies.includes('emergency') ||
-        compactStrategies.includes('light') || compactStrategies.includes('hard'),
+      cut?.cut === true || emergencyChanged,
     )
     if (refill.transitionedToSuspended) {
       console.warn(
         `[AgentEngine] refill breaker tripped (${this.compactTracking.consecutiveRefills} consecutive refills): the copy refilled within ` +
         `<${REFILL_TOOL_TURN_THRESHOLD} tool rounds of each compaction — a file or tool output is likely too large. ` +
-        `Summary absorption suspended until the rhythm normalizes; nano/light/hard/emergency keep running.`
+        `Summary absorption suspended until the rhythm normalizes; directed cuts keep running.`
       )
       this.emitCompaction({
         ts: Date.now(),
@@ -1709,8 +1720,8 @@ export class AgentEngine implements EngineCore {
         strategies: ['refill_breaker'],
         droppedMessages: 0,
         replayedUserMessages: 0,
-        tokensBefore: contextTokensOf(apiMessages),
-        tokensAfter: contextTokensOf(finalMessages),
+        tokensBefore: this.compactor.copyTokens(apiMessages, fixedOverhead),
+        tokensAfter: this.compactor.copyTokens(finalMessages, fixedOverhead),
       })
     }
     if (compactStrategies.length > 0) {
@@ -1725,8 +1736,8 @@ export class AgentEngine implements EngineCore {
         strategies: compactStrategies,
         droppedMessages: apiMessages.length - finalMessages.length,
         replayedUserMessages: this.compactor.lastInjectReplayCount,
-        tokensBefore: contextTokensOf(apiMessages),
-        tokensAfter: contextTokensOf(finalMessages),
+        tokensBefore: this.compactor.copyTokens(apiMessages, fixedOverhead),
+        tokensAfter: this.compactor.copyTokens(finalMessages, fixedOverhead),
         summary: summaryChanged ? summaryAfter : undefined,
       }
       this.emitCompaction(event)
@@ -1735,10 +1746,13 @@ export class AgentEngine implements EngineCore {
     // The state block is appended AFTER compaction: it is per-turn context, not
     // history — it must never be summarized, truncated or moved off the end.
     // Its gauge section swaps in NOW: finalMessages is what this request
-    // actually ships, so contextTokensOf(finalMessages, fixedOverhead) is the
-    // honest occupancy (wire units — the anchor already carries the previous
-    // request's overhead, the fallback leg adds this one's). A missing
-    // sentinel (older call sites, tests) keeps the block as built.
+    // actually ships, so copyTokensOf(finalMessages, fixedOverhead) — the
+    // copy's content price plus this request's overhead — is the honest
+    // occupancy. NOT the anchor readers: both key on the last wire report
+    // riding the messages, and after a cut that report prices the PRE-cut
+    // request — a 110,535 report kept every reading at ~74% while the copy
+    // shipped 54,005 (conv_20261120152212, 2026-11-21). A missing sentinel
+    // (older call sites, tests) keeps the block as built.
     let stateBlockText: string | null = spResult.stateBlock
     if (stateBlockText !== null && stateBlockText.includes(CONTEXT_GAUGE_SENTINEL)) {
       // Swap the LAST occurrence, not String.replace's first match: every
@@ -1749,8 +1763,12 @@ export class AgentEngine implements EngineCore {
       // real sentinel rides the wire verbatim and the gauge silently
       // disappears.
       const at = stateBlockText.lastIndexOf(CONTEXT_GAUGE_SENTINEL)
+      // The RAW copy price rides along for the calibration loop: when this
+      // request's usage report lands, wire / raw is the tokenizer factor the
+      // next gauge quotes (compactor.copyTokens applies it).
+      this.lastBuildCopyEstimate = copyTokensOf(finalMessages, fixedOverhead)
       stateBlockText = stateBlockText.slice(0, at)
-        + buildContextWindowSection({ tokens: contextTokensOf(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
+        + buildContextWindowSection({ tokens: this.compactor.copyTokens(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
         + stateBlockText.slice(at + CONTEXT_GAUGE_SENTINEL.length)
     }
     const stateBlock: AgentMessage | null = stateBlockText !== null
@@ -2004,11 +2022,13 @@ export class AgentEngine implements EngineCore {
     this.streamingBlocks = []
     this.jsonAccumulators = new Map()
     this.toolUseBlocks = []
+    // The retried turn gets its own clock: the failed attempt's time is not part
+    // of the answer the user ends up reading. Started BEFORE the streaming
+    // announcement — same gap rule as prepareTurn (turnMsOf skips an idle clock,
+    // and the retry would sit indicator-less until the first delta).
+    this.turnClock.start()
     this.agentStatus = { status: 'streaming' }
     this.notify()
-    // The retried turn gets its own clock: the failed attempt's time is not part
-    // of the answer the user ends up reading.
-    this.turnClock.start()
     opts.adapter.reconcileMessages?.(this.messages)
     await this.continueLoop()
   }
@@ -2026,9 +2046,8 @@ export class AgentEngine implements EngineCore {
     // scan watermark.
     this.contextWindowReaim = null
     this.gatedScan = { scannedMsgs: 0, hitCategories: new Set() }
-    // A fresh conversation also clears an explicit /compact: the force sticks
-    // until reset precisely so a live session stays slim, but it must not
-    // outlive the history it was compacting. The compactor's summary cache is
+    // A fresh conversation also drops the /compact re-aim: its cut target was
+    // computed for a history that no longer exists. The summary cache is
     // cleared with it — a reset leaves nothing for the next conversation's
     // inject to re-key against.
     this.manualCompactActive = false
@@ -2039,12 +2058,11 @@ export class AgentEngine implements EngineCore {
     this.pendingToolCompactForce = false
     this.toolCompactUsedThisTurn = false
     this.compactor.clearMandatedToolResultIds()
-    this.compactor.clearStrippedThinkingIds()
-    // The persistent light holes named this history's messages too.
-    this.compactor.clearLightDrops()
-    // The nano archive ledger and the strip latch are per-conversation state
-    // the same way (PLAN-cache-wire-gates D2/D3).
-    this.compactor.clearGateState()
+    // The epoch went with the history: its frozen base points at messages this
+    // conversation no longer holds, and its growth curve measured that
+    // history's rhythm. One state covers the base, the seam, the growth
+    // samples and the baseline price (clearEpoch, PLAN-compaction-epoch D2).
+    this.compactor.clearEpoch()
     // A fresh conversation has changed no files yet: the ledger (and the tree
     // rows it paints) go with the history. Emits only if there was anything.
     this.toolExecutor.fileChanges.clear()
@@ -2067,13 +2085,11 @@ export class AgentEngine implements EngineCore {
     // history just left the engine.
     this.gatedScan = { scannedMsgs: 0, hitCategories: new Set() }
     this.contextWindowReaim = null
-    // The history was replaced wholesale: the previous copy's light holes name
-    // messages this history may not hold (ids are per-conversation, so a stale
-    // set would only bloat — but the frontier must also start clean so the
-    // first post-resume build re-derives its own, exactly once).
-    this.compactor.clearLightDrops()
-    // The nano ledger and strip latch name/price this history too.
-    this.compactor.clearGateState()
+    // The history was replaced wholesale: the frozen base and its growth curve
+    // describe a conversation that just left — the first post-resume build
+    // re-assembles its own seam from the structural wedge (D11: the epoch is
+    // not persisted, so a restart pays one full-price request, same as cold).
+    this.compactor.clearEpoch()
     // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
     // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
     // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /

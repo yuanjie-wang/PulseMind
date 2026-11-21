@@ -71,11 +71,11 @@ describe('rescue wiring (source scans)', () => {
   it('prepareLoopRequest answers the parked limit with emergencyTruncate', () => {
     const engine = src('src/renderer/src/agent/AgentEngine.ts')
     expect(engine).toContain('this.compactor.emergencyTruncate(pipelineMessages')
-    // The summarizer source is the PRE-PIPELINE copy (apiMessages): the
-    // dropped-region arithmetic inside (original minus kept) must span
-    // emergency's drops too when the overflow flag is parked, not just
-    // nano→light→hard's share of the already-truncated copy.
-    expect(engine).toContain('injectHistorySummary(apiMessages')
+    // The directed cut receives the PRE-PIPELINE copy (`copy: apiMessages`):
+    // the dropped-region arithmetic inside must span the whole copy, exactly as
+    // it did when injectHistorySummary took apiMessages — the pipeline no longer
+    // has a per-request transform chain for it to be narrower than.
+    expect(engine).toContain('copy: apiMessages')
   })
 
   it('the forced cut ignores the trigger thresholds that missed the overflow', () => {

@@ -328,7 +328,9 @@ export function useChatController(options: UseChatControllerOptions) {
         }
         if (event) {
           const freed = Math.max(0, event.tokensBefore - event.tokensAfter)
-          message.success(t('chatView.compaction.done', { dropped: event.droppedMessages, freed: `${(freed / 1024).toFixed(1)}K` }))
+          // Decimal K — tokens have no binary basis, and every other K figure
+          // (stats row, gauge, ring tooltip) reads /1000.
+          message.success(t('chatView.compaction.done', { dropped: event.droppedMessages, freed: `${(freed / 1000).toFixed(1)}K` }))
         } else {
           message.info(t('chatView.compaction.nothing'))
         }

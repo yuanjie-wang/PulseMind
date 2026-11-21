@@ -17,12 +17,14 @@ import { registerForegroundExec, unregisterForegroundExec } from './foreground-e
 const MEMORY_PREVIEW_MAX = 2000
 
 /** freed/skipped 点名回执段——成功与拒绝信封共用。free_results 豁免主动作的
- *  全部守卫，mandate 在拒绝返回前已写入（下一请求即压缩）：拒绝信封若丢回执，
+ *  全部守卫，mandate 在拒绝返回前已写入（下一次压缩即落占位符）：拒绝信封若丢回执，
  *  模型点名的压缩就「生效了却没有凭据」（review 2026-10-04 中1）。 */
 function formatFreeResultsReceipt(o: CompactToolOutcome): string[] {
   const lines: string[] = []
   if (o.freedResults?.length) {
-    lines.push(`已压缩 ${o.freedResults.length} 条点名结果为占位符（下一请求生效），原文经 tool_result_search 取回。`)
+    // 「将在下一次压缩时生效」而不是「下一请求生效」：epoch 重写后归档计划不再
+    // 每请求重推导，mandate 只在真正发生切割时落盘——低于切割目标的请求原样发货。
+    lines.push(`已压缩 ${o.freedResults.length} 条点名结果为占位符（将在下一次压缩时生效），原文经 tool_result_search 取回。`)
   }
   if (o.skippedIds?.length) {
     const label: Record<string, string> = {
@@ -62,7 +64,10 @@ function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean, hadFreeR
         break
       case 'not_worthwhile': {
         const pct = o.window ? Math.round(((o.tokens ?? 0) / o.window) * 100) : 0
-        const k = (n?: number) => `${Math.round((n ?? 0) / 1024)}K`
+        // Token counts read in decimal K — the window these figures are
+        // divided into is a round-decimal provider quote (150K = 150_000), so
+        // /1024 broke the line's own X/Y ratio against the pct beside it.
+        const k = (n?: number) => `${Math.round((n ?? 0) / 1000)}K`
         refusal = `当前上下文约占窗口的 ${pct}%（~${k(o.tokens)} / ${k(o.window)} tokens），无需压缩。请在真正的阶段边界（探索完成/话题切换）再调用。`
         break
       }
@@ -78,7 +83,7 @@ function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean, hadFreeR
   if (o.droppedMessages != null) {
     const pct = o.window && o.tokensAfter != null ? Math.round((o.tokensAfter / o.window) * 100) : null
     const pctNote = pct != null ? `，现为窗口的 ${pct}%` : ''
-    lines.push(`已压缩：归档 ${o.droppedMessages} 条旧消息（估算 ~${Math.round((o.tokensBefore ?? 0) / 1024)}K → ~${Math.round((o.tokensAfter ?? 0) / 1024)}K tokens${pctNote}）。`)
+    lines.push(`已压缩：归档 ${o.droppedMessages} 条旧消息（估算 ~${Math.round((o.tokensBefore ?? 0) / 1000)}K → ~${Math.round((o.tokensAfter ?? 0) / 1000)}K tokens${pctNote}）。`)
     const notesNote = hadNotes ? (o.notesKept ? '摘要+交接笔记' : '摘要（注意：交接笔记未能落地）') : '摘要'
     lines.push(
       o.summaryLanded
