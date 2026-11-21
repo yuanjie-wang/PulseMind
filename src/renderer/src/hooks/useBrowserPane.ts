@@ -83,6 +83,14 @@ export function useBrowserPaneBinding(
   const primaryPaneWidth = useBrowserPaneStore((s) => s.primaryPaneWidth)
   // 浮窗让位（十三期）：useFloatOverlayShift 量出的左右内收 px。
   const floatOverlay = useBrowserPaneStore((s) => s.floatOverlay)
+  // 整窗浮层（2026-11-21）：Modal/遮罩在屏上时原生 view 必须整体让开。几何让位
+  // 救不了这类（它盖的不是一条边，是一片），只能折叠——false 即 0×0，页签与
+  // 页面都活着，浮层关掉后一次 bounds 写回。
+  // 折叠等**冻结帧就位**（方案 ③）：先折后抓会让页面先黑一下，先抓后折才是原子
+  // 替换（页面 → 定格图 + 弹窗，同一拍）。抓图卡死由 useBrowserFreeze 的超时兜底。
+  const occluded = useBrowserPaneStore((s) => s.occluded)
+  const freezeSettled = useBrowserPaneStore((s) => s.freezeSettled)
+  const fold = occluded && freezeSettled
   const browserPrimary = primary === 'browser'
   const browserActive = browserPrimary || (workbenchOpen && workbenchTab === 'browser')
   // The address bar's suggestion dropdown overhangs the webview area — the
@@ -121,7 +129,7 @@ export function useBrowserPaneBinding(
         viewKind: 'chat',
         conversationId: conversationId ?? null,
         chatAreaWidth,
-        browserActive: rightPanel === 'browser',
+        browserActive: rightPanel === 'browser' && !fold,
         chromeOverlayHeight,
         topInset: IMMERSIVE_BROWSER_TOP_INSET,
         rightInset: IMMERSIVE_BROWSER_RIGHT_INSET,
@@ -147,7 +155,7 @@ export function useBrowserPaneBinding(
         viewKind,
         conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
         chatAreaWidth,
-        browserActive: viewKind === 'chat',
+        browserActive: viewKind === 'chat' && !fold,
         chromeOverlayHeight,
         ...(cardMode ? { topInset: WORKBENCH_CARD_TOP_INSET, bottomInset: WORKBENCH_CARD_BOTTOM_INSET } : {}),
         rightInset: reserve + (cardMode ? WORKBENCH_CARD_MARGIN : 0),
@@ -162,7 +170,7 @@ export function useBrowserPaneBinding(
       viewKind,
       conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
       chatAreaWidth,
-      browserActive: viewKind === 'chat' ? browserActive : false,
+      browserActive: viewKind === 'chat' ? browserActive && !fold : false,
       chromeOverlayHeight,
       // 卡片形态：原生 view 收进工作台卡的内容盒（沉浸分支同款补偿，常量在
       // shared/browser/pane——右缘不含边框，由 webviewBox 自身内缩吸收）。
@@ -185,6 +193,7 @@ export function useBrowserPaneBinding(
     immersiveCardWidth,
     primaryPaneWidth,
     floatOverlay,
+    fold,
     workbenchOpen,
     workbenchWidth,
     cardMode,

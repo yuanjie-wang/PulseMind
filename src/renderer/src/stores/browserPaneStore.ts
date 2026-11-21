@@ -7,7 +7,7 @@
 // bridge is available before any import).
 
 import { create } from 'zustand'
-import type { BrowserPaneUpdate } from '../../../shared/browser/pane'
+import type { BrowserPaneUpdate, PaneFreezeFrame } from '../../../shared/browser/pane'
 
 interface BrowserPaneStore {
   update: BrowserPaneUpdate
@@ -34,6 +34,18 @@ interface BrowserPaneStore {
    *  （useFloatOverlayShift 实测），随 pane-state 推给 dock 内收 view。
    *  无浮窗恒 {left:0,right:0}。 */
   floatOverlay: { left: number; right: number }
+  /** 整窗浮层在屏上（2026-11-21）：useBrowserOcclusion 实测的 Modal/遮罩态。
+   *  原生 view 画在一切 DOM 之上，这类浮层只能靠折叠让开——useBrowserPane
+   *  把它与 browserActive 相与（false = 收成 0×0，页签与页面都活着）。 */
+  occluded: boolean
+  /** 冻结帧（方案 ③）：折叠前抓下的那一屏 + 它该待的矩形（主进程给的窗口内容
+   *  区坐标），BrowserFreezeLayer 铺回 DOM，观感是「页面定格」而不是「卡片空白」。
+   *  null = 没抓到（空页签/抓图失败/还没回来）。 */
+  freeze: PaneFreezeFrame | null
+  /** 抓帧这件事有结论了（拿到图或确定没有）。**折叠等它**：先折后抓会让页面
+   *  先黑一下，先抓后折才是原子替换；一直没有结论时由 useBrowserFreeze 的超时
+   *  兜底置 true——弹窗不能被页面永远盖着。 */
+  freezeSettled: boolean
   setUpdate: (update: BrowserPaneUpdate) => void
   setOptimisticActive: (id: string | null) => void
   setChromeOverlayHeight: (px: number) => void
@@ -41,6 +53,9 @@ interface BrowserPaneStore {
   setImmersiveCardWidth: (width: number | null) => void
   setPrimaryPaneWidth: (width: number | null) => void
   setFloatOverlay: (overlay: { left: number; right: number }) => void
+  setOccluded: (occluded: boolean) => void
+  setFreeze: (freeze: PaneFreezeFrame | null) => void
+  setFreezeSettled: (freezeSettled: boolean) => void
 }
 
 export const useBrowserPaneStore = create<BrowserPaneStore>((set) => ({
@@ -51,6 +66,9 @@ export const useBrowserPaneStore = create<BrowserPaneStore>((set) => ({
   immersiveCardWidth: null,
   primaryPaneWidth: null,
   floatOverlay: { left: 0, right: 0 },
+  occluded: false,
+  freeze: null,
+  freezeSettled: false,
   setUpdate: (update) => set({ update, optimisticActiveId: null }),
   setOptimisticActive: (id) => set({ optimisticActiveId: id }),
   setChromeOverlayHeight: (px) => set({ chromeOverlayHeight: px }),
@@ -58,6 +76,9 @@ export const useBrowserPaneStore = create<BrowserPaneStore>((set) => ({
   setImmersiveCardWidth: (immersiveCardWidth) => set({ immersiveCardWidth }),
   setPrimaryPaneWidth: (primaryPaneWidth) => set({ primaryPaneWidth }),
   setFloatOverlay: (floatOverlay) => set({ floatOverlay }),
+  setOccluded: (occluded) => set({ occluded }),
+  setFreeze: (freeze) => set({ freeze }),
+  setFreezeSettled: (freezeSettled) => set({ freezeSettled }),
 }))
 
 if (typeof window !== 'undefined' && window.electronAPI?.onBrowserPaneUpdate) {

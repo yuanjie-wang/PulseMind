@@ -15,7 +15,7 @@ import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { MemoryPageRecord, MemoryPageType, PageOp, PageOpResult } from '../memory-pages'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
-import type { BrowserPaneState } from '../browser/pane'
+import type { BrowserPaneState, PaneFreezeFrame } from '../browser/pane'
 import type { SummonedExpert } from '../expert-context'
 import type { GitAction, GitResult } from './git'
 import type { WindowControlsLayout } from '../window-chrome'
@@ -32,9 +32,10 @@ import type { AgentSessionCreateOptions, StatusSnapshot } from '../agent-protoco
  *  ever persisted. */
 export interface PopoutWorkbenchSeed {
   /** 本窗的主视图模式（2026-11-04 用户裁定「对话在主窗是什么视图模式，弹出独立
-   *  弹窗后要保持一致」）：弹窗是独立渲染进程，`primaryByConversation` 刻意不
-   *  持久化（各窗口一份内存态），不携带就恒 boot 成对话优先。缺省/缺席 = 'chat'
-   *  （无条目即对话优先，与 store 的读法同一条）。 */
+   *  弹窗后要保持一致」）：主窗的 `primaryByConversation` 自 2026-11-21 起
+   *  落盘，但弹窗是独立渲染进程、读写独立的 `pulsemind-workbench:secondary`
+   *  key，看不到主窗那份记忆，所以仍靠 seed 携带；不携带就恒 boot 成对话优先。
+   *  缺省/缺席 = 'chat'（无条目即对话优先，与 store 的读法同一条）。 */
   primary?: 'chat' | 'files' | 'browser'
   /** The donor's frontmost workbench tab; present only when the pane was open.
    *  视图模式（PLAN-layout-modes）下 donor 可能停在 'chat' tab（对话降级到
@@ -473,6 +474,9 @@ export interface ElectronAPI {
   browserPaneSetState: (state: BrowserPaneState) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>
   browserPaneAction: (action: Record<string, unknown>) => Promise<void>
+  /** 冻结帧（2026-11-21）：整窗浮层要折叠原生 view 时，取页面此刻的一帧 + 它的
+   *  落位矩形；null = 没东西可定格（空页签 / view 已折 / 抓图失败），折叠照旧。 */
+  browserPaneFreezeFrame: () => Promise<PaneFreezeFrame | null>
   /** Address-bar history (PLAN-browser-pane-ux T3): manual navigation only. */
   browserHistoryQuery: (text: string) => Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>>
   browserHistoryClear: () => Promise<void>

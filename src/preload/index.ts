@@ -110,6 +110,8 @@ const electronAPI = {
   browserPaneSetState: (state: BrowserPaneState) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
   browserPaneSetWidth: (width: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_WIDTH, width),
   browserPaneAction: (action: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_ACTION, action),
+  // 冻结帧（2026-11-21）：折叠原生 view 之前，先抓一帧当 DOM 底图。
+  browserPaneFreezeFrame: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_FREEZE),
   browserHistoryQuery: (text: string): Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_QUERY, text),
   browserHistoryClear: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_CLEAR),

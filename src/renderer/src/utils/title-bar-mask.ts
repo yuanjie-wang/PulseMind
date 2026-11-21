@@ -52,8 +52,11 @@ export function combineMaskAlphas(alphas: number[]): number {
 
 /** Skip masks that are in the DOM but not on screen (a closed dialog's wrap
  *  hidden behind display:none). checkVisibility() is Chromium's; jsdom has no
- *  layout, so fall back to the element's own display. */
-function onScreen(el: Element): boolean {
+ *  layout, so fall back to the element's own display.
+ *
+ *  导出给 overlay-occlusion 复用：那边要判 antd 的 wrap 是否在屏上，谓词必须是
+ *  同一个（checkVisibility 走祖先，antd 关弹窗时 display:none 可能落在包装层）。 */
+export function isOnScreen(el: Element): boolean {
   const anyEl = el as HTMLElement
   if (typeof anyEl.checkVisibility === 'function') return anyEl.checkVisibility()
   return getComputedStyle(el).display !== 'none'
@@ -63,7 +66,7 @@ function onScreen(el: Element): boolean {
 export function currentMaskAlpha(doc: Document = document): number {
   const alphas: number[] = []
   for (const el of doc.querySelectorAll(MASK_SELECTOR)) {
-    if (!onScreen(el)) continue
+    if (!isOnScreen(el)) continue
     const a = maskAlphaOf(getComputedStyle(el).backgroundColor)
     if (a > 0) alphas.push(a)
   }

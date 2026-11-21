@@ -29,6 +29,7 @@ import {
   type BrowserPaneAction,
   type BrowserPaneState,
   type BrowserPaneUpdate,
+  type PaneFreezeFrame,
   type PaneTabInfo,
   type WindowOpenRoute,
 } from '../../shared/browser/pane'
@@ -239,6 +240,40 @@ export class BrowserService {
       appViewDock.dockFor(e.win).setWidth(e.state.paneWidth ?? this.resolvePaneWidthFor(e.state.chatAreaWidth))
     }
     this.pushPaneUpdates(true)
+  }
+
+  /**
+   * 冻结帧（2026-11-21，方案 ③）：整窗浮层要把原生 view 折叠让开，折叠之前先
+   * 抓一帧交给渲染端铺回 DOM——观感是「页面定格」，不是「卡片空白」。
+   *
+   * 三处提前判掉（返回 null = 照旧折叠，只是没有底图）：
+   *   ① 本窗口的面板挂在当前会话上，且确有可见页签（空页签/about:blank 没内容可定格）；
+   *   ② dock 此刻有可用的落位矩形——**抓图必须发生在折叠之前**（折叠后 bounds 全零），
+   *      渲染端的时序正是「先要帧、拿到才折叠」，所以这里回放的是 layout 最后应用
+   *      过的那个盒子，不照公式重算；
+   *   ③ 抓出来的图非空（webContents 在销毁流程或视图隐藏时 capturePage 给空图）。
+   */
+  async captureFreezeFrame(sender: WebContents): Promise<PaneFreezeFrame | null> {
+    const win = this.resolveWindow(sender)
+    if (!win) return null
+    const state = this.paneWindows.get(win.id)?.state
+    if (!state || state.viewKind !== 'chat') return null
+    const scope = state.conversationId
+    if (!scope) return null
+    const active = this.activePaneEntry(scope)
+    const view = active ? this.viewOfTab(active.id) : null
+    if (!view || view.webContents.isDestroyed()) return null
+    if (isFreshTabUrl(view.webContents.getURL() ?? '')) return null
+    const box = appViewDock.currentBox(win)
+    if (!box || box.width <= 0 || box.height <= 0) return null
+    try {
+      const image = await view.webContents.capturePage()
+      if (image.isEmpty()) return null
+      return { src: image.toDataURL(), box }
+    } catch {
+      // 抓图失败不当错误：没有底图的折叠仍然比「弹窗被页面吞掉」正确。
+      return null
+    }
   }
 
   async handlePaneAction(action: BrowserPaneAction, sender: WebContents): Promise<void> {

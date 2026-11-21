@@ -405,6 +405,7 @@ export const IPC_CHANNELS = {
   BROWSER_PANE_STATE: 'browser:pane-state',
   BROWSER_PANE_WIDTH: 'browser:pane-width',
   BROWSER_PANE_ACTION: 'browser:pane-action',
+  BROWSER_PANE_FREEZE: 'browser:pane-freeze',
   BROWSER_PANE_UPDATE: 'browser:pane-update',
   // Address-bar history (PLAN-browser-pane-ux T3.3): manual navigation only,
   // globally shared, clearable from the suggestion dropdown's footer.

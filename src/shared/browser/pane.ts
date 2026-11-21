@@ -142,6 +142,21 @@ export interface PaneBox {
   height: number
 }
 
+// ── 冻结帧（2026-11-21，PLAN 方案 ③）──
+// 整窗浮层（Modal / ⌘K / 遮罩）打开时原生 view 只能折叠让开，否则弹窗被页面
+// 整个吞掉。折叠后卡片是空白——冻结帧就是折叠**之前**抓下的那一屏，按 view
+// 自己的落位矩形铺回 DOM（DOM 在遮罩之下、view 之上，观感是「页面定格」而不是
+// 「页面消失」）。
+//
+// `box` 由主进程给出而不是渲染端复算：dock 是唯一算得出这个矩形的地方（它手里
+// 有 clamped 的 paneWidth、三向 inset、16:9 居中的完整口径），渲染端再算一遍就
+// 有了两套几何——正是「面板看着对齐、实际差 1px 查不出根因」的来源。
+export interface PaneFreezeFrame {
+  /** `data:image/png;base64,…` — 页面此刻的一帧，尺寸即 view 的物理像素。 */
+  src: string
+  box: PaneBox
+}
+
 // ── window.open routing (2026-09-28) ──
 // A page inside the pane that calls window.open — or a target=_blank link —
 // used to hit Electron's DEFAULT handler, which spawns a real OS window

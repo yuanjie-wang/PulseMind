@@ -14,6 +14,8 @@ export function registerBrowserHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_STATE, (event, state) => browserService.handlePaneState(state, event.sender))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_WIDTH, (event, width: number) => browserService.handlePaneWidth(width, event.sender))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_ACTION, (event, action) => browserService.handlePaneAction(action, event.sender))
+  // 冻结帧（2026-11-21）：整窗浮层要折叠原生 view 时，渲染端先来要一帧当底图。
+  ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_FREEZE, (event) => browserService.captureFreezeFrame(event.sender))
   ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY_QUERY, (_event, text: string) => browserHistoryStore.query(text))
   ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY_CLEAR, () => browserHistoryStore.clear())
   // ── Favorites (PLAN-browser-favorites M1) ──

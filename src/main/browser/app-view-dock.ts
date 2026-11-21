@@ -24,7 +24,7 @@
 
 import { BrowserWindow, WebContentsView } from 'electron'
 import { TITLE_BAR_HEIGHT } from '../../shared/window-chrome'
-import { PANE_CHROME_HEIGHT, webviewBox, zoomForWidth } from '../../shared/browser/pane'
+import { PANE_CHROME_HEIGHT, webviewBox, zoomForWidth, type PaneBox } from '../../shared/browser/pane'
 
 class AppViewDock {
   private window: BrowserWindow | null = null
@@ -52,6 +52,10 @@ class AppViewDock {
   // 裁剪不缩放——zoomForWidth 仍按 this.width 算，页面不 reflow。
   private leftOverlay = 0
   private rightOverlay = 0
+  /** layout() 最后一次真正写进 view 的矩形（窗口内容区坐标）。冻结帧抓图要
+   *  按它铺回 DOM——折叠后 bounds 全零，抓图必须发生在折叠之前，且回的必须是
+   *  同一个盒子；照公式再算一遍就多了一套几何。 */
+  private lastBox: PaneBox | null = null
 
   attach(win: BrowserWindow): void {
     if (this.window === win) return
@@ -188,6 +192,7 @@ class AppViewDock {
         box.width = Math.max(0, box.width - this.leftOverlay - this.rightOverlay)
       }
       this.attached.setBounds(box)
+      this.lastBox = box
       // Pages lay out at the design width and scale down to fit the 16:9 box —
       // the whole page stays visible (等比缩放) instead of cropping a 1:1 render.
       this.attached.webContents.setZoomFactor(zoomForWidth(this.width))
@@ -197,6 +202,13 @@ class AppViewDock {
       if (showBox && view === this.attached) continue
       view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     }
+    if (!showBox) this.lastBox = null
+  }
+
+  /** 当前可见 view 的落位矩形；折叠态/无 view 时为 null。冻结帧抓图前调用
+   *  （此刻 view 还没折），拿到的是 layout 真正应用过的那个盒子。 */
+  currentBox(): PaneBox | null {
+    return this.visible && this.attached ? this.lastBox : null
   }
 }
 
@@ -262,6 +274,12 @@ class AppViewDockRegistry {
   /** 沉浸窗口的三向 inset（2026-10-31），按窗口路由。 */
   setInsets(win: BrowserWindow, top: number, right: number, bottom: number): void {
     this.dockFor(win).setInsets(top, right, bottom)
+  }
+
+  /** 该窗口此刻可见的 view 盒子（冻结帧抓图用）；没有 dock/没在显示时 null。 */
+  currentBox(win: BrowserWindow): PaneBox | null {
+    this.sweep()
+    return this.docks.get(win.id)?.currentBox() ?? null
   }
 
   /** The view is being destroyed — drop it from whichever dock holds it. */

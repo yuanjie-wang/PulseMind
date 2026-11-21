@@ -36,6 +36,9 @@ import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
 import { useFloatOverlayShift } from './hooks/useFloatOverlayShift'
+import { useBrowserOcclusion } from './hooks/useBrowserOcclusion'
+import { useBrowserFreeze } from './hooks/useBrowserFreeze'
+import { BrowserFreezeLayer } from './components/browser/BrowserFreezeLayer'
 import { useNavigationStore } from './stores/navigationStore'
 import { SettingsProvider, useSettings } from './hooks/SettingsContext'
 import { MemoryManager } from './memory/MemoryManager'
@@ -596,6 +599,13 @@ function AppContent(): React.ReactElement {
   // /dock 的下拉浮窗右侵/左侵会被遮挡——量浮窗越缘 px 推给 dock 内收 view。
   const viewKindForOverlay = useNavigationStore((s) => s.view.kind)
   useFloatOverlayShift(primary === 'browser' && viewKindForOverlay === 'chat')
+  // 整窗浮层（2026-11-21）：Modal/遮罩在屏上时原生 view 只能整体让开——不受
+  // primary 门控，侧栏形态下 dock 里的浏览器照样会被同一层遮罩吞掉；观察本身
+  // 廉价（变更先过选择器过滤），无浮层时不产生任何推送。
+  useBrowserOcclusion()
+  // 冻结帧（方案 ③）：遮罩打开后先抓一帧，折叠等它就位——页面看起来是「定格」
+  // 而不是「空白」。抓图失败/超时则退化成 ② 的空白折叠。
+  useBrowserFreeze()
   // 卡片化后的 drill-in 覆盖层要盖住「对话卡」本身：右缘 = clamp 后的 pane 宽
   // + 卡边距 + 列间 gap（ChatView 的 reserve 同一把 clamp 尺——旧代码用 raw
   // workbenchWidth，存储值大于今日 chatArea 时覆盖层会越过对话列压到 pane）。
@@ -757,7 +767,8 @@ function AppContent(): React.ReactElement {
 
   // 弹窗 donor seed（2026-10-31 裁定 + 2026-11-04 追加主视图模式）：工作台开/
   // 前置 tab + 预览文件页签/活动文件 + 本窗该会话的主视图模式。in-memory，只走
-  // 这次 IPC + 弹窗启动时的一次取回，两个 store 都不持久化；页签即使在工作台
+  // 这次 IPC + 弹窗启动时的一次取回；seed 本身不落盘（次级窗口读写独立的
+  // storage key，看不到主窗落盘的布局记忆，seed 仍是模式的唯一通道）；页签即使在工作台
   // 关着时也携带（弹窗里后开工作台照样复原）。两条入口（新建弹窗/聚焦已弹窗）
   // 共用一份——各写一份必然漂移。
   const popoutSeedFor = (key: string): PopoutWorkbenchSeed => {
@@ -966,6 +977,8 @@ function AppContent(): React.ReactElement {
               </div>
             </AppLayout>
             <InstallNotifier messages={messages} />
+            {/* 冻结帧（方案 ③）：折叠掉的网页那一屏按窗口内容区坐标铺回 DOM。 */}
+            <BrowserFreezeLayer />
           </AntdApp>
         </ConfigProvider>
       </XProvider>
