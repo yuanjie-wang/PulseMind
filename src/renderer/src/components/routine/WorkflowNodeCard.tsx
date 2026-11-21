@@ -70,9 +70,8 @@ export interface WorkflowStageNodeData extends Record<string, unknown> {
 export interface WorkflowTerminalNodeData extends Record<string, unknown> {
   kind: WorkflowTerminalKind
   label: string
-  /** 运行视图：选中的芯片（user 2026-11-20 三刀「开始和结束节点也设为灰色」）
-   *  ——芯片与任务卡同灰，选中时同款蓝边框。缺席 = 定义视图（保留芯片身份
-   *  色：开始蓝、结束绿）。 */
+  /** 运行视图：选中的芯片（user 2026-11-20 三刀）。芯片与任务卡同灰（四刀
+   *  后定义视图同源），选中时同款蓝边框；缺席 = 未选中，不再按视图分色。 */
   focused?: boolean
 }
 
@@ -217,8 +216,8 @@ export function WorkflowTerminalCard({ data }: NodeProps<WorkflowTerminalFlowNod
   // 结束的线头**必须可连**（user 2026-11-09「结束图标连线连不上」）：`type="target"`
   // 已经挡住了从芯片起拖，再给 Handle 加一个 isConnectable 关掉连通性，只会把唯一的
   // 落点判死——任务卡的流出口拖过来会被 React Flow 当非法连接静默丢弃，结束永远连不上。
-  // 运行视图（user 2026-11-20 三刀）：芯片同灰、实例终态色退役，选中的芯片
-  // 与任务卡同款蓝边框（focused 由画布下发）。
+  // 运行视图（user 2026-11-20 三刀/四刀）：芯片同灰（定义/运行共用基底）、
+  // 实例终态色退役，选中的芯片与任务卡同款蓝边框（focused 由画布下发）。
   return (
     <div
       className={(TERMINAL_CLASS[data.kind] ?? 'wf-terminal') + (data.focused ? ' wf-terminal--run-focus' : '')}

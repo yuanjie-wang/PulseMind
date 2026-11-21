@@ -1533,9 +1533,12 @@ const CANVAS_STYLES = `
   /* 线头圆点**外径 12px 是契约值**（route.ts 的 ARROW_GAP 由它推导，改这里必须
      同步改那里）：必须 border-box——Chrome 把 1.5px 边框按设备像素取整，
      content-box 下 9px + 2×1.5 的外径会随 DPR 在 11/12px 之间跳，箭头尖跟着
-     忽贴忽离（user 2026-11-09「端点和箭头之间有间隙，期望恰好接住」）。 */
+     忽贴忽离（user 2026-11-09「端点和箭头之间有间隙，期望恰好接住」）。
+     源/入线头同灰（user 2026-11-21「开始节点下方的连接端点…改为灰色」）：
+     任务卡的出口线头全用内联状态色覆盖，蓝色缺省底实际只出现在开始芯片那颗
+     没有内联色的线头上——它与「灰 = 常态、蓝 = 选中」的画布语义冲突。 */
   .wf-handle-target { box-sizing: border-box; width: 12px; height: 12px; background: var(--pm-border); border: 1.5px solid var(--pm-elevated); }
-  .wf-handle-source { box-sizing: border-box; width: 12px; height: 12px; background: var(--pm-link); border: 1.5px solid var(--pm-elevated); }
+  .wf-handle-source { box-sizing: border-box; width: 12px; height: 12px; background: var(--pm-border); border: 1.5px solid var(--pm-elevated); }
   /* 任务卡的线头必须**落在卡的外缘盒上**：route.ts 的 portGeometry 按
      node.measured 把端口放在矩形边缘，而 RF 量的是 .react-flow__node 包装盒
      = 卡的外缘盒。但 .wf-stage-card 是 position: relative，RF 的手柄定位
@@ -1572,18 +1575,20 @@ const CANVAS_STYLES = `
   .wf-dock-btn:disabled { opacity: 0.35; cursor: default; }
   .wf-dock-btn:disabled:hover { background: transparent; color: var(--pm-text-secondary); }
   /* 终态芯片（user 2026-11-08）：实线边框、白底（elevated，同任务卡）、圆角
-     矩形（12，同任务卡）、节点阴影（--pm-shadow-soft）；浅灰提示文字已撤——
-     芯片上只有 label，身份色留给边框与文字。
+     矩形（12，同任务卡）、节点阴影（--pm-shadow-soft）；芯片上只有 label。
+     **灰边制（user 2026-11-20 三刀 + 四刀）**：定义视图与运行视图共用这一条
+     基底——hairline 灰边 + 次级灰字。开始蓝/结束绿的身份色整体退役（四刀
+     「在编辑状态下，这两个节点也设为灰色」），画布上「灰 = 常态、蓝 = 选中」
+     两个语义在两种视图里一致；start/done 类名只作语义锚点，不再带配色。
      定宽（min-width 取 TS 的 TERMINAL_CHIP_W）服务垂直布局的居中落位：
      terminalPositions 用「卡宽 − 芯片宽」的一半把芯片压到卡的中轴线上。 */
   .wf-terminal {
     display: flex; align-items: center; justify-content: center; gap: 6px;
     min-width: ${TERMINAL_CHIP_W}px;
-    padding: 9px 18px; border-radius: 12px; border: 1px solid var(--pm-border);
+    padding: 9px 18px; border-radius: 12px; border: 1px solid var(--pm-border-hairline);
     background: var(--pm-elevated); box-shadow: var(--pm-shadow-soft); cursor: default;
+    color: var(--pm-text-secondary);
   }
-  .wf-terminal.done { border-color: var(--pm-success, #52c41a); color: var(--pm-success, #52c41a); }
-  .wf-terminal.start { border-color: var(--pm-link); color: var(--pm-link); }
   .wf-terminal-label { font-size: 12px; font-weight: 600; }
   /* controls 配色跟随 --pm 变量（colorMode 只翻 RF 自带的底色）；
       minimap 已按 user 2026-11-15 整体撤除（画布让位给连线） */
@@ -1632,13 +1637,9 @@ const CANVAS_STYLES = `
   /* 运行态的标题给右上角徽标让位（72 > 6 + 60 + 6）：编辑态那句 44px 是给
      两颗悬停钮留的，运行态没有钮，唯一占角的是徽标。 */
   .wf-stage-card--runview .wf-stage-title { padding-right: 72px; }
-  /* 开始/结束芯片同灰（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：
-     实例终态色（wf-terminal--run-*）与编辑态的身份色在运行视图里一并让位，
-     与任务卡同一个 hairline 灰、标签走次级灰。编辑视图的蓝「开始」/绿
-     「结束」不动（那是定义视图的芯片身份）。 */
-  .wf-runmode .wf-terminal { border-color: var(--pm-border-hairline); color: var(--pm-text-secondary); }
-  /* 选中芯片的蓝边（与任务卡同一语义）：选择器特异性必须压过上面那条
-     （.wf-runmode .wf-terminal 是 0,2,0；这里 0,3,0），否则点了芯片没有反应。 */
+  /* 选中芯片的蓝边（与任务卡同一语义）：灰边基底在 .wf-terminal（两视图同源，
+     四刀后不再有运行态覆盖），这里只管选中——特异性 0,3,0 压过基底 0,1,0，
+     否则点了芯片没有反应。 */
   .wf-runmode .wf-terminal.wf-terminal--run-focus { border-color: var(--pm-link); }
   /* 运行查看态不画端口圆点（user 2026-11-16「不用展示连接端点的灰色圆圈」，
      路由的 tailGap:0 让箭头尖直接贴到节点边框）。**opacity 0 而不是

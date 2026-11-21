@@ -350,9 +350,9 @@ check('次数徽标：code=2 次、test=2 次（running 那次也计数）',
   `code=${await badgeTextAt('code')} test=${await badgeTextAt('test')}`)
 check('没跑过的节点不给徽标（review）', (await page.locator('.react-flow__node[data-id="node:review"] .wf-run-badge').count()) === 0)
 check('走过的高亮 + 没走的弱化（边类都在）', (await page.locator('.wf-edge-taken').count()) >= 1 && (await page.locator('.wf-edge-idle').count()) >= 1)
-// user 2026-11-20 三刀：开始/结束芯片也进灰边族——实例终态色（--run-*）与编辑态
-// 身份色（开始蓝/结束绿）在运行视图一并让位，与任务卡同一 hairline 灰；蓝边只
-// 属于「选中」（§3.5 断）。
+// user 2026-11-20 三刀/四刀：开始/结束芯片进灰边族——实例终态色（--run-*）与
+// 身份色（开始蓝/结束绿）整体退役，定义/运行两视图共用基底 hairline 灰；蓝边
+// 只属于「选中」（§3.5 断）。
 check('开始/结束芯片的实例终态色退役（--run-success/failed/running 全无）',
   (await page.locator('.wf-terminal--run-running,.wf-terminal--run-success,.wf-terminal--run-failed').count()) === 0)
 const chipBorders = await page.evaluate(() => {
@@ -382,6 +382,33 @@ await page.waitForSelector('.react-flow__node')
 await page.waitForTimeout(500)
 check('定义视图：编辑钮照常在（默认行为不变）', (await page.locator('[data-workflow-node-edit]').count()) === 3)
 check('定义视图：无 run 状态类', (await page.locator('[class*="wf-stage-card--run-"]').count()) === 0)
+// user 2026-11-20 四刀「在编辑状态下，这两个节点也设为灰色」：身份色（开始蓝/
+// 结束绿）不再存在，定义视图的芯片与任务卡同一 hairline 灰；运行态覆盖也已
+// 撤掉——两种视图读的是同一条 .wf-terminal 基底。
+const defChip = await page.evaluate(() => {
+  const border = (el) => (el ? getComputedStyle(el).borderTopColor : null)
+  return {
+    card: border(document.querySelector('.wf-stage-card')),
+    start: border(document.querySelector('.react-flow__node[data-id="terminal:START"] .wf-terminal')),
+    done: border(document.querySelector('.react-flow__node[data-id="terminal:DONE"] .wf-terminal')),
+  }
+})
+check('定义视图：开始/结束芯片与任务卡同一灰边（身份色退役）',
+  !!defChip.card && defChip.start === defChip.card && defChip.done === defChip.card,
+  `card=${defChip.card} start=${defChip.start} done=${defChip.done}`)
+// user 2026-11-21「开始节点下方的连接端点…改为灰色」：源线头的缺省底色曾是
+// --pm-link，任务卡出口的内联状态色把它盖住了、蓝色只落在开始芯片那颗线头上。
+// 现在与入线头同灰（--pm-border）——用背景色互证，不能只看源码。
+const defHandle = await page.evaluate(() => {
+  const bg = (el) => (el ? getComputedStyle(el).backgroundColor : null)
+  return {
+    start: bg(document.querySelector('.react-flow__node[data-id="terminal:START"] .wf-handle-source')),
+    done: bg(document.querySelector('.react-flow__node[data-id="terminal:DONE"] .wf-handle-target')),
+  }
+})
+check('定义视图：开始芯片的下缘线头与入线头同灰',
+  !!defHandle.start && defHandle.start === defHandle.done,
+  `start=${defHandle.start} done=${defHandle.done}`)
 await page.screenshot({ path: join(SHOTS, 'definition-view.png') })
 
 // ── §1b2 定义没写 layout / 没写 verdicts：运行视图必须自己补齐（user

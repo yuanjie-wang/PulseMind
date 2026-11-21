@@ -222,11 +222,11 @@ describe('执行链导航：右栏前进/后退 + 画布定位（源码扫描）
 
   it('三刀：开始/结束芯片同灰、聚焦只剩蓝边框、选中芯片也亮蓝边', () => {
     // 芯片同灰（user 2026-11-20 三刀「开始和结束节点也设为灰色」）：运行态的
-    // 实例终态色（绿/红/蓝）与编辑态身份色一并让位，与任务卡同一 hairline 灰
+    // 实例终态色（绿/红/蓝）退役，灰边基底在 .wf-terminal（四刀后定义/运行
+    // 两视图同源，见下一条用例）
     expect(canvas).not.toContain('.wf-terminal--run-success')
     expect(canvas).not.toContain('.wf-terminal--run-failed')
     expect(canvas).not.toContain('.wf-terminal--run-running')
-    expect(canvas).toContain('.wf-runmode .wf-terminal { border-color: var(--pm-border-hairline); color: var(--pm-text-secondary); }')
     // 卡片侧不再产出实例状态类，改产出选中类
     expect(card).not.toMatch(/wf-terminal--run-(running|success|failed)/)
     expect(card).not.toContain('runStatus')
@@ -241,6 +241,22 @@ describe('执行链导航：右栏前进/后退 + 画布定位（源码扫描）
     expect(canvas).not.toContain('color-mix(in srgb, var(--pm-link) 22%')
     // 悬停不再变蓝（蓝 = 选中语义，hover 换色会与选中混淆）
     expect(canvas).not.toContain('.wf-runmode .wf-terminal:hover')
+  })
+
+  it('四刀：定义视图的开始/结束芯片也走同一灰边基底（身份色退役）', () => {
+    // user 2026-11-20 四刀「在编辑状态下，这两个节点也设为灰色」：灰边不再是
+    // 运行态覆盖，而是 .wf-terminal 的基底——两视图同一套 hairline 灰 + 次级灰字
+    // （按整段声明钉：规则体里的 ${TERMINAL_CHIP_W} 插值带 `}`，[^}] 正则过不去）
+    expect(canvas).toContain('padding: 9px 18px; border-radius: 12px; border: 1px solid var(--pm-border-hairline);')
+    expect(canvas).toContain('background: var(--pm-elevated); box-shadow: var(--pm-shadow-soft); cursor: default;\n    color: var(--pm-text-secondary);')
+    // 开始蓝/结束绿的身份色整体退役，也不再留运行态灰边覆盖
+    expect(canvas).not.toContain('.wf-terminal.done')
+    expect(canvas).not.toContain('.wf-terminal.start')
+    expect(canvas).not.toMatch(/\.wf-terminal[^{]*\{[^}]*pm-success/)
+    expect(canvas).not.toContain('.wf-runmode .wf-terminal { border-color')
+    // 类名仍是语义锚点（start/done 只挂类、不带配色）
+    expect(card).toContain("START: 'wf-terminal start'")
+    expect(card).toContain("DONE: 'wf-terminal done'")
   })
 
   it('卡面灰边制 + 次数徽标（user 2026-11-20 二刀）：状态色/状态徽标退役', () => {

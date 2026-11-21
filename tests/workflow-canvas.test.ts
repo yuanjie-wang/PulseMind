@@ -1026,6 +1026,14 @@ describe('canvas toolbox & simple model', () => {
     expect(route).not.toMatch(/const ARROW_GAP = 8/)
   })
 
+  it('开始芯片的下缘线头与入线头同灰（user 2026-11-21「开始节点下方的连接端点…改为灰色」）', () => {
+    // 源线头曾统一给 --pm-link，但任务卡的出口都用内联状态色覆盖，蓝色缺省底
+    // 实际只落在开始芯片那颗没有内联色的线头上——「灰 = 常态、蓝 = 选中」的
+    // 画布语义因此在开始芯片上破了个口。源/入线头同灰；状态色仍由卡的内联覆盖。
+    expect(canvas).toMatch(/\.wf-handle-source \{[^}]*background: var\(--pm-border\)/)
+    expect(canvas).not.toMatch(/\.wf-handle-source \{[^}]*pm-link/)
+  })
+
   it('任务卡的线头外移一个边框宽：圆心落回卡的外缘盒（route.ts 的端口就在那儿）', () => {
     // 第三处偏差：.wf-stage-card 是 position: relative，RF 的 top/left/right/bottom: 0
     // 以它的**内边距盒**为基准，圆心比 route.ts 的端口（包装盒 = 卡外缘盒）内缩一个
