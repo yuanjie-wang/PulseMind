@@ -10,9 +10,15 @@
 // tree left, preview right), each tagged with the conversation it belongs to.
 // Width is persisted, one scalar per conversation (2026-11-12 二次裁定「已打开
 // 侧边窗口的状态下切 tab，不要再改变宽度」——按 tab 的维度退役，宽度只随
-// 拖拽走); the open flag and the per-conversation tab are deliberately not
-// persisted (a restart has no live plan or browser session to show, and every
-// open path names its tab).
+// 拖拽走). The per-conversation tab is deliberately not persisted (a restart
+// has no live plan or browser session to show, and every open path names its
+// tab; reconcileActiveTab also repairs it on read).
+// 视图模式与 dock 开合自 2026-11-21 起落盘（user「重启应用后能够恢复视图模式」）：
+// `primaryByConversation` + `openByConversation` 随会话写进 localStorage，
+// 点开历史会话即恢复它上一次的布局；persist v4，hydrate 走 merge 净化 + 对
+// 非 chat 会话补开 dock（chatSlot 只在 dock 渲染，否则对话列不可达）。**恢复的
+// 只有布局**：浏览器页签 / 文件页签 / 上次的会话都不随重启回来，browser 主卡
+// 落 BrowserPaneChrome 空态、files 主卡落空目录树。
 // The deliverables aggregate tab that existed here for one day (2026-09-19)
 // is gone — the per-turn cards in the transcript are the only deliverables
 // surface; a remembered tab naming it (or the removed 'files') must not
@@ -25,12 +31,13 @@
 // `nextPrimary`——仅会话界面（非 welcome）出现、按会话生效；welcome 任务
 // 表单选「浏览器」物化的会话 = 浏览器优先（useChatController 物化时绑定）；
 // 无条目（新会话/DRAFT）= 'chat'，
-// 所以新建对话天然回到整页 welcome。与 openByConversation 同款内存态、同款
-// MRU 剪枝、刻意不持久化（重启后浏览器页签本就不在，布局回归对话优先一致）。
+// 所以新建对话天然回到整页 welcome。与 widthByConversation 同款 MRU 剪枝
+// （帽 20），但**落盘**（2026-11-21 修订 2026-11-03「刻意不持久化」裁定）：
+// 重启后浏览器页签虽然不在，布局形态仍按会话记住，用户不必每次重新换挡。
 // 项目沉浸窗口恒按 'chat' 消费（`PRIMARY_MODE_CLAMPED`）——它没有 dock、
 // hideWorkbench 常开，非 chat 主视图会让对话列无处可达；会话弹出窗口自
-// 2026-11-04 起自带头部循环钮、按本窗生效（各窗口独立渲染进程，模式不跨窗
-// 泄漏）。openTab/autoOpenTab 内做
+// 2026-11-04 起自带头部循环钮、按本窗生效（次级窗口读写独立的 storage key，
+// 不覆盖主窗的布局记忆；运行时的模式仍是各窗一份）。openTab/autoOpenTab 内做
 // activeTab 调和（reconcileActiveTab）：side 集合不含的 tab（包括「tab 就是
 // 主视图自己」）按模式回落，杜绝渲染空 body。
 //
@@ -40,7 +47,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { IS_PROJECT_WINDOW } from '../popout/boot'
+import { IS_POPOUT, IS_PROJECT_WINDOW } from '../popout/boot'
 
 export type WorkbenchTab = 'workspace' | 'browser' | 'plan' | 'chat'
 
@@ -53,6 +60,16 @@ export type PrimaryPane = 'chat' | 'files' | 'browser'
  *  恒按 'chat' 消费。会话弹出窗口 2026-11-04 起有自己的头部循环钮，按本窗
  *  生效（每个窗口是独立渲染进程，primaryByConversation 天然不跨窗泄漏）。 */
 export const PRIMARY_MODE_CLAMPED = IS_PROJECT_WINDOW
+
+/** 次级窗口（会话弹窗 / 项目沉浸窗）用独立的 storage key。它们的
+ *  primaryByConversation / openByConversation 是 donor seed 播种出来的**本窗**
+ *  内存态（项目窗还被 PRIMARY_MODE_CLAMPED 钳成 chat）；若写回主窗的 key，
+ *  弹窗里换一档、或项目窗的一次无关 set，都会盖掉主窗下次启动的布局。
+ *  主窗仍用历史 key `pulsemind-workbench`（既有探针/迁移都认它）。 */
+export const IS_SECONDARY_WINDOW = IS_POPOUT || IS_PROJECT_WINDOW
+export const WORKBENCH_STORAGE_KEY = IS_SECONDARY_WINDOW
+  ? 'pulsemind-workbench:secondary'
+  : 'pulsemind-workbench'
 
 /** The renderable tabs. A remembered tab outside this set (a tab that was
  *  since removed — 'files' merged into 'workspace') falls back to
@@ -118,9 +135,9 @@ export const WORKBENCH_DEFAULT_TREE_WIDTH = 180
 const MAX_OPEN_MAPS = 20
 
 interface WorkbenchState {
-  /** Pane open per conversation key; absent = closed. */
+  /** Pane open per conversation key; absent = closed. 落盘（v4，随主视图一起恢复）。 */
   openByConversation: Record<string, boolean>
-  /** 主视图归属 per conversation（视图模式跟任务走）；absent = 'chat'。 */
+  /** 主视图归属 per conversation（视图模式跟任务走）；absent = 'chat'。落盘（v4）。 */
   primaryByConversation: Record<string, PrimaryPane>
   /** Pane width per conversation（2026-11-12 裁定，标量见 WorkbenchWidth 的
    *  注释）；缺键回落 WORKBENCH_DEFAULT_WIDTH。落盘。 */
@@ -149,7 +166,9 @@ interface WorkbenchState {
  *  widthByTab 一并剥除——v2 的 per-tab 值在新标量模型里没有载体（哪个 tab
  *  的宽度都不该替会话定宽），各会话从默认宽度起步、拖一次即按会话记住；两
  *  个旧字段已从状态里删除，留着的旧键只会成为 merge 进来的死字段，这里剥
- *  掉。导出成纯函数：测试直接跑迁移，不依赖 persist 的运行时 API。 */
+ *  掉。v3 → v4（2026-11-21 视图模式落盘）：v3 从没写过 primary/open 两张
+ *  map，补成空表起步——「没有记忆」不能当成用户选过 chat / 关过 dock。
+ *  导出成纯函数：测试直接跑迁移，不依赖 persist 的运行时 API。 */
 export function migrateWorkbenchPersisted(persisted: unknown, version: number): WorkbenchState {
   let s = persisted as Partial<WorkbenchState> & { width?: number; activeTab?: WorkbenchTab; widthByTab?: Record<string, number> }
   if (version < 2) {
@@ -163,19 +182,65 @@ export function migrateWorkbenchPersisted(persisted: unknown, version: number): 
     delete rest.widthByTab
     s = { ...rest, widthByConversation: {} }
   }
+  if (version < 4) {
+    s = { ...s, primaryByConversation: {}, openByConversation: {} }
+  }
   return s as WorkbenchState
 }
 
-/** 落盘形状（2026-11-12 起宽度是会话标量 widthByConversation；全局
- *  activeTab 与 v2 的 widthByTab 退役不再写）。同样导出成纯函数供测试断言
- *  「旧字段没有被写回去」。 */
+const PRIMARY_VALUES: ReadonlySet<string> = new Set<string>(['chat', 'files', 'browser'])
+
+/** hydrate 净化：localStorage 是用户可改的，非法 primary 会一路走到
+ *  `PRIMARY_CYCLE_ICON[primary]`（undefined 图标）与 sideTabsFor；非法 open
+ *  会让 WorkbenchPane 收到字符串。只认合法枚举值/布尔值，其余整条丢弃。
+ *  另补一条恢复期不变量：**非 chat 的会话必须开 dock**——chatSlot 只在 dock
+ *  渲染，open 落盘时是 false（或旧数据缺失）会让对话列彻底不可达，与
+ *  `cyclePrimaryMode` / `applyPopoutSeed` 的补开臂同一条语义。 */
+export function sanitizeLayoutMemory(raw: unknown): Pick<WorkbenchState, 'primaryByConversation' | 'openByConversation'> {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const primaryByConversation: Record<string, PrimaryPane> = {}
+  const rawPrimary = src.primaryByConversation
+  if (rawPrimary && typeof rawPrimary === 'object' && !Array.isArray(rawPrimary)) {
+    for (const [key, value] of Object.entries(rawPrimary)) {
+      if (typeof value === 'string' && PRIMARY_VALUES.has(value)) primaryByConversation[key] = value as PrimaryPane
+    }
+  }
+  const openByConversation: Record<string, boolean> = {}
+  const rawOpen = src.openByConversation
+  if (rawOpen && typeof rawOpen === 'object' && !Array.isArray(rawOpen)) {
+    for (const [key, value] of Object.entries(rawOpen)) {
+      if (typeof value === 'boolean') openByConversation[key] = value
+    }
+  }
+  for (const [key, primary] of Object.entries(primaryByConversation)) {
+    if (primary !== 'chat') openByConversation[key] = true
+  }
+  return { primaryByConversation, openByConversation }
+}
+
+/** hydrate 合并口子：其余字段沿用 zustand 默认浅合并，只有布局记忆走净化。
+ *  migrate 只在版本变化时跑，同版本被写脏的数据靠这里兜住。 */
+export function mergeWorkbenchPersisted(persisted: unknown, current: WorkbenchState): WorkbenchState {
+  const rest = { ...((persisted && typeof persisted === 'object' ? persisted : {}) as Record<string, unknown>) }
+  delete rest.primaryByConversation
+  delete rest.openByConversation
+  return {
+    ...current,
+    ...rest,
+    ...sanitizeLayoutMemory(persisted),
+  } as WorkbenchState
+}
+
+/** 落盘形状（v4，2026-11-21）：宽度标量 + treeWidth + **每个会话的主视图与
+ *  dock 开合**。activeTabByConversation 仍不落盘——重启无活面板，每条 open
+ *  路径显式点名 tab，且 reconcileActiveTab 在换挡时兜底。同样导出成纯函数
+ *  供测试断言「旧字段没有被写回去」。 */
 export function workbenchPersistShape(s: WorkbenchState): WorkbenchState {
-  // primaryByConversation / activeTabByConversation 刻意不持久化——重启后
-  // 浏览器页签本就不在，布局回归对话优先 + 每条 open 路径显式点名 tab，与
-  // openByConversation 的「重启无活面板」裁定一致。
   return {
     widthByConversation: s.widthByConversation,
     treeWidth: s.treeWidth,
+    primaryByConversation: s.primaryByConversation,
+    openByConversation: s.openByConversation,
   } as WorkbenchState
 }
 
@@ -259,10 +324,11 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         })),
     }),
     {
-      name: 'pulsemind-workbench',
-      version: 3,
+      name: WORKBENCH_STORAGE_KEY,
+      version: 4,
       migrate: migrateWorkbenchPersisted,
       partialize: workbenchPersistShape,
+      merge: mergeWorkbenchPersisted,
     },
   ),
 )

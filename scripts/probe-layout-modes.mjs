@@ -15,7 +15,8 @@
  *   3. 普通会话回归：chat-primary 几何 + dock 三 tab 原样。
  *   3.5 会话头模式循环钮（2026-11-04）：welcome 门控 + 三连击换位
  *      （chat→files→browser→chat，files 的首个 UI 入口；dock 补开臂）。
- *   4. primaryByConversation 不落盘（pulsemind-workbench 无 primary 字段）。
+ *   4. primaryByConversation + openByConversation 落盘（v4），真 reload 后
+ *      按会话恢复布局；浏览器页签 / 文件页签 / activeTab 仍不恢复。
  *
  * Mounts the production surfaces (AppLayout + ChatView + WorkbenchPane +
  * WelcomeContent + BrowserTaskPanel, real stores, real i18n), stubs
@@ -51,6 +52,17 @@ import { useState } from 'react'
 import { useBrowserPaneStore } from './src/renderer/src/stores/browserPaneStore'
 import { useWorkbenchStore } from './src/renderer/src/stores/workbenchStore'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
+import { useBrowserOcclusion } from './src/renderer/src/hooks/useBrowserOcclusion'
+import { useBrowserFreeze } from './src/renderer/src/hooks/useBrowserFreeze'
+import { BrowserFreezeLayer } from './src/renderer/src/components/browser/BrowserFreezeLayer'
+
+// 整窗浮层让位（② + ③，2026-11-21）：生产里挂在这两个窗口根上，harness 没有
+// App/PopoutApp，所以补一个同构宿主。没有遮罩时它是零动作（判定只读 DOM）。
+function OcclusionHost(): React.ReactElement {
+  useBrowserOcclusion()
+  useBrowserFreeze()
+  return <BrowserFreezeLayer />
+}
 
 const CONV = { key: '${CONV_KEY}', label: '视图模式任务', updatedAt: '2026-11-03T09:00:00.000Z' }
 
@@ -61,6 +73,7 @@ window.__mount = ({
   conversationId = messages ? '${CONV_KEY}' : undefined,
   tabs = [],
   dockOpen = messages,
+  applyMode = true,
 } = {}) => {
   if (root) root.unmount()
   useBrowserPaneStore.getState().setUpdate({
@@ -72,7 +85,9 @@ window.__mount = ({
   useNewTaskStore.getState().setMode('chat')
   // 物化绑定（生产路径在 useChatController，这里直打 store）。跨挂载复用
   // 同一 conv 键——store 不重置，每次按参数归一，'chat' 也显式落盘。
-  useWorkbenchStore.getState().setConversationPrimary('${CONV_KEY}', mode)
+  // applyMode:false 供「reload 后验证恢复」用：只读 store 的 hydrate 结果，
+  // 不再写 primary/open，否则会把刚恢复的值盖掉。
+  if (applyMode) useWorkbenchStore.getState().setConversationPrimary('${CONV_KEY}', mode)
   if (dockOpen) {
     useWorkbenchStore.getState().setOpen('${CONV_KEY}', true)
     // 浏览器任务首帧落对话 tab（转录面）——镜像控制器的 setActiveTab。
@@ -115,6 +130,7 @@ window.__mount = ({
               onOpenConversation={() => {}}
             />
           </AppLayout>
+          <OcclusionHost />
         </TranslationProvider>
       </SettingsProvider>
     </ConfigProvider>
@@ -229,9 +245,11 @@ await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentT
 await page.goto('http://pm-probe.local/')
 // Before the bundle: the stores subscribe at import time and AppLayout reads
 // electronAPI at module scope — the stub must exist up front.
-await page.addScriptTag({
-  content: `window.__paneStates = [];
+const STUB = `    window.__paneStates = [];
     window.__paneActions = [];
+    window.__freezeCalls = 0;
+    window.__freezeFrame = null;
+    window.__freezeDeferred = false;
     window.__historyFixture = [
       { url: 'https://example.com/report', title: '调研报告', visitCount: 3, lastVisitAt: 1699999999000 },
       { url: 'https://www.baidu.com/s?wd=pm', title: null, visitCount: 1, lastVisitAt: 1699999900000 },
@@ -241,6 +259,12 @@ await page.addScriptTag({
       : key === 'getPlatformInfo' ? () => Promise.resolve({ platform: 'darwin' })
       : key === 'browserPaneSetState' ? (state) => { window.__paneStates.push(state); return Promise.resolve() }
       : key === 'browserPaneAction' ? (action) => { window.__paneActions.push(action); return Promise.resolve() }
+      // 冻结帧（方案 ③）：可挂起（__freezeDeferred）以钉住「先抓后折」的时序。
+      : key === 'browserPaneFreezeFrame' ? () => {
+          window.__freezeCalls = (window.__freezeCalls ?? 0) + 1
+          if (window.__freezeDeferred) return new Promise((resolve) => { window.__resolveFreeze = resolve })
+          return Promise.resolve(window.__freezeFrame ?? null)
+        }
       : key === 'browserHistoryQuery' ? (text) => Promise.resolve(text ? window.__historyFixture.filter((r) => r.url.includes(text)) : window.__historyFixture)
       : key === 'getSettings' ? () => Promise.resolve({
           activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '',
@@ -248,10 +272,16 @@ await page.addScriptTag({
         })
       : /[Ll]ist$/.test(key) ? () => Promise.resolve([])
       : /^on[A-Z]/.test(key) ? () => () => {}
-      : () => Promise.resolve(undefined) })`,
-})
-await page.addScriptTag({ path: OUT })
-await page.waitForFunction(() => window.__ready)
+      : () => Promise.resolve(undefined) })`
+
+// 页面重启（第 4 节）要重新注入 stub + bundle：reload 后 localStorage 保留，
+// 但模块级 stub 与 store 单例都会重建，正好模拟一次真实的冷启动 hydrate。
+const injectHarness = async () => {
+  await page.addScriptTag({ content: STUB })
+  await page.addScriptTag({ path: OUT })
+  await page.waitForFunction(() => window.__ready)
+}
+await injectHarness()
 
 const shot = async (name) => page.screenshot({ path: join(SHOTS, name) })
 const dockTabs = () =>
@@ -264,6 +294,17 @@ const dockTabs = () =>
     return labels.filter((l) => ['工作区', '浏览器', '工作计划', '对话'].includes(l))
   })
 const switcherChip = (value) => page.locator(`.task-switch .ant-segmented-item:nth-child(${value})`)
+
+// 快速入口：只验「落盘 + reload 恢复」。前面的 welcome/几何检查若因并行在途
+// 改动飘红，仍可用 `node scripts/probe-layout-modes.mjs --persist-only` 单独
+// 跑这条重启恢复门（runPersistChecks 是函数声明，在此可调用）。
+if (process.argv.includes('--persist-only')) {
+  await runPersistChecks()
+  await browser.close()
+  const earlyFailed = results.filter((r) => !r.pass)
+  console.log(`\n${results.length - earlyFailed.length}/${results.length} checks passed${earlyFailed.length ? ` — ${earlyFailed.length} FAILED` : ''}`)
+  process.exit(earlyFailed.length ? 1 : 0)
+}
 
 /* ── 1. welcome：三档切换器 + 浏览器快捷区（URL + 近期历史）。 ────────────── */
 await page.evaluate(() => window.__mount({ messages: false }))
@@ -474,14 +515,22 @@ await page.fill('[data-pm-browser-task-url]', 'example.com/enter-chain')
 await page.keyboard.press('Enter')
 // 物化后 dock 对话 tab 挂载 composer（autoFocus）——回车的 keypress 若未被
 // preventDefault 掐断，会在这个 textarea 里插进一个换行。
-await page.waitForSelector('[data-pm-chat-scroll]')
-const composerState = await page.evaluate(() => {
-  const dockRoot = document.querySelector('[data-pm-pane-drag-handle]')?.parentElement
-  const ta = dockRoot?.querySelector('textarea')
-  return { present: !!ta, value: JSON.stringify(ta?.value ?? null) }
-})
-check('回车链路: dock composer 挂载', composerState.present === true, JSON.stringify(composerState))
-check('回车链路: composer 无串场换行（value 为空串）', composerState.value === '""', composerState.value)
+//
+// **不致命**（2026-11-21）：这一步在 HEAD 上就已经挂了（`[data-pm-chat-scroll]`
+// 连 attached 都等不到，pristine 工作树实测同样超时），而它后面的四十余条检查
+// 与它无关。一处断裂不该让整份探针无法运行——这里单独记一条 FAIL 再往下走。
+try {
+  await page.waitForSelector('[data-pm-chat-scroll]', { timeout: 8000 })
+  const composerState = await page.evaluate(() => {
+    const dockRoot = document.querySelector('[data-pm-pane-drag-handle]')?.parentElement
+    const ta = dockRoot?.querySelector('textarea')
+    return { present: !!ta, value: JSON.stringify(ta?.value ?? null) }
+  })
+  check('回车链路: dock composer 挂载', composerState.present === true, JSON.stringify(composerState))
+  check('回车链路: composer 无串场换行（value 为空串）', composerState.value === '""', composerState.value)
+} catch (err) {
+  check('回车链路: dock composer 挂载', false, err instanceof Error ? err.message.split('\n')[0] : String(err))
+}
 await shot('modes-enter-chain.png')
 
 /* ── 1.6 新建任务子菜单（十四期）：hover 三档，档位分流 welcome 形态 ────── */
@@ -614,6 +663,115 @@ await page.waitForTimeout(120)
 const pushOverlayCleared = await page.evaluate(() => window.__lastPaneState())
 check('十三期: 浮窗关闭归零 leftOverlay=0', pushOverlayCleared && pushOverlayCleared.leftOverlay === 0, JSON.stringify(pushOverlayCleared))
 await shot('modes-browser-task.png')
+
+/* ── ③ 冻结帧（2026-11-21）：整窗浮层 → 先取帧 → 折叠 + 定格局 ────────────
+ * 判定与取帧的单测在 jsdom 里钉了时序，但三件事只有真 Chromium 能证：
+ *   1. 「拿到帧之前不折」——靠桩把取帧挂起，中间态必须是 browserActive=true；
+ *   2. 底图真的落在主进程给的 box 上（fixed 定位 + 窗口内容区坐标这套约定）；
+ *   3. 无帧可抓时仍要折叠（退化成空白底），弹窗不能被页面永远盖着。
+ * 遮罩用注入的 DOM 模拟（antd 的 mask/wrap 就是这个类名）。 */
+await page.evaluate(() => window.__clearPaneStates())
+await page.evaluate(() => window.__mount({ messages: true, mode: 'browser' }))
+await page.waitForSelector('input[placeholder="输入网址，回车打开"]')
+await page.waitForTimeout(120)
+const occlBase = await page.evaluate(() => window.__lastPaneState())
+check('③ 基线: 无浮层时 browserActive=true', occlBase && occlBase.browserActive === true, JSON.stringify(occlBase))
+
+// 挂起取帧 → 浮层出现后应当停在「页面仍在屏」这一拍。
+await page.evaluate(() => {
+  window.__freezeDeferred = true
+  window.__freezeCalls = 0
+  const mask = document.createElement('div')
+  mask.id = 'probe-mask'
+  mask.className = 'ant-modal-mask'
+  mask.style.position = 'fixed'
+  mask.style.inset = '0'
+  mask.style.backgroundColor = 'rgba(0, 0, 0, 0.45)'
+  document.body.appendChild(mask)
+})
+await page.waitForTimeout(60)
+const occlWaiting = await page.evaluate(() => ({
+  push: window.__lastPaneState(),
+  calls: window.__freezeCalls,
+  img: !!document.querySelector('[data-pm-freeze-frame]'),
+}))
+check(
+  '③ 浮层出现: 取一次帧，拿到之前不折叠（页面不先黑一下）',
+  occlWaiting.calls === 1 && occlWaiting.push.browserActive === true && occlWaiting.img === false,
+  JSON.stringify({ calls: occlWaiting.calls, active: occlWaiting.push.browserActive, img: occlWaiting.img }),
+)
+
+// 帧到位 → 折叠与铺图同一拍；底图的矩形必须逐像素等于主进程给的 box。
+const FREEZE_BOX = { x: 300, y: 160, width: 420, height: 236 }
+await page.evaluate(
+  (box) =>
+    window.__resolveFreeze({
+      src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      box,
+    }),
+  FREEZE_BOX,
+)
+await page.waitForTimeout(120)
+const occlFrozen = await page.evaluate(() => {
+  const img = document.querySelector('[data-pm-freeze-frame]')
+  const rect = img ? img.getBoundingClientRect() : null
+  return {
+    push: window.__lastPaneState(),
+    rect: rect && { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+    pointerEvents: img ? getComputedStyle(img).pointerEvents : null,
+  }
+})
+check(
+  '③ 帧到位: 同一拍折叠 + 底图落在 box 上（不吃点击）',
+  occlFrozen.push.browserActive === false &&
+    !!occlFrozen.rect &&
+    Math.abs(occlFrozen.rect.x - FREEZE_BOX.x) <= 1 &&
+    Math.abs(occlFrozen.rect.y - FREEZE_BOX.y) <= 1 &&
+    Math.abs(occlFrozen.rect.width - FREEZE_BOX.width) <= 1 &&
+    Math.abs(occlFrozen.rect.height - FREEZE_BOX.height) <= 1 &&
+    occlFrozen.pointerEvents === 'none',
+  JSON.stringify({ active: occlFrozen.push.browserActive, rect: occlFrozen.rect, pe: occlFrozen.pointerEvents }),
+)
+await shot('modes-occlusion-freeze.png')
+
+// 关掉浮层 → 恢复 + 底图退场。
+await page.evaluate(() => {
+  document.getElementById('probe-mask')?.remove()
+  window.__freezeDeferred = false
+})
+await page.waitForTimeout(120)
+const occlRestored = await page.evaluate(() => ({
+  push: window.__lastPaneState(),
+  img: !!document.querySelector('[data-pm-freeze-frame]'),
+}))
+check(
+  '③ 浮层关闭: 恢复 browserActive=true 且底图退场',
+  occlRestored.push.browserActive === true && occlRestored.img === false,
+  JSON.stringify({ active: occlRestored.push.browserActive, img: occlRestored.img }),
+)
+
+// 无帧可抓（空页签/抓图失败）：仍要折叠——顺带钉住「无遮罩的 wrap 也算浮层」。
+await page.evaluate(() => {
+  window.__freezeFrame = null
+  const wrap = document.createElement('div')
+  wrap.id = 'probe-wrap'
+  wrap.className = 'ant-modal-wrap'
+  wrap.style.position = 'fixed'
+  wrap.style.inset = '0'
+  document.body.appendChild(wrap)
+})
+await page.waitForTimeout(150)
+const occlNoFrame = await page.evaluate(() => ({
+  push: window.__lastPaneState(),
+  img: !!document.querySelector('[data-pm-freeze-frame]'),
+}))
+check(
+  '③ 无帧可抓: 仍折叠（退化成空白底，弹窗不能一直被盖）',
+  occlNoFrame.push.browserActive === false && occlNoFrame.img === false,
+  JSON.stringify({ active: occlNoFrame.push.browserActive, img: occlNoFrame.img }),
+)
+await page.evaluate(() => document.getElementById('probe-wrap')?.remove())
+await page.waitForTimeout(120)
 
 /* ── 2.5 零消息浏览器任务的静态开场（用户裁定 2026-11-04）─────────────
  * 打开页面但一句没说时，dock 对话 tab 原本一片空白。现在是一条静态开场
@@ -815,23 +973,61 @@ check(
 )
 await shot('modes-primary-cycle.png')
 
-/* ── 4. 按会话的模式不落盘。 ─────────────────────────────────────────────── */
-const persisted = await page.evaluate(() => {
-  const raw = localStorage.getItem('pulsemind-workbench')
-  return raw ? JSON.parse(raw) : null
-})
-check(
-  'persist: pulsemind-workbench 无 primary 字段',
-  persisted && persisted.state && persisted.state.primary === undefined && persisted.state.primaryByConversation === undefined,
-  JSON.stringify(persisted?.state),
-)
-const modeMap = await page.evaluate(() => window.__workbench.getState().primaryByConversation)
-check(
-  'persist: 内存里的会话模式照常存活（conv 键绑定 browser）',
-  modeMap && modeMap['${CONV_KEY}'.replace('${CONV_KEY}', '')] !== 'never',
-  JSON.stringify(modeMap),
-)
+/* ── 4. 视图模式 + dock 开合落盘，真 reload 后恢复（2026-11-21）。 ────────── */
+// 先把该会话换到 browser 并开 dock，让 partialize 写下这一会话的布局记忆。
+async function runPersistChecks() {
+  await page.evaluate((k) => {
+    const s = window.__workbench.getState()
+    s.setConversationPrimary(k, 'browser')
+    s.setOpen(k, true)
+  }, CONV_KEY)
+  const persisted = await page.evaluate(() => {
+    const raw = localStorage.getItem('pulsemind-workbench')
+    return raw ? JSON.parse(raw) : null
+  })
+  check(
+    'persist: pulsemind-workbench v4 落 primary/open（按会话）',
+    persisted?.version === 4 &&
+      persisted.state?.primaryByConversation?.[CONV_KEY] === 'browser' &&
+      persisted.state?.openByConversation?.[CONV_KEY] === true,
+    JSON.stringify(persisted?.state ?? null),
+  )
+  check(
+    'persist: activeTabByConversation 仍不落盘',
+    !!persisted && !('activeTabByConversation' in persisted.state),
+    JSON.stringify(Object.keys(persisted?.state ?? {})),
+  )
 
+  // 真重启：bundle 重新执行 → store 重新 hydrate；不重新物化绑定，避免盖掉恢复值。
+  await page.reload()
+  await injectHarness()
+  const restoredLayout = await page.evaluate((k) => {
+    const s = window.__workbench.getState()
+    return {
+      primary: s.primaryByConversation[k],
+      open: s.openByConversation[k],
+      activeTab: s.activeTabByConversation[k],
+    }
+  }, CONV_KEY)
+  check('reload: browser 模式按会话恢复', restoredLayout.primary === 'browser', JSON.stringify(restoredLayout))
+  check('reload: dock 补开（非 chat 会话对话列可达）', restoredLayout.open === true, JSON.stringify(restoredLayout))
+  check('reload: activeTab 无陈旧记忆', restoredLayout.activeTab === undefined, JSON.stringify(restoredLayout))
+
+  // 恢复的是布局不是内容：主卡落浏览器空态、侧栏对话 tab 仍在。
+  await page.evaluate(() => window.__mount({ messages: true, applyMode: false, dockOpen: false }))
+  await page.waitForTimeout(150)
+  check(
+    'reload: 主卡 = 浏览器 chrome 空态（网页页签不恢复）',
+    await page.locator('input[placeholder="输入网址，回车打开"]').isVisible(),
+  )
+  check(
+    'reload: dock 开着且对话 tab 可达',
+    JSON.stringify(await dockTabs()) === JSON.stringify(['对话', '工作区', '工作计划']),
+    JSON.stringify(await dockTabs()),
+  )
+}
+
+await runPersistChecks()
 await browser.close()
 
 const failed = results.filter((r) => !r.pass)

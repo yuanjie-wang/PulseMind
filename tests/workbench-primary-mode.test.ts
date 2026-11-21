@@ -140,16 +140,22 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     expect(mod.useWorkbenchStore.getState().openByConversation['convF']).toBeUndefined()
   })
 
-  it('persist 不携带 primaryByConversation / activeTabByConversation（重启回归对话优先+无活面板，与 openByConversation 同裁定）', () => {
+  it('persist 携带 primaryByConversation / openByConversation（v4，重启恢复布局；activeTab 仍不落盘）', () => {
     const src = read(STORE)
-    // 2026-11-06 起落盘形状提成具名纯函数；2026-11-12 宽度收敛成会话标量
-    // （widthByConversation，v2 的 widthByTab 一并退役），全局 activeTab 退役。
+    // 2026-11-06 起落盘形状提成具名纯函数；2026-11-12 宽度收敛成会话标量；
+    // 2026-11-21 视图模式与 dock 开合落盘（persist v4 + merge 净化）。
     expect(src).toContain('partialize: workbenchPersistShape')
-    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n  } as WorkbenchState')
-    expect(src).not.toContain('primaryByConversation: s.')
-    expect(src).not.toContain('openByConversation: s.')
+    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n    primaryByConversation: s.primaryByConversation,\n    openByConversation: s.openByConversation,\n  } as WorkbenchState')
+    expect(src).toContain('version: 4')
+    expect(src).toContain('merge: mergeWorkbenchPersisted')
     expect(src).not.toContain('activeTabByConversation: s.')
     expect(src).not.toContain('widthByTab: s.')
+  })
+
+  it('hydrate 净化：非法值丢弃 + 非 chat 会话补开 dock（对话列可达）', () => {
+    const src = read(STORE)
+    expect(src).toContain('PRIMARY_VALUES.has(value)')
+    expect(src).toContain("if (primary !== 'chat') openByConversation[key] = true")
   })
 
   it('只有项目沉浸窗口恒按 chat 消费；弹出窗口按本窗生效（2026-11-04 裁定）', async () => {
@@ -162,7 +168,10 @@ describe('store 动作 — primary 跟任务走（按会话）', () => {
     // 钳位只归项目沉浸窗口（hideWorkbench + 无 dock → 非 chat 主视图会让对话
     // 列无处可达）；会话弹出窗口自 2026-11-04 起自带头部循环钮、按本窗生效。
     expect(src).toContain('export const PRIMARY_MODE_CLAMPED = IS_PROJECT_WINDOW')
-    expect(src).not.toContain('IS_POPOUT')
+    // 2026-11-21：次级窗口只是改写独立的 storage key，不改变「钳位只归
+    // 项目沉浸窗口」的读侧裁定（IS_POPOUT 因此会出现在 store 里）。
+    expect(src).not.toContain('PRIMARY_MODE_CLAMPED = IS_POPOUT')
+    expect(src).toContain('export const IS_SECONDARY_WINDOW = IS_POPOUT || IS_PROJECT_WINDOW')
     expect(src).toMatch(/conversationPrimaryOf[\s\S]{0,80}if \(PRIMARY_MODE_CLAMPED\) return 'chat'/)
     expect(src).toMatch(/useConversationPrimary[\s\S]{0,160}PRIMARY_MODE_CLAMPED \|\| !convKey \? 'chat'/)
   })

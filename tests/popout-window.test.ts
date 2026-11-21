@@ -526,8 +526,8 @@ describe('renderer: applyPopoutSeed (2026-10-31 裁定)', () => {
   })
 
   // ── 主视图模式（2026-11-04 裁定「对话在主窗是什么视图模式，弹出独立弹窗后
-  // 要保持一致」）── primaryByConversation 不持久化、每窗一份内存态，所以弹窗
-  // 只能靠 donor seed 拿到主窗的模式。
+  // 要保持一致」）── 主窗的布局记忆自 2026-11-21 起落盘，但弹窗读写独立的
+  // storage key，本窗内存态仍是空表，所以弹窗只能靠 donor seed 拿到主窗的模式。
   it.each(['files', 'browser'] as const)('seeds the %s primary AND opens the dock', async (primary) => {
     const seed = await importFresh()
     const { useWorkbenchStore } = await import('../src/renderer/src/stores/workbenchStore')

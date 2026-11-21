@@ -123,7 +123,9 @@ describe('layout width wiring', () => {
     // 2026-11-12：宽度是每会话一份标量（widthByConversation）——同日二次裁定
     // 「切 tab 不改宽」把 2026-11-06 的按 tab 维度退役，落盘形状随之收敛。
     expect(src).toContain('partialize: workbenchPersistShape')
-    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n  } as WorkbenchState')
+    // 2026-11-21：落盘形状再加 primaryByConversation + openByConversation
+    // （重启恢复视图模式），宽度与 treeWidth 的口径不变。
+    expect(src).toContain('return {\n    widthByConversation: s.widthByConversation,\n    treeWidth: s.treeWidth,\n    primaryByConversation: s.primaryByConversation,\n    openByConversation: s.openByConversation,\n  } as WorkbenchState')
   })
 
   it('both drags share the pointer guards the workbench handle paid for', () => {

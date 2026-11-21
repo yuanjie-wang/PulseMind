@@ -8,9 +8,11 @@
 //      WORKBENCH_DEFAULT_WIDTH，会话之间互不串；
 //   ② setActiveTab（切 tab）不触碰宽度 map——「切 tab 不改宽」的行为面；
 //   ③ setWidth 是唯一的写路径（convKey + 标量），MRU 剪枝同 open/primary；
-//   ④ v1→v2→v3 迁移链：v3 把全局 activeTab 与 v2 的 widthByTab 一并剥除
-//      （per-tab 值在新标量模型里没有载体），落盘形状只剩
-//      widthByConversation + treeWidth；
+//   ④ v1→v2→v3→v4 迁移链：v3 把全局 activeTab 与 v2 的 widthByTab 剥除
+//      （per-tab 值在新标量模型里没有载体），v4 补 primary/open 两张空表
+//      （2026-11-21 视图模式落盘，旧数据从零起步而非被当成用户选过 chat）；
+//      落盘形状 = widthByConversation + treeWidth + primaryByConversation
+//      + openByConversation；hydrate 走 merge 净化 + 非 chat 会话补开 dock；
 //   ⑤ 五个几何消费点全走 useWorkbenchWidth(<会话键>) —— 少一个，对话列
 //      reserve 与 pane 宽度就会错位（多一条缝，或覆盖层压到 pane 上）。
 
@@ -23,6 +25,10 @@ import {
   activeTabOf,
   migrateWorkbenchPersisted,
   workbenchPersistShape,
+  sanitizeLayoutMemory,
+  mergeWorkbenchPersisted,
+  WORKBENCH_STORAGE_KEY,
+  IS_SECONDARY_WINDOW,
   WORKBENCH_DEFAULT_WIDTH,
 } from '../src/renderer/src/stores/workbenchStore'
 
@@ -112,7 +118,7 @@ describe('activeTabOf: tab 选中按会话独立（第一刀裁定保持）', ()
   })
 })
 
-describe('persist v1 → v2 → v3 迁移链', () => {
+describe('persist v1 → v2 → v3 → v4 迁移链', () => {
   it('v1 直达终态：单标量 width 没有会话载体，全部回落默认（中间的 v2 形态不可观察）', () => {
     const out = migrateOf()({ width: 812, activeTab: 'plan', treeWidth: 200 }, 1)
     expect(out.widthByConversation).toEqual({})
@@ -137,25 +143,97 @@ describe('persist v1 → v2 → v3 迁移链', () => {
     expect('widthByTab' in out).toBe(false)
   })
 
-  it('已是 v3 的持久化原样透传（不重复迁移）', () => {
-    const v3 = { widthByConversation: { conv_a: 700 }, treeWidth: 200 }
-    expect(migrateOf()(v3, 3)).toEqual(v3)
+  it('v3 → v4：旧数据没有布局记忆，补空表而不是把「无记忆」当成用户选过 chat', () => {
+    const out = migrateOf()({ widthByConversation: { conv_a: 700 }, treeWidth: 200 }, 3)
+    expect(out.widthByConversation).toEqual({ conv_a: 700 })
+    expect(out.treeWidth).toBe(200)
+    expect(out.primaryByConversation).toEqual({})
+    expect(out.openByConversation).toEqual({})
+  })
+
+  it('v1 直达 v4：布局记忆同样空表起步（宽度中转值不残留）', () => {
+    const out = migrateOf()({ width: 812, activeTab: 'plan' }, 1)
+    expect(out.primaryByConversation).toEqual({})
+    expect(out.openByConversation).toEqual({})
+    expect('activeTab' in out).toBe(false)
+  })
+
+  it('已是 v4 的持久化原样透传（不重复迁移，布局记忆不丢）', () => {
+    const v4 = {
+      widthByConversation: { conv_a: 700 },
+      treeWidth: 200,
+      primaryByConversation: { conv_a: 'browser' },
+      openByConversation: { conv_a: true },
+    }
+    expect(migrateOf()(v4, 4)).toEqual(v4)
   })
 })
 
-describe('partialize：只落 widthByConversation + treeWidth', () => {
-  it('落盘形状：tab 选中与 open/primary 一律不写，v2 的 widthByTab 不再写回', () => {
+describe('partialize：落盘形状含视图模式与 dock 开合（v4）', () => {
+  it('落盘形状：primary/open 按会话写入；tab 选中与 v2 旧字段仍不写', () => {
     useWorkbenchStore.getState().setActiveTab('conv_a', 'plan')
     useWorkbenchStore.getState().setWidth('conv_a', 510)
+    useWorkbenchStore.getState().setConversationPrimary('conv_a', 'browser')
     useWorkbenchStore.getState().setOpen('conv_a', true)
     const out = workbenchPersistShape(useWorkbenchStore.getState()) as unknown as Record<string, unknown>
     expect(out.widthByConversation).toEqual({ conv_a: 510 })
     expect(out.treeWidth).toBeDefined()
+    expect(out.primaryByConversation).toEqual({ conv_a: 'browser' })
+    expect(out.openByConversation).toEqual({ conv_a: true })
     expect('activeTab' in out).toBe(false)
     expect('widthByTab' in out).toBe(false)
     expect('activeTabByConversation' in out).toBe(false)
-    expect('openByConversation' in out).toBe(false)
-    expect('primaryByConversation' in out).toBe(false)
+  })
+})
+
+describe('hydrate 净化与恢复期不变量（2026-11-21 重启恢复视图模式）', () => {
+  it('非法 primary/open 整条丢弃（脏 localStorage 不把 undefined 图标送进循环钮）', () => {
+    expect(sanitizeLayoutMemory({
+      primaryByConversation: { a: 'browser', b: 'nonsense', c: 3 },
+      openByConversation: { a: true, b: 'yes', c: false },
+    })).toEqual({
+      primaryByConversation: { a: 'browser' },
+      openByConversation: { a: true, c: false },
+    })
+  })
+
+  it('非 chat 会话强制补开 dock（chatSlot 只在 dock 渲染，关着时对话列不可达）', () => {
+    const out = sanitizeLayoutMemory({
+      primaryByConversation: { a: 'browser', b: 'files', c: 'chat' },
+      openByConversation: { a: false, b: false, c: false },
+    })
+    expect(out.openByConversation).toEqual({ a: true, b: true, c: false })
+  })
+
+  it('v3 形态 / 非对象 / 数组都不炸，回落空表', () => {
+    expect(sanitizeLayoutMemory(undefined)).toEqual({ primaryByConversation: {}, openByConversation: {} })
+    expect(sanitizeLayoutMemory(null)).toEqual({ primaryByConversation: {}, openByConversation: {} })
+    expect(sanitizeLayoutMemory({ primaryByConversation: [], openByConversation: [] })).toEqual({ primaryByConversation: {}, openByConversation: {} })
+  })
+
+  it('merge 保留 current 的 actions 与不落盘字段，只覆盖净化后的两张表', () => {
+    const merged = mergeWorkbenchPersisted(
+      {
+        widthByConversation: { conv_a: 700 },
+        treeWidth: 200,
+        primaryByConversation: { conv_a: 'browser' },
+        openByConversation: { conv_a: false },
+      },
+      useWorkbenchStore.getState(),
+    )
+    expect(merged.primaryByConversation).toEqual({ conv_a: 'browser' })
+    expect(merged.openByConversation).toEqual({ conv_a: true })
+    expect(merged.widthByConversation).toEqual({ conv_a: 700 })
+    expect(merged.activeTabByConversation).toEqual({})
+    expect(typeof merged.setConversationPrimary).toBe('function')
+  })
+
+  it('主窗沿用历史 key、次级窗口隔离；persist v4 且挂 merge', () => {
+    expect(WORKBENCH_STORAGE_KEY).toBe(IS_SECONDARY_WINDOW ? 'pulsemind-workbench:secondary' : 'pulsemind-workbench')
+    const src = readFileSync(STORE_SRC, 'utf-8')
+    expect(src).toContain('name: WORKBENCH_STORAGE_KEY')
+    expect(src).toContain('version: 4')
+    expect(src).toContain('merge: mergeWorkbenchPersisted')
   })
 })
 

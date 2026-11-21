@@ -36,6 +36,9 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import { InstallNotifier } from '../components/chat/InstallNotifier'
 import { useChatController } from '../hooks/useChatController'
 import { useFloatOverlayShift } from '../hooks/useFloatOverlayShift'
+import { useBrowserOcclusion } from '../hooks/useBrowserOcclusion'
+import { useBrowserFreeze } from '../hooks/useBrowserFreeze'
+import { BrowserFreezeLayer } from '../components/browser/BrowserFreezeLayer'
 import { SettingsProvider, useSettings } from '../hooks/SettingsContext'
 import { TranslationProvider, useTranslation } from '../i18n/useTranslation'
 import { useWorkbenchStore, useWorkbenchWidth, useConversationPrimary } from '../stores/workbenchStore'
@@ -556,6 +559,10 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
   // 发生——本窗补挂同一测量点。弹窗无换页视图（viewKind 恒 chat），主窗那道
   // viewKind 门在这里没有对应物；项目沉浸窗口被钳位恒 false，零开销。
   useFloatOverlayShift(primary === 'browser')
+  // 整窗浮层（2026-11-21）：本窗也有 browser 主视图与自己的 dock，Modal/遮罩
+  // 同样会吞掉原生 view——每个窗口测自己的 body、写自己进程里的 store。
+  useBrowserOcclusion()
+  useBrowserFreeze()
   // ── welcome 浏览器任务（review_20261105 中1）：与主窗 App 同一条通道 ──
   // URL 表单回车/点历史项 → createBrowserTask 铸容器会话（乐观列表 + browser
   // 主视图绑定）→ pane 快照报到「提交目标」会话名下再开页签。此前 prop 缺省
@@ -1127,6 +1134,8 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
                 )}
               </Layout>
               <InstallNotifier messages={messages} />
+              {/* 冻结帧（方案 ③）：本窗自己的 dock 折掉的那一屏。 */}
+              <BrowserFreezeLayer />
             </div>
           </AntdApp>
         </ConfigProvider>

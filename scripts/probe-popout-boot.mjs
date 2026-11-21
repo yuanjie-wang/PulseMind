@@ -555,8 +555,8 @@ check(
 )
 
 // ── 主视图模式种子（2026-11-04 裁定「对话在主窗是什么视图模式，弹出独立弹窗
-// 后要保持一致」）：primaryByConversation 是每窗一份的内存态，弹窗只能靠 donor
-// seed 继承。组C 文件优先（主卡=工作区树、对话列搬进 dock）、组D 浏览器优先
+// 后要保持一致」）：主窗的布局记忆自 2026-11-21 起落盘，但弹窗读写独立的
+// storage key、本窗内存态仍是空表，所以只能靠 donor seed 继承。组C 文件优先（主卡=工作区树、对话列搬进 dock）、组D 浏览器优先
 // （主卡=浏览器 chrome、原生视图推送 browserActive:true）。两组的循环钮文案也
 // 必须是模式本身——那就是「这一窗确实从该模式开机」的可视证据。
 const filesPrimaryPage = await loadAndBoot(DARWIN_CONTROLS, 'popout-seed', '?popout=' + CONV_ID, {
