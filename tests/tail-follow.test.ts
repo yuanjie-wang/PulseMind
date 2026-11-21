@@ -161,10 +161,43 @@ describe('tail-follow / following while content grows', () => {
     expect(ctx.follow.isFollowing()).toBe(true)
 
     commit(ctx, 500)
-    expect(ctx.follow.gap()).toBe(500)
-    ctx.frames()
-    expect(ctx.el.scrollTop).toBe(1100)
+    // settle 的同步 pre-paint snap：报告生长的当帧就已贴底，不等帧泵。
     expect(ctx.follow.gap()).toBe(0)
+    expect(ctx.el.scrollTop).toBe(1100)
+    // 循环仍负责无人报告的生长：直接改高、再泵帧，照样跟上。
+    ctx.el.grow(200)
+    ctx.frames()
+    expect(ctx.el.scrollTop).toBe(1300)
+    expect(ctx.follow.gap()).toBe(0)
+  })
+
+  it('settle pins the tail synchronously, before any scheduled frame (2026-11-21 pre-paint snap)', () => {
+    // user report「执行过程中徽章上下跳」：settle 的调用点（宿主 commit 的
+    // layout effect、ResizeObserver/MutationObserver 回调）全部跑在下一次
+    // paint 之前——修正必须在调用帧内落盘。回退成「只排帧」的话，生长帧会
+    // 以旧 offset 画出来（尾部下坠一帧、下一帧弹回），徽章按流式拍频上下跳。
+    const ctx = harness()
+    ctx.el.setTop(600)
+    ctx.el.grow(120)
+    ctx.follow.settle()
+    // 一帧都还没泵：尾部必须已经钉住（这就是 pre-paint 的含义）。
+    expect(ctx.el.scrollTop).toBe(ctx.el.maxTop)
+    expect(ctx.follow.gap()).toBe(0)
+    // 循环仍在按调度跑，但已贴底——幂等，不再移动。
+    ctx.frames(3)
+    expect(ctx.el.scrollTop).toBe(ctx.el.maxTop)
+  })
+
+  it('settle respects the jump hold window — the smooth landing wins', () => {
+    // jump() 的 hold 窗口里 settle 不得硬 snap（会把 smooth 动画拽成瞬移）。
+    const ctx = harness()
+    ctx.el.setTop(0)
+    ctx.follow.jump()
+    expect(ctx.el.scrolling).toHaveLength(1)
+    const writes = ctx.el.scrollTop
+    ctx.el.grow(80)
+    ctx.follow.settle() // hold 窗口内
+    expect(ctx.el.scrollTop).toBe(writes)
   })
 
   it('keeps following through a growth step larger than any threshold', () => {
@@ -487,6 +520,118 @@ describe('tail-follow / reattaching', () => {
   })
 })
 
+/**
+ * The stranded tail (2026-11-22 user report: 滚动到底部后回到底部按钮不消失).
+ * Released at the exact tail, no scroll event can ever carry the reattach —
+ * the condition needs a move TOWARD the tail and the view cannot move further
+ * down. Two escapes: the wheel-down intent press, and the quiet dwell.
+ */
+describe('tail-follow / stranded at the tail', () => {
+  /** Release while parked at the very tail, the way a micro wheel-up does. */
+  function stranded(harnessOverrides: Record<string, unknown> = {}): Harness {
+    const ctx = harness(harnessOverrides)
+    ctx.el.setTop(ctx.el.maxTop)
+    ctx.follow.attach(ctx.el)
+    ctx.el.emit('wheel', { deltaY: -1 })
+    expect(ctx.follow.isFollowing()).toBe(false)
+    return ctx
+  }
+
+  it('a wheel-down within reattachPx reattaches a released view instantly', () => {
+    const ctx = stranded()
+    ctx.el.emit('wheel', { deltaY: 240 })
+    expect(ctx.follow.isFollowing()).toBe(true)
+    expect(ctx.flips).toEqual([false, true])
+  })
+
+  it('a wheel-down away from the tail does not reattach', () => {
+    const ctx = harness()
+    ctx.el.setTop(ctx.el.maxTop - 300)
+    ctx.follow.attach(ctx.el)
+    ctx.el.emit('wheel', { deltaY: -120 })
+    expect(ctx.follow.isFollowing()).toBe(false)
+    ctx.el.emit('wheel', { deltaY: 240 })
+    expect(ctx.follow.isFollowing()).toBe(false)
+  })
+
+  it('a wheel-down does not reattach while following (still not a takeover)', () => {
+    const ctx = harness()
+    ctx.el.setTop(ctx.el.maxTop)
+    ctx.follow.attach(ctx.el)
+    ctx.el.emit('wheel', { deltaY: 240 })
+    expect(ctx.follow.isFollowing()).toBe(true)
+    expect(ctx.flips).toEqual([])
+  })
+
+  it('sitting quiet at the tail re-grabs follow after the dwell', () => {
+    const ctx = stranded()
+    // 600ms of quiet frames: short of the dwell, still released.
+    ctx.clock.t = 600
+    ctx.frames(4)
+    expect(ctx.follow.isFollowing()).toBe(false)
+    ctx.clock.t = 1300
+    ctx.frames(4)
+    expect(ctx.follow.isFollowing()).toBe(true)
+    expect(ctx.flips).toEqual([false, true])
+    // The re-grab owns the tail again: growth snaps down.
+    commit(ctx, 200)
+    expect(ctx.el.scrollTop).toBe(ctx.el.maxTop)
+  })
+
+  it('input activity defers the dwell', () => {
+    const ctx = stranded()
+    ctx.clock.t = 600
+    ctx.frames(4)
+    // A wheel-up 600ms in (the already-released no-op path) restarts the quiet clock.
+    ctx.el.emit('wheel', { deltaY: -10 })
+    ctx.clock.t = 1500
+    ctx.frames(4)
+    expect(ctx.follow.isFollowing()).toBe(false)
+    ctx.clock.t = 2800
+    ctx.frames(4)
+    expect(ctx.follow.isFollowing()).toBe(true)
+  })
+
+  it('sitting quiet away from the tail never re-grabs; returning to the tail does', () => {
+    const ctx = harness()
+    ctx.el.setTop(ctx.el.maxTop - 300)
+    ctx.follow.attach(ctx.el)
+    ctx.el.emit('wheel', { deltaY: -120 })
+    ctx.clock.t = 5000
+    ctx.frames(6)
+    expect(ctx.follow.isFollowing()).toBe(false)
+    // The user scrolls back to the tail and rests: dwell completes.
+    ctx.el.setTop(ctx.el.maxTop)
+    ctx.clock.t = 5400
+    ctx.frames(6)
+    expect(ctx.follow.isFollowing()).toBe(false)
+    ctx.clock.t = 6700
+    ctx.frames(6)
+    expect(ctx.follow.isFollowing()).toBe(true)
+  })
+
+  it('an actively-scrolling reader inside the dwell zone is not grabbed', () => {
+    const ctx = stranded()
+    // Scroll events (even tiny ones) keep refreshing the quiet mark.
+    for (let i = 1; i <= 8; i += 1) {
+      ctx.clock.t = i * 400
+      ctx.el.setTop(ctx.el.maxTop - i * 10)
+      ctx.el.emit('scroll')
+      ctx.frames(2)
+      expect(ctx.follow.isFollowing(), `step ${i}`).toBe(false)
+    }
+  })
+
+  it('dispose() stops the dwell loop', () => {
+    const ctx = stranded()
+    ctx.follow.dispose()
+    ctx.clock.t = 5000
+    ctx.frames(4)
+    expect(ctx.follow.isFollowing()).toBe(false)
+    expect(ctx.flips).toEqual([false])
+  })
+})
+
 describe('tail-follow / jump and hold', () => {
   it('jump() smooth-scrolls to the tail and suppresses logic while animating', () => {
     const ctx = harness({ jumpHoldMs: 200 })
@@ -585,12 +730,15 @@ describe('tail-follow / element lifecycle', () => {
 
   it('dispose() detaches and stops the loop', () => {
     const ctx = harness()
-    commit(ctx, 400)
+    commit(ctx, 400) // commit 即同步贴底（pre-paint snap）
     ctx.follow.attach(ctx.el)
     ctx.follow.dispose()
     expect(ctx.el.listenerCount('wheel')).toBe(0)
+    // dispose 之后的生长无人认领：泵帧也不许再动尾部。
+    const pinnedAt = ctx.el.scrollTop
+    ctx.el.grow(300)
     expect(ctx.frames(5)).toBeUndefined()
-    expect(ctx.el.scrollTop).toBe(0)
+    expect(ctx.el.scrollTop).toBe(pinnedAt)
   })
 
   it('reports an initially-following state without a notification', () => {
