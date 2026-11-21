@@ -5,6 +5,9 @@ import { currentSessionSandbox } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import type {
   GitAction,
+  GitBranchEntry,
+  GitBranchList,
+  GitBranchMutation,
   GitCommitResult,
   GitDiffResult,
   GitLogEntry,
@@ -126,7 +129,13 @@ function parsePorcelainStatus(raw: string): GitStatusInfo {
     if (!line) continue
     if (line.startsWith('## ')) {
       const rest = line.slice(3)
-      const branchPart = rest.split('...')[0].split(' [')[0].trim()
+      // A repo with no commits yet prints "## No commits yet on main" — not a
+      // branch head with tracking metadata. Without this arm the whole English
+      // sentence became `branch` and the composer chip displayed it verbatim.
+      // The branch name still matters: symbolic-ref resolves it even with no
+      // HEAD, so keep it and let the picker's empty `head` mark the repo empty.
+      const noCommits = /^No commits yet on (.+)$/.exec(rest)
+      const branchPart = noCommits ? noCommits[1].trim() : rest.split('...')[0].split(' [')[0].trim()
       result.branch = branchPart === 'HEAD (no branch)' || branchPart === 'HEAD' ? null : branchPart
       const meta = rest.match(/\[(.*)\]/)?.[1] ?? ''
       const ahead = meta.match(/ahead (\d+)/)?.[1]
@@ -257,6 +266,89 @@ export async function gitRestore(
   return { restored: files }
 }
 
+// ── branch picker (composer) ─────────────────────────────────────────
+// One for-each-ref call carries everything the panel needs. A literal tab
+// separates the atoms: commit subjects can contain tabs, so the middle is
+// rejoined rather than indexed. `%(HEAD)` emits '*' or a single space.
+const BRANCH_REF_FORMAT = '%(refname)\t%(refname:short)\t%(objectname:short)\t%(contents:subject)\t%(upstream:track)\t%(HEAD)'
+
+const EMPTY_BRANCH_LIST: GitBranchList = {
+  isRepo: false,
+  current: null,
+  detached: false,
+  head: null,
+  local: [],
+  remote: [],
+}
+
+/** execFile has no shell, but a leading dash would still be parsed by git as
+ *  an option and '..' has ref-revision meaning. Pin the accepted shape. */
+function assertRefName(name: string): void {
+  if (!name || name.startsWith('-') || name.includes('..') || !/^[A-Za-z0-9._/@-]+$/.test(name)) {
+    throw new GitExecError(1, `invalid branch name: ${name}`, '')
+  }
+}
+
+async function currentBranchName(cwd: string): Promise<string | null> {
+  const r = await execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd).catch(() => null)
+  return r?.stdout.trim() || null
+}
+
+export async function gitBranchList(cwd: string): Promise<GitBranchList> {
+  if (!(await checkIsRepo(cwd))) return EMPTY_BRANCH_LIST
+  const [current, head, refs] = await Promise.all([
+    currentBranchName(cwd),
+    execGit(['rev-parse', '--short', 'HEAD'], cwd)
+      .then((r) => r.stdout.trim() || null)
+      .catch(() => null),
+    execGit(['for-each-ref', `--format=${BRANCH_REF_FORMAT}`, 'refs/heads/', 'refs/remotes/'], cwd),
+  ])
+  const local: GitBranchEntry[] = []
+  const remote: GitBranchEntry[] = []
+  for (const line of refs.stdout.split('\n')) {
+    if (!line) continue
+    const parts = line.split('\t')
+    if (parts.length < 6) continue
+    const fullRef = parts[0]
+    const name = parts[1]
+    const isRemote = fullRef.startsWith('refs/remotes/')
+    // refs/remotes/<remote>/HEAD is a symbolic pointer, not a branch.
+    if (isRemote && name.endsWith('/HEAD')) continue
+    const track = parts[parts.length - 2]
+    const entry: GitBranchEntry = {
+      name,
+      head: parts[2] || null,
+      summary: parts.slice(3, -2).join('\t'),
+      ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0),
+      behind: Number(/behind (\d+)/.exec(track)?.[1] ?? 0),
+      current: !isRemote && name === current,
+    }
+    ;(isRemote ? remote : local).push(entry)
+  }
+  return { isRepo: true, current, detached: current === null, head, local, remote }
+}
+
+/** Plain `git switch` carries uncommitted changes along (git's own default).
+ *  A conflicting target branch makes git refuse the switch; the error reaches
+ *  the UI verbatim, nothing is discarded. */
+export async function gitSwitch(cwd: string, name: string): Promise<GitBranchMutation> {
+  assertRefName(name)
+  const previous = await currentBranchName(cwd)
+  await execGit(['switch', name], cwd)
+  return { name, previous }
+}
+
+/** Create-and-checkout in one step — a branch the user cannot see is a branch
+ *  they will not use. Empty repos have no HEAD to base it on, so the caller
+ *  disables this entry instead of surfacing a raw git error. */
+export async function gitBranchCreate(cwd: string, name: string, from?: string): Promise<GitBranchMutation> {
+  assertRefName(name)
+  if (from) assertRefName(from)
+  const previous = await currentBranchName(cwd)
+  await execGit(['switch', '-c', name, ...(from ? [from] : [])], cwd)
+  return { name, previous }
+}
+
 export async function invokeGitAction(action: GitAction): Promise<GitResult> {
   try {
     // git 写动作与文件写同一坐标系（audit 2026-10-10 #3）：文件写被 path-jail
@@ -266,7 +358,15 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
     // 照旧可用）。读动作（status/diff/log）保持免地理——读在沙盒语义里本就
     // 到处可读。判定用词法与 realpath 两个拼写（/tmp → /private/tmp 的祖先
     // 符号链接会让单一坐标判死整个 workspace）。
-    if (action.action === 'commit' || action.action === 'restore') {
+    // Branch mutations are writes too: `git switch` rewrites HEAD and the work
+    // tree, so they ride the same cwd gate as commit/restore (P2 of the same
+    // audit). They carry no pathspec, so the file loop below is a no-op.
+    if (
+      action.action === 'commit' ||
+      action.action === 'restore' ||
+      action.action === 'switch' ||
+      action.action === 'branch_create'
+    ) {
       const sandbox = currentSessionSandbox()
       if (sandbox) {
         const [cwdReal, wsReal] = await Promise.all([
@@ -295,7 +395,8 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
         // 文件名、过门，git 却把它锚到仓库根——workspace 外的未提交修改被
         // 实际丢弃。全部魔法拼写共享 ':' 前缀，先拒前缀（拒掉后 git 的 pathspec
         // 语义只剩字面与通配，与上面的词法/realpath 坐标重新对齐）。
-        for (const f of action.files ?? []) {
+        const writeFiles = action.action === 'commit' || action.action === 'restore' ? (action.files ?? []) : []
+        for (const f of writeFiles) {
           if (f.startsWith(':')) {
             return {
               ok: false,
@@ -331,7 +432,7 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
     // structural, not textual: one pre-check arms all three. The cwd
     // existence check comes first so a missing directory is not mislabeled a
     // repo question.
-    if (action.action === 'status' || action.action === 'diff' || action.action === 'log') {
+    if (action.action === 'status' || action.action === 'diff' || action.action === 'log' || action.action === 'branch_list') {
       const st = await stat(resolve(action.cwd)).catch(() => null)
       if (!st || !st.isDirectory()) {
         return { ok: false, error: { code: 1, message: `cwd 不存在或不是目录：${resolve(action.cwd)} — 先确认路径，或用 exec ls 查看` } }
@@ -341,6 +442,7 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
           return { ok: true, data: { isRepo: false, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflict: [] } }
         }
         if (action.action === 'diff') return { ok: true, data: { isRepo: false } }
+        if (action.action === 'branch_list') return { ok: true, data: EMPTY_BRANCH_LIST }
         return { ok: false, error: { code: 128, message: `not a git repository: ${action.cwd} — run git init first, or compare files without git` } }
       }
     }
@@ -369,6 +471,18 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
       case 'restore': {
         if (!action.files?.length) return { ok: false, error: { code: 1, message: 'restore requires files' } }
         const data = await gitRestore(action.cwd, action.files, action.confirm)
+        return { ok: true, data }
+      }
+      case 'branch_list': {
+        const data = await gitBranchList(action.cwd)
+        return { ok: true, data }
+      }
+      case 'switch': {
+        const data = await gitSwitch(action.cwd, action.name)
+        return { ok: true, data }
+      }
+      case 'branch_create': {
+        const data = await gitBranchCreate(action.cwd, action.name, action.from)
         return { ok: true, data }
       }
       default: {
