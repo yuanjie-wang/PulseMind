@@ -23,12 +23,15 @@ export function ContextRing({
   diameter,
   cacheHit,
   inputBudget,
+  lastCompaction,
 }: {
   used: number
   total: number
   diameter?: number
   cacheHit?: CacheHitRate
   inputBudget?: number
+  /** 最近一次压缩 pass（与已压缩 chip 同源）。有才出「压缩策略」行。 */
+  lastCompaction?: CompactionEvent | null
 }): React.ReactElement | null {
   // Leads the body so the hook still runs on the bail-out path below.
   const { t } = useTranslation()
@@ -49,26 +52,53 @@ export function ContextRing({
   // 只在 0 < budget < total 时画：等于 total 时刻度正落在顶点（无信息），大于
   // total 则说明宿主与本组件的口径不一致 —— 宁可不画，也不画一根与引擎不符的线。
   const tick = inputBudget != null && Number.isFinite(inputBudget) && inputBudget > 0 && inputBudget < total ? inputBudget / total : null
-  // Both figures read in thousands, the unit the label is written in.
-  const inK = (n: number) => `${(n / 1024).toFixed(1)}K`
-  // The ring answers "how full is the window"; the session's cache hit rate
-  // answers "how much of what we ship is already cached" — the two questions a
-  // context panel is read for, so both ride one tooltip.
-  // Omitted rather than shown as 0% when nothing was counted: a sidecar-only
-  // history or a provider that reports no cache fields would otherwise read as
-  // a total miss, which is the opposite of what an absent reading means.
-  const ringLine = t('chatView.contextRing.tooltip', { percent, used: inK(used), total: inK(total) })
-  const cacheLine: string | null =
-    cacheHit && cacheHit.requestCount > 0
-      ? t(cacheHit.reliable ? 'chatView.contextRing.cacheHit' : 'chatView.contextRing.cacheHitTentative', {
-          rate: `${Math.round(cacheHit.hitRate * 100)}%`,
-          count: cacheHit.requestCount,
-        })
-      : null
-  // 刻度线的读数单独一行：它回答的是「什么时候开始压缩」，与「现在多满」
-  // 「缓存命中多少」是两个问题，混在一句里就没人读了。
-  const budgetLine = tick == null ? null : t('chatView.contextRing.inputBudget', { percent: Math.round(tick * 100), budget: inK(inputBudget as number) })
-  const detailLines = [budgetLine, cacheLine].filter((line): line is string => line !== null)
+  // Both figures read in thousands, the unit the label is written in — DECIMAL
+  // thousands: token windows are quoted by providers in round-decimal K
+  // (this one is literally 150_000), so /1024 read the window as 146.5K and
+  // broke the tooltip's own ratio against the percent beside it (2026-11-21
+  // user catch「和刻度的 /1000 不一样吧」). Same unit as the model-facing
+  // gauge and the stats row's formatTokenCount.
+  const inK = (n: number) => `${(n / 1000).toFixed(1)}K`
+  // 浮窗是 label/value 栅格（user 2026-11-21：一段文字 → 结构化展示）——
+  // 一个指标一行，标签列放问题（上下文使用 / 输入预算 / 缓存命中），
+  // 值列放答案。首行是标题行：百分数加重，用量/窗口跟在后面
+  //（user 同日三刀「上下文使用 59% · 86.3K / 146.5K」，单独的「已用」行退役）。
+  const rows: { label: string; value: React.ReactNode; hint?: string }[] = [
+    { label: t('chatView.contextRing.title'), value: <span className="pct">{percent}%</span>, hint: `${inK(used)} / ${inK(total)}` },
+  ]
+  // 刻度行与环上那根线同条件：刻度不存在（无预算或口径不符）就不出现空行。
+  if (tick != null) {
+    rows.push({
+      label: t('chatView.contextRing.budget'),
+      value: inK(inputBudget as number),
+      hint: t('chatView.contextRing.budgetHint', { percent: Math.round(tick * 100) }),
+    })
+  }
+  // 缓存行缺席语义保持原样：没有计数 ≠ 0% 命中 —— sidecar-only 历史或不报
+  // 缓存字段的供应商，缺席读成全 miss 恰好是反的，什么都不给比给零诚实。
+  if (cacheHit && cacheHit.requestCount > 0) {
+    rows.push({
+      label: t('chatView.contextRing.cache'),
+      value: `${Math.round(cacheHit.hitRate * 100)}%`,
+      hint: t(cacheHit.reliable ? 'chatView.contextRing.cacheDetail' : 'chatView.contextRing.cacheTentative', {
+        count: cacheHit.requestCount,
+      }),
+    })
+  }
+  // 压缩行只报结果，不报机制（user 2026-11-21 四刀：外层 chip 退役后这里
+  // 是压缩信息唯一展示面；每策略一行的机制名+效果描述用户不必看，回到
+  // 「压缩了多少条、释放多少」的计数形态）。droppedMessages 只计 light+hard
+  //（nano 是 1:1 占位替换，不丢条数），释放量取 pass 前后的实测差；非
+  // request 来源（prewarm / manual）的 pass 要到下一次请求构建才真正落
+  // 副本，hint 说明，不把「已执行」说成「已生效」。
+  if (lastCompaction) {
+    const freedK = (Math.max(0, lastCompaction.tokensBefore - lastCompaction.tokensAfter) / 1000).toFixed(1)
+    rows.push({
+      label: t('chatView.contextRing.strategies'),
+      value: t('chatView.contextRing.compacted', { dropped: lastCompaction.droppedMessages, freed: freedK }),
+      hint: lastCompaction.source !== 'request' ? t('chatView.contextRing.strategiesPending') : undefined,
+    })
+  }
 
   return (
     <>
@@ -77,8 +107,38 @@ export function ContextRing({
       <style>{`
         .pm-context-ring { display: inline-flex; border-radius: 50%; }
         .pm-context-ring:hover { background-color: var(--pm-hover-faint); }
+        .pm-ctx-tip { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: baseline; width: 340px; }
+        .pm-ctx-tip .k { opacity: 0.65; text-align: right; white-space: nowrap; }
+        .pm-ctx-tip .v { font-variant-numeric: tabular-nums; }
+        .pm-ctx-tip .pct { font-weight: 600; }
+        .pm-ctx-tip .sub { opacity: 0.65; font-size: 12px; }
       `}</style>
-      <Tooltip title={detailLines.length === 0 ? ringLine : <>{ringLine}{detailLines.map((line, i) => <React.Fragment key={i}><br />{line}</React.Fragment>)}</>}>
+      {/* 强调一律走 opacity 不走硬色：antd 浮窗底色随主题翻转，opacity 两主题都可读。
+          overlayStyle 放宽 antd 默认的 250px 浮窗上限；栅格定宽 340px（含浮窗内边距
+          恰好 ≤360）+ 值列 minmax(0,1fr)：长的策略名单在值列内自然换行，而不是
+          被 max-content 轨道顶出浮窗边缘削角（en 五策略名单一行 ≈500px，给够了
+          也会把浮窗撑成横幅，定宽换行才是对的形态）。 */}
+      <Tooltip
+        overlayStyle={{ maxWidth: 360 }}
+        title={
+          <div className="pm-ctx-tip">
+            {rows.map((row) => (
+              <React.Fragment key={row.label}>
+                <span className="k">{row.label}</span>
+                <span className="v">
+                  {row.value}
+                  {row.hint != null && (
+                    <span className="sub">
+                      {' · '}
+                      {row.hint}
+                    </span>
+                  )}
+                </span>
+              </React.Fragment>
+            ))}
+          </div>
+        }
+      >
         <span className="pm-context-ring">
           <svg width={RING_BOX} height={RING_BOX} viewBox={`0 0 ${RING_BOX} ${RING_BOX}`} style={{ display: 'block' }}>
             {/* The two strokes ride `style` rather than the presentation attributes:
@@ -86,9 +146,14 @@ export function ContextRing({
                 a `style` value always is. */}
             <circle cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none" strokeWidth={RING_STROKE} style={{ stroke: 'var(--pm-border)' }} />
             <circle
-              cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none"
-              strokeWidth={RING_STROKE} strokeLinecap="round"
-              strokeDasharray={circ} strokeDashoffset={offset}
+              cx={RING_CENTER}
+              cy={RING_CENTER}
+              r={r}
+              fill="none"
+              strokeWidth={RING_STROKE}
+              strokeLinecap="round"
+              strokeDasharray={circ}
+              strokeDashoffset={offset}
               transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
               style={{ transition: 'stroke-dashoffset 0.3s ease', stroke: 'var(--pm-text-secondary)' }}
             />
@@ -103,7 +168,8 @@ export function ContextRing({
                 y1={RING_CENTER + (r + RING_STROKE / 2 + 0.25) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
                 x2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
                 y2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
-                strokeWidth={1} strokeLinecap="butt"
+                strokeWidth={1}
+                strokeLinecap="butt"
                 style={{ stroke: 'var(--pm-text-secondary)' }}
               />
             )}
@@ -160,11 +226,7 @@ export function estimateContextUsed(messages: AgentMessage[], contextLength?: nu
  * new turns from the compacted base. Any message without a timestamp (or no
  * event) falls back to the raw estimate.
  */
-export function projectContextUsed(
-  messages: AgentMessage[],
-  compaction: CompactionEvent | null | undefined,
-  contextLength?: number,
-): number {
+export function projectContextUsed(messages: AgentMessage[], compaction: CompactionEvent | null | undefined, contextLength?: number): number {
   const raw = estimateContextUsed(messages, contextLength)
   if (!compaction || !messages.length) return raw
   // ts is the engine's Date.now() at the pass; message createdAt is ISO from

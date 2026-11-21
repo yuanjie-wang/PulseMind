@@ -115,7 +115,11 @@ export function WelcomeContent({
         ${P1.toFixed(4)}% { transform: translateX(-${LOGO_SIZE_WIDTH * 1}px); }
         ${P2.toFixed(4)}% { transform: translateX(-${LOGO_SIZE_WIDTH * SCROLL_CYCLES}px); }
         100% { transform: translateX(-${LOGO_SIZE_WIDTH * SCROLL_CYCLES}px); }
-      }`}</style>
+      }
+      /* AI greeting replaces the static title in place: a single short rise,
+         never played for the default copy on first mount. */
+      @keyframes greetingIn { from { opacity: 0; transform: translateY(4px); } }
+      `}</style>
       {/* Elastic top gap: the column's spare height (half of it, capped at
           TOP_SPACER_MAX) is the blank under the switcher — it shrinks to zero
           on a short window, then the quick band's 224 floor holds and the
@@ -149,7 +153,11 @@ export function WelcomeContent({
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', gap: 6, marginBottom: 8, flexShrink: 0 }}>
         <div style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <Typography.Title key={greeting || 'default-title'} level={2} style={{ margin: 0, animation: 'greetingIn 0.6s ease' }}>
+          <Typography.Title
+            key={greeting || 'default-title'}
+            level={2}
+            style={{ margin: 0, animation: greeting ? 'greetingIn 0.32s ease-out' : undefined }}
+          >
             {greeting || t('welcome.title')}
           </Typography.Title>
         </div>

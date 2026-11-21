@@ -33,6 +33,7 @@ import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-
 import { normalizePathInput } from '../../../../shared/path-input'
 import { notifyFailure } from '../../utils/notify'
 import { CHAT_COMMANDS } from '../../agent/chat-commands'
+import { GitBranchButton } from './GitBranchButton'
 
 /** 一次提交的应答：只回答「这条输入有没有被收下」。故意不 import hook 里的
  *  SendResult —— 组件层不该反向依赖 useChatController，结构兼容即可（它的
@@ -108,6 +109,8 @@ function InputAreaImpl({
   onUnbindExpert,
   approvalMode,
   onChangeApprovalMode,
+  gitProjectId,
+  workspaceDir,
   profilePinned,
   onResetProfile,
   features,
@@ -190,6 +193,12 @@ function InputAreaImpl({
   boundExpertId?: string
   /** Clear the bound expert (chip ×). */
   onUnbindExpert?: () => void
+  /** Git branch picker. `gitProjectId` is the project binding — the picker
+   *  resolves the project's own directory from it and stays hidden for plain
+   *  conversations. `workspaceDir` is the fallback cwd when the project list
+   *  has not loaded yet. */
+  gitProjectId?: string
+  workspaceDir?: string
   /** How tool calls are approved for this conversation — the effective mode,
    *  i.e. the project's policy when the conversation belongs to one. */
   approvalMode?: SandboxApprovalMode
@@ -208,6 +217,9 @@ function InputAreaImpl({
     modelPicker?: boolean
     experts?: boolean
     authorization?: boolean
+    /** Git 分支按钮。只有宿主传了 gitProjectId（绑定项目的会话）才显示；
+     *  复用宿主不传 features 时默认开，但仍需 gitProjectId 才落地。 */
+    gitBranch?: boolean
     /** `$`-skill mention popup. Full chat only — the reuse sites' sends bypass
      *  useChatController, where the $ tokens are resolved. */
     skills?: boolean
@@ -268,6 +280,9 @@ function InputAreaImpl({
   // Hoisted: the trigger popup's command rows read their descriptions through t.
   const { t } = useTranslation()
   const showAuthorization = (features?.authorization ?? features === undefined) && onChangeApprovalMode !== undefined
+  // Only project-bound conversations have a git repo to speak for; the plain
+  // timestamped workspace deliberately shows nothing.
+  const showGitBranch = (features?.gitBranch ?? features === undefined) && !!gitProjectId
   const showVoice = features?.voice ?? features === undefined
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
@@ -607,32 +622,9 @@ function InputAreaImpl({
   const approvalLabel = approvalMode ?? DEFAULT_APPROVAL_MODE
   const approvalHint = t('chatView.approval.tooltip', { level: t(`chatView.approval.${approvalLabel}`) })
 
-  // 已压缩 chip: last compaction pass of this conversation. 已生效 (request)
-  // vs 下次请求生效 (post-turn prewarm / manual) — the drop rides the next
-  // request build in both non-request sources, so the ring's projected
-  // drop and the copy the model sees agree with what the label claims.
-  const compactionFreedK = lastCompaction ? (Math.max(0, lastCompaction.tokensBefore - lastCompaction.tokensAfter) / 1024).toFixed(1) : '0'
-  const compactionLabel = !lastCompaction
-    ? ''
-    : lastCompaction.source === 'request'
-      ? t('chatView.compaction.chip', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
-      : t('chatView.compaction.chipPending', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
-  // The replay count covers ONLY this pass's dropped region, and
-  // collectUserReplays replays at least the head of every dropped user text,
-  // so 0 ⇔ the dropped region held no user-typed message at all — the zero
-  // branch can truthfully promise the user's words were untouched. Never fold
-  // the two wordings into one template: 「0 条用户消息原文保留」 reads as data
-  // loss (user report 2026-10-15).
-  const compactionHint = lastCompaction
-    ? lastCompaction.replayedUserMessages > 0
-      ? t('chatView.compaction.tooltip', {
-          strategies: lastCompaction.strategies.join(' · '),
-          replayed: lastCompaction.replayedUserMessages,
-        })
-      : t('chatView.compaction.tooltipZeroReplays', {
-          strategies: lastCompaction.strategies.join(' · '),
-        })
-    : ''
+  // 已压缩 chip 已退役（user 2026-11-21：压缩信息只在 ContextRing 浮窗里展示，
+  // 外层不再占一行宽度）—— lastCompaction 仍透传给 ContextRing，那里出
+  // 「压缩策略」结构化行（计数 + pending 分档 + 每策略一行效果描述）。
 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -665,25 +657,6 @@ function InputAreaImpl({
       prev,
       normalized.filter((p) => !/\]|\|/.test(p)),
     )
-  }
-
-  const handlePickFile = async () => {
-    const result = await window.electronAPI.showOpenDialog({
-      properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'All Files', extensions: ['*'] }],
-    })
-    if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFiles((prev) => mergeAttachmentsNotified(prev, result.filePaths))
-    }
-  }
-
-  const handlePickFolder = async () => {
-    const result = await window.electronAPI.showOpenDialog({
-      properties: ['openDirectory'],
-    })
-    if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFolders((prev) => mergeAttachmentsNotified(prev, result.filePaths))
-    }
   }
 
   const removeFile = (index: number) => {
@@ -736,6 +709,21 @@ function InputAreaImpl({
     })
     if (files.length > 0) setSelectedFiles((prev) => mergeAttachmentsNotified(prev, files))
     if (folders.length > 0) setSelectedFolders((prev) => mergeAttachmentsNotified(prev, folders))
+  }
+
+  /** The ONE attachment button. Electron's chooser accepts openFile AND
+   *  openDirectory together (RoutineForm's file trigger already relies on it),
+   *  so a single dialog can pick both in one pass. addAttachments stats each
+   *  returned path and routes it to the file or folder chip — the same exit
+   *  paste and drag use. No `filters`: the old "All Files /*" was a no-op
+   *  filter and could hide directories on some platforms. */
+  const handlePickAttachment = async () => {
+    const result = await window.electronAPI.showOpenDialog({
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+    })
+    if (!result.canceled && result.filePaths.length > 0) {
+      await addAttachments(result.filePaths)
+    }
   }
 
   /** Clipboard / drag files → attachments — the same chips the file-picker
@@ -1480,22 +1468,15 @@ function InputAreaImpl({
         footerLeft={
           <>
             {showAttachments && (
-              <>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<PlusOutlined style={{ fontSize: 14 }} />}
-                  onClick={handlePickFile}
-                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
-                />
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<FolderOutlined style={{ fontSize: 14 }} />}
-                  onClick={handlePickFolder}
-                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
-                />
-              </>
+              <Button
+                size="small"
+                type="text"
+                icon={<PlusOutlined style={{ fontSize: 14 }} />}
+                title={t('chatView.attachFile')}
+                aria-label={t('chatView.attachFile')}
+                onClick={handlePickAttachment}
+                style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
+              />
             )}
             {showAuthorization && (
               <Dropdown
@@ -1537,26 +1518,29 @@ function InputAreaImpl({
                 </Button>
               </Dropdown>
             )}
+            {showGitBranch && gitProjectId && (
+              <GitBranchButton
+                gitProjectId={gitProjectId}
+                workspaceDir={workspaceDir}
+                isRequesting={isRequesting}
+              />
+            )}
           </>
         }
         trailing={
           <>
-            {/* Right cluster order: compaction chip, context ring, model picker, mic, send button. */}
-            {hasMessages && !!lastCompaction && (
-              <Tooltip title={compactionHint}>
-                {/* pm-collapse-chip: Composer's first responsive stage — the
-                    chip is the row's widest piece (~200px pending) and purely
-                    informational, so it hides below the 700px container width
-                    while every control keeps its label; this tooltip still
-                    carries the full accounting. */}
-                <span className="pm-collapse-chip" style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>
-                  {compactionLabel}
-                </span>
-              </Tooltip>
-            )}
+            {/* Right cluster order: context ring (压缩信息只在它的浮窗里 ——
+                外层已压缩 chip 已于 2026-11-21 退役), model picker, mic, send button. */}
             {hasMessages && contextLength != null && contextLength > 0 && (
               <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} cacheHit={cacheHit} inputBudget={inputBudget} />
+                <ContextRing
+                  used={contextUsed ?? 0}
+                  total={contextLength}
+                  diameter={16}
+                  cacheHit={cacheHit}
+                  inputBudget={inputBudget}
+                  lastCompaction={lastCompaction}
+                />
               </span>
             )}
             {showModelPicker && (

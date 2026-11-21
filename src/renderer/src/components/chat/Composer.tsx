@@ -261,7 +261,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   return (
     <div
       ref={containerRef}
-      className={dropActive ? 'pm-drop-active' : undefined}
+      className={`pm-composer-root${dropActive ? ' pm-drop-active' : ''}`}
       style={
         layout === 'floating'
           ? {
@@ -353,7 +353,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   type="primary"
                   shape="circle"
                   className={accent ? 'pm-accent-send' : 'pm-send'}
-                  icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />}
+                  icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined className="pm-send-arrow" />}
                   disabled={sendDisabled}
                   style={
                     {
@@ -391,25 +391,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
            element first, so controls keep their labels down to widths where
            they genuinely no longer fit (2026-11-01 user ruling: the old single
            600px breakpoint compressed the 授权/模型 labels while the common
-           row — short model name, no chip — still had ~250px of visible
-           slack). Measured row pieces (probe-composer-responsive.mjs /
-           real Chromium): attach buttons 56, 授权 full 108 / icon 30, count
-           "3400/4000" 59, compaction chip 199 (pending) / ~150 (settled),
-           context ring 16, model full 84 short / 194 (160px-capped name) /
-           icon 30, send 24, gaps ~36. Absolute worst (pending chip + count +
-           ring + long name + labels) ≈ 692px. The stages, each sized so the
-           post-shed worst row fits every width it applies to:
-             ≤ 700  the compaction chip hides (pm-collapse-chip, hung by
-                    InputArea) — passive info, the tooltip carries everything;
-                    it is the widest and least essential piece. This is ALSO
-                    the stage that rescues the true worst case: the old 600px
-                    estimate (~560) predates the pending-chip wording.
+           row — short model name — still had ~250px of visible slack).
+           Measured row pieces (probe-composer-responsive.mjs / real
+           Chromium): attach button 28, 授权 full 108 / icon 30, count
+           "3400/4000" 59, context ring 16, model full 84 short / 194
+           (160px-capped name) / icon 30, send 24, gaps ~36. Absolute worst
+           (count + ring + long name + labels) ≈ 493px. The git branch chip
+           (glyph + ellipsized name only) adds one more piece. The stages, each
+           sized so the post-shed worst row fits every width it applies to:
              ≤ 500  the near-cap count hides (pm-composer-count) — transient
-                    typing feedback; the clamp itself is unchanged.
+                    typing feedback; the clamp itself is unchanged — and the
+                    branch chip sheds its name (pm-branch-label), leaving the
+                    glyph. Together they keep the enlarged worst row under 500.
              ≤ 440  the 授权/模型 selectors shed label + caret
                     (pm-collapse-compact, hung by InputArea) and the model
                     picker swaps to a robot glyph (pm-collapse-only) — 28px
                     icons whose colour/tooltip still name the choice.
+           (Former stage ≤ 700 hid the compaction chip; the chip retired on
+           2026-11-21 — 压缩信息只在 ContextRing 浮窗里 — and the stage went
+           with it. The worst row it rescued, pending chip ≈ 692px, no longer
+           exists: 493px fits everywhere above 500.)
            The breakpoint is the column's width (container pm-composer above),
            which equals the card's width everywhere below its 952 cap; the
            model name span (minWidth 0 + ellipsis) is the row's last absorber,
@@ -418,11 +419,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
            root, so hidden elements leave no phantom spacing and one visible
            icon leaves no gap at all. */
         .pm-collapse-only { display: none; }
-        @container pm-composer (max-width: 700px) {
-          .pm-collapse-chip { display: none; }
-        }
         @container pm-composer (max-width: 500px) {
           .pm-composer-count { display: none; }
+          /* The branch chip sheds its label in this SAME stage — no new
+             breakpoint (composer-collapse-stages.test.ts pins the two stages).
+             Its BranchesOutlined glyph stays visible at every width. */
+          .pm-branch-label { display: none; }
         }
         @container pm-composer (max-width: 440px) {
           .pm-collapse-compact { display: none; }
@@ -439,6 +441,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           max-width: ${COMPOSER_MAX_WIDTH}px;
           margin: 0 auto;
           box-shadow: var(--pm-shadow-glass) !important;
+          /* Only colour/shadow ride the transition: the card's height is
+             measured for the transcript's bottom reserve, so no size tween. */
+          transition: border-color 0.16s ease, box-shadow 0.16s ease;
+        }
+        .pm-composer-root .ant-sender:focus-within {
+          border-color: var(--pm-border-strong);
         }
         /* Quick-attach drop target: the card reads as a dashed receptacle while
            a file drag hovers it (InputArea's drag counter drives the class on
@@ -448,6 +456,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         .pm-drop-active .ant-sender {
           border-style: dashed;
           border-color: var(--pm-ink);
+        }
+        /* The arrow appears once the button is actually sendable: one short
+           rise on the disabled -> enabled flip, not a looping breath. */
+        @keyframes pm-send-arrow-in { from { opacity: 0; transform: translateY(2px); } }
+        .pm-composer-root .ant-btn-primary:not(:disabled) .pm-send-arrow {
+          animation: pm-send-arrow-in 0.18s ease-out;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .pm-composer-root .ant-sender { transition: none; }
+          .pm-composer-root .ant-btn-primary:not(:disabled) .pm-send-arrow { animation: none; }
         }
         /* The send button's fills. The base circle is the antd theme's primary,
            i.e. the ink — black in light, light in dark; pm-send lands only on

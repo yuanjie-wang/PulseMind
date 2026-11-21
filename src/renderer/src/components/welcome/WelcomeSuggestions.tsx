@@ -86,6 +86,7 @@ export function CardShell({
   const activate = onClick
   return (
     <div
+      className={activate ? 'pm-welcome-card pm-welcome-card--interactive' : 'pm-welcome-card'}
       role={activate ? 'button' : undefined}
       tabIndex={activate ? 0 : undefined}
       onClick={activate}
@@ -112,7 +113,7 @@ export function CardShell({
         textAlign: 'left',
         userSelect: 'none',
         cursor: activate ? 'pointer' : 'default',
-        transition: 'background 0.15s',
+        transition: 'background 0.15s ease, transform 0.16s ease, box-shadow 0.16s ease',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 600, color: 'var(--pm-text-muted)' }}>
@@ -159,7 +160,7 @@ function CardBody({
       {meta && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--pm-text-soft)' }}>
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta}</span>
-          {!muted && <ArrowRightOutlined style={{ fontSize: 11, flexShrink: 0 }} />}
+          {!muted && <ArrowRightOutlined className="pm-welcome-card-arrow" style={{ fontSize: 11, flexShrink: 0 }} />}
         </div>
       )}
     </>
@@ -185,6 +186,7 @@ function SkeletonCard(): React.ReactElement {
         background: CARD_BG,
         borderRadius: 16,
         padding: '18px 20px 16px',
+        animation: 'pm-welcome-card-in 0.18s ease-out',
       }}
     >
       <div style={bar(64, 12)} />
@@ -303,7 +305,18 @@ export function WelcomeSuggestions({
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* The card badge's pulse keyframes live here (they used to be borrowed from
           ConversationRows' style block, which no longer defines them). */}
-      <style>{`@keyframes ant-status-processing { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.4); opacity: 0; } }`}</style>
+      <style>{`
+        @keyframes ant-status-processing { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.4); opacity: 0; } }
+        /* The card mounts when its slice lands: one short rise reads as the
+           skeleton resolving into content, without a looping shimmer. */
+        @keyframes pm-welcome-card-in { from { opacity: 0; transform: translateY(3px); } }
+        .pm-welcome-card { animation: pm-welcome-card-in 0.18s ease-out; }
+        .pm-welcome-card-arrow { transition: transform 0.16s ease; }
+        .pm-welcome-card--interactive:hover .pm-welcome-card-arrow,
+        .pm-welcome-card--interactive:focus-visible .pm-welcome-card-arrow { transform: translateX(2px); }
+        .pm-welcome-card--interactive:hover,
+        .pm-welcome-card--interactive:focus-visible { transform: translateY(-2px); box-shadow: var(--pm-shadow-pop); }
+      `}</style>
       {runModal}
       <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', minHeight: 158 }}>
         <ChatCard chat={chat} now={now} running={convLights[chat?.key ?? ''] === 'running'} onOpenConversation={onOpenConversation} />

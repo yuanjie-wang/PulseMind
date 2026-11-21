@@ -123,7 +123,10 @@ describe('Composer forwards the paste event', () => {
   })
 
   it('paints the dashed receptacle only through the dropActive class', () => {
-    expect(src).toMatch(/className=\{dropActive \? 'pm-drop-active' : undefined\}/)
+    // The root element also carries `pm-composer-root` (responsive composer
+    // round, same wave); the drop paint must still ride SOLELY on the
+    // conditional flag — no static drop class, no styling keyed off anything else.
+    expect(src).toMatch(/className=\{`pm-composer-root\$\{dropActive \? ' pm-drop-active' : ''\}`\}/)
     expect(src).toMatch(/\.pm-drop-active \.ant-sender/)
     expect(src).toMatch(/border-style:\s*dashed/)
   })
@@ -172,11 +175,12 @@ describe('InputArea gates both entry points', () => {
     expect(src).toMatch(/dropActive=\{dragActive\}/)
   })
 
-  it('routed paths (picker buttons too) go through the de-duplicating merge', () => {
+  it('routed paths (the picker included) go through the de-duplicating merge', () => {
     expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, files\)/)
     expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, folders\)/)
-    expect(src).toMatch(/setSelectedFiles\(\(prev\) => mergeAttachmentsNotified\(prev, result\.filePaths\)\)/)
-    expect(src).toMatch(/setSelectedFolders\(\(prev\) => mergeAttachmentsNotified\(prev, result\.filePaths\)\)/)
+    // The merged picker no longer writes either list directly: it hands the
+    // dialog's paths to addAttachments, which stats and routes them.
+    expect(fnBody(src, 'handlePickAttachment')).toContain('addAttachments(result.filePaths)')
   })
 
   it('the drop hint renders in the above-card layer, tail position, both conditions', () => {
@@ -289,5 +293,25 @@ describe('the Electron probe runs the real preload under app-exact webPreference
     // …and bundled the way scripts/build.js bundles it: only electron
     // external, or webUtils would resolve differently than at launch.
     expect(probe).toMatch(/external: \['electron'\]/)
+  })
+})
+
+describe('composer attachment picker: one button, one dialog', () => {
+  const src = read('src/renderer/src/components/chat/InputArea.tsx')
+
+  it('openFile + openDirectory + multiSelections in a single showOpenDialog', () => {
+    const body = fnBody(src, 'handlePickAttachment')
+    expect(body).toContain("properties: ['openFile', 'openDirectory', 'multiSelections']")
+    expect(body).toContain('addAttachments(result.filePaths)')
+    // "All Files /*" was a no-op and could hide directories on some platforms.
+    expect(body).not.toContain('filters:')
+  })
+
+  it('the two old buttons are gone; footerLeft has one picker handler', () => {
+    expect(src).not.toContain('handlePickFile')
+    expect(src).not.toContain('handlePickFolder')
+    const footer = src.slice(src.indexOf('footerLeft={'), src.indexOf('trailing={'))
+    expect(footer).toContain('onClick={handlePickAttachment}')
+    expect(footer.match(/onClick=\{handlePick/g)?.length).toBe(1)
   })
 })

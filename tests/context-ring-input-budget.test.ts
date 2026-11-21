@@ -46,7 +46,10 @@ describe('resolveMaxTokens — 解析链镜像主进程', () => {
     // 不顺延到 profiles[0]。这里 profiles[0] 恰好有 32_000，若实现写成
     // `?.maxTokens ?? profiles[0]?.maxTokens` 就会静默通过 —— 所以另配一组
     // 让「别人有、它有」的差异可见。
-    const mixed = [{ id: 'A', contextLength: 100_000 }, { id: 'B', contextLength: 200_000, maxTokens: 32_000 }]
+    const mixed = [
+      { id: 'A', contextLength: 100_000 },
+      { id: 'B', contextLength: 200_000, maxTokens: 32_000 },
+    ]
     expect(resolveMaxTokens(mixed, 'A', 'B')).toBeUndefined()
   })
 
@@ -70,7 +73,10 @@ describe('resolveMaxTokens — 解析链镜像主进程', () => {
 
   it('reads window and reserve off the SAME entry', () => {
     // 拆成两份实现就会漂移：窗口取 A、预留取 B 时，预算会凭空多出 28K。
-    const mixed = [{ id: 'A', contextLength: 100_000 }, { id: 'B', contextLength: 200_000, maxTokens: 32_000 }]
+    const mixed = [
+      { id: 'A', contextLength: 100_000 },
+      { id: 'B', contextLength: 200_000, maxTokens: 32_000 },
+    ]
     expect(resolveContextWindow(mixed, 'A', 'B')).toBe(100_000)
     expect(resolveMaxTokens(mixed, 'A', 'B')).toBeUndefined()
     // 非空性：B 的两个值都不是上面读到的，证明确实是按 A 读的。
@@ -133,12 +139,63 @@ describe('ContextRing — 刻度几何', () => {
     expect(ring).toContain('r + RING_STROKE / 2 + 1.5')
   })
 
-  it('reads the budget out in the tooltip under its own line', () => {
-    expect(ring).toContain("t('chatView.contextRing.inputBudget'")
-    // 刻度线与「现在多满」「命中多少」是两个问题，必须分行 —— 混在一句里
-    // 就没人读了（见 budgetLine / detailLines）。
-    expect(ring).toContain('const budgetLine =')
-    expect(ring).toContain('[budgetLine, cacheLine]')
+  it('浮窗是结构化栅格：一个指标一行，标签列问、值列答（user 2026-11-21）', () => {
+    // 旧形态是三句话 <br/> 拼接 —— 读的人要在散文里找数。现钉结构化形态：
+    // .pm-ctx-tip 栅格存在，且四个标签全部经 i18n 取词（不许把文案硬编码进组件）。
+    // 标题行自带用量（user 同日三刀「上下文使用 59% · 86.3K / 146.5K」，
+    // 单独的已用行退役，used 键随删）。
+    expect(ring).toContain('pm-ctx-tip')
+    for (const key of ['title', 'budget', 'cache', 'strategies']) {
+      expect(ring).toContain(`chatView.contextRing.${key}`)
+    }
+    expect(ring).toContain("hint: `${inK(used)} / ${inK(total)}`")
+    expect(ring).not.toContain("t('chatView.contextRing.used')")
+  })
+
+  it('刻度行与缓存行是条件行，hint 语义分档保留', () => {
+    // 刻度不存在（无预算或口径不符）不出现空行；无缓存计数不出 0% 误导。
+    // 命中与「仅供参考」仍是两条文案 —— 少样本的数字必须带保留意见。
+    expect(ring).toContain('if (tick != null)')
+    expect(ring).toContain('cacheHit.requestCount > 0')
+    expect(ring).toContain("cacheHit.reliable ? 'chatView.contextRing.cacheDetail' : 'chatView.contextRing.cacheTentative'")
+  })
+
+  it('压缩行只报结果：条数 + 释放量 + pending 分档（user 2026-11-21 四刀）', () => {
+    // 每策略一行的机制名+效果描述用户不必看，回到计数形态。droppedMessages
+    // 只计 light+hard（nano 是 1:1 不丢条数），释放量取 pass 前后实测差；
+    // 非 request 来源的 pass 下次请求才落副本，hint 分档保留。
+    expect(ring).toContain('chatView.contextRing.compacted')
+    expect(ring).toContain('tokensBefore - lastCompaction.tokensAfter')
+    expect(ring).toContain("lastCompaction.source !== 'request'")
+    expect(ring).toContain('strategiesPending')
+    expect(ring).toContain('if (lastCompaction)')
+    // 机制词表与效果描述已随明细行退役，不许在组件里长回来。
+    expect(ring).not.toContain('STRATEGY_LABEL_KEYS')
+    expect(ring).not.toContain('strategyDesc')
+  })
+})
+
+describe('K 单位约定：token 显示一律十进制 K（/1000），/1024 是字节世界的惯例（2026-11-21）', () => {
+  // 模型窗口按供应商十进制报价（本例配置值就是字面 150_000）；/1024 把窗口
+  // 读成 146.5K、还让浮窗括号里的 X/Y 除不出旁边的百分比。字节面（fileSize
+  // KB、content KB）的 /1024 是另一个物理量，不在本约定内。
+  const read = (p: string): string => src(p).replace(/\/\/[^\n]*/g, '')
+  const files: Array<[string, string]> = [
+    ['src/renderer/src/components/chat/ContextRing.tsx', '环浮窗 inK/freedK'],
+    ['src/renderer/src/agent/executors/domain-tools.ts', 'compact 信封（拒绝 + 结果）'],
+    ['src/renderer/src/hooks/useChatController.ts', '压缩 toast'],
+    ['src/extension/ui/StateStrip.tsx', '面板压缩条'],
+  ]
+  for (const [path, what] of files) {
+    it(`${what}（${path}）的 token K 值走 /1000`, () => {
+      const s = read(path)
+      expect(s).not.toMatch(/\/\s*1024/)
+      expect(s).toContain('/ 1000')
+    })
+  }
+
+  it('进档边界同线：StateStrip 的 K 档 1000 整入档（与 formatTokenCount 同一条线）', () => {
+    expect(read('src/extension/ui/StateStrip.tsx')).toContain('if (n >= 1000)')
   })
 })
 
@@ -189,20 +246,63 @@ describe('接线：分母与预算同源，四层贯通', () => {
     // 唯一那处必须落在 ContextRing 上（非空性）。
     expect(input).toMatch(/<ContextRing[^>]*inputBudget=\{inputBudget\}/)
   })
+
+  it('strategies row rides the SAME lastCompaction the chip reads (single source)', () => {
+    // 策略行与已压缩 chip 必须同源：InputArea 只有一份 lastCompaction prop，
+    // 原样透传给 ContextRing —— 再造一份解析（自己另取事件流）就会与 chip
+    // 各说各话（已生效 vs 下次生效的判定分叉）。
+    const ring = src(RING)
+    expect(ring).toContain('lastCompaction?: CompactionEvent | null')
+    const input = src('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).toMatch(/<ContextRing[^>]*lastCompaction=\{lastCompaction\}/)
+  })
 })
 
-describe('i18n — 两条文案都在且占位符齐全', () => {
+describe('i18n — 浮窗标签与占位符齐全（两 locale）', () => {
   const zh = src('src/renderer/src/i18n/locales/zh.ts')
   const en = src('src/renderer/src/i18n/locales/en.ts')
 
   it.each([
     ['zh', zh],
     ['en', en],
-  ])('%s carries the key with both placeholders', (_name, text) => {
-    // 少一个占位符不会报错，只会在 tooltip 里原样显示 {{percent}}。
-    const line = text.match(/inputBudget: '([^']+)'/)?.[1]
-    expect(line).toBeDefined()
-    expect(line).toContain('{{percent}}')
-    expect(line).toContain('{{budget}}')
+  ])('%s: budgetHint 带 percent，两档缓存文案都带 count', (_name, text) => {
+    // 少一个占位符不会报错，只会在浮窗里原样显示 {{percent}}。
+    // 捕获限定在 contextRing 块内 —— 全文匹配会撞上 compaction/approval 的
+    // 同名键（它们也有 tooltip: / 但语义无关）。
+    const block = text.match(/contextRing: \{([\s\S]*?)\n {4}\},/)?.[1]
+    expect(block).toBeDefined()
+    expect(block!).toContain("budgetHint: '")
+    expect(block!.match(/budgetHint: '([^']+)'/)?.[1]).toContain('{{percent}}')
+    expect(block!.match(/cacheDetail: '([^']+)'/)?.[1]).toContain('{{count}}')
+    expect(block!.match(/cacheTentative: '([^']+)'/)?.[1]).toContain('{{count}}')
+  })
+
+  it.each([
+    ['zh', zh],
+    ['en', en],
+  ])('%s: compacted 行带 dropped+freed 两个占位符，pending 文案在', (_name, text) => {
+    // 少一个占位符只会在浮窗里原样显示 {{dropped}}。机制词表
+    // （strategy/strategyDesc）已随明细行退役，不许在 locale 里残留。
+    const block = text.match(/contextRing: \{([\s\S]*?)\n {4}\},/)?.[1]
+    expect(block).toBeDefined()
+    const line = block!.match(/compacted: '([^']+)'/)?.[1]
+    expect(line).toContain('{{dropped}}')
+    expect(line).toContain('{{freed}}')
+    expect(block!.match(/strategiesPending: '([^']+)'/)?.[1]).toBeDefined()
+    expect(block).not.toContain('strategy:')
+    expect(block).not.toContain('strategyDesc:')
+    expect(block).not.toContain('strategiesApplied:')
+  })
+
+  it('退役的行级键不再残留', () => {
+    // 结构化之后旧键留在 locale 里就是邀请 run-on 句/独立已用行长回来。
+    for (const text of [zh, en]) {
+      const block = text.match(/contextRing: \{([\s\S]*?)\n {4}\},/)?.[1] ?? ''
+      expect(block).not.toContain('tooltip:')
+      expect(block).not.toContain('cacheHit:')
+      expect(block).not.toContain('cacheHitTentative:')
+      expect(block).not.toContain('inputBudget:')
+      expect(block).not.toContain('used:')
+    }
   })
 })

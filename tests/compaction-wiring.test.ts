@@ -100,13 +100,20 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
     // without it the merged fit gate never opens and the ring prices archived
     // results whole.
     expectLines(ring, /export function estimateContextUsed\(messages: AgentMessage\[\], contextLength\?: number\)/, 'ContextRing.tsx')
-    expectLines(ring, /contextLength\?: number,/, 'ContextRing.tsx')
+    // 不带尾逗号：钉的是「投影第三参拿到窗口」这个语义，不是行形态 ——
+    // prettier（printWidth 160）会把 projectContextUsed 的多行签名折成单行，
+    // 两种形态都必须放行（2026-11-21 折行实锤过一次）。
+    expectLines(ring, /contextLength\?: number/, 'ContextRing.tsx')
     expectLines(chatView, /projectContextUsed\(messages, lastCompaction, contextLength\)/, 'ChatView.tsx')
     expectLines(app, /lastCompaction=\{lastCompaction\}/, 'App.tsx')
     expectLines(chatView, /lastCompaction=\{lastCompaction\}/, 'ChatView.tsx', 2) // welcome + main composers
     expectLines(inputArea, /lastCompaction\?: CompactionEvent \| null/, 'InputArea.tsx')
-    expectLines(inputArea, /t\('chatView\.compaction\.chip'/, 'InputArea.tsx')
-    expectLines(inputArea, /t\('chatView\.compaction\.chipPending'/, 'InputArea.tsx')
+    // 外层已压缩 chip 已退役（user 2026-11-21：压缩信息只在 ContextRing 浮窗
+    // 里展示）—— lastCompaction 仍由 InputArea 持有并透传给环，但外层 chip
+    // 渲染与它的两句文案不许长回来。
+    expectLines(inputArea, /<ContextRing[^>]*lastCompaction=\{lastCompaction\}/, 'InputArea.tsx')
+    expect(inputArea).not.toContain('pm-collapse-chip')
+    expect(inputArea).not.toContain('compactionLabel')
   })
 
   it('the engine emits the request-time event and the post-turn hook fires at turn end', () => {
@@ -122,16 +129,28 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
     // The compactor owns the two P0 mechanisms themselves.
     expectLines(compactor, /export function collectUserReplays/, 'context-compactor.ts')
     expectLines(compactor, /USER_REPLAY_BUDGET_TOKENS = 10_000/, 'context-compactor.ts')
-    expectLines(compactor, /POST_TURN_COMPACT_USED_RATIO = 0\.75/, 'context-compactor.ts')
+    // 2026-11-21 epoch 重写：固定比例 0.75 退役 —— post-turn prewarm 不再读
+    // 「用到几成」这个猜测，而是直接预测下一次切割的落点（`epochLines` 的
+    // target）；手动压缩是唯一例外（0.60 常量，用户要求「压到位」）。
+    expect(compactor).not.toContain('POST_TURN_COMPACT_USED_RATIO')
+    expectLines(compactor, /const lines = this\.epochLines\(contextLength\)/, 'context-compactor.ts')
+    expectLines(compactor, /EPOCH_MANUAL_TARGET_RATIO = 0\.60/, 'context-compactor.ts')
+    // prewarm 只在后台，两处纪律：tool 触发是恢复路径不给 hard；一律不记账
+    // （账本是请求路径的，prewarm 不写它 —— 见 compaction-wire-gate 的钉子）。
+    expectLines(compactor, /allowHard: source !== 'tool'/, 'context-compactor.ts')
     expectLines(compactor, /async prewarm\(options: \{/, 'context-compactor.ts')
     expectLines(summaryAgent, /\[摘要额外要求\]/, 'HistorySummaryAgent.ts')
   })
 
-  it('both locales carry the chip and feedback strings', () => {
+  it('both locales carry the feedback strings (chip 文案已随 chip 退役)', () => {
     for (const locale of ['zh', 'en']) {
       const table = src(`src/renderer/src/i18n/locales/${locale}.ts`)
-      expectLines(table, /chip: '/, `${locale}.ts`)
-      expectLines(table, /chipPending: '/, `${locale}.ts`)
+      // chip/chipPending/tooltip/tooltipZeroReplays 四键随外层 chip 退役删除
+      // （user 2026-11-21）；留着死键就是邀请 run-on 句回来。反馈类键保留
+      // （手动压缩的 toast 还在读）。
+      expect(table).not.toContain('chip: ')
+      expect(table).not.toContain('chipPending: ')
+      expect(table).not.toContain('tooltipZeroReplays: ')
       expectLines(table, /noConversation: '/, `${locale}.ts`)
       expectLines(table, /busy: '/, `${locale}.ts`)
       expectLines(table, /done: '/, `${locale}.ts`)

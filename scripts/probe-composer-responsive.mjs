@@ -8,26 +8,27 @@
  * The footer now sheds in stages, least-essential first (all measured against
  * the container pm-composer, the column that hugs the Sender card):
  *
- *   ≤ 700  compaction chip hides (pm-collapse-chip) — passive info, the
- *          tooltip carries the accounting; widest piece (~200px pending)
  *   ≤ 500  near-cap count hides (pm-composer-count) — transient feedback
  *   ≤ 440  授权/模型 shed label + caret (pm-collapse-compact), the model
  *          picker swaps to a robot glyph (pm-collapse-only) — 28px icons
  *
+ * (Former stage ≤ 700 hid the compaction chip; the chip retired 2026-11-21
+ * — 压缩信息只在 ContextRing 浮窗里 — and the stage went with it.)
+ *
  * Measured row pieces (real Chromium): attach 56, 授权 full 108 / icon 30,
- * count 59, chip 199 pending / ~150 settled, ring 16, model 84 short / 194
- * capped-long / 30 icon, send 24, gaps ~36 — absolute worst ≈ 692px, so the
- * stages guarantee: above 700 everything fits, below each threshold the
- * post-shed worst row fits every width it applies to, and the model name span
- * (minWidth 0 + ellipsis) absorbs any residual estimate error.
+ * count 59, ring 16, model 84 short / 194 capped-long / 30 icon, send 24,
+ * gaps ~36 — absolute worst ≈ 493px, so the stages guarantee: above 500
+ * everything fits, below each threshold the post-shed worst row fits every
+ * width it applies to, and the model name span (minWidth 0 + ellipsis)
+ * absorbs any residual estimate error.
  *
  * Cases mounted (production InputArea, no Electron/LLM — window.electronAPI
  * is stubbed, this cannot touch a real session):
  *   1. wide (952, conversation, typed past the cap): everything visible,
  *      zero overflow — the staged rules must not touch the healthy row
  *   2. mid (620, conversation, typed): the old breakpoint zone — labels
- *      VISIBLE again, chip hidden, count still visible
- *   3. mid-narrow (480, conversation): labels visible, chip and count hidden
+ *      VISIBLE, count still visible (both thresholds live below this width)
+ *   3. mid-narrow (480, conversation): labels visible, count hidden
  *   4. narrow (400, welcome shape): both selectors are ~28px icons, the
  *      全部允许 amber still rides the approval icon, zero overflow
  *   5. wide-long (620 + 160px-capped model name): the ellipsis cap holds
@@ -56,7 +57,7 @@ const COMPACTION = {
   tokensAfter: 61000,
   requestedAtMessageIndex: 39,
   effectiveRequest: { type: 'threshold' },
-  strategies: ['drop-tool-results'],
+  strategies: ['nano', 'light'],
 }
 
 const HARNESS = `
@@ -159,6 +160,8 @@ const read = (caseId) =>
     const model = root.querySelector('.pm-chat-model')
     const chip = root.querySelector('.pm-collapse-chip')
     const count = root.querySelector('.pm-composer-count')
+    // chip 已退役（2026-11-21）：每个 case 都断言元素根本不存在，而不是
+    // display:none —— 退休的东西留下的应该是「查无此人」，不是「躲起来了」。
     const disp = (el) => (el ? getComputedStyle(el).display : null)
     // antd icons render as <span class="anticon …"><svg/></span> — a className
     // passed to a *Outlined lands on the wrapper span, so the class selectors
@@ -184,7 +187,7 @@ const read = (caseId) =>
         robotDisplay: disp(model.querySelector('.pm-collapse-only')),
         allCompactHidden: [...model.querySelectorAll('.pm-collapse-compact')].every((el) => disp(el) === 'none'),
       },
-      chip: { display: disp(chip), text: chip?.textContent },
+      chip: { gone: chip === null },
       count: { display: disp(count), text: count?.textContent },
     }
   }, caseId)
@@ -204,14 +207,14 @@ check(
   wide.model.labelDisplay !== 'none' && wide.model.caretDisplay !== 'none' && wide.model.robotDisplay === 'none' && wide.model.labelText === 'GLM-4.6',
   JSON.stringify(wide.model),
 )
-check('wide: chip visible above 700', wide.chip.display !== 'none' && !!wide.chip.text, JSON.stringify(wide.chip))
+check('wide: retired chip element absent (2026-11-21)', wide.chip.gone, JSON.stringify(wide.chip))
 check('wide: count visible above 500', wide.count.display !== 'none' && wide.count.text === '3400/4000', JSON.stringify(wide.count))
 check('wide: footer does not overflow', wide.footerOverflow <= 0 && wide.buttonsInsideCard, `overflow ${wide.footerOverflow}px`)
 // Screenshot clips: each case is height 260 + 24 margin, page padding 20 —
 // case N starts at 20 + N*284; the footer sits at the case bottom.
 await page.screenshot({ path: join(SHOTS, 'wide.png'), clip: { x: 0, y: 0, width: 1200, height: 290 } })
 
-console.log('── mid (620)：旧 600px 断点区——标签存活、chip 退场、计数仍在 ──')
+console.log('── mid (620)：旧 600px 断点区——标签存活、计数仍在 ──')
 const mid = await read('mid')
 check(
   'mid: 授权 label+caret visible (the 2026-11-01 ruling)',
@@ -219,12 +222,12 @@ check(
   JSON.stringify(mid.approval),
 )
 check('mid: 模型 label+caret visible', mid.model.labelDisplay !== 'none' && mid.model.caretDisplay !== 'none', JSON.stringify(mid.model))
-check('mid: chip hidden (stage ≤700)', mid.chip.display === 'none', JSON.stringify(mid.chip))
+check('mid: retired chip element absent', mid.chip.gone, JSON.stringify(mid.chip))
 check('mid: count still visible (hides at ≤500, not ≤700)', mid.count.display !== 'none' && mid.count.text === '3400/4000', JSON.stringify(mid.count))
 check('mid: footer does not overflow', mid.footerOverflow <= 0 && mid.buttonsInsideCard, `overflow ${mid.footerOverflow}px`)
 await page.screenshot({ path: join(SHOTS, 'mid.png'), clip: { x: 0, y: 292, width: 1200, height: 290 } })
 
-console.log('── mid-narrow (480)：标签仍在、chip 与计数都已退场 ──')
+console.log('── mid-narrow (480)：标签仍在、计数已退场 ──')
 const midNarrow = await read('mid-narrow')
 check(
   'mid-narrow: 授权 label+caret visible (collapse moved 600→440)',
@@ -236,7 +239,7 @@ check(
   midNarrow.model.labelDisplay !== 'none' && midNarrow.model.caretDisplay !== 'none',
   JSON.stringify(midNarrow.model),
 )
-check('mid-narrow: chip hidden (stage ≤700)', midNarrow.chip.display === 'none', JSON.stringify(midNarrow.chip))
+check('mid-narrow: retired chip element absent', midNarrow.chip.gone, JSON.stringify(midNarrow.chip))
 check('mid-narrow: count hidden (stage ≤500)', midNarrow.count.display === 'none', JSON.stringify(midNarrow.count))
 check('mid-narrow: footer does not overflow', midNarrow.footerOverflow <= 0 && midNarrow.buttonsInsideCard, `overflow ${midNarrow.footerOverflow}px`)
 
