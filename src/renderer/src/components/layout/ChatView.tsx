@@ -6,7 +6,7 @@ import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
-import { buildSegments, createLiveKeys, getSegmentAnchorId, getSegmentKey, hasLiveTextTail, type Segment } from '../chat/message-segments'
+import { buildSegments, createLiveKeys, getSegmentAnchorId, getSegmentKey, stripMessageIdSuffix, type Segment } from '../chat/message-segments'
 import { useSegmentEntrance } from '../chat/use-segment-entrance'
 import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
 import { ChatBody, CHAT_SCROLLER_EDGE_GAP } from '../chat/ChatBody'
@@ -15,7 +15,7 @@ import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea, type SendAck } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
-import { sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
+import { collectTurnMessageStats, sessionCacheHitRate } from '../../../../shared/agent-session/message-stats'
 import { BackgroundTasksStrip } from '../chat/BackgroundTasksStrip'
 import { useBackgroundTasksStore } from '../../stores/backgroundTasksStore'
 import { MessageNavControls } from '../chat/MessageNavigator'
@@ -769,6 +769,15 @@ function ChatView({
   const turnRows = useMemo(() => collectTurnDeliverables(messages, childDeliverables, { workspaceDir }), [messages, childDeliverables, workspaceDir])
   const turnPlacement = useMemo(() => segmentTurnPlacement(allSegments), [allSegments])
 
+  // 回合级统计聚合（2026-11-21 user ruling「期望要回合级的聚合」）：每回合全部
+  // LLM 请求的 Σtoken + 完成时间，按回合最后一条 assistant 消息 id 键控。与
+  // turnRows 同一份键纪律（messages 身份，不是逐 token 重建的 allSegments）。
+  // renderSegment 只把聚合递给回合最后一段（turnPlacement 的 lastSegmentOfTurn
+  // 且非 live 轮），中间叙述段用 hideStats 撤掉统计行——重复的单请求值比没有
+  // 更误导。liveTurn 在此提前（renderSegment 的 useMemo 依赖它）。
+  const liveTurn = !routineEntryAllowed(agentStatus.status) ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1] : undefined
+  const turnStatsById = useMemo(() => collectTurnMessageStats(messages), [messages])
+
   // 存为日常任务 rides exactly one action row — the conversation's last settled
   // assistant message, and only while a turn is settled (routine-entry.ts).
   // `null` takes the prop away from every segment, so streaming/execution tails
@@ -956,7 +965,19 @@ function ChatView({
   // ── Render helpers ──
 
   const renderSegment = useCallback(
-    (seg: Segment, index: number, aboveActions?: React.ReactNode) => (
+    (seg: Segment, index: number, aboveActions?: React.ReactNode) => {
+      // 回合级统计的落点（2026-11-21 user ruling）：回合最后一段且回合已落定
+      // （非 live 轮——运行中没有「完成时间」可言）才拿到聚合；同回合的其余
+      // assistant 段 hideStats 撤行。execution 段的展开体 MessageGroup 恒
+      // actions='none'，统计行本来就不渲染，两个 prop 对它是空操作。
+      const isAssistantSingle = seg.type === 'single' && seg.msg.role === 'assistant'
+      const segTurn = turnPlacement.turnOf[index]
+      const turnSettled = segTurn !== liveTurn
+      const isTurnFinal = turnPlacement.lastSegmentOfTurn[segTurn] === index
+      const turnStats = isAssistantSingle && isTurnFinal && turnSettled
+        ? turnStatsById.get(stripMessageIdSuffix(seg.msg.id))
+        : undefined
+      return (
       <SegmentBlock
         seg={seg}
         nextSeg={allSegments[index + 1]}
@@ -965,6 +986,8 @@ function ChatView({
         isRequesting={isRequesting}
         awaitingApproval={agentStatus.status === 'awaiting_approval'}
         enter={freshSegKeys.has(getSegmentKey(seg))}
+        turnStats={turnStats}
+        hideStats={isAssistantSingle && !(isTurnFinal && turnSettled) ? true : undefined}
         onApproveTool={onApproveTool}
         onRejectTool={onRejectTool}
         onKillTool={onKillTool ?? onRejectTool}
@@ -977,13 +1000,17 @@ function ChatView({
         onResendUserMessage={handleResendUserMessage}
         aboveActions={aboveActions}
       />
-    ),
+      )
+    },
     [
       highlightedMsgId,
       allSegments,
       isRequesting,
       agentStatus.status,
       freshSegKeys,
+      turnPlacement,
+      liveTurn,
+      turnStatsById,
       onApproveTool,
       onRejectTool,
       onKillTool,
@@ -1112,6 +1139,8 @@ function ChatView({
                 key={conversationId ?? 'new'}
                 layout="inline"
                 focusToken={welcomeFocusToken}
+                gitProjectId={composerProjectId}
+                workspaceDir={workspaceDir}
                 sendAccentHue={composerProjectHue}
                 staging={staging}
                 isRequesting={isRequesting}
@@ -1153,8 +1182,6 @@ function ChatView({
   // ChatBody 的两份宿主——chat-primary 在主卡、其余模式经 chatSlot 进
   // WorkbenchPane 的对话 tab。每次渲染只落一个宿主；换宿主重挂可接受
   // （状态在上方 hooks 与 store，滚动重置后 follow-tail 自动落底）。
-  const showCursor = isRequesting && !hasLiveTextTail(allSegments)
-  const liveTurn = !routineEntryAllowed(agentStatus.status) ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1] : undefined
   // 浏览器任务的静态开场（用户裁定 2026-11-04）：零消息的浏览器容器没有
   // 转录可读，侧栏对话 tab 本来是纯空白。只在「浏览器主视图 + 一句话都没说
   // + 没有回合在跑」时出现——它不是消息，不落库、不进上下文；用户一开口
@@ -1182,9 +1209,9 @@ function ChatView({
       turnRows={turnRows}
       liveTurn={liveTurn}
       renderSegment={renderSegment}
-      showCursor={showCursor}
       isRequesting={isRequesting}
       workspaceDir={workspaceDir}
+      gitProjectId={composerProjectId}
       agentStatus={agentStatus}
       turnElapsedMs={turnElapsedMs}
       isError={isError}

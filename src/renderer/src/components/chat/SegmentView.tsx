@@ -7,6 +7,7 @@ import { MessageGroup, type MessageActions } from './MessageGroup'
 import { ExecutionSegment } from './ExecutionSegment'
 import { ENTER_ANIM } from './motion'
 import type { Segment } from './message-segments'
+import type { TurnMessageStats } from '../../../../shared/agent-session/message-stats'
 
 /** The chat's message-column padding. It is what makes the bubbles line up with
  *  the composer: the column is 1000 wide, the composer card 952, and the 24px
@@ -33,6 +34,11 @@ export interface SegmentViewProps {
    *  toolbar (the turn deliverables card). Only meaningful for 'single'
    *  segments; execution segments have no toolbar and ignore it. */
   aboveActions?: React.ReactNode
+  /** 回合级统计聚合（2026-11-21 user ruling，见 MessageGroup 同名 prop）：宿主
+   *  按回合最后一段下发；缺省宿主回落为逐消息统计。 */
+  turnStats?: TurnMessageStats
+  /** 撤掉本段的统计行（回合中间的叙述段），见 MessageGroup 同名 prop。 */
+  hideStats?: boolean
   /** The engine is parked awaiting approval (`agentStatus: 'awaiting_approval'`).
    *  A held call opens its way out of both collapsed layers — the execution
    *  segment and the tool card — so 运行/跳过 never need expanding. Optional and
@@ -65,6 +71,8 @@ export function SegmentView({
   isLastSegment,
   actions,
   aboveActions,
+  turnStats,
+  hideStats,
   conversationId,
   conversationTitle,
   onOpenSubAgent,
@@ -107,6 +115,8 @@ export function SegmentView({
       live={seg.live}
       actions={seg.live ? 'none' : actions}
       aboveActions={seg.live ? undefined : aboveActions}
+      turnStats={turnStats}
+      hideStats={hideStats}
       onApproveTool={onApproveTool}
       onRejectTool={onRejectTool}
       onRespondToTool={onRespondToTool}

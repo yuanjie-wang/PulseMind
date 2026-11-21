@@ -18,7 +18,8 @@
 import { memo, useEffect, useRef, useMemo, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
-import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolDetailSummary, toolDisplayName, toolObjectSummary } from './format'
+import { describeSentAt, formatTokenCount, cacheHitRate, thinkingPreview, toolDetailSummary, toolDisplayName, toolObjectSummary } from './format'
+import type { TurnMessageStats } from '../../shared/agent-session/message-stats'
 import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
 import { isImeConfirmKey } from '../../shared/ui/ime'
@@ -625,10 +626,15 @@ export function ToolBlock({ block, completedFromResult, awaiting, onApprovalResp
 
 // ── action row ───────────────────────────────────────────────────────
 
-/** 复制 / 下载 + 耗时 / Token — the chat's row minus like & favorite, which
- *  write message metadata and have no conversation to write to from the panel
- *  (the same reason the renderer's `actions="viewOnly"` exists). */
-export function ActionRow({ text, msg }: { text: string; msg: ActionMeta }): React.JSX.Element {
+/** 复制 / 下载 + 完成时间 / 回合 Token — the chat's row minus like & favorite,
+ *  which write message metadata and have no conversation to write to from the
+ *  panel (the same reason the renderer's `actions="viewOnly"` exists). Same
+ *  2026-11-21 ruling as the desktop: 耗时 out, the completion stamp in (pairs
+ *  with the turn's input message), tokens a TURN aggregate (Σ over the turn's
+ *  requests) — `turnStats` arrives for exactly the row's message (the
+ *  aggregate's key IS the row message); without it the row falls back to the
+ *  message's own values. */
+export function ActionRow({ text, msg, turnStats }: { text: string; msg: ActionMeta; turnStats?: TurnMessageStats }): React.JSX.Element {
   const [copied, setCopied] = useState(false)
 
   const copy = (): void => {
@@ -639,6 +645,12 @@ export function ActionRow({ text, msg }: { text: string; msg: ActionMeta }): Rea
     })
   }
 
+  const stats = turnStats ?? msg
+  const doneAt = describeSentAt(turnStats?.completedAt ?? msg.createdAt)
+  // The panel has no i18n by ruling — the stamp composes the zh shape its
+  // locale string would produce (zh.ts chatView.sentAtDate).
+  const doneAtText = doneAt ? `${doneAt.month}月${doneAt.day}日 ${doneAt.clock}` : null
+
   return (
     <div className="pm-actions">
       <button className="pm-action-btn" title="复制" onClick={copy}>
@@ -647,27 +659,34 @@ export function ActionRow({ text, msg }: { text: string; msg: ActionMeta }): Rea
       <button className="pm-action-btn" title="下载" onClick={() => downloadText(text, 'message.md')}>
         <Icon name="download" />
       </button>
-      {(msg.processingMs != null || msg.inputTokens != null || msg.outputTokens != null || msg.promptCacheHitTokens != null) && (
+      {(doneAtText != null || stats.inputTokens != null || stats.outputTokens != null || stats.promptCacheHitTokens != null) && (
         <span className="pm-stats">
           <span className="pm-stats-divider">|</span>
-          {msg.processingMs != null && <span className="pm-stats-item" title="处理时间">{formatDuration(msg.processingMs)}</span>}
-          {msg.inputTokens != null && (
+          {stats.inputTokens != null && (
             <span className="pm-stats-item" title="上行 Token">
               <Icon name="arrowUp" />
-              {formatTokenCount(msg.inputTokens)}
+              {formatTokenCount(stats.inputTokens)}
             </span>
           )}
-          {msg.outputTokens != null && (
+          {stats.outputTokens != null && (
             <span className="pm-stats-item" title="下行 Token">
               <Icon name="arrowDown" />
-              {formatTokenCount(msg.outputTokens)}
+              {formatTokenCount(stats.outputTokens)}
             </span>
           )}
-          {msg.promptCacheHitTokens != null && msg.inputTokens != null && msg.inputTokens > 0 && (
+          {stats.promptCacheHitTokens != null && stats.inputTokens != null && stats.inputTokens > 0 && (
             <span className="pm-stats-item" title="缓存命中率">
               <Icon name="aim" />
-              {cacheHitRate(msg.promptCacheHitTokens, msg.inputTokens)}
+              {cacheHitRate(stats.promptCacheHitTokens, stats.inputTokens)}
             </span>
+          )}
+          {/* 2026-11-22 user ruling（与桌面端 MessageGroup 同刀）：完成时间挪
+              到 token（上下文信息）之后，前面补竖线——行序 = 按钮 | token | 时间。 */}
+          {doneAtText != null && (
+            <>
+              <span className="pm-stats-divider">|</span>
+              <span className="pm-stats-item" title="完成时间">{doneAtText}</span>
+            </>
           )}
         </span>
       )}
@@ -680,6 +699,9 @@ export interface ActionMeta {
   inputTokens?: number
   outputTokens?: number
   promptCacheHitTokens?: number
+  /** The assistant message's own createdAt — the completion moment when no
+   *  turn aggregate is at hand. */
+  createdAt?: string
 }
 
 /** Clipboard write with a fallback for pages that deny the async API (a content

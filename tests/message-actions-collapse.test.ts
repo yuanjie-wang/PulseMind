@@ -1,9 +1,11 @@
-// ── Message action row narrow-column collapse (2026-10-31 user ruling) ──
-// In narrow chat columns the stats group stays FULLY visible; the action
-// buttons yield instead of wrapping, collapsing progressively into a ⋯
-// overflow menu:
-//   ≥440px   all five inline (the old row untouched)
-//   360–439  下载/点赞/存为日常任务 → ⋯ (inline 复制+收藏)
+// ── Message action row narrow-column collapse (2026-10-31 user ruling,
+//    stats arm reversed 2026-11-22「宽度不足时隐藏上下文信息」) ──
+// In narrow chat columns the action buttons yield instead of wrapping,
+// collapsing progressively into a ⋯ overflow menu:
+//   ≥440px   all five inline + full stats (the old row untouched)
+//   360–439  下载/点赞/存为日常任务 → ⋯ (inline 复制+收藏); the token
+//            stats group (上下文信息) hides with them — the completion
+//            timestamp is what stays
 //   <360px   收藏 also → ⋯ (inline 复制+⋯; the chat column's floor is 320px)
 // The mechanism is pure CSS container queries (global index.html) over
 // always-mounted elements — no JS measurement, so like/favorite state can
@@ -41,12 +43,16 @@ describe('collapse CSS (global index.html)', () => {
     expect(css).toContain('.pm-msg-overflow {')
   })
 
-  it('tier 2 (≤439px): collapse set hides, ⋯ shows', () => {
+  it('tier 2 (≤439px): collapse set hides, ⋯ shows, token stats hide (2026-11-22)', () => {
     const tier2 = blockOf(css, '@container (max-width: 439px)', '@container (min-width: 360px)')
     expect(tier2).toContain('.pm-msg-actions .pm-msg-btn-collapse')
     expect(tier2).toContain('display: none !important')
     expect(tier2).toContain('.pm-msg-actions .pm-msg-overflow')
     expect(tier2).toContain('display: inline-flex !important')
+    // 2026-11-22 user ruling「宽度不足时隐藏上下文信息」: the token group
+    // yields in the same tier where the buttons first collapse.
+    expect(tier2).toContain('.pm-msg-actions .pm-msg-stats-tokens')
+    expect(tier2).toContain('display: none !important')
   })
 
   it('the 收藏 menu item is hidden from 360px up (tier-2 shows it inline already)', () => {
@@ -133,13 +139,17 @@ describe('collapse wiring (MessageGroup)', () => {
     expect(groupSrc).toContain("trigger={['hover']}")
   })
 
-  it('durations past two minutes read in minutes (2026-11-01 user ruling)', () => {
-    // 「184.6s」读不出量级；≥2min 换算成一位小数的分钟档。措辞真源已抬进
-    // shared/ui/message-stats.ts（review_20261103 中6：面板私有副本漏改导致
-    // 同一条消息两侧漂移）——扫描跟着真源走，MessageGroup 只认导入。
-    expect(statsSrc).toContain('if (ms >= 120_000)')
-    expect(statsSrc).toContain('toFixed(1)}min')
+  it('the stats line shows calendar stamps, not durations (2026-11-21 user ruling)', () => {
+    // 耗时档位整个退役（scopes 混装：token 单请求、耗时整轮）——工具条改显
+    // 完成时间戳（与用户气泡的发送时间同形）。formatDuration 在 shared 真源
+    // 与两侧消费者中都不得残留。
+    expect(statsSrc).not.toMatch(/formatDuration\b/)
     expect(groupSrc).toContain("from '../../../../shared/ui/message-stats'")
+    expect(groupSrc).not.toMatch(/formatDuration\b/)
+    expect(groupSrc).not.toContain('processingTime')
+    // 完成时间戳走 describeSentAtText（与用户侧 describeSentAtText 同一格式化
+    // 通道），不是第二个私有拷贝。
+    expect(groupSrc).toContain('describeSentAtText(')
   })
 
   it('token counts past one thousand read in k (2026-11-01 user ruling)', () => {
@@ -150,12 +160,25 @@ describe('collapse wiring (MessageGroup)', () => {
     expect(statsSrc).not.toContain('n >= 10_000')
   })
 
-  it('the stats group never participates in the collapse', () => {
-    // The stats span carries no hiding class — its only wrapper classes are
-    // the token-stat spans' own.
-    const statsFrom = groupSrc.indexOf('msg.processingMs != null || msg.inputTokens != null')
+  it('the token stats group is the collapse participant, the timestamp is not (2026-11-22 user ruling)', () => {
+    // 2026-11-22「宽度不足时隐藏上下文信息」: the leading divider + the three
+    // token spans live in ONE pm-msg-stats-tokens wrapper (the CSS hides the
+    // whole group — a bare divider must never survive alone), while the
+    // completion timestamp and its own divider stay outside it and therefore
+    // always visible.
+    const statsFrom = groupSrc.indexOf('const stats = turnStats ?? msg')
     expect(statsFrom).toBeGreaterThan(-1)
     expect(groupSrc.slice(statsFrom - 400, statsFrom)).not.toContain('pm-msg-btn')
+    expect(groupSrc.slice(statsFrom)).toContain('className="pm-msg-stats-tokens"')
+    // The wrapper is conditional: token-less messages (no usage reporting)
+    // render no leading divider at all, so nothing dangles before the time.
+    const wrapperAt = groupSrc.indexOf('{hasTokens && (')
+    expect(wrapperAt).toBeGreaterThan(statsFrom)
+    expect(groupSrc.slice(wrapperAt, wrapperAt + 200)).toContain('pm-msg-stats-tokens')
+    // The timestamp fragment sits outside the wrapper.
+    const timeAt = groupSrc.indexOf('{doneAt && (')
+    expect(timeAt).toBeGreaterThan(wrapperAt)
+    expect(groupSrc.slice(wrapperAt, timeAt)).not.toContain('<time')
   })
 })
 

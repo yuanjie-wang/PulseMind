@@ -1,13 +1,13 @@
-/** Display formatting shared by the panel transcript — the panel's copies of
- *  three helpers the desktop chat keeps private inside
- *  `components/chat/MessageGroup.tsx` (`toolBlockSummary`, `formatDuration`,
- *  `formatTokenCount`).
+/** Display formatting shared by the panel transcript — tool-label/summary
+ *  helpers shaped after the desktop chat's `tool-summary.ts`, plus re-exports
+ *  of the shared bubble-line formatters.
  *
- * They are copied rather than imported on purpose: MessageGroup imports antd,
- * `@ant-design/icons` and the renderer stores, and the panel runs as a content
- * script in the page's isolated world — importing that module would pull the
- * whole widget layer (and its DOM-injecting cssinjs runtime) into every page
- * load. If the chat's wording changes, change it here too. */
+ * The tool helpers are shaped (not imported) on purpose: MessageGroup imports
+ * antd, `@ant-design/icons` and the renderer stores, and the panel runs as a
+ * content script in the page's isolated world — importing that module would
+ * pull the whole widget layer (and its DOM-injecting cssinjs runtime) into
+ * every page load. The time/token wording has no such problem: it lives in
+ * shared/ui/message-stats.ts and both sides import it (review_20261103 中6). */
 
 import type { ToolUseBlock } from '../../renderer/src/types/agent'
 
@@ -118,12 +118,14 @@ export function toolBlockSummary(block: ToolUseBlock): string {
   return detail ? `${label} · ${detail}` : label
 }
 
-// ── 耗时 / Token / cache-hit wording ── THE shared source is
+// ── 完成时间 / Token / cache-hit wording ── THE shared source is
 // shared/ui/message-stats.ts (review_20261103 中6: this file's private copies
 // missed the 2026-11-01 min/k rewording — the same message read 184.6s /
 // 1,234 here and 3.1min / 1.2k on the desktop). Re-exported so MessageBlocks'
-// import surface stays './format'; do not re-create local copies.
-export { cacheHitRate, formatDuration, formatTokenCount } from '../../shared/ui/message-stats'
+// import surface stays './format'; do not re-create local copies. The
+// 2026-11-21 ruling retired the duration tier entirely (耗时 → completion
+// stamp), so the duration helper is gone from both sides at once.
+export { cacheHitRate, describeSentAt, formatTokenCount } from '../../shared/ui/message-stats'
 
 /** Thinking-block preview line: the first line (truncated) plus a line count —
  *  the chat's ThinkingBlockView heuristic, so a collapsed block reads the same. */

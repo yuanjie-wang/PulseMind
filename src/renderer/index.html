@@ -156,13 +156,18 @@
       }
 
       /* Message action row (MessageGroup) responsive collapse — 2026-10-31 user
-         ruling: in narrow columns the token/duration stats stay fully visible;
-         the action buttons yield instead. The row is a size container; the
-         inline buttons and the ⋯ overflow trigger are BOTH always mounted and
-         these queries decide who is visible:
+         ruling: in narrow columns the action buttons yield instead of wrapping,
+         collapsing progressively into a ⋯ overflow menu:
            ≥440px   all five buttons inline, ⋯ hidden (the old row untouched)
            360–439  下载/点赞/存为日常任务 → ⋯ (inline 复制+收藏)
            <360px   收藏 also → ⋯ (inline 复制+⋯; the chat column's floor is 320px)
+         2026-11-22 user ruling (reverses the 10-31 "stats stay fully visible"
+         arm): when the width is insufficient the context info yields too — the
+         token group (pm-msg-stats-tokens: leading divider + ↑输入 ↓输出 ◎命中)
+         hides in the SAME 360–439 tier where the buttons first collapse, and
+         the completion timestamp is what stays. ≥440px keeps the full row (the
+         row's own flexWrap remains the safety net for pathological token
+         counts).
          The Dropdown mounts its overlay INSIDE the row (getPopupContainer on the
          trigger's parent) so the same container queries govern the menu items —
          the 收藏 item exists only in the narrowest tier, where its inline
@@ -180,6 +185,9 @@
         }
         .pm-msg-actions .pm-msg-overflow {
           display: inline-flex !important;
+        }
+        .pm-msg-actions .pm-msg-stats-tokens {
+          display: none !important;
         }
       }
       @container (min-width: 360px) {

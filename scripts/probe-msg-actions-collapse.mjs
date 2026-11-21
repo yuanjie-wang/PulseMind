@@ -1,14 +1,19 @@
 /**
  * Message action row collapse probe (real Chromium) — 窄列收纳的几何验收。
  *
- * 2026-10-31 用户裁定：对话工具条在窄列下不再换行——统计组永远全量可见，
- * 按钮渐进收进 ⋯（≥440 全量 / 360–439 收 下载·点赞·日常任务 / <360 再收收藏）。
+ * 2026-10-31 用户裁定：对话工具条在窄列下不再换行——按钮渐进收进 ⋯
+ * （≥440 全量 / 360–439 收 下载·点赞·日常任务 / <360 再收收藏）；
+ * 2026-11-22 二刀「宽度不足时隐藏上下文信息」：token 统计组（前导竖线 +
+ * 三段 token，pm-msg-stats-tokens）在按钮开始收起的同一档（<440）整体
+ * 隐藏，完成时间戳保留。
  * 机制是全局 index.html 的 @container 容器查询 + 常挂载双元素（内联按钮与
  * ⋯ 触发器都渲染，CSS 决定谁可见），单测只能钉字节，钉不住的是：
  *   ① 容器查询真的按行宽分档生效（!important 压过内联 display）；
  *   ② Dropdown 弹层挂进行内（getPopupContainer=trigger.parentElement）后，
  *      @container 真的够得到弹层里的菜单项（收藏项只在最窄档可见）；
- *   ③ 最窄档 320px 地板上整行仍是单行（不回退成两行）。
+ *   ③ 最窄档 320px 地板上整行仍是单行（不回退成两行）；
+ *   ④ token 统计组在 <440 档真的不可见（!important 压过内联 inline-flex），
+ *      宽档仍全量可见。
  *
  * 方法：同页挂三个真实 MessageGroup（600/400/320px 容器），逐档量按钮的
  * computed display；再真实 hover ⋯ 打开菜单量可见菜单项（2026-11-01 起菜单是
@@ -87,6 +92,7 @@ window.__rowState = (wrapSel) => {
     book: vis('.anticon-book'),
     routine: vis('.anticon-schedule'),
     more: vis('.pm-msg-overflow'),
+    tokens: vis('.pm-msg-stats-tokens'),
     rowW: Math.round(row.getBoundingClientRect().width),
     rowH: Math.round(row.getBoundingClientRect().height),
   }
@@ -182,8 +188,11 @@ check(
   JSON.stringify(wide),
 )
 check('宽档：⋯ 隐藏（老行原样）', wide.more === 'hidden', `more=${wide.more}`)
+check('宽档：token 统计组全量可见', wide.tokens === 'visible', `tokens=${wide.tokens}`)
+check('宽档 600px：整行单行', wide.rowH > 0 && wide.rowH < 40, `rowH=${wide.rowH}`)
 
-// ── 中档 400px：下载/点赞/日常任务 收起，复制+收藏 内联，菜单 3 项 ──
+// ── 中档 400px：下载/点赞/日常任务 收起，复制+收藏 内联，菜单 3 项；
+//    token 统计组随档隐藏（2026-11-22 二刀）──
 const t2 = await rowState('#w-t2')
 console.log('  tier2 400:', JSON.stringify(t2))
 check('中档：复制+收藏 内联保留', t2.copy === 'visible' && t2.book === 'visible', JSON.stringify(t2))
@@ -192,6 +201,8 @@ check(
   t2.download === 'hidden' && t2.like === 'hidden' && t2.routine === 'hidden' && t2.more === 'visible',
   JSON.stringify(t2),
 )
+check('中档：token 统计组隐藏（宽度不足，上下文信息让位）', t2.tokens === 'hidden', `tokens=${t2.tokens}`)
+check('中档 400px：整行单行', t2.rowH > 0 && t2.rowH < 40, `rowH=${t2.rowH}`)
 await openMenu('#w-t2')
 const menu2 = await menuState('#w-t2')
 console.log('  tier2 menu:', JSON.stringify(menu2))
@@ -202,6 +213,7 @@ check('弹层挂进行内（@container 够得到菜单项）', menu2.parentIsRow
 const t3 = await rowState('#w-t3')
 console.log('  tier3 320:', JSON.stringify(t3))
 check('窄档：只剩 复制+⋯ 内联', t3.copy === 'visible' && t3.book === 'hidden' && t3.more === 'visible', JSON.stringify(t3))
+check('窄档：token 统计组仍隐藏', t3.tokens === 'hidden', `tokens=${t3.tokens}`)
 check('窄档 320px：整行单行（不回退两行）', t3.rowH > 0 && t3.rowH < 40, `rowH=${t3.rowH}`)
 await openMenu('#w-t3')
 const menu3 = await menuState('#w-t3')

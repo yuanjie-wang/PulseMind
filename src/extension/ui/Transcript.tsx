@@ -28,6 +28,7 @@ import { useRef } from 'react'
 import { useTailFollow } from '../../shared/ui/useTailFollow'
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from '../../shared/types/agent'
 import type { SessionState } from '../../shared/agent-session/mirror'
+import { collectTurnMessageStats, type TurnMessageStats } from '../../shared/agent-session/message-stats'
 import { ActionRow, AskUserBatchBlock, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
 
 type Message = SessionState['messages'][number]
@@ -181,11 +182,15 @@ function AssistantBlock({ block, completed, streaming, handlers }: {
   }
 }
 
-function Message({ message, handlers, showRow }: {
+function Message({ message, handlers, showRow, turnStats }: {
   message: Message
   handlers: BlockHandlers
   /** Whether this message may carry the action row — `actionRowIds` decides. */
   showRow: boolean
+  /** 回合级聚合（2026-11-21 user ruling，桌面 MessageGroup 同语义）：只在
+   *  showRow 的那条（回合最后输出）上有值——actionRowIds 与聚合的键恰好是
+   *  同一条消息，行与聚合天然同落点。 */
+  turnStats?: TurnMessageStats
 }): React.JSX.Element | null {
   if (!hasDisplayable(message)) return null
   const isUser = message.role === 'user'
@@ -244,10 +249,11 @@ function Message({ message, handlers, showRow }: {
           ),
         )}
       </div>
-      {/* The chat's row: 复制 / 下载 / 耗时 / Token (its `viewOnly` variant —
-          like & favorite write message metadata a panel session has no row
-          for). Only a turn's final output gets one (`actionRowIds`). */}
-      {text && showRow ? <ActionRow text={text} msg={message} /> : null}
+      {/* The chat's row: 复制 / 下载 / 完成时间 / 回合 Token (its `viewOnly`
+          variant — like & favorite write message metadata a panel session has
+          no row for). Only a turn's final output gets one (`actionRowIds`),
+          and that same message is the aggregate's key. */}
+      {text && showRow ? <ActionRow text={text} msg={message} turnStats={turnStats} /> : null}
     </div>
   )
 }
@@ -296,6 +302,10 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
   const hasContent = session.messages.length > 0 || session.streamingBlocks.length > 0
 
   const rowIds = actionRowIds(session.messages, busy)
+  // 回合级聚合（2026-11-21 user ruling）：键 = 每回合最后一条 assistant 消息 id
+  // ——与 rowIds 的落点是同一条消息，行存在则聚合必有值（无用量报告的回合也
+  // 有完成时间条目）。
+  const statsById = collectTurnMessageStats(session.messages)
 
   return (
     <div className="pm-transcript" ref={scrollRef}>
@@ -306,7 +316,7 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
       ) : null}
       <div className="pm-column">
         {session.messages.map((message) => (
-          <Message key={message.id} message={message} handlers={handlers} showRow={rowIds.has(message.id)} />
+          <Message key={message.id} message={message} handlers={handlers} showRow={rowIds.has(message.id)} turnStats={statsById.get(message.id)} />
         ))}
         <StreamingBlocks blocks={session.streamingBlocks} handlers={handlers} />
         {busy ? <CursorRow /> : null}

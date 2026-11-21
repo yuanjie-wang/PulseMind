@@ -613,8 +613,8 @@ check('no block overflows the 380px panel', probe.widest <= probe.panelRight + 1
 // would inject cssinjs into the *page's* head.
 check('every glyph is an inline SVG, none an <img> or font icon', probe.svgGlyphs >= 15 && probe.imgGlyphs === 0 && probe.caretInThinking, `${probe.svgGlyphs} paths, ${probe.imgGlyphs} imgs`)
 check(
-  'action row is the chat viewOnly variant (复制 / 下载 + 耗时 · Token)',
-  probe.actionRow && probe.actionButtons.join('/') === '复制/下载' && /耗时|s|ms/.test(probe.actionStats) && !probe.actionStats.includes('收藏'),
+  'action row is the chat viewOnly variant (复制 / 下载 + 完成时间 · 回合 Token)',
+  probe.actionRow && probe.actionButtons.join('/') === '复制/下载' && /\d+月\d+日 \d{2}:\d{2}/.test(probe.actionStats) && !probe.actionStats.includes('收藏'),
   `${probe.actionButtons.join('/')} — ${probe.actionStats.replace(/\s+/g, ' ').trim()}`,
 )
 

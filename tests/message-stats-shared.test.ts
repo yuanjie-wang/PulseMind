@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cacheHitRate, formatDuration, formatTokenCount } from '../src/shared/ui/message-stats'
+import { cacheHitRate, describeSentAt, formatTokenCount } from '../src/shared/ui/message-stats'
 
 const REPO = join(__dirname, '..')
 const GROUP = readFileSync(join(REPO, 'src', 'renderer', 'src', 'components', 'chat', 'MessageGroup.tsx'), 'utf-8')
@@ -17,14 +17,18 @@ const PANEL_FORMAT = readFileSync(join(REPO, 'src', 'extension', 'ui', 'format.t
 const PANEL_BLOCKS = readFileSync(join(REPO, 'src', 'extension', 'ui', 'MessageBlocks.tsx'), 'utf-8')
 
 describe('shared message-stats formatters (the 2026-11-01 min/k wording)', () => {
-  it('duration: ms < 1s, one-decimal s, and ≥2min switches to the minute tier', () => {
-    expect(formatDuration(0)).toBe('0ms')
-    expect(formatDuration(950)).toBe('950ms')
-    expect(formatDuration(1000)).toBe('1.0s')
-    expect(formatDuration(105_000)).toBe('105.0s') // 秒档上限内：一位小数
-    expect(formatDuration(119_999)).toBe('120.0s')
-    expect(formatDuration(120_000)).toBe('2.0min') // 用户裁定档位边界
-    expect(formatDuration(186_000)).toBe('3.1min') // 旧面板副本会显示 186.0s 的那条
+  it('sent-at stamp: local date parts and clock, null for missing/unparsable (2026-11-21)', () => {
+    // 2026-11-21 裁定退役了耗时档位（formatDuration 整体删除），工具条的时间
+    // 位是日历戳——用户气泡的发送时间与助手气泡的完成时间共用同一组纯函数。
+    // 本地时区钉住：用带时区的构造再读回 parts。
+    const at = new Date(2026, 10, 6, 18, 2) // local 2026-11-06 18:02
+    const sent = describeSentAt(at.toISOString())
+    expect(sent).toEqual({ clock: '18:02', year: 2026, month: 11, day: 6 })
+    expect(describeSentAt(at.getTime())).toEqual(sent) // number 形同形
+    expect(describeSentAt(at)).toEqual(sent) // Date 形同形
+    expect(describeSentAt(undefined)).toBeNull()
+    expect(describeSentAt(null)).toBeNull()
+    expect(describeSentAt('not a timestamp')).toBeNull()
   })
 
   it('tokens: below 1000 keeps the locale group, ≥1000 (inclusive) tiers to k', () => {
@@ -65,6 +69,10 @@ describe('both renderers import the shared source (drift is structural, not disc
     expect(PANEL_FORMAT).toContain("from '../../shared/ui/message-stats'")
     expect(PANEL_FORMAT).not.toMatch(/export function formatDuration/)
     expect(PANEL_FORMAT).not.toMatch(/export function formatTokenCount/)
+    // The 2026-11-21 ruling retired the duration tier — the panel must not
+    // re-export it back in (describeSentAt replaces it for the stamp).
+    expect(PANEL_FORMAT).not.toContain('formatDuration')
+    expect(PANEL_FORMAT).toContain('describeSentAt')
     // The panel's consumer surface is unchanged: MessageBlocks still reads
     // './format' (the import path is part of the hand-mirroring contract).
     expect(PANEL_BLOCKS).toContain("from './format'")

@@ -1,11 +1,13 @@
 /**
  * The transcript's "still working" cursor at the foot of the column. Shared so
- * the chat and the tool studio show the same affordance while a loop is
- * running. It yields whenever a live text tail is on screen — hosts pass
- * `show={isRequesting && !hasLiveTextTail(segments)}` — because the same caret
- * then sits at the end of the streaming text instead (SegmentView's streaming
- * tail), and a run must show exactly one cursor. The horizontal geometry
- * mirrors SegmentView's message column (maxWidth 1000 centred, the host's
+ * the hosts that still draw it (TranscriptView — tool studio, form assist,
+ * sub-agent drill-in) show the same affordance while a loop is running. It
+ * yields whenever a live text tail is on screen — hosts pass
+ * `show={isRequesting && !hasLiveTextTail(segments)}` — because the growing
+ * fading text is then its own indicator and no cursor shows at all (the
+ * in-text tail caret this used to yield to is retired, user ruling
+ * 2026-11-21: 渐变流式期间不要光标). The horizontal geometry mirrors
+ * SegmentView's message column (maxWidth 1000 centred, the host's
  * contentInset), so hosts with contentInset 0 — the editor assistants — get
  * the blink flush left with the conversation instead of at the chat's 24px
  * column inset.

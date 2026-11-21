@@ -1,15 +1,16 @@
 /**
  * The transcript's caret — a 6×14 bar of --pm-ink blinking at 1s step-end.
  *
- * Two hosts draw it, never both at once: `StreamingCursor` at the foot of the
- * column while the loop works without live text (thinking, tool rounds, the
- * wait for the first token), and SegmentView's streaming tail at the end of
- * the live text itself (x-markdown's `streaming.tail` component). The cursor
- * the user watches is therefore ONE glyph moving from the column's foot into
- * the sentence, not a second symbol appearing next to it (user ruling
- * 2026-10-26: 不要出现两个光标). `data-streaming-cursor` rides both hosts, so
- * counting it answers 「how many cursors are on screen」 — exactly one during a
- * run, none once settled — which is what vitest and the probes assert.
+ * One host draws it today: `StreamingCursor` at the foot of TranscriptView
+ * hosts (tool studio / form assist / sub-agent drill-in) while the loop works
+ * without live text. The other host is retired — x-markdown's in-text
+ * `streaming.tail` caret rode the live text until user ruling 2026-11-21
+ * (渐变流式期间不要光标): the fading text itself is the streaming indicator,
+ * and the chat's foot cursor had already been retired the same day in favour
+ * of the live-badge. `data-streaming-cursor` stays so counting it still
+ * answers 「how many cursors are on screen」 — one during a TranscriptView
+ * run's textless phases, none once settled — which is what vitest and the
+ * probes assert.
  */
 import React from 'react'
 import { CARET_BLINK_ANIM } from './motion'

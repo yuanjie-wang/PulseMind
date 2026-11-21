@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
-// The streaming tail (2026-10-26): the live text renders through x-markdown's
-// streaming mode (hasNextChunk holds unclosed tokens back, enableAnimation
-// fades in each refresh's new text) and carries the transcript caret at its
-// end as the `tail` component. The user's one condition — 不要出现两个光标 — is
-// the invariant pinned here through the REAL components (no x-markdown mock):
-// the foot StreamingCursor and the in-text tail draw the same StreamingCaret,
-// both tagged data-streaming-cursor, so counting that attribute across a host
-// that composes them the way ChatView/TranscriptView do must read exactly one
-// during a run — inside the markdown while text streams, at the foot while the
-// loop works without text (thinking, tool rounds) — and zero once settled.
-// createElement, not JSX — vitest here runs plain .ts through esbuild.
+// The streaming tail (2026-10-26, restructured 2026-11-21): the live text
+// renders through x-markdown's streaming mode (hasNextChunk holds unclosed
+// tokens back, enableAnimation fades in each refresh's new text). The in-text
+// caret that used to ride its `tail` slot is RETIRED (user ruling 2026-11-21,
+// 渐变流式期间不要光标): the growing fading text is the streaming indicator,
+// so the invariant here is ZERO cursors while text streams. TranscriptView
+// hosts' foot StreamingCursor (the only remaining host, tagged
+// data-streaming-cursor) keeps the hasLiveTextTail yield — it shows only in
+// the textless phases (thinking, tool rounds) and never during text, so
+// counting the attribute across a host that composes them the way
+// ChatView/TranscriptView do reads one in those phases, zero while text
+// streams or once settled. createElement, not JSX — vitest here runs plain
+// .ts through esbuild.
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { readFileSync } from 'node:fs'
@@ -103,20 +105,15 @@ describe('hasLiveTextTail / lastLiveTextIndex', () => {
   })
 })
 
-describe('one cursor per run', () => {
-  it('streaming text: the caret sits at the end of the text, the foot draws none', async () => {
+describe('cursor per run phase', () => {
+  it('streaming text: no cursor anywhere — the fading text is the indicator', async () => {
     const m = await mount([text('Hello **world**')])
     try {
-      const carets = m.carets()
-      expect(carets).toHaveLength(1)
-      expect(m.inText(carets[0])).toBe(true)
-      expect(m.atFoot(carets[0])).toBe(false)
-      // The tail follows the last text token, inside the paragraph.
-      expect(carets[0].closest('p')).not.toBeNull()
+      expect(m.carets()).toHaveLength(0)
     } finally { await m.close() }
   })
 
-  it('thinking only: the caret stays at the foot', async () => {
+  it('thinking only: the caret sits at the foot', async () => {
     const m = await mount([thinking('weighing options')])
     try {
       const carets = m.carets()
@@ -125,7 +122,7 @@ describe('one cursor per run', () => {
     } finally { await m.close() }
   })
 
-  it('an opened but still empty text block has not taken the caret over yet', async () => {
+  it('an opened but still empty text block has not taken over yet — the foot keeps the caret', async () => {
     const m = await mount([text('')])
     try {
       const carets = m.carets()
@@ -134,34 +131,32 @@ describe('one cursor per run', () => {
     } finally { await m.close() }
   })
 
-  it('two text blocks: only the last one with text carries the caret', async () => {
+  it('two text blocks: still no cursor while either streams', async () => {
     const m = await mount([text('first'), text('second')])
     try {
-      const carets = m.carets()
-      expect(carets).toHaveLength(1)
+      expect(m.carets()).toHaveLength(0)
       const roots = [...m.container.querySelectorAll('.x-markdown')]
       expect(roots).toHaveLength(2)
-      expect(roots[1].contains(carets[0])).toBe(true)
     } finally { await m.close() }
   })
 
-  it('the caret moves from the foot into the text as the first token lands, and goes out when settled', async () => {
+  it('the caret leaves the foot as the first token lands and never enters the text', async () => {
     const m = await mount([thinking('…')])
     try {
       expect(m.atFoot(m.carets()[0])).toBe(true)
       await m.render([thinking('…'), text('Answer')])
-      const live = m.carets()
-      expect(live).toHaveLength(1)
-      expect(m.inText(live[0])).toBe(true)
+      expect(m.carets()).toHaveLength(0)
       await m.render([], false)
       expect(m.carets()).toHaveLength(0)
     } finally { await m.close() }
   })
 
   // 2026-10-28 report: the caret used to stay parked at the end of the
-  // completed narration while the tool card ran below it. The round lifecycle
-  // is foot → in-text → foot, with exactly one caret at every stage.
-  it('the caret yields back to the foot when the round moves on to its tool call', async () => {
+  // completed narration while the tool card ran below it. Now the whole text
+  // phase is caret-free; the foot caret only returns once the round's tool
+  // call begins (and in the chat it never returns — the foot cursor there is
+  // retired in favour of the live badge).
+  it('the foot caret takes over when the round moves on to its tool call', async () => {
     const m = await mount([text('Done narrating.'), toolUse('tu_1')])
     try {
       const carets = m.carets()
@@ -171,12 +166,12 @@ describe('one cursor per run', () => {
     } finally { await m.close() }
   })
 
-  it('full round lifecycle: foot while thinking, in-text while text streams, foot once the tool call begins', async () => {
+  it('full round lifecycle: foot while thinking, none while text streams, foot once the tool call begins', async () => {
     const m = await mount([thinking('…')])
     try {
       expect(m.atFoot(m.carets()[0])).toBe(true)
       await m.render([thinking('…'), text('Answer text')])
-      expect(m.inText(m.carets()[0])).toBe(true)
+      expect(m.carets()).toHaveLength(0)
       await m.render([thinking('…'), text('Answer text'), toolUse('tu_1')])
       expect(m.carets()).toHaveLength(1)
       expect(m.inText(m.carets()[0])).toBe(false)
@@ -261,22 +256,30 @@ describe('tool-call flush signal', () => {
 // The two production hosts compose the rule the harness above reproduces; a
 // host that reverted to `show={isRequesting}` would blink two cursors again.
 describe('wiring', () => {
-  it('both transcript hosts gate the foot cursor on hasLiveTextTail', () => {
-    // PLAN-layout-modes: ChatView computes the gate once (both hosts — primary
-    // card and side dock — render the same ChatBody); TranscriptView keeps its
-    // own composition.
-    expect(read(R('components', 'layout', 'ChatView.tsx'))).toContain('const showCursor = isRequesting && !hasLiveTextTail(allSegments)')
-    expect(read(R('components', 'chat', 'ChatBody.tsx'))).toContain('<StreamingCursor show={showCursor} />')
+  it('the chat foot cursor is retired — the live badge is the run indicator', () => {
+    // 2026-11-21 user ruling: 「本回合已运行 X」就是会话进行中的指示，聊天
+    // 脚部光标退役（徽章已覆盖 streaming/executing/retry/等待全状态）。负扫
+    // 钉死不长回来；TranscriptView（工具 studio / 表单助手 / 例行转写——无
+    // 徽章的宿主）保留光位与 hasLiveTextTail 门。同日第二刀：正文流式尾巴的
+    // 内联 caret 也退役（渐变流式期间不要光标，见上面的 cursor per run phase）。
+    const body = read(R('components', 'chat', 'ChatBody.tsx'))
+    expect(body).not.toContain('<StreamingCursor')
+    expect(body).toContain('data-pm-turn-elapsed')
+    expect(read(R('components', 'layout', 'ChatView.tsx'))).not.toContain('showCursor')
     expect(read(R('components', 'chat', 'TranscriptView.tsx'))).toContain('show={isRequesting && !hasLiveTextTail(segments)}')
   })
 
-  it('the live tail renders through x-markdown streaming mode with the shared caret as its tail', () => {
+  it('the live tail renders through x-markdown streaming mode with NO tail caret', () => {
     // 2026-11-13 step 2: the streaming config lives in the shared body now —
-    // SegmentView no longer owns a streaming path of its own.
+    // SegmentView no longer owns a streaming path of its own. 2026-11-21: the
+    // in-text caret is retired — negative scans pin that no `tail` component
+    // (and no StreamingCaret) can come back through this file.
     const src = read(R('components', 'chat', 'assistant-markdown.tsx'))
     expect(src).toContain('hasNextChunk: true, enableAnimation: true')
-    expect(src).toContain('tail: { component: StreamingTail }')
-    expect(src).toContain('streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD}')
+    expect(src).toContain('streaming={STREAMING_MD}')
+    expect(src).not.toContain('STREAMING_MD_TAIL')
+    expect(src).not.toContain("tail: { component:")
+    expect(src).not.toContain('StreamingCaret')
     expect(src).toContain('a.shown === b.shown && a.streaming === b.streaming')
   })
 
@@ -287,8 +290,8 @@ describe('wiring', () => {
     expect(read(R('components', 'chat', 'SegmentView.tsx'))).toContain('live={seg.live}')
     const body = read(R('components', 'chat', 'assistant-markdown.tsx'))
     expect(body).toContain('throttleRef.current.feed(text, performance.now(), live.toolsStarted === true)')
-    // the same signal yields the in-text tail (hasLiveTextTail agrees, so the
-    // foot caret takes over in the same render — still one cursor)
-    expect(read(R('components', 'chat', 'MessageGroup.tsx'))).toContain('lastLiveTextIndex(msg.contentBlocks)')
+    // The tail pick (`lastLiveTextIndex` at the MessageGroup call site) is
+    // retired with the in-text caret (2026-11-21) — pinned gone.
+    expect(read(R('components', 'chat', 'MessageGroup.tsx'))).not.toContain('lastLiveTextIndex')
   })
 })

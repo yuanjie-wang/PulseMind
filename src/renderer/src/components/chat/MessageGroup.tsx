@@ -30,7 +30,8 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { isBackgroundNoticeText, backgroundNoticeBody } from '../../../../shared/background-notice'
 import { describeSentAtText, describeSentAtTitle } from '../../utils/relative-time'
-import { cacheHitRate, formatDuration, formatTokenCount } from '../../../../shared/ui/message-stats'
+import { cacheHitRate, formatTokenCount } from '../../../../shared/ui/message-stats'
+import type { TurnMessageStats } from '../../../../shared/agent-session/message-stats'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard, { AskUserBatchCard } from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
@@ -43,7 +44,7 @@ import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/compile-queue'
 import { createKnowledgeSaveAction } from './knowledge-save'
-import { lastLiveTextIndex, stripMessageIdSuffix } from './message-segments'
+import { stripMessageIdSuffix } from './message-segments'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import { CollapseBody, POP_ANIM, SHAKE_ANIM } from './motion'
 
@@ -350,6 +351,8 @@ export const MessageGroup = React.memo(function MessageGroup({
   msg,
   actions = 'full',
   aboveActions,
+  turnStats,
+  hideStats,
   onApproveTool,
   onRejectTool,
   onRespondToTool,
@@ -370,6 +373,14 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  shows 「本轮产物」 ABOVE its 对话工具条. Optional; a host passing nothing
    *  renders exactly as before. */
   aboveActions?: React.ReactNode
+  /** 回合级统计聚合（2026-11-21 user ruling「期望要回合级的聚合」）：本回合全部
+   *  LLM 请求的 Σtoken 与完成时间，挂在回合最后一条 assistant 段上。缺省（无
+   *  回合结构的宿主：tool studio / 表单助手转录）回落为本消息自己的值——单请求
+   *  轮里两者相等，语义不变。 */
+  turnStats?: TurnMessageStats
+  /** 撤掉统计行（回合中间的叙述段）：聚合只出现在回合最后一段，中间段各自再
+   *  显示一次单请求值就是重复计数。缺省 false（不感知回合的宿主照旧显示）。 */
+  hideStats?: boolean
   onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
@@ -719,7 +730,6 @@ export const MessageGroup = React.memo(function MessageGroup({
                       <AssistantMarkdown
                         text={t}
                         live={live}
-                        tail={live !== undefined && live.toolsStarted !== true && i === lastLiveTextIndex(msg.contentBlocks)}
                       />
                     )}
                   />
@@ -815,11 +825,11 @@ export const MessageGroup = React.memo(function MessageGroup({
       )}
 
       {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages.
-          Narrow-column collapse (2026-10-31): the stats group always stays fully visible and the buttons
-          yield instead of wrapping — the ⋯ overflow trigger and the collapse classes are governed by the
-          global @container rules on .pm-msg-actions (src/renderer/index.html). flexWrap remains only as a
-          safety net for pathological stats (a six-digit token count); the tiers keep the row single-line
-          down to the chat column's 320px floor. */}
+          Narrow-column collapse (2026-10-31, amended 2026-11-22): the buttons yield first (⋯ overflow
+          trigger + collapse classes, global @container rules on .pm-msg-actions in src/renderer/index.html),
+          and below 440px the token stats group (上下文信息) hides with them — the completion timestamp is
+          what stays. flexWrap remains only as a safety net for pathological stats (a six-digit token count)
+          in the wide tier; the tiers keep the row single-line down to the chat column's 320px floor. */}
       {aboveActions}
       {!isUser && actions !== 'none' && !msg.contentBlocks.every(b => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') && (
         <div
@@ -832,11 +842,12 @@ export const MessageGroup = React.memo(function MessageGroup({
             // shrink-to-fit width collapses to 0 and every @container query
             // reads the narrowest tier — stretch to the full column instead.
             alignSelf: 'stretch',
-            // Responsive (2026-10-30): the chat column's floor is a real 320px
-            // now (the workbench pane's ceiling became chat − 320), and the
-            // widest row — five buttons (~160px) plus the token stats
-            // (~260px) — needs ~420px. The stats group wraps to a second line
-            // instead of clipping; rowGap keeps the wrapped line off the icons.
+            // Responsive (2026-10-30, stats arm reversed 2026-11-22): the chat
+            // column's floor is a real 320px now (the workbench pane's ceiling
+            // became chat − 320). Below 440px the buttons collapse into ⋯ and
+            // the token group hides (index.html @container rules) — flexWrap
+            // stays only for the wide tier's pathological stats (a six-digit
+            // token count); rowGap keeps any wrapped line off the icons.
             flexWrap: 'wrap',
             gap: 2,
             rowGap: 4,
@@ -944,44 +955,83 @@ export const MessageGroup = React.memo(function MessageGroup({
             </>
           )}
 
-          {(msg.processingMs != null || msg.inputTokens != null || msg.outputTokens != null || msg.promptCacheHitTokens != null) && (
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                // Wraps internally as a second safety net: a column narrower
-                // than the stats' own min-content (a hand-shrunk main window)
-                // breaks the segments across lines instead of clipping them.
-                flexWrap: 'wrap',
-                gap: 12,
-                rowGap: 4,
-                marginLeft: 6,
-                color: 'var(--pm-text-faint)',
-                fontSize: 12,
-                lineHeight: 1,
-                // Tooltip-only row: `help` instead of the text I-beam `auto`
-                // renders over selectable-looking spans.
-                cursor: 'help',
-                // Durations and token counts align their digit columns across
-                // neighboring messages instead of jittering with each render.
-                fontVariantNumeric: 'tabular-nums'
-              }}
-            >
-              <span style={{ color: 'var(--pm-separator)' }}>|</span>
-              {msg.processingMs != null && (
-                <span title={t('chatView.processingTime')}>{formatDuration(msg.processingMs)}</span>
-              )}
-              {msg.inputTokens != null && (
-                <span title={t('chatView.inputTokens')}><ArrowUpOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(msg.inputTokens)}</span>
-              )}
-              {msg.outputTokens != null && (
-                <span title={t('chatView.outputTokens')}><ArrowDownOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(msg.outputTokens)}</span>
-              )}
-              {msg.promptCacheHitTokens != null && msg.inputTokens != null && msg.inputTokens > 0 && (
-                <span title={t('chatView.promptCacheHit')}><AimOutlined style={{fontSize:10,marginRight:2}} />{cacheHitRate(msg.promptCacheHitTokens, msg.inputTokens)}</span>
-              )}
-            </span>
-          )}
+          {/* 统计行（2026-11-21 user ruling「把耗时去掉，改为最终完成输出的
+              时间，和输入消息的时间对应；期望要回合级的聚合」）：耗时段退役
+              （ scopes 混装——token 是单请求的、耗时是整轮的），换成完成时间的
+              日历戳，与用户气泡悬停工具条的发送时间同形同位；token 读 turnStats
+              （回合 Σ），无回合结构的宿主回落为本消息自己的值。中间叙述段由
+              hideStats 整行撤掉——聚合只出现在回合最后一段。
+              2026-11-22 user ruling「当前时间移动到上下文信息后，增加竖线分
+              割」：时间从行首挪到 token（上下文信息）之后，与 token 之间补一
+              条竖线——行序 = 按钮 | token | 时间。同日二刀「宽度不足时隐藏
+              上下文信息」：token 组（前导竖线 + 三段 token）包进
+              pm-msg-stats-tokens，窄档（<440px，与按钮收 ⋯ 同一档）整体隐藏，
+              时间戳保留——token 组缺席时（只有完成时间、无用量上报的宿主）
+              前导竖线不落单。 */}
+          {(() => {
+            if (hideStats) return null
+            const stats = turnStats ?? msg
+            // completedAt 只在 TurnMessageStats 上（AgentMessage 无此字段），
+            // union 上的取值必须走可选链回落 msg.createdAt——tsc 的约束，钉在
+            // tests/turn-message-stats.test.ts。
+            const doneAt = describeSentAtText(turnStats?.completedAt ?? msg.createdAt, t)
+            const doneAtTitle = doneAt ? describeSentAtTitle(turnStats?.completedAt ?? msg.createdAt, t) : null
+            if (!doneAt && stats.inputTokens == null && stats.outputTokens == null && stats.promptCacheHitTokens == null) return null
+            // 与下方实际渲染面一致：cache-hit 段以 inputTokens 存在为前提，
+            // 所以「有 token 可显」= input 或 output 任一存在。
+            const hasTokens = stats.inputTokens != null || stats.outputTokens != null
+            return (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  // Wraps internally as a second safety net: a column narrower
+                  // than the stats' own min-content (a hand-shrunk main window)
+                  // breaks the segments across lines instead of clipping them.
+                  flexWrap: 'wrap',
+                  gap: 12,
+                  rowGap: 4,
+                  marginLeft: 6,
+                  color: 'var(--pm-text-faint)',
+                  fontSize: 12,
+                  lineHeight: 1,
+                  // Tooltip-only row: `help` instead of the text I-beam `auto`
+                  // renders over selectable-looking spans.
+                  cursor: 'help',
+                  // Timestamps and token counts align their digit columns across
+                  // neighboring messages instead of jittering with each render.
+                  fontVariantNumeric: 'tabular-nums'
+                }}
+              >
+                {hasTokens && (
+                  <span className="pm-msg-stats-tokens" style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+                    <span style={{ color: 'var(--pm-separator)' }}>|</span>
+                    {stats.inputTokens != null && (
+                      <span title={t('chatView.inputTokens')}><ArrowUpOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(stats.inputTokens)}</span>
+                    )}
+                    {stats.outputTokens != null && (
+                      <span title={t('chatView.outputTokens')}><ArrowDownOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(stats.outputTokens)}</span>
+                    )}
+                    {stats.promptCacheHitTokens != null && stats.inputTokens != null && stats.inputTokens > 0 && (
+                      <span title={t('chatView.promptCacheHit')}><AimOutlined style={{fontSize:10,marginRight:2}} />{cacheHitRate(stats.promptCacheHitTokens, stats.inputTokens)}</span>
+                    )}
+                  </span>
+                )}
+                {doneAt && (
+                  <>
+                    <span style={{ color: 'var(--pm-separator)' }}>|</span>
+                    <time
+                      dateTime={turnStats?.completedAt ?? msg.createdAt}
+                      title={doneAtTitle ?? undefined}
+                      style={{ fontSize: 11, whiteSpace: 'nowrap', userSelect: 'none' }}
+                    >
+                      {doneAt}
+                    </time>
+                  </>
+                )}
+              </span>
+            )
+          })()}
         </div>
       )}
     </div>

@@ -25,9 +25,11 @@ import { Icon } from './icons'
 const INK_CREATED = '#587c0c'
 const INK_MODIFIED = '#895503'
 
-/** k-formatted token count, same shape as the desktop action row's stats. */
+/** k-formatted token count, same shape as the desktop action row's stats —
+ *  decimal K (tokens have no binary basis; 1000 整入档，与 formatTokenCount
+ *  同一条线). */
 function fmtTokens(n: number): string {
-  if (n >= 1024) return `${(n / 1024).toFixed(1)}K`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
   return String(n)
 }
 

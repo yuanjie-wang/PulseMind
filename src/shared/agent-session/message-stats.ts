@@ -81,3 +81,75 @@ function cacheHitSampleOf(msg: AgentMessage): CacheHitSample {
 export function sessionCacheHitRate(messages: readonly AgentMessage[]): CacheHitRate {
   return computeCacheHitRate(messages.map(cacheHitSampleOf))
 }
+
+// ── Turn-level stats aggregate (2026-11-21 user ruling) ─────────────────
+// The per-message toolbar used to read each message's OWN usage — on a
+// tool-loop turn that is the last request only (its input is the whole prompt
+// of that one call, not what the turn consumed), which is exactly the number
+// that made the row lie next to the turn-scoped duration. The ruling replaces
+// the duration with the completion timestamp AND makes the tokens a TURN
+// aggregate: Σ over every assistant request the turn issued, so ↑/↓ read as
+// what the round trip actually moved and the cache rate weights the same way.
+
+/** One turn's aggregate, as the toolbar renders it. `undefined` tokens mean
+ *  "no request in the turn reported usage" — distinct from zero, which is a
+ *  real report. `completedAt` is the FINAL assistant message's createdAt: the
+ *  engine mints it when that request's stream completes, so it is the moment
+ *  the turn's last output character landed (the counterpart of the opening
+ *  user message's send time). */
+export interface TurnMessageStats {
+  completedAt?: string
+  inputTokens?: number
+  outputTokens?: number
+  promptCacheHitTokens?: number
+}
+
+/**
+ * Aggregate stats per turn, keyed by the turn's FINAL assistant message id —
+ * the one message both clients hang the toolbar on (the desktop's segment for
+ * it carries a `__text`/`__ask` suffix on the id, so callers strip the suffix
+ * before looking up; the panel's `actionRowIds` already names the same
+ * message). The turn boundary is the same rule everywhere: a plain user
+ * message (no tool_result — those are the loop's result carriers) opens a new
+ * turn. Sidecar summary rows are skipped, matching sessionCacheHitRate. A turn
+ * whose requests reported no usage still gets an entry (the timestamp is a
+ * per-message fact, not a usage report); turns with no assistant message get
+ * none.
+ */
+export function collectTurnMessageStats(messages: readonly AgentMessage[]): Map<string, TurnMessageStats> {
+  const byFinalId = new Map<string, TurnMessageStats>()
+  let inputTokens: number | undefined
+  let outputTokens: number | undefined
+  let promptCacheHitTokens: number | undefined
+  let finalId: string | undefined
+  let finalCreatedAt: string | undefined
+  let hasAssistant = false
+
+  const flush = (): void => {
+    if (hasAssistant && finalId) {
+      byFinalId.set(finalId, { completedAt: finalCreatedAt, inputTokens, outputTokens, promptCacheHitTokens })
+    }
+    inputTokens = undefined
+    outputTokens = undefined
+    promptCacheHitTokens = undefined
+    finalId = undefined
+    finalCreatedAt = undefined
+    hasAssistant = false
+  }
+
+  for (const msg of messages) {
+    if (msg.role === 'user' && !(msg.contentBlocks ?? []).some((b) => b.type === 'tool_result')) {
+      flush()
+      continue
+    }
+    if (msg.role !== 'assistant' || msg.autoSummary === true) continue
+    hasAssistant = true
+    if (msg.inputTokens !== undefined) inputTokens = (inputTokens ?? 0) + msg.inputTokens
+    if (msg.outputTokens !== undefined) outputTokens = (outputTokens ?? 0) + msg.outputTokens
+    if (msg.promptCacheHitTokens !== undefined) promptCacheHitTokens = (promptCacheHitTokens ?? 0) + msg.promptCacheHitTokens
+    finalId = msg.id
+    finalCreatedAt = msg.createdAt
+  }
+  flush()
+  return byFinalId
+}

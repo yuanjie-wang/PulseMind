@@ -23,7 +23,7 @@
 // resets the scroll position — the follow-tail effect lands the fresh mount
 // at the bottom anyway.
 
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Segmented } from 'antd'
 import type { AgentStatus, SteerOutcome } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
@@ -31,7 +31,6 @@ import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 import type { Segment } from './message-segments'
 import { getSegmentKey } from './message-segments'
-import { StreamingCursor } from './StreamingCursor'
 import { ErrorDisplay } from './ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from './ExtensionPrompt'
 import { TurnDeliverablesCard } from './TurnDeliverablesCard'
@@ -40,7 +39,9 @@ import { InputArea, type SendAck } from './InputArea'
 import { SelectionToolbar } from './SelectionToolbar'
 import { ApiKeyGuide } from '../welcome/ApiKeyGuide'
 import { useTranslation } from '../../i18n/useTranslation'
-import { formatDuration } from '../../../../shared/ui/message-stats'
+import { ensureSegmentKeyframes } from './ExecutionSegment'
+import { isWaitingOnUserStatus } from '../../agent/engine/turn-clock'
+import { formatDurationHms } from '../../../../shared/ui/message-stats'
 import type { NewTaskMode } from '../../stores/newTaskStore'
 import type { TailFollow } from '../../../../shared/ui/useTailFollow'
 import type { CacheHitRate } from '../../../../shared/agent-session/cache-hit-rate'
@@ -90,14 +91,17 @@ interface ChatBodyProps {
   /** 未落定的 live 轮（本轮产物卡等落定才出，ChatView 按 routineEntryAllowed 算）。 */
   liveTurn: number | undefined
   renderSegment: (seg: Segment, index: number, aboveActions?: React.ReactNode) => React.ReactNode
-  showCursor: boolean
   isRequesting: boolean
   workspaceDir?: string
+  /** Id of the project this composer belongs to. The git branch picker uses
+   *  it to resolve the PROJECT's directory (not the conversation's timestamped
+   *  workspace); undefined for plain conversations keeps the picker hidden. */
+  gitProjectId?: string
   // ── status banners ──
   agentStatus: AgentStatus
   /** 运行中回合的 live 总时长（null = 没有回合在跑）：引擎 TurnClock 锚点 +
-   *  运行段外推（useChatController），等待/暂停冻结，收口后由消息上的总章
-   *  接替（2026-11-20「处理时间偏差太大」）。 */
+   *  运行段外推（useChatController），等待/暂停冻结；收口即消失——统计行不再
+   *  有耗时段可接替（2026-11-21 裁定：完成时间戳 + 回合聚合 token 上位）。 */
   turnElapsedMs?: number | null
   isError: boolean
   isRetrying: boolean
@@ -157,7 +161,46 @@ interface ChatBodyProps {
   hasApiKey: boolean
 }
 
-export function ChatBody({
+/** 秒表徽标（2026-11-21，user 提供的 animated-clock-icon.html 设计）：表盘 +
+ *  4 主刻度 + 顶部表冠 + 指针绕轴转动，纯色 `--pm-text-muted`（2026-11-21
+ *  二次裁定：多色改纯色，与徽章文字同灰阶一体）。14px 适配口径与参考文件的
+ *  小档一致（刻度只留主位）；转动复用 segment header 的 pulsemind-spin——
+ *  动画定义仍然只此一份。`running`=false（等人冻结）指针停转，与冻结的数字
+ *  同源。 */
+function TurnStopwatchIcon({ running }: { running: boolean }): React.ReactElement {
+  const ticks = [0, 90, 180, 270].map((deg) => {
+    const a = (deg * Math.PI) / 180
+    return (
+      <line
+        key={deg}
+        x1={50 + 34 * Math.sin(a)}
+        y1={55 - 34 * Math.cos(a)}
+        x2={50 + 40 * Math.sin(a)}
+        y2={55 - 40 * Math.cos(a)}
+        stroke="var(--pm-text-muted)"
+        strokeWidth={5}
+        strokeLinecap="round"
+      />
+    )
+  })
+  return (
+    <svg width={14} height={14} viewBox="0 0 100 100" aria-hidden data-pm-turn-stopwatch style={{ flexShrink: 0, marginRight: 6 }}>
+      {/* 表冠（秒表的身份特征） */}
+      <rect x={43} y={2} width={14} height={11} rx={3} fill="var(--pm-text-muted)" />
+      {/* 表盘 */}
+      <circle cx={50} cy={55} r={42} fill="none" stroke="var(--pm-text-muted)" strokeWidth={8} />
+      {ticks}
+      {/* 旋转指针（强调色，参考件的秒针着色）+ 中心铆钉 */}
+      <g style={{ transformOrigin: '50px 55px', animation: running ? 'pulsemind-spin 10s linear infinite' : undefined, willChange: 'transform' }}>
+        <line x1={50} y1={55} x2={50} y2={19} stroke="var(--pm-text-muted)" strokeWidth={8} strokeLinecap="round" />
+      </g>
+      <circle cx={50} cy={55} r={7} fill="var(--pm-text-muted)" />
+    </svg>
+  )
+}
+
+export
+function ChatBody({
   welcome,
   isRequesting,
   scrollRef,
@@ -169,8 +212,8 @@ export function ChatBody({
   turnRows,
   liveTurn,
   renderSegment,
-  showCursor,
   workspaceDir,
+  gitProjectId,
   agentStatus,
   turnElapsedMs,
   isError,
@@ -216,7 +259,13 @@ export function ChatBody({
   onSendBlocked,
   hasApiKey,
 }: ChatBodyProps): React.ReactElement {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
+  // Badge 共用 segment header 的圆环/淡入动画——keyframes 的模块副作用挂在
+  // ChatView 的 SegmentBlock 链上，这里显式兜底（无 segment 的宿主也有动画）。
+  useEffect(() => { ensureSegmentKeyframes() }, [])
+  // live 时长徽章的上间距按前驱自适应：execution segment 自带 margin 8px 0，
+  // 只补 2px（合计 10）；md 转写（assistant 消息 marginBottom 0）补足 10px。
+  const prevIsExecutionSegment = renderedSegments.length > 0 && renderedSegments[renderedSegments.length - 1].type === 'execution'
 
   // ── Above-card reserve (2026-11-04) ──
   // The floating composer's aboveCard slot (stage strip, plan strip) is
@@ -337,6 +386,8 @@ export function ChatBody({
               key={conversationId ?? 'new'}
               layout="inline"
               focusToken={welcomeFocusToken}
+              gitProjectId={gitProjectId}
+              workspaceDir={workspaceDir}
               sendBlocked={taskMode === 'project' && !newTaskProjectId}
               onSendBlocked={onSendBlocked}
               sendAccentHue={sendAccentHue}
@@ -437,19 +488,49 @@ export function ChatBody({
           {/* 160 = the floating composer's own band (root padding + card).
               aboveCardReserve = the above-card slot's persistent height + gap
               — without it the stage strip paints over the newest message. */}
-          {/* 运行中回合的 live 总时长：就是用户要在「处理时间」位置看到的那个
-              诚实的数字——运行时跟着走、等人时冻结、收口后被总章原位接替
-              （2026-11-20「处理时间偏差太大，会让用户觉得我们在欺骗」）。 */}
+          {/* 运行中回合的 live 总时长：运行时跟着走、等人时冻结（2026-11-20
+              「处理时间偏差太大，会让用户觉得我们在欺骗」）；收口后不再有时长
+              接替——2026-11-21 裁定把统计行的耗时段退役（scopes 混装），工具条
+              改显示完成时间戳 + 回合聚合 token（MessageGroup turnStats）。
+              样式与 segment 的收起 header 同一套（2026-11-21：同款 14×14 圆环
+              spinner、13px/22px 文本、34px 行高、0 10px 内边距）；左对齐进消
+              息列。图标与数字同源：运行转、等待冻结不转——转着的圈配冻结的
+              数字是谎话。
+              徽章是滚动内容（2026-11-21 四刀 user ruling「翻历史时跟随滚走」
+              ——sticky 底缘方案因此退役）：画位的防跳保证不在 CSS 侧，在
+              tail-follow 的 pre-paint snap（settle() 同步钉尾，见
+              shared/tail-follow.ts）——stale 帧在机制上不出现，徽章与整段
+              转录一起钉在尾部。 */}
           {turnElapsedMs != null && (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '0 24px 4px' }}>
-              <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }} data-pm-turn-elapsed>
-                {t('chatView.turnElapsed', { time: formatDuration(turnElapsedMs) })}
-              </span>
+            <div style={{ maxWidth: 1000, margin: '0 auto', padding: `${prevIsExecutionSegment ? 2 : 10}px 24px 4px` }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  height: 34,
+                  padding: '0 10px',
+                  overflow: 'hidden'
+                }}
+              >
+                <TurnStopwatchIcon running={!isWaitingOnUserStatus(agentStatus.status)} />
+                <span
+                  style={{
+                    fontSize: 13,
+                    lineHeight: '22px',
+                    color: 'var(--pm-text-muted)',
+                    animation: 'pulsemind-fade-in 0.25s ease-out'
+                  }}
+                  data-pm-turn-elapsed
+                >
+                  {t('chatView.turnElapsed', { time: formatDurationHms(turnElapsedMs, locale) })}
+                </span>
+              </div>
             </div>
           )}
-          {/* The single cursor of a run: at the foot while nothing streams as
-              text, otherwise at the end of the live text (SegmentView's tail). */}
-          <StreamingCursor show={showCursor} />
+          {/* 脚部 StreamingCursor 已退役（2026-11-21 user ruling）：运行指示由
+              上方「本回合已运行 X」徽章承担。正文流式尾巴的内联 caret 保留
+              ——它标记「文字还在流」，不是运行态；TranscriptView 宿主（工具
+              studio / 表单助手 / 例行转写，无徽章）仍用脚部光标。 */}
 
           {/* Error state */}
           {isError && (
@@ -523,6 +604,8 @@ export function ChatBody({
       <InputArea
         key={conversationId ?? 'new'}
         hidden={hideComposer}
+        gitProjectId={gitProjectId}
+        workspaceDir={workspaceDir}
         quoteRequest={activeQuoteRequest}
         onQuoteConsumed={handleQuoteConsumed}
         isRequesting={isRequesting}

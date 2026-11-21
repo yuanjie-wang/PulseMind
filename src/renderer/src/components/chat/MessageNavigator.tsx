@@ -21,6 +21,7 @@ import React, { useEffect, useState } from 'react'
 import { Tooltip } from 'antd'
 import { ArrowDownOutlined, ArrowUpOutlined, CaretDownFilled } from '@ant-design/icons'
 import { measureStepTarget, type UserPromptAnchor } from './message-navigator'
+import { ENTER_ANIM } from './motion'
 import { COMPOSER_MAX_WIDTH } from './Composer'
 import { useTranslation } from '../../i18n/useTranslation'
 
@@ -102,6 +103,9 @@ export const MessageNavControls = React.memo(function MessageNavControls({
         margin: '0 auto',
         maxWidth: COMPOSER_MAX_WIDTH,
         pointerEvents: 'none',
+        // The group mounts only when the transcript leaves the bottom, so the
+        // shared one-shot entrance plays on appearance and never on scroll ticks.
+        animation: ENTER_ANIM,
       }}
     >
       <Tooltip title={t('chatView.navigator.toBottom')}>

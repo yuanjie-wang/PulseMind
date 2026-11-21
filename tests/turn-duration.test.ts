@@ -15,6 +15,7 @@ const { setHost } = await import('../src/renderer/src/agent/host')
 const { applySessionEvent, freshSessionState } = await import('../src/shared/agent-session/mirror')
 const { ToolManager } = await import('../src/renderer/src/tools/ToolManager')
 const { agentMessagesToConversation } = await import('../src/renderer/src/utils/message-utils')
+const { formatDurationHms } = await import('../src/shared/ui/message-stats')
 const { SkillManager } = await import('../src/renderer/src/skills/SkillManager')
 
 import type { AgentEngineOptions } from '../src/renderer/src/agent/AgentEngine'
@@ -380,6 +381,19 @@ describe('turn duration: user send → last output character', () => {
     expect(agentMessagesToConversation([user()], 'c1', 't', 5_000).messages[0].processingMs).toBeUndefined()
   })
 
+  it('the live badge reads whole-clock h/m/s, truncated to integer seconds (2026-11-21)', () => {
+    // 截断不进位：跳动的显示不能把 59.9s 提前读成「1分钟」。
+    expect(formatDurationHms(59_999, 'zh')).toBe('59秒')
+    expect(formatDurationHms(750_000, 'zh')).toBe('12分钟30秒')
+    expect(formatDurationHms(3_750_000, 'zh')).toBe('1小时2分钟30秒')
+    // 前导零单位省略，秒恒显。
+    expect(formatDurationHms(45_000, 'zh')).toBe('45秒')
+    expect(formatDurationHms(0, 'zh')).toBe('0秒')
+    expect(formatDurationHms(59_999, 'en')).toBe('59s')
+    expect(formatDurationHms(3_750_000, 'en')).toBe('1h 2m 30s')
+    expect(formatDurationHms(750_000, 'en')).toBe('12m 30s')
+  })
+
   it('the live-elapsed path is wired end to end (wiring scan)', async () => {
     const { readFileSync } = await import('node:fs')
     const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8')
@@ -396,7 +410,31 @@ describe('turn duration: user send → last output character', () => {
     expect(ctl).toContain('isWaitingOnUserStatus(anchor.status.status)')
     const body = read('../src/renderer/src/components/chat/ChatBody.tsx')
     expect(body).toContain("t('chatView.turnElapsed'")
+    expect(body).toContain('formatDurationHms(turnElapsedMs, locale)')
     // 存档面：快照传入 turnMs。
     expect(read('../src/renderer/src/hooks/useConversationPersistence.ts')).toContain('engine.turnMs)')
+    // 序钉（2026-11-21 空窗期）：时钟必须先于 streaming 播报启动，否则
+    // turnMsOf 跳过怠速时钟，徽章等到首个 delta 才出现。
+    const eng = read('../src/renderer/src/agent/AgentEngine.ts')
+    expect(eng).not.toMatch(/this\.notify\(\)\s*\n\s*this\.turnClock\.start\(\)/)
+    // 正向形态：start → streaming 宣布 → notify，prepareTurn 与 retryLastTurn 两处。
+    expect(eng.match(/this\.turnClock\.start\(\)\s*\n\s*this\.agentStatus = \{ status: 'streaming' \}\s*\n\s*this\.notify\(\)/g)).toHaveLength(2)
+  })
+
+  it('the live badge is plain scrolled content — pinning lives in tail-follow, not CSS (2026-11-21 jitter)', async () => {
+    // user report「执行过程中徽章上下跳」+ 二次裁定「翻历史时跟随滚走」：
+    // sticky 底缘方案（视口钳制）语义过重已退役。防跳的保证在引擎侧——
+    // tail-follow 的 settle() 同步 pre-paint snap（行为钉见
+    // tests/tail-follow.test.ts 的 pre-paint snap 组），徽章就是普通滚动
+    // 内容：跟随尾部时被逐帧钉住，翻历史时随内容滚走。
+    const { readFileSync } = await import('node:fs')
+    const body = readFileSync(new URL('../src/renderer/src/components/chat/ChatBody.tsx', import.meta.url), 'utf8')
+    // 负扫：徽章不得改用视口侧定位（sticky/fixed）——那会让它翻历史时留在屏上。
+    expect(body).not.toContain("position: 'sticky'")
+    expect(body).not.toContain("position: 'fixed'")
+    // 徽章住在滚动内容里（composer spacer 内、pad 之上）。
+    const spacerIdx = body.indexOf('data-pm-composer-spacer')
+    expect(spacerIdx).toBeGreaterThan(-1)
+    expect(body.indexOf('data-pm-turn-elapsed')).toBeGreaterThan(spacerIdx)
   })
 })

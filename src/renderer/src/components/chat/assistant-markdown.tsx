@@ -21,7 +21,6 @@ import { XMarkdown, type XMarkdownProps } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
-import { StreamingCaret } from './StreamingCaret'
 import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle'
 
 /** x-markdown's streaming mode for the live tail. `hasNextChunk` holds an
@@ -30,16 +29,12 @@ import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle
  *  refresh's new text per block (the throttle sets the chunk size, the default
  *  200ms fade overlaps the 150ms interval; motion.tsx's reduced-motion rule
  *  covers the keyframe). Module constants because XMarkdown memoizes on the
- *  object's identity — minting one per render would re-parse on every tick. */
+ *  object's identity — minting one per render would re-parse on every tick.
+ *  No `tail` component: the in-text caret is retired (user ruling 2026-11-21,
+ *  渐变流式期间不要光标 — the fading text itself is the streaming indicator;
+ *  TranscriptView's foot caret covers only the textless phases). */
 type StreamingOption = NonNullable<XMarkdownProps['streaming']>
 const STREAMING_MD: StreamingOption = { hasNextChunk: true, enableAnimation: true }
-/** The caret at the end of the live text: the transcript's own glyph, which
- *  the foot StreamingCursor stops drawing while this tail exists. x-markdown
- *  injects it after the last text token, so an empty `shown` draws none. */
-function StreamingTail(): React.ReactElement {
-  return <StreamingCaret style={{ marginLeft: 2 }} />
-}
-const STREAMING_MD_TAIL: StreamingOption = { ...STREAMING_MD, tail: { component: StreamingTail } }
 
 /** The parse boundary. Memoized on the FROZEN snapshot: the live text changes
  *  every tick, but `shown` only advances at STREAM_PARSE_MIN_INTERVAL, so
@@ -68,16 +63,12 @@ const MarkdownOnce = React.memo(
 export function AssistantMarkdown({
   text,
   live,
-  tail = false,
 }: {
   text: string
   /** The round is still streaming this text. Its presence is the ONLY difference
    *  between the live tail and the settled paragraph — everything below renders
    *  the same element either way, which is what keeps the subtree alive. */
   live?: { toolsStarted?: boolean }
-  /** This block is where the live caret rides (the last text block with text,
-   *  and the round has not moved on to its tool call). Ignored when settled. */
-  tail?: boolean
 }): React.ReactElement {
   // Per-block throttle, one component instance per text block now that both
   // sides render this: feed() is O(1) and idempotent for the shown text, so
@@ -93,5 +84,5 @@ export function AssistantMarkdown({
   if (!throttleRef.current) throttleRef.current = createTextThrottle(STREAM_PARSE_MIN_INTERVAL)
   // eslint-disable-next-line react-hooks/purity -- the stream throttle's arrival clock: feed() decides how much of the accumulated text may show now
   const shown = throttleRef.current.feed(text, performance.now(), live.toolsStarted === true)
-  return <MarkdownOnce shown={shown} streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD} />
+  return <MarkdownOnce shown={shown} streaming={STREAMING_MD} />
 }

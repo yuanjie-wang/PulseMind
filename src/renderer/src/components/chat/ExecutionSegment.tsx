@@ -11,12 +11,16 @@ import { CollapseBody } from './motion'
 // Injected once into <head> to avoid creating a new <style> element on every render
 const KEYFRAMES = `@keyframes pulsemind-spin { 100% { transform: rotate(360deg); } } @keyframes pulsemind-fade-in { 0% { opacity: 0; transform: translateY(2px); } 100% { opacity: 1; transform: translateY(0); } }`
 let keyframesInjected = false
-if (typeof document !== 'undefined' && !keyframesInjected) {
+/** 共享给同视觉族的使用方（live 回合时长徽章与 header 同款圆环/淡入）——
+ *  动画定义只此一份，第二处复制就是漂移的种子。 */
+export function ensureSegmentKeyframes(): void {
+  if (keyframesInjected || typeof document === 'undefined') return
   const el = document.createElement('style')
   el.textContent = KEYFRAMES
   document.head.appendChild(el)
   keyframesInjected = true
 }
+ensureSegmentKeyframes()
 
 // The header badge's per-block memo: buildEditDiffModel runs an LCS (bounded by
 // the generator's guards, but not free) and this memo re-runs on every commit of

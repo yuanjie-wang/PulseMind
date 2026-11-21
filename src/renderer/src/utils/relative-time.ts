@@ -118,49 +118,14 @@ export function describeRelativeTimeText(timestamp: string | undefined, now: num
 
 // ── Chat bubble sent-at stamp ───────────────────────────────────────────
 // The hover toolbar under a user bubble carries the send time (2026-11-06) as
-// the LOCAL calendar date plus the clock — "11月6日 18:02". The date shows on
-// every message, not only on older ones: a transcript is read days after the
-// fact, and a bare clock only answers "when" for the few bubbles sent in the
-// last hours. Deciding "today → drop the date", or "same year → drop the year",
-// needs a "now" — and a now in this render path is either forbidden (react-hooks
-// purity: "Cannot call impure function during render" rejects Date.now()) or
-// bought with a clock threaded down from ChatView, which would invalidate the
-// memo of every MessageGroup on every tick and re-render the whole transcript
-// once a minute for a fact that changes once a day. So the stamp stays a pure
-// function of the message, and the year — the one part only a clock could prove
-// redundant — rides on describeSentAtTitle, one hover away.
+// the LOCAL calendar date plus the clock — "11月6日 18:02". Since 2026-11-21
+// the assistant toolbar carries the same stamp shape (the completion time), so
+// the pure parts live in shared/ui/message-stats.ts next to the other
+// bubble-line formatters and both sides import them — re-created local copies
+// fail the message-stats pins. The text/title wrappers below keep the i18n.
 
-export interface SentAt {
-  /** Zero-padded local wall clock, "18:02" — the clock the user sent at. */
-  clock: string
-  /** Local calendar date; month is 1-based, as in RelativeTime. */
-  year: number
-  month: number
-  day: number
-}
-
-const pad2 = (n: number): string => String(n).padStart(2, '0')
-
-/**
- * The parts of a sent-at stamp — a pure function of the message, so the render
- * path needs no clock and nothing re-renders when the minute rolls over.
- * Returns null for a missing or unparsable timestamp, so the caller leaves the
- * slot empty instead of printing "NaN:NaN" — conversations persisted before the
- * field existed carry none.
- */
-export function describeSentAt(timestamp: string | number | Date | null | undefined): SentAt | null {
-  if (timestamp == null) return null
-  const time = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : Date.parse(timestamp)
-  if (!Number.isFinite(time)) return null
-
-  const at = new Date(time)
-  return {
-    clock: `${pad2(at.getHours())}:${pad2(at.getMinutes())}`,
-    year: at.getFullYear(),
-    month: at.getMonth() + 1,
-    day: at.getDate()
-  }
-}
+export { describeSentAt, type SentAt } from '../../../shared/ui/message-stats'
+import { describeSentAt } from '../../../shared/ui/message-stats'
 
 /**
  * The stamp text shown in the toolbar — local date plus clock, "11月6日 18:02"

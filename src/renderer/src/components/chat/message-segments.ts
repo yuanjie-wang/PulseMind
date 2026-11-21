@@ -88,14 +88,15 @@ export function lastLiveTextIndex(blocks: readonly ContentBlock[]): number {
 }
 
 /** A live text tail is on screen — the streaming segment has text and the
- *  round has not moved past it (its tool_use is not streaming yet), so its
- *  in-text caret is drawn. The transcript's bottom StreamingCursor yields to
- *  it (hosts pass `show={isRequesting && !hasLiveTextTail(segments)}`): one
- *  caret moves from the column's foot into the sentence, never two cursors.
- *  Once `toolsStarted` flips (the text block is done, tool args are streaming)
- *  the in-text tail yields back — the finished sentence is reading material,
- *  the live position is the foot again (2026-10-28 report: the caret used to
- *  stay parked at the completed text while the tool card ran). */
+ *  round has not moved past it (its tool_use is not streaming yet). The
+ *  in-text caret it used to anchor is retired (user ruling 2026-11-21,
+ *  渐变流式期间不要光标): the growing text itself is the streaming indicator,
+ *  and hosts' foot StreamingCursor still yields through this gate
+ *  (`show={isRequesting && !hasLiveTextTail(segments)}`) so the textless
+ *  phases — thinking, tool rounds — are where the foot caret shows. Once
+ *  `toolsStarted` flips (the text block is done, tool args are streaming)
+ *  the gate opens again — the finished sentence is reading material, the
+ *  live position is the foot (2026-10-28 report). */
 export function hasLiveTextTail(segs: readonly Segment[]): boolean {
   return segs.some((s) => s.type === 'single' && s.live !== undefined && s.live.toolsStarted !== true && lastLiveTextIndex(s.msg.contentBlocks) >= 0)
 }
