@@ -147,6 +147,15 @@ function turnMsOf(sessions: Map<string, SessionEntry>, sessionId: string): { tur
   return clock?.isActive() ? { turnMs: Math.round(clock.elapsed()) } : {}
 }
 
+/** 当前 epoch 切深线（2026-11-22）：随 status 事件与重连快照两处捎带，环的
+ *  nano 投影按它给 tail 定价。0 = 引擎还没构建过请求（新会话/重置后）——
+ *  渲染端据此回落冷启动线，不把 0 当一条真实的切深线。可选读：桩引擎与异构
+ *  宿主不带该字段，缺席即回落，绝不因探测拖垮状态事件。 */
+function epochTargetOf(sessions: Map<string, SessionEntry>, sessionId: string): { epochTarget?: number } {
+  const target = (sessions.get(sessionId)?.engine as { epochTarget?: number } | undefined)?.epochTarget
+  return typeof target === 'number' && target > 0 ? { epochTarget: target } : {}
+}
+
 function sessionPlatformInfo(): PlatformInfo {
   const p = platform()
   return {
@@ -1224,17 +1233,24 @@ export class AgentSessionManagerImpl {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return null
-    const status = entry.engine.agentStatus
+    // The optional carriers ride INSIDE the status snapshot here exactly as
+    // they do on the event stream: a client that re-attaches mid-turn — parked
+    // in `error`, or mid-backoff on a retry — has no other carrier and can only
+    // show its own fallback. Keeping both paths on the same `status` shape is
+    // what the mirror's `snapshot.status` seed reads (turnMs used to be spread
+    // at the snapshot top level, where the seed never looked).
+    const status: StatusSnapshot = {
+      ...statusSnapshotOf(entry.engine.agentStatus),
+      // 重连进一个正在跑的回合，客户端的 live 时长立刻有锚点，不用等下一次
+      // 状态翻转；时钟停了就缺席。
+      ...turnMsOf(this.sessions, sessionId),
+      // 重连进会话时环立刻拿到引擎的热态切深线，不必等下一次请求构建；缺席
+      // （首次连接/桩引擎）即回落冷启动。
+      ...epochTargetOf(this.sessions, sessionId),
+    }
     return {
       messages: entry.engine.messages,
-      // The optional carriers ride with the status word here exactly as they do
-      // on the event stream (statusSnapshotOf via onStatusChanged): a client
-      // that re-attaches mid-turn — parked in `error`, or mid-backoff on a
-      // retry — has no other carrier and can only show its own fallback.
-      status: statusSnapshotOf(status),
-      // turnMs 同款：重连进一个正在跑的回合，客户端的 live 时长立刻有锚点，
-      // 不用等下一次状态翻转。
-      ...turnMsOf(this.sessions, sessionId),
+      status,
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
       fileChanges: entry.engine.getFileChanges(),
@@ -1499,6 +1515,27 @@ export class AgentSessionManagerImpl {
     })
   }
 
+  /** 设置里「进 option bag」的那些字段变了（services/option-bag-sync.ts 判定）：
+   *  把新袋子推给每一个活着的会话，让改动落在**下一个请求**上，而不是等应用
+   *  重启。2026-11-22 的真机病例：改最大上下文只存盘，已打开的会话继续按旧
+   *  窗口跑（引擎实例活在 sessions 表里，只有 dispose 才走），用户以为在验
+   *  50K，实际还在 150K 上跑。
+   *
+   *  逐会话兜底：一个会话的 profile 解析失败（模型被删）不该连累其余会话。 */
+  async refreshAllSessions(): Promise<number> {
+    let refreshed = 0
+    // 快照键：refreshOptions → ensureEntry 可能在循环里补条目。
+    for (const sessionId of [...this.sessions.keys()]) {
+      try {
+        await this.refreshOptions(sessionId)
+        refreshed++
+      } catch (err) {
+        console.warn('[AgentSession] settings refresh: failed', sessionId, err)
+      }
+    }
+    return refreshed
+  }
+
   /** A project's name/overview changed (PROJECT_UPDATE): re-read it onto every
    *  live session bound to that project, so the edit takes effect on the very
    *  next request (2026-09-18 立即生效 ruling). Same sweep shape as
@@ -1529,6 +1566,7 @@ export class AgentSessionManagerImpl {
           // snapshot makes, so a re-attach sees exactly what the event said.
           ...statusSnapshotOf(status),
           ...turnMsOf(this.sessions, sessionId),
+          ...epochTargetOf(this.sessions, sessionId),
           // Held tools ride along on the two "the user must decide" statuses so
           // a remote client (browser extension) can render confirmation cards
           // without holding engine internals. args ships in full only for the

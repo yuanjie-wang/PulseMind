@@ -780,6 +780,8 @@ export function useChatController(options: UseChatControllerOptions) {
     /** Last compaction pass of the active conversation — the composer's 已压缩
      *  chip and the ring's post-compaction projection both read it. */
     lastCompaction: engine.lastCompaction,
+    /** Live epoch cut target for the ring's nano projection (warm p75 line). */
+    epochTarget: engine.epochTarget,
     isRequesting:
       engine.agentStatus.status !== 'idle' &&
       engine.agentStatus.status !== 'completed' &&

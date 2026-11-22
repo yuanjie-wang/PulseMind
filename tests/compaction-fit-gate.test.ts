@@ -213,9 +213,12 @@ describe('接线：nano 只有一个调用方，且它给的是步长目标', ()
     const compactor = read('src/renderer/src/agent/engine/context-compactor.ts')
     expect(compactor).toContain('this.nanoCompact(working, stepTarget, overhead)')
     expect(engine).not.toContain('nanoCompact(')
-    // 环是投影的唯一消费方（两处：整段与压缩后的 tail）。
+    // 环是投影的唯一消费方（两处：整段与压缩后的 tail）。投影分母是引擎的
+    // 输入侧预算，不是总窗口（方案 A 只管环的显示分母），否则环会按一条
+    // 压缩链永远不会切到的深度问 nano 要空间。
     const ring = read('src/renderer/src/components/chat/ContextRing.tsx')
-    expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1), contextLength, t)')
-    expect(ring).toContain('estimateAfterNanoTokens(tailMsgs, contextLength, compaction.tokensAfter)')
+    expect(ring).toContain('const projectionWindow = inputBudget ?? contextLength')
+    expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1), projectionWindow, t, epochTarget)')
+    expect(ring).toContain('estimateAfterNanoTokens(tailMsgs, inputBudget ?? contextLength, compaction.tokensAfter, epochTarget)')
   })
 })

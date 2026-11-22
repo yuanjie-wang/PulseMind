@@ -16,6 +16,13 @@ const RING_STROKE = 2.5
 const DEFAULT_RING_RADIUS = 9
 // Keeps the stroke's outer edge off the box edge, where it would be antialiased away.
 const RING_INSET = 0.25
+// 刻度线两端各伸多远（2026-11-22 user：原来只从描边外沿探出 1.25，在 16px 的环上
+// 几乎看不见 —— 改成穿过环身）。内端进中心空腔 REACH，外端出描边 REACH，
+// 于是这根线**从空腔里进去、从环外出来**，一眼能认出它指的是哪个角度。
+// 外端上限由盒子决定：RING_STROKE / 2 + 1.5 恰好收到 11.75（贴 12 的盒边会被
+// 抗锯齿抹掉）；默认半径下它就是这条上限，传入 diameter 时按比例缩小。
+const TICK_INNER_REACH = 2
+const TICK_OUTER_REACH = 1.5
 
 export function ContextRing({
   used,
@@ -52,6 +59,9 @@ export function ContextRing({
   // 只在 0 < budget < total 时画：等于 total 时刻度正落在顶点（无信息），大于
   // total 则说明宿主与本组件的口径不一致 —— 宁可不画，也不画一根与引擎不符的线。
   const tick = inputBudget != null && Number.isFinite(inputBudget) && inputBudget > 0 && inputBudget < total ? inputBudget / total : null
+  // 刻度线的两个半径：内端进空腔、外端出描边 —— 线段因此横穿环身（见 TICK_* 常量）。
+  const tickInnerRadius = r - RING_STROKE / 2 - TICK_INNER_REACH
+  const tickOuterRadius = r + RING_STROKE / 2 + TICK_OUTER_REACH
   // Both figures read in thousands, the unit the label is written in — DECIMAL
   // thousands: token windows are quoted by providers in round-decimal K
   // (this one is literally 150_000), so /1024 read the window as 146.5K and
@@ -157,20 +167,24 @@ export function ContextRing({
               transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
               style={{ transition: 'stroke-dashoffset 0.3s ease', stroke: 'var(--pm-text-secondary)' }}
             />
-            {/* 刻度线画在环的外侧：压在填充弧上的话两者同色，什么都看不见。
-                起点贴着描边外沿（+0.25 留抗锯齿余量），终点收在盒内 11.75 以内 ——
-                到盒边会被抗锯齿抹掉（见 RING_INSET 的注释）。
+            {/* 刻度线：**橙线，压在环的上方**（2026-11-22 user 两刀 —— 先加长穿环，
+                再改橙色并叠到环上面）。
+                它必须是 svg 的**最后一个子元素**：SVG 的文档顺序就是绘制顺序，挪到
+                两个 circle 前面就会被描边盖住，只剩环外那一小截。
+                颜色走 `--pm-warn`（这套主题里它本来就是个 ink 色，亮/暗两版分别是
+                #d46b08 / #d89614，压在描边和空腔上都看得清）。
+                外端收在盒内：贴到盒边会被抗锯齿抹掉（见 RING_INSET 的注释）。
                 角度按 0% = 顶点算，与填充弧的 rotate(-90) 同一套约定，否则刻度会
                 与指针起点对不齐。 */}
             {tick != null && (
               <line
-                x1={RING_CENTER + (r + RING_STROKE / 2 + 0.25) * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
-                y1={RING_CENTER + (r + RING_STROKE / 2 + 0.25) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
-                x2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
-                y2={RING_CENTER + (r + RING_STROKE / 2 + 1.5) * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
+                x1={RING_CENTER + tickInnerRadius * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
+                y1={RING_CENTER + tickInnerRadius * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
+                x2={RING_CENTER + tickOuterRadius * Math.cos(tick * 2 * Math.PI - Math.PI / 2)}
+                y2={RING_CENTER + tickOuterRadius * Math.sin(tick * 2 * Math.PI - Math.PI / 2)}
                 strokeWidth={1}
                 strokeLinecap="butt"
-                style={{ stroke: 'var(--pm-text-secondary)' }}
+                style={{ stroke: 'var(--pm-warn)' }}
               />
             )}
           </svg>
@@ -193,7 +207,7 @@ export function ContextRing({
  * quantities on purpose; the header of engine/context-estimate.ts carries the
  * full contract.
  */
-export function estimateContextUsed(messages: AgentMessage[], contextLength?: number): number {
+export function estimateContextUsed(messages: AgentMessage[], contextLength?: number, inputBudget?: number, epochTarget?: number): number {
   if (!messages.length) return 0
   // Anchor + tail priced as the NEXT request would carry it: the tail's old
   // tool_results become nano placeholders before anything ships, and pricing
@@ -203,17 +217,24 @@ export function estimateContextUsed(messages: AgentMessage[], contextLength?: nu
   // quotas/protection over the tail slice alone, so a young tail prices whole
   // (nano compresses nothing below quota anyway) and the reading never drops
   // under what the request will really ship.
-  // `contextLength` is the FULL window even for the tail slice: the merged
-  // fit gate compares the whole copy's usage to the window, which is why the
-  // anchor `t` rides along as the baseline — without it the tail alone would
-  // look small forever and the gate would never open (PLAN-nano-light-
-  // trigger-merge W1). Absent window ⇒ gate closed ⇒ raw pricing, the
-  // conservative direction this reader already documents.
+  // `inputBudget` is the engine's INPUT-SIDE window (total − output reserve);
+  // the projection's epoch target divides by it, so the ring prices the tail
+  // against the same line the compressor will cut to. `contextLength` stays
+  // the total window and is the fallback for hosts that cannot resolve
+  // maxTokens (方案 A: those hosts draw NO tick rather than guess a boundary).
+  // The anchor `t` rides along because the target is whole-copy while the
+  // slice is not — without it the tail alone would look small forever. Absent
+  // budget ⇒ no epoch target ⇒ raw pricing, the conservative direction this
+  // reader already documents. The RING's display denominator is untouched.
+  // `epochTarget` is the engine's CURRENT cut line, refreshed every request;
+  // callers without it (hosted hosts) fall back to the cold-start line inside
+  // estimateAfterNanoTokens — never a locally guessed depth.
+  const projectionWindow = inputBudget ?? contextLength
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = messages[i].inputTokens
-    if (t && t > 0) return t + estimateAfterNanoTokens(messages.slice(i + 1), contextLength, t)
+    if (t && t > 0) return t + estimateAfterNanoTokens(messages.slice(i + 1), projectionWindow, t, epochTarget)
   }
-  return estimateAfterNanoTokens(messages, contextLength)
+  return estimateAfterNanoTokens(messages, projectionWindow, 0, epochTarget)
 }
 
 /**
@@ -226,8 +247,8 @@ export function estimateContextUsed(messages: AgentMessage[], contextLength?: nu
  * new turns from the compacted base. Any message without a timestamp (or no
  * event) falls back to the raw estimate.
  */
-export function projectContextUsed(messages: AgentMessage[], compaction: CompactionEvent | null | undefined, contextLength?: number): number {
-  const raw = estimateContextUsed(messages, contextLength)
+export function projectContextUsed(messages: AgentMessage[], compaction: CompactionEvent | null | undefined, contextLength?: number, inputBudget?: number, epochTarget?: number): number {
+  const raw = estimateContextUsed(messages, contextLength, inputBudget, epochTarget)
   if (!compaction || !messages.length) return raw
   // ts is the engine's Date.now() at the pass; message createdAt is ISO from
   // the same main-process clock, so plain comparison orders them.
@@ -241,8 +262,9 @@ export function projectContextUsed(messages: AgentMessage[], compaction: Compact
   }
   // Same nano pricing as the raw path — the tail's compressible results ride
   // the next request as placeholders, not whole — and the compacted copy's
-  // measured size is the baseline the fit gate should judge against.
-  const projected = compaction.tokensAfter + estimateAfterNanoTokens(tailMsgs, contextLength, compaction.tokensAfter)
+  // measured size is the baseline the epoch target judges against. Price the
+  // tail against the INPUT budget, not the total window's cold-start line.
+  const projected = compaction.tokensAfter + estimateAfterNanoTokens(tailMsgs, inputBudget ?? contextLength, compaction.tokensAfter, epochTarget)
   // Estimates drift upward as the tail grows; a projection above the raw
   // number would mean the "compacted" copy is bigger than the history — fall
   // back to the raw reading rather than show a ring that grew on compaction.

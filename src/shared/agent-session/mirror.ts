@@ -33,6 +33,10 @@ export interface SessionState {
    *  没有回合在跑），与 agentStatus 同一事件原子更新；外推读法见
    *  useChatController 的 turnElapsedMs。 */
   turnMs?: number
+  /** Current epoch cut target for the ring's nano projection (2026-11-22).
+   *  Rides the status event, refreshed every request build. Absent until the
+   *  first build or on hosts that don't carry it → ring falls back cold. */
+  epochTarget?: number
 }
 
 export function freshSessionState(): SessionState {
@@ -168,6 +172,9 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       // 清（键离开 state，持久化/比较语义与 PlanManager.clearCurrentMarker
       // 同一条纪律）。
       state.turnMs = data.turnMs
+      // epoch 切深线与状态词同事件到达，但与 agentStatus 引用无关：每请求
+      // 都会刷新（status 可能是同一个词），故不能挂在 agentStatus 门后面。
+      state.epochTarget = data.epochTarget
       return true
     }
     case 'plan_update': {
@@ -257,6 +264,7 @@ export function seedSessionState(state: SessionState, snapshot: {
   // 快照与事件同一字段（session-manager 的 turnMsOf 两处 spread）：重连进
   // 正在跑的回合，live 时长立刻有锚点。
   state.turnMs = snapshot.status.turnMs
+  state.epochTarget = snapshot.status.epochTarget
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
   state.fileChanges = Array.isArray(snapshot.fileChanges) ? (snapshot.fileChanges as SessionFileChange[]) : []

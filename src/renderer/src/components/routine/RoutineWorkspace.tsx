@@ -505,10 +505,11 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
   // compaction pass, against the effective model's window — the conversation's
   // own profile choice (the runner seeds it at session creation), falling back
   // to the global default / any profile / 128K, the same chain App.tsx uses
-  // for the main chat. The window is declared first because the projection now
-  // needs it: the merged fit gate only archives above 60% of the window
-  // (PLAN-nano-light-trigger-merge W1), and a gate-blind ring would price
-  // archived results whole.
+  // for the main chat. The projection needs the window to price the tail's
+  // nano placeholders against a cut target; this host cannot resolve the
+  // model's maxTokens, so it passes only the total window (the documented
+  // fallback) and draws no input-budget tick — 方案 A. The old 0.60×
+  // "merged fit gate" is gone with the four-gate pipeline (epoch, 2026-11-21).
   const contextUsed = useMemo(
     () => projectContextUsed(session.messages, session.lastCompaction, contextLength),
     [session.messages, session.lastCompaction, contextLength],

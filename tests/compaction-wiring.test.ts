@@ -96,15 +96,14 @@ describe('compaction P0 wiring: engine → protocol → mirror → UI', () => {
 
   it('the chat surface projects the ring after compaction and renders the chip', () => {
     expectLines(ring, /export function projectContextUsed\(/, 'ContextRing.tsx')
-    // The window reaches the projection (PLAN-nano-light-trigger-merge W1):
-    // without it the merged fit gate never opens and the ring prices archived
-    // results whole.
-    expectLines(ring, /export function estimateContextUsed\(messages: AgentMessage\[\], contextLength\?: number\)/, 'ContextRing.tsx')
-    // 不带尾逗号：钉的是「投影第三参拿到窗口」这个语义，不是行形态 ——
-    // prettier（printWidth 160）会把 projectContextUsed 的多行签名折成单行，
-    // 两种形态都必须放行（2026-11-21 折行实锤过一次）。
-    expectLines(ring, /contextLength\?: number/, 'ContextRing.tsx')
-    expectLines(chatView, /projectContextUsed\(messages, lastCompaction, contextLength\)/, 'ChatView.tsx')
+    // 两个分母都到投影：contextLength 是环的显示分母（方案 A），inputBudget
+    // 是引擎压缩真正除以的输入侧窗口；后者缺位时投影回落到前者。
+    expectLines(ring, /export function estimateContextUsed\(messages: AgentMessage\[\], contextLength\?: number, inputBudget\?: number, epochTarget\?: number\)/, 'ContextRing.tsx')
+    expectLines(ring, /export function projectContextUsed\([^)]*inputBudget\?: number, epochTarget\?: number\)/, 'ContextRing.tsx')
+    expectLines(ring, /const projectionWindow = inputBudget \?\? contextLength/, 'ContextRing.tsx')
+    expectLines(ring, /estimateAfterNanoTokens\(messages\.slice\(i \+ 1\), projectionWindow, t, epochTarget\)/, 'ContextRing.tsx')
+    expectLines(chatView, /projectContextUsed\(messages, lastCompaction, contextLength, inputBudget, epochTarget\)/, 'ChatView.tsx')
+    expectLines(chatView, /\[messages, lastCompaction, contextLength, inputBudget, epochTarget\]/, 'ChatView.tsx')
     expectLines(app, /lastCompaction=\{lastCompaction\}/, 'App.tsx')
     expectLines(chatView, /lastCompaction=\{lastCompaction\}/, 'ChatView.tsx', 2) // welcome + main composers
     expectLines(inputArea, /lastCompaction\?: CompactionEvent \| null/, 'InputArea.tsx')

@@ -63,6 +63,10 @@ export interface HostedAgentSession {
    *  re-attach snapshot does not carry it, so it reads null after a restart
    *  until the session compacts again. */
   lastCompaction: CompactionEvent | null
+  /** Current epoch cut target for the context ring's nano projection. Rides
+   *  the status event (and the re-attach snapshot's `status` carrier), so it
+   *  refreshes every request even when the status word stays the same. */
+  epochTarget?: number
   /** Send a user message; `annotation` is appended verbatim (callers pass
    *  context like the routine assistant's live-form block). */
   send: (text: string, annotation?: string) => void
@@ -87,6 +91,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
   const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
+  const [epochTarget, setEpochTarget] = useState<number | undefined>(undefined)
   // Nothing to restore without a conversation (fixed per keyed mount).
   const [restoring, setRestoring] = useState(convId != null)
 
@@ -97,7 +102,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
   // cadence the engine leg already uses. Cold paths (restore, send's
   // catch-up, the error setter) call `sync` directly — immediate, and it
   // updates the ledger the scheduled flush compares against.
-  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; lastCompaction?: CompactionEvent | null }>({})
+  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; lastCompaction?: CompactionEvent | null; epochTarget?: number }>({})
   const pendingSyncRef = useRef<SessionState | null>(null)
   const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const lastSyncAtRef = useRef(0)
@@ -119,6 +124,11 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     if (state.lastCompaction !== last.lastCompaction) {
       last.lastCompaction = state.lastCompaction
       setLastCompaction(state.lastCompaction)
+    }
+    // 每请求刷新的切深线：status 词可能不变，故独立比较而非挂在 agentStatus 门里。
+    if (state.epochTarget !== last.epochTarget) {
+      last.epochTarget = state.epochTarget
+      setEpochTarget(state.epochTarget)
     }
   }, [])
 
@@ -261,6 +271,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     isBusy: isActiveStatus(agentStatus),
     restoring,
     lastCompaction,
+    epochTarget,
     send,
     cancel: useCallback(() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }, [convId]),
     engineCall,

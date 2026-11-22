@@ -176,6 +176,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
     isLoadingConversation,
     messages,
     lastCompaction,
+    epochTarget,
     isRequesting,
     getWorkspaceDir,
     handleRequest,
@@ -856,6 +857,7 @@ function PopoutContent({ fixedConvId, projectId }: { fixedConvId?: string; proje
       isRequesting={isRequesting}
       isLoadingConversation={isLoadingConversation || !booted}
       lastCompaction={lastCompaction as CompactionEvent | null}
+      epochTarget={epochTarget}
       agentStatus={agentStatus}
       turnElapsedMs={turnElapsedMs}
       streamingBlocks={streamingBlocks}

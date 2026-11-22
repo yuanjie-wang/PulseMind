@@ -323,8 +323,11 @@ export interface CompactionEvent {
  *  `turnMs`（2026-11-20「处理时间偏差太大」）：回合在跑时 TurnClock 的运行段
  *  累计锚点（每次 notify 刷新，流式期 ~12.5/s）。渲染端据此显示 live 总时长、
  *  两次锚点之间按「运行态推进、等待态冻结」外推、存档时落近似总章。时钟
- *  停了不带——undefined 才是「没有回合在跑」，0 会是假话。 */
-export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number; turnMs?: number }
+ *  停了不带——undefined 才是「没有回合在跑」，0 会是假话。
+ *  `epochTarget`（2026-11-22）：当前请求的 epoch 切深线（每次 build 刷新），
+ *  环的 nano 投影按它定价 tail。热态 p75 线与冷启动可差 ±30K，cut-only 的
+ *  CompactionEvent 在 directCut 清空样本后会立刻陈旧，故走 status 载体。 */
+export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number; turnMs?: number; epochTarget?: number }
 
 /** One file the session's own tools created or rewrote (2026-10-28 工作区树
  *  会话改动着色). `kind` is fixed at the FIRST touch and never revised: a file

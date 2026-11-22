@@ -208,6 +208,7 @@ function AppContent(): React.ReactElement {
     isLoadingConversation,
     messages,
     lastCompaction,
+    epochTarget,
     isRequesting,
     createNewConversation,
     getWorkspaceDir,
@@ -860,6 +861,7 @@ function AppContent(): React.ReactElement {
                     isRequesting={isRequesting}
                     isLoadingConversation={isLoadingConversation}
                     lastCompaction={lastCompaction}
+                    epochTarget={epochTarget}
                     agentStatus={agentStatus}
                     turnElapsedMs={turnElapsedMs}
                     streamingBlocks={streamingBlocks}

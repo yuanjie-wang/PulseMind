@@ -48,6 +48,10 @@ interface ChatViewProps {
   /** The active conversation's last compaction pass — drives the ring's
    *  post-compaction projection and the composer's 已压缩 chip. */
   lastCompaction?: CompactionEvent | null
+  /** The engine's CURRENT epoch cut target for the ring's nano projection.
+   *  Unlike lastCompaction (cut-only) this refreshes every request, so a
+   *  warmed p75 line reaches the ring. Absent on hosted hosts → cold fallback. */
+  epochTarget?: number
   /** True while a switched-to conversation is still loading from the DB —
    *  suppresses the welcome screen so it doesn't flash before messages land. */
   isLoadingConversation?: boolean
@@ -196,6 +200,7 @@ function ChatView({
   messages,
   isRequesting,
   lastCompaction,
+  epochTarget,
   isLoadingConversation,
   agentStatus,
   turnElapsedMs,
@@ -281,12 +286,15 @@ function ChatView({
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
-  // The window rides along so the ring prices the copy the way the next build
-  // will: the merged fit gate only archives above 60% of it (PLAN-nano-light-
-  // trigger-merge W1), and a gate-blind ring would price archived results whole.
+  // Both windows ride along: `contextLength` is the total window (the ring's
+  // displayed denominator, 方案 A), `inputBudget` is the engine's spendable
+  // input side — the epoch cut target the tail projection divides by. A
+  // ring priced against the TOTAL window would ask nano for a depth the
+  // pipeline never cuts to. The old 0.60× "merged fit gate" is gone with the
+  // four-gate pipeline (epoch, 2026-11-21).
   const contextUsed = useMemo(
-    () => projectContextUsed(messages, lastCompaction, contextLength),
-    [messages, lastCompaction, contextLength],
+    () => projectContextUsed(messages, lastCompaction, contextLength, inputBudget, epochTarget),
+    [messages, lastCompaction, contextLength, inputBudget, epochTarget],
   )
   // The other half of the context panel's story: how much of what we ship is
   // already cached. Reads the same `messages` the ring does and leans on the

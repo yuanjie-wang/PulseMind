@@ -71,6 +71,7 @@ export interface SessionEngineHandle {
   /** 运行中回合的 TurnClock 锚点（2026-11-20）：status 事件捎带、缺席时
    *  undefined。live 显示与存档快照经 useChatController 外推消费。 */
   readonly turnMs?: number
+  readonly epochTarget?: number
   readonly streamingBlocks: ContentBlock[]
   readonly plan: Plan | null
   getHistorySummary(): { firstKeptId: string; text: string } | null
@@ -210,6 +211,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
   const [turnMs, setTurnMs] = useState<number | undefined>(undefined)
+  const [epochTarget, setEpochTarget] = useState<number | undefined>(undefined)
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
@@ -255,6 +257,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     get messages() { return st.messages },
     get agentStatus() { return st.agentStatus },
     get turnMs() { return st.turnMs },
+    get epochTarget() { return st.epochTarget },
     get streamingBlocks() { return st.streamingBlocks },
     get plan() { return st.plan },
     getHistorySummary() { return st.historySummary },
@@ -332,7 +335,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   // per tick anyway. The rAF/80ms schedule caps this leg at the cadence the
   // engine leg already uses; document.hidden skips rAF, which never fires in
   // a hidden window.
-  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; plan?: Plan | null }>({})
+  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; plan?: Plan | null; epochTarget?: number }>({})
   // The pending sync carries the session it was scheduled FOR. The scheduler
   // only accepts the active conversation's events, but the flush fires up to
   // one coalesce window (~80ms) later — after 新建任务 / a sidebar switch has
@@ -372,6 +375,12 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setAgentStatus(st.agentStatus)
       // turnMs 与 agentStatus 同一事件原子更新，跟着同一次 flush 过 React。
       setTurnMs(st.turnMs)
+    }
+    // 切深线每请求刷新，但 status 词可能不变（executing→executing），不能
+    // 挂在上面的 agentStatus 门里 —— 独立比较，独立过 React。
+    if (st.epochTarget !== last.epochTarget) {
+      last.epochTarget = st.epochTarget
+      setEpochTarget(st.epochTarget)
     }
     if (st.plan !== last.plan) {
       last.plan = st.plan
@@ -552,13 +561,15 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setAgentStatus(st.agentStatus)
       setStreamingBlocks([...st.streamingBlocks])
       setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
-      lastSyncedRef.current = { messages: st.messages, agentStatus: st.agentStatus, streamingBlocks: st.streamingBlocks, plan: st.plan }
+      lastSyncedRef.current = { messages: st.messages, agentStatus: st.agentStatus, streamingBlocks: st.streamingBlocks, plan: st.plan, epochTarget: st.epochTarget }
+      setEpochTarget(st.epochTarget)
       setLastCompaction(st.lastCompaction)
     } else {
       // A conversation this app-run never touched has no mirror — every piece
       // of active-conversation state must reset, or the previous
       // conversation's compaction chip survives the switch.
       setLastCompaction(null)
+      setEpochTarget(undefined)
     }
   }, [markConversationRead])
 
@@ -573,7 +584,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
    *  is enough to have both the session and the mirror exist. */
   const seedSessionSnapshot = useCallback((key: string, snapshot: {
     messages: unknown[]
-    status: { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string }
+    status: { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; epochTarget?: number }
     streamingBlocks: unknown[]
     plan: unknown
     fileChanges?: unknown
@@ -728,6 +739,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     // Last compaction pass of the active conversation (composer chip + ring
     // projection); null until the engine compacts something.
     lastCompaction,
+    // Current epoch cut target for the ring's nano projection (warm p75 line).
+    epochTarget,
     // Engine proxies
     approveTool,
     rejectTool,
