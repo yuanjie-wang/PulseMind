@@ -124,9 +124,12 @@ describe('Composer forwards the paste event', () => {
 
   it('paints the dashed receptacle only through the dropActive class', () => {
     // The root element also carries `pm-composer-root` (responsive composer
-    // round, same wave); the drop paint must still ride SOLELY on the
-    // conditional flag — no static drop class, no styling keyed off anything else.
-    expect(src).toMatch(/className=\{`pm-composer-root\$\{dropActive \? ' pm-drop-active' : ''\}`\}/)
+    // round, same wave) and appends the voice-phase classes (voice-input
+    // round); the drop paint must still ride SOLELY on the conditional flag —
+    // no static drop class, no styling keyed off anything else.
+    expect(src).toMatch(
+      /className=\{`pm-composer-root\$\{dropActive \? ' pm-drop-active' : ''\}\$\{voiceClass\}`\}/
+    )
     expect(src).toMatch(/\.pm-drop-active \.ant-sender/)
     expect(src).toMatch(/border-style:\s*dashed/)
   })

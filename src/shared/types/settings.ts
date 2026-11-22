@@ -117,8 +117,9 @@ export interface AppSettings {
   keepAwakeEnabled?: boolean
   /** 运行历史自动清理策略：保留天数（未设 / 0 = 永久保留）。启动时按此清理已结束的运行记录。 */
   routineRunRetentionDays?: number
-  /** 语音输入的转写语言 hint（PLAN-voice-input M2，未设 = 'auto'）。传给
-   *  SenseVoice 的 language 参数；'auto' 由模型自判（支持中/粤/英/日/韩）。 */
+  /** 语音输入的转写语言 hint（PLAN-voice-input M2；未设/非法 = 'zh'，2026-11-22
+   *  缺省裁定）。传给 SenseVoice 的 language 参数；'auto' 由模型自判（支持
+   *  中/粤/英/日/韩），盘上显式写过的 'auto' 原样尊重。 */
   voiceLanguage?: 'auto' | 'zh' | 'en' | 'ja' | 'ko' | 'yue'
   /** PLAN-knowledge-base D7: 导入完成后自动把新源压入编译队列。默认关（手动编译为主）。 */
   knowledge?: { autoCompile?: boolean }

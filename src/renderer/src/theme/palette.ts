@@ -265,6 +265,12 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     /** antd's red-5 as a *status* colour (a field's error text, an inline
      *  failure) — a step brighter than `--pm-error`'s red-7. */
     '--pm-error-status': '#ff4d4f',
+    /** Voice dictation, NOT a failure: the mic-live edge and the glow beneath
+     *  it. Its own role even though it currently shares red-5 with
+     *  `--pm-error-status` — red here reads as "listening", and the two must
+     *  stay free to diverge. */
+    '--pm-rec-accent': '#ff4d4f',
+    '--pm-rec-glow': 'rgba(255, 77, 79, 0.32)',
     /** antd green-6 as a status colour — the pair of --pm-error-status. */
     '--pm-success-status': '#52c41a',
     /** The crash screen's own red, which is the CSS keyword `red` in the source
@@ -486,6 +492,9 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-card': '#262626',
     '--pm-gold-accent': '#d89614',
     '--pm-error-status': '#ff7875',
+    /* Voice dictation, not a failure — see the light block's note. */
+    '--pm-rec-accent': '#ff7875',
+    '--pm-rec-glow': 'rgba(255, 120, 117, 0.34)',
     '--pm-success-status': '#73d13d',
     '--pm-error-bright': '#ff7875',
     '--pm-card-soft': '#1f1f1f',

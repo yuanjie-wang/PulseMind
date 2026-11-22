@@ -169,6 +169,28 @@ describe('渲染端接线', () => {
     expect(input).toContain('insertVoiceText')
   })
 
+  it('麦克风 hover 提示带触发快捷键（2026-11-22，formatAccelerator 平台词汇）', () => {
+    // 平台化展示收敛在一个助手（mac ⌥V / 其余 Alt+V，shared/shortcuts 同一 formatter）——
+    // 别再手写 ⌥V 字面量进展示面
+    const util = read('src/renderer/src/utils/shortcut-display.ts')
+    expect(util).toContain("formatAccelerator('Alt+V'")
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).toContain('voiceShortcutLabel()')
+    expect(input).toContain("t('voiceInput.micStartTip'")
+    expect(input).toContain("t('voiceInput.micStopTip'")
+    // 转写中不给快捷键（⌥V 在该相位无事可做）
+    expect(input).toContain("voice.state.phase === 'transcribing'\n                        ? t('voiceInput.micTranscribing')")
+    // 设置页 hint 同源插值（composer 与设置页词汇必须一致）
+    const settings = read('src/renderer/src/components/settings/VoiceSettings.tsx')
+    expect(settings).toContain("t('voiceInput.shortcutHint', { shortcut: voiceShortcutLabel() })")
+    // 两 locale 都不留 ⌥V 字面量（占位符形态是平台词汇的唯一入口）
+    for (const loc of ['src/renderer/src/i18n/locales/zh.ts', 'src/renderer/src/i18n/locales/en.ts']) {
+      const text = read(loc)
+      expect(text).toContain('shortcutHint:')
+      expect(text).not.toMatch(/shortcutHint: '.*⌥V/)
+    }
+  })
+
   it('引导卡的消失契约（user 2026-11-20：受控 Popover 不会自己收，三个契机必须接线）', () => {
     const input = read('src/renderer/src/components/chat/InputArea.tsx')
     // overlayClassName 是外部点击判定的锚点（内容在 body portal，靠 DOM 判内外）
@@ -182,13 +204,133 @@ describe('渲染端接线', () => {
     expect(input).toContain('if (e.key !== \'Escape\') return')
   })
 
-  it('useVoiceInput 的录音形态（getUserMedia + MediaRecorder opus + Esc 取消）', () => {
+  it('useVoiceInput 的采集形态（AudioWorklet 16k PCM，不再走 MediaRecorder）', () => {
     const hook = read('src/renderer/src/components/chat/useVoiceInput.ts')
     expect(hook).toContain('getUserMedia')
-    expect(hook).toContain('audio/webm;codecs=opus')
-    expect(hook).toContain("'Escape'")
+    expect(hook).toContain('AudioWorkletNode')
+    expect(hook).toContain("addModule('./pcm-tap.worklet.js')")
+    expect(hook).toContain("'pm-pcm-tap'")
+    expect(hook).toContain('createSegmenter')
+    expect(hook).toContain('SAMPLE_RATE = 16000')
     expect(hook).toContain('asrTranscribe')
     expect(hook).toContain('onAsrModelsChanged')
+    expect(hook).toContain("'Escape'")
+    // MediaRecorder 产出 webm/opus 容器，必须整段编码完才能解码——与「逐段出字」
+    // 天然互斥，别有人把它加回来
+    expect(hook).not.toContain('new MediaRecorder')
+    expect(hook).not.toContain('audio/webm')
+    // blob: URL 会被生产 CSP(script-src 'self') 拦掉（2026-11-22 阶段 0 实测）
+    expect(hook).not.toContain('createObjectURL')
+  })
+
+  it('pcm-tap worklet 是 public/ 下的真实静态资源（blob: 会被 CSP 拦）', () => {
+    const worklet = read('src/renderer/public/pcm-tap.worklet.js')
+    expect(worklet).toContain('class PcmTap extends AudioWorkletProcessor')
+    expect(worklet).toContain("registerProcessor('pm-pcm-tap'")
+    // 批量投递后再切片复制：直接 post 复用的 buffer 会把后续写入带过去
+    expect(worklet).toContain('this.buf.slice(')
+  })
+
+  it('听写期间锁输入框（user 2026-11-22：不允许手动编辑）', () => {
+    // 选 readOnly 而不是 disabled：disabled 会把文字变灰、断掉选中复制，而听写要
+    // 持续数秒——用户得能看着已转出的文字、也要能选中它
+    const composer = read('src/renderer/src/components/chat/Composer.tsx')
+    expect(composer).toContain('readOnly?: boolean')
+    expect(composer).toContain('readOnly={readOnly}')
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).toContain("readOnly={voice.state.phase !== 'idle'}")
+    // 转写态必须有退出路径（此前 Esc 只挂 recording，按钮也不处理 transcribing）
+    expect(input).toContain("voice.state.phase === 'transcribing') voice.cancel()")
+  })
+
+  it('录音期间语音按钮形态恒定（user 2026-11-22：分段识别时不要抖动）', () => {
+    const hook = read('src/renderer/src/components/chat/useVoiceInput.ts')
+    // 秒数每秒 setState 不仅改宽按钮，还会把整棵 InputAreaImpl 重渲一遍
+    expect(hook).not.toContain('setSeconds')
+    // 「有段在转写中」在边录边转时反复进出，同样让按钮内容忽有忽无
+    expect(hook).not.toContain('setRecognizing')
+    // 不设录音时长上限（user 2026-11-22 裁定）：每段独立转写，尾延迟只看最后
+    // 一段；硬停只会打断正常的长口述。hook 里因此也不该再留任何 setInterval
+    // ——计时显示在 VoiceElapsed 自己身上，那是界面的事，与采集链路无关
+    expect(hook).not.toContain('MAX_RECORD_SECONDS')
+    expect(hook).not.toContain('setInterval')
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).not.toContain('voice.state.seconds')
+    expect(input).not.toContain('voice.state.recognizing')
+    // 秒数照旧显示，但不能直接在按钮里塞裸文本：独立小组件自计时 + 固定 minWidth
+    // + tabular-nums，读数每秒在变而按钮宽度一秒不变（user 2026-11-22）
+    expect(input).toContain('const VoiceElapsed = React.memo')
+    expect(input).toContain('minWidth: 32')
+    expect(input).toContain('fontVariantNumeric')
+    expect(input).toContain("voice.state.phase === 'recording' && <VoiceElapsed />")
+    // 按钮文字只在用户点停之后的 transcribing 态出现
+    expect(input).toContain("voice.state.phase === 'transcribing' && (")
+  })
+
+  it('录音时输入区边框呼吸、阴影转红（user 2026-11-22：阴影也要变、更偏红）', () => {
+    const composer = read('src/renderer/src/components/chat/Composer.tsx')
+    expect(composer).toContain("voicePhase?: 'idle' | 'recording' | 'transcribing'")
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).toContain('voicePhase={voice.state.phase}')
+    // 边框呼吸 = 静止的浅灰 → 录音红。关键约束是「只动颜色」：卡片高度被测量
+    // 用于对话区底部留白，任何尺寸属性混进关键帧都会让整个布局跟着抖。
+    const breath = composer.match(/@keyframes pm-voice-breath \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''
+    expect(breath).toContain('border-color: var(--pm-border-veil)')
+    expect(breath).toContain('border-color: var(--pm-rec-accent)')
+    expect([...new Set([...breath.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]))]).toEqual(['border-color'])
+    // 发光走 ::after，不走卡片自己的 box-shadow：基线上那条带 !important，
+    // 而「重要作者声明」在级联里高于动画声明——写在那里会静默失效。
+    const glow = composer.match(/@keyframes pm-voice-glow \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''
+    expect([...new Set([...glow.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]))]).toEqual(['opacity'])
+    expect(composer).toContain('box-shadow: 0 5px 20px 2px var(--pm-rec-glow)')
+    // 转写态（麦克风已关）保持静态红边与发光，不继续呼吸
+    expect(composer).toContain('.pm-composer-root.pm-voice-busy .ant-sender {')
+    expect(composer).toContain('.pm-composer-root.pm-voice-busy .ant-sender::after {')
+    expect(composer).toContain('animation: pm-voice-breath 2.4s ease-in-out infinite')
+    expect(composer).toContain('animation: pm-voice-glow 2.4s ease-in-out infinite')
+    // 减少动效下停掉呼吸，但红色边框与发光必须留着——否则录音就没了可见指示
+    expect(composer).toContain('.pm-composer-root.pm-voice-recording .ant-sender { animation: none; }')
+    expect(composer).toContain('.pm-composer-root.pm-voice-recording .ant-sender::after { animation: none; }')
+    // 暖金还给状态点：录音色不再是 gold
+    expect(composer).not.toContain('border-color: var(--pm-gold-accent)')
+  })
+
+  it('语音插入用冻结锚点，不读实时选区（user 2026-11-22：光标不可见却能移动）', () => {
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    // readonly textarea 不绘制 caret，但点击/方向键仍能移动选区。插入点若跟着
+    // 实时选区走，听写中随手点一下中间就会插错位置；点成「选中一段」更糟——
+    // slice(0,start)+text+slice(end) 会把选中内容整段替换掉，用户没编辑、
+    // 自己写的字却消失了。
+    expect(input).toContain('voiceAnchorRef')
+    const from = input.indexOf('const insertVoiceText')
+    const insertBody = input.slice(from, input.indexOf('}, [])', from))
+    expect(insertBody).not.toContain('ta.selectionStart')
+    expect(insertBody).not.toContain('ta.selectionEnd')
+    // end 恒等于 start：只插入、永不替换
+    expect(insertBody).toContain('const end = start')
+    // 锚点在进入录音时取一次，回到 idle 清空
+    expect(input).toContain("voice.state.phase === 'recording'")
+    expect(input).toContain('voiceAnchorRef.current = null')
+  })
+
+  it('取消听写回滚草稿（Esc 语义 = 当这次没发生）', () => {
+    const hook = read('src/renderer/src/components/chat/useVoiceInput.ts')
+    expect(hook).toContain('draftSnapshotRef')
+    expect(hook).toContain('writeDraftRef.current?.(snapshot)')
+    // 快照在开录成功之后取：麦克风被拒时不该留下一个可回滚的假快照
+    expect(hook).toContain('draftSnapshotRef.current = readDraftRef.current ? readDraftRef.current() : null')
+    // finish() 会清空快照，cancel 必须先取再 finish——顺序反了就回滚不到。
+    // 比位置前先剥掉注释行：注释里提到 finish() 会让 indexOf 指到注释上（本断言
+    // 第一版正是这样误报的，比较的是两行注释）。切片也收到 cancel 函数体为止。
+    const cancelBody = hook.slice(hook.indexOf('const cancel = useCallback'), hook.indexOf('const start = useCallback'))
+    const cancelCode = cancelBody
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+    expect(cancelCode.indexOf('draftSnapshotRef.current')).toBeLessThan(cancelCode.indexOf('finish()'))
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    expect(input).toContain('readDraft: () => inputValueRef.current')
+    expect(input).toContain('writeDraft: writeVoiceDraft')
   })
 
   it('设置页：VoiceSettings 挂进 SettingsPage（菜单 + renderSection + settingsTab 类型）', () => {
@@ -204,7 +346,9 @@ describe('渲染端接线', () => {
     expect(en).toContain('voiceInput: {')
     for (const key of [
       'micStart',
+      'micStartTip',
       'micStop',
+      'micStopTip',
       'guideTitle',
       'guideImport',
       'imported',

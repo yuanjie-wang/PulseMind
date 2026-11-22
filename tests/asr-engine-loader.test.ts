@@ -91,7 +91,8 @@ describe('verifyEngineSha — sha 门', () => {
       },
     })
     const mod = await freshModule()
-    expect(mod.verifyEngineSha(dir)).toEqual({ ok: true, bad: [] })
+    // sha 门是异步流式的（review 20261122 B3）：34MB 引擎不许同步占住主进程
+    expect(await mod.verifyEngineSha(dir)).toEqual({ ok: true, bad: [] })
   })
 
   it('文件被替换 → 不 ok，bad 带文件名与前后缀对照', async () => {
@@ -103,7 +104,7 @@ describe('verifyEngineSha — sha 门', () => {
       },
     })
     const mod = await freshModule()
-    const r = mod.verifyEngineSha(dir)
+    const r = await mod.verifyEngineSha(dir)
     expect(r.ok).toBe(false)
     expect(r.bad[0]).toContain('sherpa-onnx.node')
     expect(r.bad[0]).toContain('mismatch')
@@ -114,7 +115,7 @@ describe('verifyEngineSha — sha 门', () => {
       manifest: { version: '2.0.2', files: { 'ghost.dylib': 'a'.repeat(64) } },
     })
     const mod = await freshModule()
-    const r = mod.verifyEngineSha(dir)
+    const r = await mod.verifyEngineSha(dir)
     expect(r.ok).toBe(false)
     expect(r.bad[0]).toContain('missing')
   })
@@ -123,7 +124,7 @@ describe('verifyEngineSha — sha 门', () => {
     const dir = makeEngineDir({ manifest: null })
     writeFileSync(join(dir, 'manifest.json'), 'not json at all', 'utf-8')
     const mod = await freshModule()
-    const r = mod.verifyEngineSha(dir)
+    const r = await mod.verifyEngineSha(dir)
     expect(r.ok).toBe(false)
     expect(r.bad[0]).toContain('manifest.json')
   })

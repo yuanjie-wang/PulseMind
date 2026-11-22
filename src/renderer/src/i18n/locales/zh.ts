@@ -241,7 +241,7 @@ const zh = {
     routineExtractEmpty: '没能从当前对话中提炼出日常任务',
     routineExtractFailed: '提炼失败，请重试',
     routineExtractNoKey: '请先在设置中配置 API Key',
-    turnElapsed: '本回合已运行 {{time}}',
+    turnElapsed: '执行中，已运行 {{time}}',
     inputTokens: '上行 Token',
     outputTokens: '下行 Token',
     promptCacheHit: '缓存命中率',
@@ -1323,7 +1323,9 @@ const zh = {
   // ── 语音输入（PLAN-voice-input M2）──
   voiceInput: {
     micStart: '语音输入（说完了再点一次停止）',
+    micStartTip: '语音输入 {{shortcut}}（说完了再点一次停止）',
     micStop: '停止并转写',
+    micStopTip: '停止并转写 {{shortcut}}',
     micTranscribing: '转写中…',
     recordingHint: '正在录音 {{seconds}}s — 再点停止出字，Esc 取消',
     emptyResult: '没听清——靠近麦克风再试一次',
@@ -1342,6 +1344,7 @@ const zh = {
     guideImporting: '校验中…',
     guideRemove: '删除模型',
     guideRemoveConfirm: '删除后语音输入不可用，重新导入即可恢复。确认删除？',
+    guideRemoveFailed: '删除模型失败',
     imported: '模型包导入成功，语音输入已就绪',
     importFailed: '导入被拒绝',
     engineTitle: '语音引擎',
@@ -1360,7 +1363,7 @@ const zh = {
     modelVersion: '版本',
     modelSize: '大小',
     supportedModels: '支持的模型包',
-    shortcutHint: '应用内快捷键 ⌥V（聚焦输入框时）可随时开始/停止',
+    shortcutHint: '应用内快捷键 {{shortcut}}（聚焦输入框时）可随时开始/停止',
   },
 }
 

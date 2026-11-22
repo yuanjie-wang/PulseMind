@@ -29,6 +29,7 @@ import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
+import { voiceShortcutLabel } from '../../utils/shortcut-display'
 import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-attach'
 import { normalizePathInput } from '../../../../shared/path-input'
 import { notifyFailure } from '../../utils/notify'
@@ -79,6 +80,32 @@ const TRIGGER_SECTION_ORDER: TriggerKind[] = ['command', 'expert', 'skill']
 function approvalButtonColor(mode: SandboxApprovalMode): string {
   return mode === 'auto' ? UNRESTRICTED_COLOR : 'var(--pm-text-secondary)'
 }
+
+/** 录音计时：只在 recording 态挂载，秒数 tick 在它自己身上。
+ *  单独成组件是关键——秒数若放进 InputAreaImpl 的 state，每秒一次 setState 会把
+ *  整棵 1690 行的树重渲一遍（user 2026-11-22 反馈分段识别时按钮抖动）。
+ *  固定宽度 + tabular-nums：读数每秒在变，按钮宽度一秒都不变。 */
+const VoiceElapsed = React.memo(function VoiceElapsed(): React.ReactElement {
+  const [sec, setSec] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setSec((s) => s + 1), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  return (
+    <span
+      style={{
+        marginLeft: 6,
+        minWidth: 32,
+        display: 'inline-block',
+        textAlign: 'right',
+        fontSize: 12,
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    >
+      {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, '0')}
+    </span>
+  )
+})
 
 function InputAreaImpl({
   isRequesting,
@@ -284,23 +311,66 @@ function InputAreaImpl({
   // timestamped workspace deliberately shows nothing.
   const showGitBranch = (features?.gitBranch ?? features === undefined) && !!gitProjectId
   const showVoice = features?.voice ?? features === undefined
+  // 麦克风 hover 提示里的快捷键展示（⌥V mac / Alt+V 其余平台）。
+  const voiceShortcut = voiceShortcutLabel()
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, driven by the autoFocus rule below. */
   const composerRef = useRef<ComposerHandle>(null)
+  // 插入与回滚都要读「当下」的草稿（回调经 hook 的 ref 转发，闭包会旧），镜像一份。
+  const inputValueRef = useRef(inputValue)
+  inputValueRef.current = inputValue
+
+  /** 取消听写时把草稿整体写回快照。走与插入同一条受控路径（setInputValue），
+   *  光标落到末尾——用户按 Esc 的预期是「当这次没发生」，不该留下半截文字。 */
+  const writeVoiceDraft = useCallback((text: string): void => {
+    const next = clampComposerInput(text)
+    setInputValue(next)
+    requestAnimationFrame(() => {
+      const el = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (el) {
+        el.focus()
+        const caret = Math.min(next.length, el.value.length)
+        el.setSelectionRange(caret, caret)
+      }
+    })
+  }, [])
 
   // ── 语音输入（PLAN-voice-input §3.5）──
   // 录音态机与转写走 useVoiceInput；转写结果插回光标处（不自动发送，可编辑）。
-  const voice = useVoiceInput({ t })
-  // 插入要读「当下」的草稿（回调经 hook 的 ref 转发，闭包会旧），镜像一份。
-  const inputValueRef = useRef(inputValue)
-  inputValueRef.current = inputValue
+  // readDraft/writeDraft 供取消回滚，见 useVoiceInput 的 cancel()。
+  const voice = useVoiceInput({ t, readDraft: () => inputValueRef.current, writeDraft: writeVoiceDraft })
+
+  // 语音插入锚点：进入录音那一刻定下插入位置，之后只往后推进。
+  // 不能每段都读实时选区——readOnly 只禁编辑、不禁移动选区，而听写中光标是
+  // 不显示的（Chromium 对 readonly textarea 不绘制 caret），用户随手点一下
+  // 文本中间根本不知道点中了哪，下一段就会插错位置；更糟的是若点成「选中一段」
+  // 想复制，slice(0,start)+text+slice(end) 会把选中内容整段替换掉——用户没编辑，
+  // 自己写的字却消失了（user 2026-11-22 反馈「光标不显示却能改变位置」）。
+  const voiceAnchorRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (voice.state.phase === 'recording') {
+      // 只在进入录音的那一刻取一次。transcribing 不清：最后一段还要用它落位。
+      if (voiceAnchorRef.current === null) {
+        const ta = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
+        const at = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : inputValueRef.current.length
+        voiceAnchorRef.current = Math.min(at, inputValueRef.current.length)
+      }
+    } else if (voice.state.phase === 'idle') {
+      voiceAnchorRef.current = null
+    }
+  }, [voice.state.phase])
+
   const insertVoiceText = useCallback((text: string): void => {
     const prev = inputValueRef.current
-    const ta = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
-    const start = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : prev.length
-    const end = ta && typeof ta.selectionEnd === 'number' ? ta.selectionEnd : start
-    // 与既有内容留一个空格（除非行首/贴着空白），语音和手打互不粘连
-    const joiner = start > 0 && !/\s$/.test(prev.slice(0, start)) ? ' ' : ''
+    // 插入点取自冻结锚点，不读实时选区。end 恒等于 start，所以只会插入、
+    // 永不替换——听写中选中的文字只用于复制，不会被吃掉。
+    const start = Math.min(voiceAnchorRef.current ?? prev.length, prev.length)
+    const end = start
+    // 只在两侧都是 ASCII 字母数字时补空格（英文词不能粘连）；中文逐段追加本来
+    // 就不需要空格——无条件补会把「你好」+「世界」变成「你好 世界」。
+    const before = prev.slice(0, start)
+    const needsSpace = start > 0 && !/\s$/.test(before) && /[A-Za-z0-9]$/.test(before) && /^[A-Za-z0-9]/.test(text)
+    const joiner = needsSpace ? ' ' : ''
     const next = clampComposerInput(`${prev.slice(0, start)}${joiner}${text}${prev.slice(end)}`)
     const caret = Math.min(next.length, start + joiner.length + text.length)
     setInputValue(next)
@@ -1067,6 +1137,7 @@ function InputAreaImpl({
         onCancel={onCancel}
         isRequesting={isRequesting}
         disabled={isInputDisabled}
+        readOnly={voice.state.phase !== 'idle'}
         sendBlocked={sendBlocked}
         onSendBlocked={onSendBlocked}
         sendAccentHue={sendAccentHue}
@@ -1074,6 +1145,7 @@ function InputAreaImpl({
         layout={layout}
         onPaste={handlePaste}
         dropActive={dragActive}
+        voicePhase={voice.state.phase}
         onCardBand={onCardBand}
         autoFocus={autoFocus ?? !hasMessages}
         placeholder={
@@ -1609,6 +1681,15 @@ function InputAreaImpl({
                   ref={micBtnRef}
                   size="small"
                   type="text"
+                  // hover 提示带触发快捷键（aria-label 不动——图标钮的可访问名
+                  // 是探针的定位锚；原生 title 在可访问名计算中被 aria-label 压住）。
+                  title={
+                    voice.state.phase === 'recording'
+                      ? t('voiceInput.micStopTip', { shortcut: voiceShortcut })
+                      : voice.state.phase === 'transcribing'
+                        ? t('voiceInput.micTranscribing')
+                        : t('voiceInput.micStartTip', { shortcut: voiceShortcut })
+                  }
                   aria-label={
                     voice.state.phase === 'recording'
                       ? t('voiceInput.micStop')
@@ -1623,6 +1704,9 @@ function InputAreaImpl({
                   }
                   onClick={() => {
                     if (voice.state.phase === 'recording') voice.stop()
+                    // 转写态此前没有退出路径（Esc 只挂在 recording），一旦卡住
+                    // 只能等或刷新——补上取消
+                    else if (voice.state.phase === 'transcribing') voice.cancel()
                     else if (voice.state.guideVisible) voice.dismissGuide()
                     else if (voice.state.phase === 'idle') voice.start()
                   }}
@@ -1632,8 +1716,12 @@ function InputAreaImpl({
                     color: voice.state.phase === 'recording' ? 'var(--pm-error, #cf1322)' : 'var(--pm-text-secondary)'
                   }}
                 >
-                  {voice.state.phase === 'recording' && (
-                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{voice.state.seconds}s</span>
+                  {/* 录音期间按钮宽度必须恒定：秒数交给固定宽度的 VoiceElapsed 自计时，
+                      读数变、宽度不变（user 2026-11-22 反馈分段识别时按钮抖动）。 */}
+                  {voice.state.phase === 'recording' && <VoiceElapsed />}
+                  {/* 形态只在用户点停之后才换：spinner + 文案 */}
+                  {voice.state.phase === 'transcribing' && (
+                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--pm-text-secondary)' }}>{t('voiceInput.micTranscribing')}</span>
                   )}
                 </Button>
               </Popover>

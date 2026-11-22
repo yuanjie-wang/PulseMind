@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { normalizePathInput } from '../../shared/path-input'
 
@@ -108,8 +108,8 @@ export function resolveAsrEngineDir(): AsrEngineDir {
         dir: c.dir,
         source: c.source,
         version: readManifestVersion(c.dir) ?? readDevPackageVersion(c.dir) ?? 'unknown',
-        // sha 门不在 resolve 里跑（每次校验 34MB 太贵）——识别器初始化时
-        // 对 hasManifest 的目录调 verifyEngineSha 一次。
+        // sha 门不在 resolve 里跑（每次校验 34MB 太贵）——只在转写前置
+        // （asr-recognizer 的 prepareEngine）对 hasManifest 的目录调一次。
         hasManifest: existsSync(join(c.dir, 'manifest.json')),
       }
     }
@@ -146,8 +146,23 @@ function readDevPackageVersion(dir: string): string | null {
   }
 }
 
-/** 引擎 sha 门：对 manifest.json.files 逐文件校验（prepare 脚本产出的清单） */
-export function verifyEngineSha(dir: string): { ok: boolean; bad: string[] } {
+/**
+ * 流式 sha256（1MB 块）。引擎包 34MB 级，整文件 readFileSync 会同步占满主进程
+ * 事件循环数秒（review 20261122 B3）；流在块间天然让出，同 model-manager 纪律。
+ */
+async function sha256FileStreamed(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  const stream = createReadStream(path, { highWaterMark: 1024 * 1024 })
+  for await (const chunk of stream) hash.update(chunk as Buffer)
+  return hash.digest('hex')
+}
+
+/**
+ * 引擎 sha 门：对 manifest.json.files 逐文件校验（prepare 脚本产出的清单）。
+ * 异步 + 流式：调用方是转写前置路径（asr-recognizer 的 prepareEngine），
+ * 绝不能再让一次状态查询在主进程上同步算完 34MB。
+ */
+export async function verifyEngineSha(dir: string): Promise<{ ok: boolean; bad: string[] }> {
   const manifestPath = join(dir, 'manifest.json')
   if (!existsSync(manifestPath)) return { ok: true, bad: [] }
   let files: Record<string, string> = {}
@@ -164,7 +179,7 @@ export function verifyEngineSha(dir: string): { ok: boolean; bad: string[] } {
       bad.push(`${name} (missing)`)
       continue
     }
-    const actual = createHash('sha256').update(readFileSync(p)).digest('hex')
+    const actual = await sha256FileStreamed(p)
     if (actual !== expected) bad.push(`${name} (sha256 mismatch, expected ${expected.slice(0, 12)}… got ${actual.slice(0, 12)}…)`)
   }
   return { ok: bad.length === 0, bad }

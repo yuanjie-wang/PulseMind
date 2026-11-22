@@ -89,6 +89,23 @@ describe('SettingsStore.get', () => {
     expect((await explicitSystem.get()).theme).toBe('system')
   })
 
+  // 转写语言缺省 zh（2026-11-22 user ruling）：无配置/非法值读作 zh；显式
+  // 'auto'（模型自判）仍是合法值、原样尊重——与 theme 缺省裁定同款三处同源
+  // （readVoiceLanguage 回落 + FALLBACK + 修复路径）。
+  it('defaults voiceLanguage to zh when the file carries none', async () => {
+    const noVoice = await freshStore()
+    writeRaw({ profiles: RAW_BASE.profiles, activeProfileId: RAW_BASE.activeProfileId })
+    expect((await noVoice.get()).voiceLanguage).toBe('zh')
+
+    const explicitAuto = await freshStore()
+    writeRaw({ ...RAW_BASE, voiceLanguage: 'auto' })
+    expect((await explicitAuto.get()).voiceLanguage).toBe('auto')
+
+    const junk = await freshStore()
+    writeRaw({ ...RAW_BASE, voiceLanguage: 'fr' })
+    expect((await junk.get()).voiceLanguage).toBe('zh')
+  })
+
   it('serves a cached copy until the file mtime changes', async () => {
     const store = await freshStore()
     const first = await store.get()

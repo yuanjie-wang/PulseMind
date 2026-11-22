@@ -93,6 +93,11 @@ export interface ComposerProps {
   isRequesting: boolean
   /** Blocks input entirely (e.g. a pending approval dialog owns the turn). */
   disabled?: boolean
+  /** 只锁用户输入，不阻断程序化写入。
+   *  语音听写期间用它而不选 `disabled`：`disabled` 会把文字变灰、并断掉选中复制，
+   *  而听写是个持续数秒到数十秒的过程——用户要能看着已转出的文字、也要能选中它。
+   *  user 2026-11-22：听写期间锁住输入框，不允许手动编辑。 */
+  readOnly?: boolean
   /** Dims the send button and drops Enter, leaving the textarea usable — for a
    *  task form that still owes a choice (the welcome page's project pick). */
   sendBlocked?: boolean
@@ -138,6 +143,11 @@ export interface ComposerProps {
   /** A file drag is hovering the composer — paints the card with a dashed
    *  border so the drop target is visible. Driven by InputArea's drag counter. */
   dropActive?: boolean
+  /** Voice dictation phase, for the card border's cue: `recording` breathes
+   *  toward the gold status accent, `transcribing` holds that colour steady,
+   *  `idle` leaves the resting veil. Colour only — never the card's height,
+   *  which is measured for the transcript's bottom reserve. */
+  voicePhase?: 'idle' | 'recording' | 'transcribing'
   /** Focus the textarea once mounted. */
   autoFocus?: boolean
   /** Reports the height of the band the card occupies at the bottom of the
@@ -160,6 +170,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onCancel,
     isRequesting,
     disabled,
+    readOnly,
     sendBlocked,
     onSendBlocked,
     sendAccentHue,
@@ -174,6 +185,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onKeyDown,
     onPaste,
     dropActive,
+    voicePhase,
     autoFocus,
     onCardBand,
   }: ComposerProps,
@@ -258,10 +270,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSubmit(value)
   }
 
+  // Voice classes drive the breathing border in the style sheet below:
+  // recording breathes (mic live), transcribing holds the warm colour steady
+  // (mic closed, card still busy), idle leaves the resting veil.
+  let voiceClass = ''
+  if (voicePhase === 'recording') voiceClass = ' pm-voice-busy pm-voice-recording'
+  else if (voicePhase === 'transcribing') voiceClass = ' pm-voice-busy'
+
   return (
     <div
       ref={containerRef}
-      className={`pm-composer-root${dropActive ? ' pm-drop-active' : ''}`}
+      className={`pm-composer-root${dropActive ? ' pm-drop-active' : ''}${voiceClass}`}
       style={
         layout === 'floating'
           ? {
@@ -376,6 +395,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           loading={loading}
           placeholder={placeholder}
           disabled={disabled}
+          readOnly={readOnly}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           onSubmit={(val) => {
@@ -457,6 +477,54 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           border-style: dashed;
           border-color: var(--pm-ink);
         }
+        /* Voice dictation: the card breathes from its resting veil to a red
+           "record" accent, and a red glow breathes with it (user 2026-11-22:
+           阴影也要变色，而且要更偏红). The glow cannot ride the card's own
+           box-shadow — the base rule above carries !important, and an
+           !important author declaration OUTRANKS animations in the cascade, so
+           an animated box-shadow written there would be silently dead. It rides
+           a ::after layer instead: a separate box with its own shadow, nothing
+           to fight, and (antd declares no overflow on .ant-sender) nothing to
+           clip. Its geometry matches --pm-shadow-glass so the two read as one
+           shadow changing colour.
+           Colour and opacity only, never size: the card's height is measured
+           for the transcript's bottom reserve. Transcribing holds the red edge
+           and the glow steady — the mic is closed, the card is still busy.
+           The busy rule out-specifies :focus-within above (3 classes vs 2 + a
+           pseudo-class, and it comes later) so the red edge survives the
+           focused textarea that dictation always has. */
+        @keyframes pm-voice-breath {
+          0%, 100% { border-color: var(--pm-border-veil); }
+          50% { border-color: var(--pm-rec-accent); }
+        }
+        @keyframes pm-voice-glow {
+          0%, 100% { opacity: 0; }
+          50% { opacity: 1; }
+        }
+        .pm-composer-root .ant-sender {
+          position: relative;
+        }
+        .pm-composer-root .ant-sender::after {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          border-radius: 20px;
+          pointer-events: none;
+          box-shadow: 0 5px 20px 2px var(--pm-rec-glow);
+          opacity: 0;
+        }
+        .pm-composer-root.pm-voice-busy .ant-sender {
+          border-color: var(--pm-rec-accent);
+        }
+        .pm-composer-root.pm-voice-busy .ant-sender::after {
+          opacity: 1;
+        }
+        .pm-composer-root.pm-voice-recording .ant-sender {
+          animation: pm-voice-breath 2.4s ease-in-out infinite;
+        }
+        .pm-composer-root.pm-voice-recording .ant-sender::after {
+          animation: pm-voice-glow 2.4s ease-in-out infinite;
+        }
         /* The arrow appears once the button is actually sendable: one short
            rise on the disabled -> enabled flip, not a looping breath. */
         @keyframes pm-send-arrow-in { from { opacity: 0; transform: translateY(2px); } }
@@ -466,6 +534,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         @media (prefers-reduced-motion: reduce) {
           .pm-composer-root .ant-sender { transition: none; }
           .pm-composer-root .ant-btn-primary:not(:disabled) .pm-send-arrow { animation: none; }
+          /* The breath stops, the red edge and its glow stay: a reduced-motion
+             user must still be able to tell the mic is live. */
+          .pm-composer-root.pm-voice-recording .ant-sender { animation: none; }
+          .pm-composer-root.pm-voice-recording .ant-sender::after { animation: none; }
         }
         /* The send button's fills. The base circle is the antd theme's primary,
            i.e. the ink — black in light, light in dark; pm-send lands only on

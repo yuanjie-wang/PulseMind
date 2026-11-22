@@ -57,6 +57,10 @@ type PendingResolver = {
 }
 
 let engine: AsrEngineDir | null = null
+/** 定位结果（文件齐、版本已知）；与 engine 的区别是**没有 dlopen** */
+let located: AsrEngineDir | null = null
+/** addon 是否已在本进程 dlopen 成功（转写前置才置真） */
+let enginePrepared = false
 let engineError: string | null = null
 let worker: Worker | null = null
 /** 当前 worker 的身份：换模型目录或语言都要重建 */
@@ -80,27 +84,46 @@ function touchIdleTimer(): void {
   idleTimer.unref?.()
 }
 
-function resolveEngine(): AsrEngineDir {
-  if (engine) return engine
+/**
+ * 只「定位」引擎（文件齐不齐、版本多少），**不 dlopen、不算 sha**。
+ * 状态查询走这里（review 20261122 B3）：设置页、引导卡、每个 InputArea 挂载
+ * 都会问一次状态，让一次问询付出 34MB addon 常驻 + 34MB 同步 sha 是不可接受
+ * 的（ocr.ts 同纪律：没人真要转写时不付这份钱）。
+ */
+function locateEngine(): AsrEngineDir {
+  if (located) return located
   if (engineError) throw new Error(engineError)
   try {
-    const dir = resolveAsrEngineDir()
-    if (dir.hasManifest) {
-      const sha = verifyEngineSha(dir.dir)
-      if (!sha.ok) {
-        throw new Error(`语音引擎文件校验失败（安装包损坏）：${sha.bad.join('; ')}。请重新安装应用。`)
-      }
-    }
-    // 引擎 addon 在主进程侧 require 一次：失败即「引擎不可用」的可读错误，
-    // 且 dlopen 失败不缓存——但 resolve 结果可以缓存（文件不会自己变）。
-    loadAsrAddon(dir.dir)
-    engine = dir
-    engineError = null
-    return engine
+    located = resolveAsrEngineDir()
+    return located
   } catch (e) {
     engineError = e instanceof Error ? e.message : String(e)
     throw e instanceof Error ? e : new Error(engineError)
   }
+}
+
+/**
+ * 转写前置：定位 → sha 门（异步流式，让出事件循环）→ dlopen。
+ * **全仓只有这条路径加载 addon**。
+ * 失败不置 enginePrepared，下次转写自动重试（模型/引擎可能刚修好）。
+ */
+async function prepareEngine(): Promise<AsrEngineDir> {
+  const dir = locateEngine()
+  if (engine && enginePrepared) return engine
+  if (dir.hasManifest) {
+    const sha = await verifyEngineSha(dir.dir)
+    if (!sha.ok) {
+      const msg = `语音引擎文件校验失败（安装包损坏）：${sha.bad.join('; ')}。请重新安装应用。`
+      engineError = msg
+      throw new Error(msg)
+    }
+  }
+  // addon 在主进程 require 一次：失败即「引擎不可用」的可读错误
+  loadAsrAddon(dir.dir)
+  engine = dir
+  enginePrepared = true
+  engineError = null
+  return engine
 }
 
 function rejectAllPending(message: string): void {
@@ -112,9 +135,9 @@ function rejectAllPending(message: string): void {
   }
 }
 
-function spawnWorker(modelDir: string, language: string, useItn: boolean): Promise<Worker> {
-  // 引擎定位 + sha 门在主进程进程内完成（失败给可读错误，不进 worker）
-  const eng = resolveEngine()
+async function spawnWorker(modelDir: string, language: string, useItn: boolean): Promise<Worker> {
+  // 引擎定位 + sha 门 + dlopen 都在这里完成（失败给可读错误，不进 worker）
+  const eng = await prepareEngine()
   const numThreads = Math.max(1, Math.min(4, cpus().length))
   return new Promise<Worker>((resolve, reject) => {
     let settled = false
@@ -223,16 +246,21 @@ export async function disposeAsr(): Promise<void> {
 }
 
 export function getAsrEngineStatus(workerAlive = !!worker): AsrEngineStatus {
-  // 状态查询不触发懒加载（引擎错误要能先报出来）
-  if (!engine && !engineError) {
+  // 状态查询只「定位」，**绝不 dlopen、绝不算 sha**（review 20261122 B3）。
+  // 此前这里调 resolveEngine，而它内含 loadAsrAddon —— 设置页/引导卡/每个
+  // InputArea 挂载都会问一次状态，等于为一次问询把 34MB 引擎 + ORT 常驻进
+  // 主进程（这份句柄还永不用于推理，推理在 worker 里另 require 一份）。
+  // 定位失败仍要报出来（engineError 由 locateEngine 记下）。
+  if (!located && !engineError) {
     try {
-      resolveEngine()
+      locateEngine()
     } catch {
-      /* engineError 已被 resolveEngine 记下 */
+      /* engineError 已被 locateEngine 记下 */
     }
   }
   return {
-    engine,
+    // 展示用：定位到即报（版本/平台/来源都齐），未定位到才为 null
+    engine: located,
     engineError,
     platform: `${process.platform}-${process.arch}`,
     numThreads: Math.max(1, Math.min(4, cpus().length)),

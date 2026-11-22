@@ -226,7 +226,7 @@ const micInfo = () =>
     const b = btns.find((x) => (x.getAttribute('aria-label') ?? '').includes('语音输入') || (x.getAttribute('aria-label') ?? '').includes('停止'))
     if (!b) return null
     const icon = b.querySelector('[aria-label], .anticon')?.tagName ?? null
-    return { label: b.getAttribute('aria-label'), text: b.textContent.trim(), color: getComputedStyle(b).color, hasIcon: !!icon }
+    return { label: b.getAttribute('aria-label'), title: b.getAttribute('title'), text: b.textContent.trim(), color: getComputedStyle(b).color, hasIcon: !!icon }
   })
 const composerText = () => page.evaluate(() => document.querySelector('[data-probe="composer"] textarea')?.value ?? '')
 const asrCalls = () => page.evaluate(() => window.__asrCalls)
@@ -253,6 +253,23 @@ console.log('== 位置契约：模型选择 < 麦克风 < 发送 ==')
   check('麦克风在右侧簇（不在 footerLeft 附件簇旁）', pos.mic !== null && pos.send !== null && pos.mic < pos.send, JSON.stringify(pos))
   check('模型选择在麦克风左侧', pos.model !== null && pos.model < pos.mic, JSON.stringify(pos))
   check('发送按钮在麦克风右侧', pos.mic < pos.send, JSON.stringify(pos))
+}
+
+// ── 0b · hover 提示带触发快捷键（user 2026-11-22；aria-label 不动，title 另带）──
+// 平台词汇与快捷键设置页同源（formatAccelerator）：mac ⌥V（thin space 连排），
+// 其余 Alt+V——探针在 mac 上跑就把 ⌥ 字形钉住。
+console.log('== hover 提示：title 展示触发快捷键 ==')
+{
+  const isMacPage = await page.evaluate(() => /mac/i.test(navigator.platform))
+  const idle = await micInfo()
+  check('idle title 含「语音输入」', idle?.title?.includes('语音输入') ?? false, idle?.title)
+  check(
+    'idle title 含快捷键字形',
+    isMacPage ? (idle?.title?.includes('⌥') ?? false) : (idle?.title?.includes('Alt+V') ?? false),
+    idle?.title,
+  )
+  // aria-label 仍是原 micStart 文案（可访问名是探针定位锚，不被 title 顶掉）
+  check('aria-label 未被 title 顶掉', idle?.label?.includes('语音输入') ?? false, idle?.label)
 }
 
 // ── 1 · 无模型首按 → 引导卡 ──
@@ -407,6 +424,16 @@ console.log('== Esc 取消 ==')
 await mic().click()
 await page.waitForTimeout(300)
 check('进入录音态', (await micInfo())?.label?.includes('停止并转写'), (await micInfo())?.label)
+{
+  // 录音态 title 同样带快捷键（⌥V 此刻就是「停止」）
+  const rec = await micInfo()
+  const isMacPage = await page.evaluate(() => /mac/i.test(navigator.platform))
+  check(
+    '录音态 title 带停止 + 快捷键',
+    (rec?.title?.includes('停止并转写') ?? false) && (isMacPage ? (rec?.title?.includes('⌥') ?? false) : (rec?.title?.includes('Alt+V') ?? false)),
+    rec?.title,
+  )
+}
 await page.keyboard.press('Escape')
 await page.waitForTimeout(300)
 {
@@ -480,6 +507,15 @@ await page.waitForTimeout(400)
 {
   const body = await page.evaluate(() => document.querySelector('[data-probe="settings"]')?.textContent ?? '')
   check('引擎卡：随包安装 + 版本', body.includes('随包安装') && body.includes('2.0.2'), body.slice(0, 60))
+  // 快捷键提示与 composer title 同词汇（mac ⌥V / 其余 Alt+V）——{{shortcut}} 插值落在真实 UI
+  {
+    const isMacPage = await page.evaluate(() => /mac/i.test(navigator.platform))
+    check(
+      '设置页快捷键提示带平台字形',
+      body.includes('应用内快捷键') && (isMacPage ? body.includes('⌥') : body.includes('Alt+V')),
+      isMacPage ? 'expect ⌥' : 'expect Alt+V',
+    )
+  }
   check('模型卡：已装模型 + 删除入口', body.includes('已安装模型') && body.includes('删除模型'), 'remove entry missing')
   check('支持清单列出模型 + 大小', body.includes('SenseVoice 高精度') && body.includes('≈228 MB'), 'catalog missing')
   check('语言偏好 Select 在场', await page.evaluate(() => !!document.querySelector('[data-probe="settings"] .ant-select')), 'select missing')

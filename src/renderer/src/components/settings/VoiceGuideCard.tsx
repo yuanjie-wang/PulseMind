@@ -107,9 +107,20 @@ export function VoiceGuideCard(props: VoiceGuideCardProps): React.JSX.Element {
         title: t('voiceInput.guideRemoveConfirm'),
         okButtonProps: { danger: true },
         onOk: async () => {
-          const ok = await window.electronAPI.asrRemoveModel(modelId)
-          if (ok) onChanged?.()
-          return ok
+          // 删除是破坏动作：失败必须让用户看见原因（主进程此刻可能因文件占用
+          // 抛错），静默返回 false 会让用户以为删掉了
+          try {
+            const ok = await window.electronAPI.asrRemoveModel(modelId)
+            if (ok) {
+              onChanged?.()
+            } else {
+              notify.error(t('voiceInput.guideRemoveFailed'))
+            }
+            return ok
+          } catch (e) {
+            notify.error(`${t('voiceInput.guideRemoveFailed')}：${e instanceof Error ? e.message : String(e)}`)
+            return false
+          }
         },
       })
     },

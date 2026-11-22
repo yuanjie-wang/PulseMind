@@ -145,15 +145,28 @@ export function registerAsrHandlers(): void {
     return result
   })
 
-  ipcMain.handle(IPC_CHANNELS.ASR_REMOVE_MODEL, (_event, modelId: string): boolean => {
-    const removed = removeModel(ASR_FAMILY, modelId)
-    if (removed) {
-      logMain('INFO', 'asr', `model removed: ${modelId}`)
-      // 删除模型后旧 worker 还拿着已删除的模型文件——下次转写前必须重建
-      void disposeAsr()
+  ipcMain.handle(IPC_CHANNELS.ASR_REMOVE_MODEL, async (_event, modelId: string): Promise<boolean> => {
+    // 与导入臂同一条纪律：worker 活着时 ONNX Runtime 保持 model.int8.onnx
+    // 打开/映射，Windows 上先动盘会 EBUSY/EPERM。此前这里是「先 rmSync 删盘、
+    // 再 void disposeAsr()」——顺序正好反了，且 removeModel 无 try/catch：
+    // 删不掉时异常直接抛给渲染端，Modal 静默无提示、广播也不发（设置页删完
+    // 仍显示已安装）。改为先 await 到 terminate 真完成，再动盘。
+    await disposeAsr()
+    try {
+      const removed = removeModel(ASR_FAMILY, modelId)
+      if (removed) {
+        logMain('INFO', 'asr', `model removed: ${modelId}`)
+      } else {
+        logMain('WARN', 'asr', `model remove skipped (not found or unsafe id): ${modelId}`)
+      }
+      // 成败都广播：失败时界面也需要回到磁盘上的真实状态
       broadcastModelsChanged()
+      return removed
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      logMain('WARN', 'asr', `model remove failed: ${msg}`)
+      throw new Error(`删除模型失败：${msg}。请关闭可能占用该模型文件的程序后重试。`)
     }
-    return removed
   })
 }
 

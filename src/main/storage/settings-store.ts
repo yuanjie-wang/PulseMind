@@ -427,11 +427,13 @@ function readRetentionDays(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
-/** 语音转写语言 hint 的读取器（PLAN-voice-input M2）：非法值回落 'auto'，
- *  不让一个手改的 settings.json 拒载整个文件。 */
+/** 语音转写语言 hint 的读取器（PLAN-voice-input M2）：缺失/非法回落 'zh'
+ *  （2026-11-22 user ruling：转写语言默认 zh，不再 auto——中文是主场景，模型
+ *  自判对短语音的误判反而更常见）；不让一个手改的 settings.json 拒载整个
+ *  文件。盘上显式写过的 'auto' 是合法选择，原样尊重。 */
 const VOICE_LANGUAGES = ['auto', 'zh', 'en', 'ja', 'ko', 'yue'] as const
 function readVoiceLanguage(raw: unknown): 'auto' | 'zh' | 'en' | 'ja' | 'ko' | 'yue' {
-  return (VOICE_LANGUAGES as readonly string[]).includes(raw as string) ? (raw as 'auto') : 'auto'
+  return (VOICE_LANGUAGES as readonly string[]).includes(raw as string) ? (raw as 'auto') : 'zh'
 }
 
 /** 备份保留天数的读取器：与 readRetentionDays 的「缺失=永久」刻意不同 ——
@@ -574,7 +576,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
   backupRetentionDays: 30,
-  voiceLanguage: 'auto',
+  voiceLanguage: 'zh',
   maxLoopIterations: 200,
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
@@ -749,7 +751,7 @@ export class SettingsStore {
       experienceEnabled: true,
       keepAwakeEnabled: false,
       routineRunRetentionDays: 0,
-      voiceLanguage: 'auto',
+      voiceLanguage: 'zh',
       maxLoopIterations: 200,
       maxParallelSubAgents: 5,
       debugLlmRequests: false,

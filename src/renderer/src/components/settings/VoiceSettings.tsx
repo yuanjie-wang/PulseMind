@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { Drawer, Select, Space, Tag, Typography } from 'antd'
 import { AudioOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { voiceShortcutLabel } from '../../utils/shortcut-display'
 import { VoiceGuideCard } from './VoiceGuideCard'
 
 const { Text } = Typography
@@ -52,7 +53,7 @@ const SOURCE_KEYS: Record<string, string> = {
 function VoiceSettingsBody(): React.JSX.Element {
   const { t } = useTranslation()
   const [state, setState] = useState<VoiceStatePayload | null>(null)
-  const [voiceLanguage, setVoiceLanguage] = useState<string>('auto')
+  const [voiceLanguage, setVoiceLanguage] = useState<string>('zh')
 
   const refresh = useCallback((): void => {
     window.electronAPI
@@ -61,7 +62,7 @@ function VoiceSettingsBody(): React.JSX.Element {
       .catch((err: unknown) => console.warn('[VoiceSettings] state refresh failed:', err))
     window.electronAPI
       .getSettings()
-      .then((s) => setVoiceLanguage(s.voiceLanguage ?? 'auto'))
+      .then((s) => setVoiceLanguage(s.voiceLanguage ?? 'zh'))
       .catch(() => {})
   }, [])
 
@@ -169,7 +170,7 @@ function VoiceSettingsBody(): React.JSX.Element {
           </Text>
         </div>
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-          {t('voiceInput.shortcutHint')}
+          {t('voiceInput.shortcutHint', { shortcut: voiceShortcutLabel() })}
         </Text>
       </div>
     </Space>

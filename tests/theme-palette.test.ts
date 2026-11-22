@@ -88,6 +88,19 @@ describe('PALETTE', () => {
     expect(PALETTE.light['--pm-danger-wash']).toBe('rgba(0, 0, 0, 0.04)')
   })
 
+  it('the recording accent is its own role, riding the red status pair', () => {
+    // 录音红不是错误红：红色在这里的意思是「正在听」。今天两者取值相同，
+    // 但那是一致而不是同一角色——所以是一对独立令牌，而不是复用
+    // --pm-error-status。谁想调动其中一方，不该被另一方拦住。
+    for (const mode of ['light', 'dark'] as const) {
+      expect(PALETTE[mode]['--pm-rec-accent']).toBe(PALETTE[mode]['--pm-error-status'])
+      // 发光的颜色必须带 alpha：它是一层叠加，不能盖住卡片自己的玻璃阴影
+      expect(PALETTE[mode]['--pm-rec-glow']).toMatch(/^rgba\(255,/)
+    }
+    expect(PALETTE.light['--pm-rec-glow']).toBe('rgba(255, 77, 79, 0.32)')
+    expect(PALETTE.dark['--pm-rec-glow']).toBe('rgba(255, 120, 117, 0.34)')
+  })
+
   it('keeps the ink and border ladders ordered across the flip', () => {
     // Both families are read against opposite grounds, so each runs monotone in
     // both modes and *reverses* its direction: the ink ladder starts at the
