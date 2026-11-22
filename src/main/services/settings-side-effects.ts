@@ -4,6 +4,10 @@
 // 于是导入模板后主题/标题栏/开机自启/菜单语言/记忆开关都要等重启才生效——
 // 「导进来了但看起来没变」，而模板包存在的意义恰恰是让一台空机器立刻可用。
 //
+// 这里每个动作都是「已经落盘了，但内存里还有人拿着旧值」的那一类：主题、开机
+// 自启、休眠守卫、记忆开关、菜单语言、保留期清扫，以及活会话的引擎 option
+// bag（模型连接与预算——见 option-bag-sync）。
+//
 // 逐个动作独立兜底：设置已经落盘，副作用是尽力而为，任一失败不得中断其余。
 // 广播也在这里（SETTINGS_CHANGED 用**存储层视图**而非调用方载荷——set() 会
 // 重算派生 profiles，调用方的快照是旧的）。
@@ -17,6 +21,7 @@ import { agentSessionManager } from '../agent/session-manager'
 import { keepAwake } from '../system/keep-awake'
 import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { expireOldBackups } from '../services/backup-retention'
+import { refreshOptionBags } from './option-bag-sync'
 import { setTitleBarTheme } from '../window-chrome'
 import { refreshPopoutTitleBarTheme } from '../popout-window'
 import { rebuildApplicationMenu } from '../menu'
@@ -27,6 +32,10 @@ export interface SettingsSideEffectOptions {
   window?: BrowserWindow | null
   /** 是否在副作用之后广播 SETTINGS_CHANGED（默认 true）。 */
   broadcast?: boolean
+  /** 保存**之前**的设置（settings.handler 读到的旧值）。给了才有「引擎 option
+   *  bag 的输入是否真变了」的判据；没给（模板包导入，设置已由导入步骤写入）
+   *  按一定变了处理——那条路可能整批换模型。 */
+  previous?: AppSettings | null
 }
 
 /**
@@ -63,6 +72,21 @@ export async function applySettingsSideEffects(settings: AppSettings, opts: Sett
   // The 记忆/经验 master switches must reach the main-hosted managers right
   // away — engines and hooks read them through the shared manager instances.
   void agentSessionManager.applyFeatureToggles(settings).catch((err: unknown) => console.warn('[settings] Failed to apply feature toggles:', err))
+  // 模型连接与预算（最大上下文 / 输出上限 / 模型名 / Base URL / API Key）、
+  // 人格与人称、语言、工作区：这些是引擎 option bag 的输入，改完必须当场换袋。
+  // 漏了这一步的后果是「改完设置在同一个会话里继续问，引擎还在用旧窗口」——
+  // 用户以为在验 50K，实际按 150K 跑（2026-11-22 真机病例，见 option-bag-sync）。
+  //
+  // 比的是**存储层视图**，不是调用方的保存载荷：写入只认 providers，派生的
+  // profiles 由 set() 重算，渲染端快照里那份可能是旧的——拿它当「新值」会
+  // 把真改动判成没改（同一个陷阱，下面的广播注释也记着）。`previous` 缺席
+  // = 没有旧值可比（模板包导入），按一定变了处理。
+  try {
+    const fresh = await settingsStore.get()
+    await refreshOptionBags(opts.previous ?? null, fresh, () => agentSessionManager.refreshAllSessions())
+  } catch (err) {
+    console.warn('[settings] Failed to refresh session option bags:', err)
+  }
   // The application menu's labels follow the locale; this save may have just
   // changed it. Cheap rebuild from the stored getter.
   void rebuildApplicationMenu().catch((err: unknown) => console.warn('[settings] Failed to rebuild application menu:', err))

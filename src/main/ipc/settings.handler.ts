@@ -17,8 +17,14 @@ export function registerSettingsHandlers(): void {
     // 的最新表达：直接落进这份整存载荷（不能走 rememberLastUsedProfileId 的
     // merge 写 —— 它排在 writeChain 前面，会被紧随其后的整存用旧值盖回去），
     // 与面板侧同一动作在 setActiveProfile 里的 remember 语义一致。
+    //
+    // 读到的旧值还要往下传：生效动作里「活会话的引擎 option bag 要不要重刷」
+    // 只有拿新旧两份比才知道（见 services/option-bag-sync）。读失败就传 null，
+    // 那样按「一定变了」处理 —— 宁可多重刷一次，也不能把 50K 的配置闷在磁盘上。
+    let previous: AppSettings | null = null
     try {
       const current = await settingsStore.get()
+      previous = current
       settings.lastUsedApprovalMode = current.lastUsedApprovalMode
       settings.lastUsedProfileId = current.lastUsedProfileId
       // 运行态时间戳（上次记忆提取）：主进程每轮 sweep 落笔，渲染端快照必旧
@@ -32,8 +38,11 @@ export function registerSettingsHandlers(): void {
     }
     await settingsStore.set(settings)
     // 生效动作与模板包导入共用一份（services/settings-side-effects.ts）：
-    // 主题重绘 / 开机自启 / 休眠守卫 / 记忆开关 / 菜单语言 / 保留期清扫 +
-    // SETTINGS_CHANGED 广播。
-    await applySettingsSideEffects(settings, { window: BrowserWindow.fromWebContents(event.sender) })
+    // 主题重绘 / 开机自启 / 休眠守卫 / 记忆开关 / 菜单语言 / 保留期清扫 /
+    // 活会话的 option bag + SETTINGS_CHANGED 广播。
+    await applySettingsSideEffects(settings, {
+      window: BrowserWindow.fromWebContents(event.sender),
+      previous,
+    })
   })
 }
