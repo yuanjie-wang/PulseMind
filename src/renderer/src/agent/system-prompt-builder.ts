@@ -34,7 +34,7 @@ export interface BuildSystemPromptParams {
   continuationNudge?: boolean | 'todoClose'
   /** Context window gauge (user 2026-10-10): the POST-PIPELINE size of THIS
    *  request — what the model is actually reading after the automatic
-   *  nano/light/hard passes (2026-10-24 口径修正). The pre-pipeline reading
+   *  directed cut (2026-10-24 口径修正). The pre-pipeline reading
    *  (last wire anchor + raw tail, requestTokensOf) over-reads by exactly the
    *  share the pipeline compresses before it ships: a tool-heavy turn pinned
    *  the gauge at 79–96% while the wire carried ~60%, and the model read the

@@ -7,6 +7,7 @@ import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOL
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import { safeExternalUrl, safeOpenPath, safeRevealPath } from '../utils/external-url'
 import { setTitleBarMaskAlpha } from '../window-chrome'
+import { logMain } from '../main-log'
 
 export interface PlatformInfo {
   platform: string
@@ -57,6 +58,15 @@ export function notifyResume(win: BrowserWindow, timeoutMs: number, fallback: ()
 }
 
 export function registerAppHandlers(): void {
+  // Durable diagnostic sink. Bound the line main-side: the renderer is not a
+  // trusted size source, and main.log is append-only with no rotation of its
+  // own. `logMain` is a no-op outside Electron, so vitest never writes here.
+  ipcMain.on(IPC_CHANNELS.APP_LOG_DIAGNOSTIC, (_event, source: unknown, message: unknown) => {
+    const tag = typeof source === 'string' ? source.replace(/[\r\n]/g, ' ').slice(0, 64) : 'renderer'
+    const line = typeof message === 'string' ? message.replace(/[\r\n]/g, ' ').slice(0, 512) : ''
+    if (line) logMain('INFO', tag, line)
+  })
+
   // The renderer's mask watcher reports the combined alpha of the full-window
   // masks currently open (fire-and-forget — a visual state has no reply). The
   // blend itself lives in window-chrome (theme × alpha → overlay colours), so

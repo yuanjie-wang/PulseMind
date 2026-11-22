@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildContextWindowSection } from '../src/renderer/src/agent/system-prompt-builder'
 import { contextTokensOf, copyTokensOf } from '../src/renderer/src/agent/engine/context-estimate'
+import { COPY_CALIBRATION_MAX } from '../src/renderer/src/agent/engine/context-compactor'
 import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent'
 
 /**
@@ -87,8 +88,10 @@ describe('copyTokensOf：copy 自身的诚实价（锚点毒化不可回归）',
     const calibrated = compactor.copyTokens(copy, 12_000)
     expect(Math.abs(calibrated - 117_168)).toBeLessThanOrEqual(117_168 * 0.01)
     // 离群请求（一张启发式计 0 的大图把比值顶上天）不得把刻度甩上天。
+    // 2026-11-22：上限由 1.6 放宽到 2.5（实测 raw/wire 下探到 0.42，
+    // 旧上限会少报 → D12 超窗方向），断言跟着常量走，不再复制字面量。
     compactor.setCopyCalibration(9.7)
-    expect(compactor.copyTokens(copy, 12_000)).toBeLessThan(raw * 1.6 + 1)
+    expect(compactor.copyTokens(copy, 12_000)).toBeLessThan(raw * COPY_CALIBRATION_MAX + 1)
     // 无效报告（0/负/NaN）不碰已学因子。
     compactor.setCopyCalibration(117_168 / raw)
     const learned = compactor.copyTokens(copy, 12_000)
@@ -153,7 +156,11 @@ describe('wiring 扫描：引擎传数、节在钟前、续跑指令契约不动
     // content rendered before the gauge must not eat it (first-match replace
     // silently dropped the gauge when a literal sentinel rode user bytes).
     expect(src).toContain('stateBlockText.lastIndexOf(CONTEXT_GAUGE_SENTINEL)')
-    expect(src).toContain('buildContextWindowSection({ tokens: this.compactor.copyTokens(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })')
+    // 2026-11-22：这份价格被提成 `requestPrice` —— 表盘与 max_tokens 的钳制必须
+    // 读同一份（否则「告诉模型多大」与「按多大窗口发出去」会各算一次）。取数位
+    // 不变：仍是 finalMessages + fixedOverhead 的校准 copy 价。
+    expect(src).toContain('const requestPrice = this.compactor.copyTokens(finalMessages, fixedOverhead)')
+    expect(src).toContain('buildContextWindowSection({ tokens: requestPrice, window: this.opts.contextLength || 128_000 })')
     // 负扫：锚点读数不得回到 gauge/事件的取数位（触发链里 contextTokensOf
     // 住在 compactor.contextTokens，那里才是它的家）。
     expect(src).not.toContain('contextTokensOf(finalMessages')
@@ -186,10 +193,15 @@ describe('wiring 扫描：引擎传数、节在钟前、续跑指令契约不动
     expect(src).toContain('this.compactor.copyTokens(finalMessages, fixedOverhead)')
     // usage 落地即喂校准（stream-runner 主回合路径；旁路 one-shot 不经此）。
     expect(runner).toContain('this.engine.noteCopyCalibration(usage.inputTokens)')
-    expect(src).toContain('this.compactor.setCopyCalibration(measuredTokens / this.lastBuildCopyEstimate)')
-    // 校准器语义在位：钳制与纯函数包装。
+    expect(src).toContain('const wanted = measuredTokens / raw')
+    expect(src).toContain('this.compactor.setCopyCalibration(wanted)')
+    // 2026-11-22 新增：raw/wire 配对必须落进持久日志，否则事后无法算真机精度
+    // （renderer console 不进 main.log）。
+    expect(src).toContain('[ContextCalibration]')
+    expect(src).toContain("getHost().logDiagnostic?.('ContextCalibration', line)")
+    // 校准器语义在位：钳制与纯函数包装。边界常量化，钳制表达式引用它们。
     expect(compactor).toContain('private copyCalibration = 1')
-    expect(compactor).toContain('Math.min(1.6, Math.max(0.6, ratio))')
+    expect(compactor).toContain('Math.min(COPY_CALIBRATION_MAX, Math.max(COPY_CALIBRATION_MIN, ratio))')
     expect(compactor).toContain('copyTokensOf(messages, fixedOverhead) * this.copyCalibration')
   })
 

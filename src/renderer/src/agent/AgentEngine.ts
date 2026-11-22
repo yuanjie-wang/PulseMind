@@ -36,7 +36,7 @@ import { persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
-import { effectiveInputWindow } from './engine/window-budget'
+import { effectiveInputWindow, wireMaxTokens } from './engine/window-budget'
 import { TurnClock, stampTurnDuration, isWaitingOnUserStatus } from './engine/turn-clock'
 import { mintTurnId, countUserTurns } from './engine/turn-identity'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
@@ -346,6 +346,12 @@ export class AgentEngine implements EngineCore {
    *  not calibrate against nothing. */
   /** @internal */
   lastBuildCopyEstimate = 0
+  /** The TARGET line of the CURRENT request's epoch, for the ring's nano
+   *  projection. Unlike a CompactionEvent (emitted only on a cut, and whose
+   *  growthSamples are reset BY that cut) this is refreshed on EVERY build —
+   *  the projection must price the tail against the line the engine is about
+   *  to judge, not the cold-start line a warmed engine left behind. */
+  epochTarget = 0
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
@@ -642,7 +648,31 @@ export class AgentEngine implements EngineCore {
   /** @internal */
   noteCopyCalibration(measuredTokens: number): void {
     if (!(measuredTokens > 0) || !(this.lastBuildCopyEstimate > 0)) return
-    this.compactor.setCopyCalibration(measuredTokens / this.lastBuildCopyEstimate)
+    const raw = this.lastBuildCopyEstimate
+    const wanted = measuredTokens / raw
+    this.compactor.setCopyCalibration(wanted)
+    const applied = this.compactor.copyCalibrationFactor
+    // ── The durable raw/wire pair (review_20261121.md:204) ──────────────
+    // The 2026-11-22 audit could not compute production accuracy at all:
+    // `lastBuildCopyEstimate` lived only in the renderer, `usage.inputTokens`
+    // only in the provider response, and main.log does NOT capture renderer
+    // console. One line here carries both sides plus the clamp verdict, so a
+    // session's true raw/wire domain (and how often the bounds bite) is
+    // recoverable after the fact instead of only through a DB replay. The
+    // console line stays for devtools; the host sink puts the SAME line into
+    // main.log in a packaged launch. Diagnostics must never break a request.
+    const line =
+      `raw=${Math.round(raw)} wire=${Math.round(measuredTokens)} ` +
+      `want=${wanted.toFixed(4)} applied=${applied.toFixed(4)} ` +
+      `clamp=${Math.abs(applied - wanted) > 1e-9 ? 'hit' : 'no'} ` +
+      `b=${Math.round(this.inputWindow)} model=${this.opts.model}` +
+      (this.opts.conversationId ? ` conv=${this.opts.conversationId}` : '')
+    console.log(`[ContextCalibration] ${line}`)
+    try {
+      getHost().logDiagnostic?.('ContextCalibration', line)
+    } catch {
+      // No host installed (bare engine in a unit test): the console line stands.
+    }
   }
 
   /** Explicit /compact [指示词]: materialize the cut NOW — the manual target is
@@ -1610,6 +1640,10 @@ export class AgentEngine implements EngineCore {
     // two summarization calls for one head move.
     await this.compactor.awaitPrewarm()
     const epochLines = this.compactor.epochLines(inputBudget)
+    // Publish the CURRENT build's cut target for the ring's nano projection.
+    // Every request — cut or not — so a warmed p75 line reaches the display;
+    // a cut-only event would go stale the moment directCut resets the samples.
+    this.epochTarget = epochLines.target
     const apiMessages = this.compactor.assembleCopy()
     // Price + book this request's growth sample — on EVERY request, cut or
     // not: the curve is what positions T and sizes Δ.
@@ -1753,6 +1787,9 @@ export class AgentEngine implements EngineCore {
     // request — a 110,535 report kept every reading at ~74% while the copy
     // shipped 54,005 (conv_20261120152212, 2026-11-21). A missing sentinel
     // (older call sites, tests) keeps the block as built.
+    // 这一版请求的**输入**价（校准后的 wire 单位；fixedOverhead 已含状态块）。
+    // 下面两处共用一份：表盘要它，`max_tokens` 的钳制也要它（见 wireMaxTokens）。
+    const requestPrice = this.compactor.copyTokens(finalMessages, fixedOverhead)
     let stateBlockText: string | null = spResult.stateBlock
     if (stateBlockText !== null && stateBlockText.includes(CONTEXT_GAUGE_SENTINEL)) {
       // Swap the LAST occurrence, not String.replace's first match: every
@@ -1768,7 +1805,7 @@ export class AgentEngine implements EngineCore {
       // next gauge quotes (compactor.copyTokens applies it).
       this.lastBuildCopyEstimate = copyTokensOf(finalMessages, fixedOverhead)
       stateBlockText = stateBlockText.slice(0, at)
-        + buildContextWindowSection({ tokens: this.compactor.copyTokens(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
+        + buildContextWindowSection({ tokens: requestPrice, window: this.opts.contextLength || 128_000 })
         + stateBlockText.slice(at + CONTEXT_GAUGE_SENTINEL.length)
     }
     const stateBlock: AgentMessage | null = stateBlockText !== null
@@ -1783,14 +1820,11 @@ export class AgentEngine implements EngineCore {
 
     const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey ?? '', {
       model: opts.model,
-      // The ×1.5 headroom is inherited from the initial commit (no written
-      // rationale survives): thinking gateways settle reasoning INSIDE
-      // max_tokens, so a request sized exactly at the configured value can cut
-      // visible replies on reasoning models. Known edge: a profile whose
-      // 输出上限 already equals the provider's hard cap can 400 here
-      // ("max_tokens too large") — that rejection is NOT a context overflow,
-      // so the rescue chain leaves it to end the turn plainly.
-      maxTokens: Math.floor(opts.maxTokens * 1.5),
+      // 思考余量（×1.5）与「不能超过窗口」的钳制都在 wireMaxTokens 里：provider
+      // 校验的是 `input + max_tokens ≤ 窗口`，用的是这个字段的值，与实际输出多长
+      // 无关 —— 所以它必须按本版请求的真实输入价钳住，否则小窗口配置（如
+      // 50K/32K）会把每条请求都打成 400。宽窗口下它等于改动前那个不加钳的算式。
+      maxTokens: wireMaxTokens(opts.maxTokens, opts.contextLength || 128_000, requestPrice),
       messages: requestMessages,
       tools: enabledTools,
       systemPrompt,
@@ -2069,6 +2103,9 @@ export class AgentEngine implements EngineCore {
     // The 已压缩 chip describes the old history's copy pressure — it does not
     // survive the history it described (same discipline as the ledger above).
     this.lastCompaction = null
+    // Same history-scoped reset as the frozen epoch itself: a target derived
+    // from the old conversation's growth curve means nothing for a new one.
+    this.epochTarget = 0
     this.notify()
   }
 
@@ -2311,19 +2348,27 @@ export class AgentEngine implements EngineCore {
 
   // ── Compaction pipeline ──────────────────────────────────────────────
   //
-  // Three-layer strategy (all operate on API copies; this.messages untouched),
-  // triggered per request build in prepareLoopRequest:
+  // One decision point, one directed cut (epoch, 2026-11-21), on API copies
+  // only — this.messages is never touched. The copy is a frozen base plus the
+  // live tail (ContextCompactor.assembleCopy); below the trigger it ships
+  // byte-identical so the provider's cached prefix survives. The steps below
+  // are ordered stages of ONE cut, not independent gates: price > T decides
+  // whether to cut, a cut lands at T − Δ, and each tier is a cap on how much
+  // that single pass may take.
   //
-  //   Layer 1: nanoCompact — tiered tool_result content replacement (API copy)
-  //   Layer 2: lightCompact — structured removal of complete tool cycles (API copy)
-  //   Layer 3: hardTruncate — drop oldest messages (API copy, last resort)
+  //   1. drop synthetic messages   5. hard truncate (oldest prefix)
+  //   2. nano archive tool_results 6. one summary + compensation block
+  //   3. strip stale thinking         (verbatim user replays, dropped-read
+  //   4. light drop tool cycles       reminders, coverage header)
   //
-  // followed by injectHistorySummary, which summarizes the dropped region
-  // into the copy. The remaining-window floors (30K light / 10K hard) live in
-  // engine/context-compactor.ts next to the thresholds they guard. Above the
-  // post-turn ratio, schedulePostTurnCompaction prewarms the summary at turn
-  // end so the request path hits the cache instead of an LLM round; an
-  // explicit /compact sets manualCompactActive and bypasses the thresholds.
+  // Four force sources resolve into that one cut in prepareLoopRequest:
+  // provider overflow, manual /compact (0.60b), the model's context_compact
+  // (light depth, no hard), and the passive price > T predicate. Between cuts,
+  // schedulePostTurnCompaction materializes the next base predictively once
+  // the copy crosses T − Δ, so the request path ships a frozen copy instead
+  // of blocking on a summary LLM call. Step floors live next to the steps
+  // they guard in engine/context-compactor.ts; the input-side budget (output
+  // reservation removed) is engine/window-budget.ts.
   //
   // Background memory extraction replaces the old autoCompact mechanism —
   // saves memories from old tool pairs instead of modifying messages.

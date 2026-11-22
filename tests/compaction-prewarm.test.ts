@@ -12,12 +12,13 @@ const turn = (t: string): AgentMessage[] => [
   { id: `a${++seq}`, role: 'assistant', contentBlocks: [text(`回复：${t}`)], createdAt: '2026-09-23T10:00:01.000Z' },
 ]
 
-/** A conversation long enough that BOTH hard shapes drop a real region against
- *  a 500-token window: the prewarm's forced simulation (0.6× = 300) and the
- *  request path's passive trigger (0.9× = 450). 50 messages × ~11.5 ≈ 575
- *  tokens — the old 15-turn fixture sat below 450, where the fixed walk now
- *  (correctly) keeps everything, and the request-path half of these contracts
- *  had nothing real to pin. */
+/** A conversation long enough that BOTH epoch shapes drop a real region against
+ *  a 500-token window: the manual/prewarm forced target (`0.60b` = 300) and the
+ *  request path's cold-start lines (`T = 0.85b` = 425, `target = 0.70b` = 350).
+ *  50 messages × ~11.5 ≈ 575 tokens — the old 15-turn fixture sat below the
+ *  trigger, where the fixed walk now (correctly) keeps everything, and the
+ *  request-path half of these contracts had nothing real to pin. The retired
+ *  0.6×/0.9× "fit gates" belong to the four-gate pipeline (pre-2026-11-21). */
 function makeConversation(): AgentMessage[] {
   return Array.from({ length: 25 }, (_, i) => turn(`第${i + 1}轮的完整需求描述`).flat()).flat() as AgentMessage[]
 }

@@ -132,6 +132,11 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.TOOLBRIDGE_INVOKE, toolId, method, params),
 
   dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
+  // Fire-and-forget diagnostic line → main.log (renderer console is not
+  // captured there). No reply, so a slow/failed disk append cannot hold up a
+  // request; the main-side handler bounds both strings.
+  logDiagnostic: (source: string, message: string): void =>
+    ipcRenderer.send(IPC_CHANNELS.APP_LOG_DIAGNOSTIC, source, message),
 
   // Conversations
   listConversations: (): Promise<ConversationIndexEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LIST),

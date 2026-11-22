@@ -529,6 +529,60 @@ describe('growth 样本：按请求记账、帽 8、切割清空', () => {
     expect(lines.growth).toBe(1_002)
     expect(lines.trigger).toBe(92_000)
   })
+
+  // 2026-11-22 深挖时推演过的极端边界：切割会清空 growthSamples（:2109），
+  // p75 至少需要 4 个样本才脱离冷启动。一个「切完攒不满 4 个请求就又切」的
+  // 高增长会话理论上永远钉在 0.85b / 0.70b。回放学证据把「普遍缺陷」降级成
+  // 边界（真实增长 ~0.8K/请求，40 请求只切 1 次），但边界本身没有钉子，
+  // 这里用真 directCut + 真 priceRequest 把它固定下来。
+  it('a cut before 4 fresh samples falls back to the cold-start 0.85b / 0.70b lines', async () => {
+    const { live, compactor } = harness(textPairs(8, 5_000))
+    compactor.priceRequest(compactor.assembleCopy(), 0) // baseline, no sample
+    // 4 个 20K 增量 → p75 = 20K，T = b − 30K = 70K（热态，明显低于冷启动）。
+    for (let i = 0; i < 4; i++) {
+      live.push(...textPair(20_000))
+      compactor.priceRequest(compactor.assembleCopy(), 0)
+    }
+    const hot = compactor.epochLines(WINDOW)
+    expect(hot.growth).toBeGreaterThan(10_000)
+    expect(hot.trigger).toBeLessThan(85_000)
+
+    const cut = await compactor.directCut(hot.target, { record: false })
+    expect(cut.cut).toBe(true)
+    // 切割把曲线清空并把 lastCopyPrice 重锚到切后副本。
+    expect(compactor.epochLines(WINDOW)).toEqual({
+      growth: 10_000, trigger: 85_000, depth: 15_000, target: 70_000,
+    })
+
+    // 只有 3 个新样本：p75 的门还没开，两条线仍是冷启动。
+    for (let i = 0; i < 3; i++) {
+      live.push(...textPair(20_000))
+      compactor.priceRequest(compactor.assembleCopy(), 0)
+    }
+    expect(compactor.epochLines(WINDOW)).toEqual({
+      growth: 10_000, trigger: 85_000, depth: 15_000, target: 70_000,
+    })
+
+    // 第 4 个样本一到就翻回热态 —— 证明上面是「样本数不够」，不是别的机制。
+    live.push(...textPair(20_000))
+    compactor.priceRequest(compactor.assembleCopy(), 0)
+    expect(compactor.epochLines(WINDOW).trigger).toBeLessThan(85_000)
+  })
+
+  it('a session that re-cuts every 3 requests never escapes the cold lines', async () => {
+    const { live, compactor } = harness(textPairs(8, 5_000))
+    const cold = { growth: 10_000, trigger: 85_000, depth: 15_000, target: 70_000 }
+    for (let cycle = 0; cycle < 3; cycle++) {
+      for (let i = 0; i < 3; i++) {
+        live.push(...textPair(20_000))
+        compactor.priceRequest(compactor.assembleCopy(), 0)
+      }
+      expect(compactor.epochLines(WINDOW)).toEqual(cold)
+      const cut = await compactor.directCut(cold.target, { record: false })
+      expect(cut.cut).toBe(true)
+      expect(compactor.epochLines(WINDOW)).toEqual(cold)
+    }
+  })
 })
 
 // ── 10. 接线扫描 ──────────────────────────────────────────────────────

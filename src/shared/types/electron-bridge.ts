@@ -199,6 +199,9 @@ export interface TemplateImportResult {
 export interface ElectronAPI {
   // Debug
   dbCheck: () => Promise<string>
+  /** Fire-and-forget diagnostic line into main.log (renderer console is not
+   *  captured there). Used by the per-request copyCalibration pairing log. */
+  logDiagnostic: (source: string, message: string) => void
 
   // Conversations
   listConversations: () => Promise<ConversationIndexEntry[]>

@@ -177,6 +177,10 @@ export interface EngineCore {
    *  stream-runner feeds each usage report through this so the copy
    *  estimator learns the provider's tokenizer factor. */
   lastBuildCopyEstimate: number
+  /** The current request's epoch cut target, refreshed on every build — the
+   *  ring's nano projection prices its tail against this instead of a stale
+   *  cold-start line. 0 before the first build / after a conversation reset. */
+  epochTarget: number
   noteCopyCalibration: (measuredTokens: number) => void
   continueLoop: () => Promise<void>
   cancelLoop: () => void
@@ -193,7 +197,7 @@ export interface EngineCore {
   steer: (text: string) => Promise<SteerOutcome>
   /** Post-turn compaction prewarm (fire-and-forget): called from
    *  handleEndTurnResponse once the turn is closed. Skips spawned sub-agents,
-   *  in-flight prewarms, and usage below the post-turn ratio. */
+   *  in-flight prewarms, and copies below the predictive prewarm line (T − Δ). */
   schedulePostTurnCompaction: () => void
   /** 多专家 @召唤：the turn ended without a plan — one corrective re-issue is
    *  owed. True means the caller must NOT close the turn (the engine is about

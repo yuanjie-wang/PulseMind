@@ -21,6 +21,12 @@ export const IPC_CHANNELS = {
   APP_RENDERER_PING: 'app:renderer-ping',
   APP_RENDERER_PONG: 'app:renderer-pong',
   APP_HOOKS_COMPLETED: 'app:hooks-completed',
+  // Renderer → main.log, fire-and-forget. The renderer's console never reaches
+  // main.log, so any diagnostic that must survive a packaged launch needs its
+  // own sink (2026-11-22 copyCalibration audit: the raw/wire pair was
+  // unrecoverable afterwards). Deliberately narrow: source + one line, no
+  // payload bodies, no reply.
+  APP_LOG_DIAGNOSTIC: 'app:log-diagnostic',
   // 原生菜单/加速键 → 渲染层动作（菜单点击或 before-input fallback 命中后推送）
   MENU_ACTION: 'app:menu-action',
 

@@ -477,12 +477,13 @@ export class StreamRunner {
           console.warn(`[AgentEngine] provider limit ${limit} < profile contextLength ${this.engine.opts.contextLength} — fix the profile's 上下文长度 setting`)
         }
         // Re-aim THIS session's automatic chain at the provider's real window
-        // (0.4.2 「压缩机制不触发」排查): light (0.3×), hard (0.1×), the compact
-        // tool's 0.55 precheck and the gauge all read opts.contextLength — a
-        // stale or unset profile number larger than the real window parks every
-        // trigger past it, so nothing ever fires proactively and each growth
-        // cycle costs one 400 + forced retry (accept clears the flag, the copy
-        // re-inflates toward the phantom window, overflow again). Only a
+        // (0.4.2 「压缩机制不触发」排查): the epoch trigger and target derive
+        // from effectiveInputWindow(opts.contextLength, opts.maxTokens) and the
+        // ring and gauge display opts.contextLength — a stale or unset profile
+        // number larger than the real window parks every trigger past it, so
+        // nothing ever fires proactively and each growth cycle costs one 400 +
+        // forced retry (accept clears the flag, the copy re-inflates toward
+        // the phantom window, overflow again). Only a
         // provider-NUMBERED limit re-aims — it is ground truth; the numberless
         // fallback guess keeps today's flag-only semantics so a vague rejection
         // cannot silently shrink the session. refreshOptions rebuilds the bag

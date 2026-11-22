@@ -83,6 +83,9 @@ export const HOST_METHOD_KEYS = [
   'getConversationPlan',
   // misc
   'getSettings',
+  // 逐请求诊断落 main.log（renderer console 不进该文件）——copyCalibration
+  // 的 raw/wire 配对行走这条，主进程宿主与渲染桥各实现一次。
+  'logDiagnostic',
   // knowledge (KnowledgeManager + engine knowledge tools)
   'knowledgeAddFile',
   'knowledgeAddFolder',

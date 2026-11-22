@@ -138,8 +138,9 @@ export function requestTokensOf(messages: AgentMessage[], fixedOverhead = 0): nu
  *
  *  Surfaces that must describe THE COPY — the state block's gauge section and
  *  the compaction event's tokensBefore/tokensAfter — read this. Surfaces that
- *  must price transcript pressure (the fit gates, guard ③) keep
- *  `contextTokensOf`; the ring's anchor-plus-tail keeps `requestTokensOf` via
+ *  must price transcript pressure (the backstop readers: provider-400 recast,
+ *  emergencyTruncate, the final hard insurance) keep `contextTokensOf`; the
+ *  ring's anchor-plus-tail keeps `requestTokensOf` via
  *  estimateContextUsed. Estimate slop vs the measured wire is the tokenizer's
  *  ~3% — reports on the copy still price their own message whole. */
 export function copyTokensOf(messages: AgentMessage[], fixedOverhead = 0): number {

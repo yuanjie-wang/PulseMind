@@ -5,6 +5,7 @@
  * of making an IPC round-trip per operation from the renderer.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { logMain } from '../main-log'
 import { settingsStore } from '../storage/settings-store'
 import {
   getConversation,
@@ -104,6 +105,10 @@ function toMemoryEntry(row: MemoryRow): MemoryEntry {
 // ── The host ─────────────────────────────────────────────────────────
 
 export const mainHost: PulseHost = {
+  // Engine runs here, so the diagnostic line lands in main.log directly — the
+  // renderer variant of this method sends the same line over IPC instead.
+  logDiagnostic: (source: string, message: string): void => logMain('INFO', source, message),
+
   // ── LLM transport ──
   apiFetchStream: (requestId, url, options) => {
     const controller = new AbortController()

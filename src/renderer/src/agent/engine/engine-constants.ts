@@ -171,8 +171,9 @@ export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any to
 // User ruling 2026-09-30: 「给输入框一个4k的上限」. 4000 chars ≈ 4000 tokens in
 // the worst case (all CJK at the estimator's ~1 token/char) — a huge paste
 // used to ride the conversation forever (lightCompact only drops tool cycles;
-// a pure-text user message is only cut by hardTruncate past the 0.9× window
-// line). Enforced at two depths: the desktop composer's onChange wrapper
+// under the epoch a pure-text user message survives until hardTruncate runs as
+// one step of a cut the `price > T` predicate already triggered — the retired
+// 0.9× gate is pre-2026-11-21). Enforced at two depths: the desktop composer's onChange wrapper
 // (feedback: the near-limit counter), and prepareTurn as the protocol-level
 // backstop for clients without the UI clamp — staged rows restored from old
 // drafts, the extension panel, hosted sessions. This lives in engine-constants

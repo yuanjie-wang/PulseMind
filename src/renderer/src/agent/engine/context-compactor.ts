@@ -1,9 +1,12 @@
 /**
- * Context compaction pipeline (PLAN-0.3.5 refactor): extracted from AgentEngine
- * so the state machine stays under the class-size budget. Owns the history
- * summary cache and the three-layer compaction (nano → light → hard truncate).
- * Operates on API-copy message arrays only — never touches the engine's live
- * messages (deps.getMessages supplies the live list for token estimation).
+ * Context compaction pipeline (PLAN-0.3.5 extract, epoch refactor 2026-11-21):
+ * extracted from AgentEngine so the state machine stays under the class-size
+ * budget. Owns the history-summary cache and the frozen epoch base: one
+ * price > T decision triggers one directed cut (drop synthetics → nano →
+ * stale-thinking → light → hard → summary), then the base stays byte-identical
+ * until the next cut. Operates on API-copy message arrays only — never touches
+ * the engine's live messages (deps.getMessages supplies the live list for
+ * token estimation).
  */
 import type { AgentMessage, ContentBlock, ToolResultBlock, TextBlock, ToolUseBlock } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol/payloads'
@@ -181,6 +184,22 @@ const USER_REPLAY_BUDGET_TOKENS = 10_000
 export const REFILL_TOOL_TURN_THRESHOLD = 3
 export const REFILL_BREAKER_LIMIT = 3
 
+// ── Copy-price calibration bounds (module scope: the probe imports these) ──
+// `copyTokens = copyTokensOf(...) × clamp(wire/raw, MIN, MAX)`. Convergence
+// needs `raw/wire ∈ [1/MAX, 1/MIN]`. The old [0.6, 1.6] only covered
+// `[0.625, 1.667]`; the 2026-11-22 replay over two real sessions measured
+// `raw/wire ∈ [0.42, 4.25]`, i.e. `ratio = wire/raw ∈ [0.235, 2.38]`. Both
+// ends were pinned: 40/40 requests at the 0.60 floor in conv_20261117170141
+// (price/wire 1.82× → the epoch cut at ~47% of the real window), 13/40 at the
+// 1.60 ceiling with 7 UNDER-reads in conv_20261120152212 (D12's overflow
+// direction, which review_20261121.md:208 never registered). [0.2, 2.5]
+// covers that whole domain with margin (`raw/wire ∈ [0.40, 5.00]`); the
+// finite/positive guard and the next request's own usage report (D12) keep a
+// single outlier from sticking. See _review/review_20261122.md. Exported so
+// the replay probe cannot drift from the shipped bounds.
+export const COPY_CALIBRATION_MIN = 0.2
+export const COPY_CALIBRATION_MAX = 2.5
+
 export interface CompactTracking {
   /** Completed tool batches since the last compaction drop. */
   toolRoundsSinceDrop: number
@@ -202,13 +221,13 @@ export function makeCompactTracking(): CompactTracking {
 // placeholders before anything ships — tool-heavy turns pinned the ring at
 // 79–96% while the wire carried ~60% (conv_20261021155951). This helper
 // mirrors nanoCompact's DECISION deterministically (protection window + quota
-// caps + the merged fit gate + placeholder pricing) without the live engine's
+// caps + the epoch cut target + placeholder pricing) without the live engine's
 // mandates, which only it knows — the two share planNanoArchival, so neither
 // can drift. Tail-only callers pass a
-// slice: quotas/protection are computed over exactly that slice, and the gate
+// slice: quotas/protection are computed over exactly that slice, and the target
 // needs the caller's anchor (baselineTokens) because it compares the whole
-// copy's usage to the window. The approximation errs toward OVER-reading the
-// shipped copy, never under it.
+// copy's usage to the INPUT budget. The approximation errs toward OVER-reading
+// the shipped copy, never under it.
 /** TOKEN-unit placeholder price — the number is NOT a char count. The printed
  *  placeholder ('⟨archived: <uuid>⟩' + the two multibyte glyphs, ~45 chars)
  *  is really ~13-20 tokens by estimateTextTokens; 45 keeps the OVER-reading
@@ -418,22 +437,38 @@ function planNanoArchival(
  * Price a message list AS THE NEXT REQUEST WILL CARRY IT: planned tool_results
  * become placeholders at `NANO_PLACEHOLDER_COST`, everything else prices raw.
  * This is the ring's projection — it must over-read the shipped copy, never
- * under. With `contextLength` the projection aims at the COLD-START epoch
- * target (`0.70b`): that is the depth a cut would reach today, so the ring
- * never claims less headroom than the pipeline will actually create. Absent
- * window ⇒ the quota walk. `baselineTokens` is the anchor a tail-only caller
- * priced its slice against (the target is whole-copy, the slice is not).
+ * under. `inputWindow` is the ENGINE'S INPUT-SIDE BUDGET
+ * (`effectiveInputWindow(contextLength, maxTokens)`), NOT the provider's total
+ * window: the epoch predicate prices against that budget, so the projection's
+ * `epochLines(...).target` (`0.70b` on a cold start) must divide by the same
+ * number or the ring asks nano for a depth the pipeline never cuts to. The
+ * RING's displayed denominator stays the total window (方案 A, user
+ * 2026-11-17) — only this projection moved. Absent budget ⇒ the quota walk.
+ * `baselineTokens` is the anchor a tail-only caller priced its slice against
+ * (the target is whole-copy, the slice is not).
+ *
+ * `targetTokens` is the ENGINE'S CURRENT cut target, published every request
+ * (AgentEngine.epochTarget). A warmed engine's p75 line can sit ±30K from the
+ * cold-start one, so reading `epochLines(inputWindow, [])` here made the ring
+ * ask nano for a depth the pipeline had already stopped cutting to. Callers
+ * without the engine's live line (hosted/RoutineWorkspace) omit it and get the
+ * cold-start fallback — the same degraded shape they already have for the
+ * input-budget tick, never a guessed number.
  */
 export function estimateAfterNanoTokens(
   messages: AgentMessage[],
-  contextLength?: number,
+  inputWindow?: number,
   baselineTokens = 0,
+  targetTokens?: number,
 ): number {
   let raw = 0
   for (const msg of messages) for (const block of msg.contentBlocks) raw += nanoBlockPrice(block)
+  const target = typeof targetTokens === 'number' && Number.isFinite(targetTokens) && targetTokens >= 0
+    ? targetTokens
+    : inputWindow ? epochLines(inputWindow, []).target : undefined
   const plan = planNanoArchival(messages, {
-    usedTokens: contextLength ? baselineTokens + raw : undefined,
-    targetTokens: contextLength ? epochLines(contextLength, []).target : undefined,
+    usedTokens: inputWindow ? baselineTokens + raw : undefined,
+    targetTokens: inputWindow ? target : undefined,
   })
   if (plan.ids.size === 0) return raw
   // Planned blocks price at the constant (the deliberate over-read documented
@@ -472,13 +507,15 @@ export const NANO_TIER3_NAMES = new Set(['ask_user', 'create_plan', 'advance_pla
 export const NANO_PROTECTION_WINDOW = 4
 
 /** Pure transition of the refill breaker, run once per request build after
- *  the compaction strategies are known. `droppedFit` = the fit-based layers
- *  dropped this pass — nano never counts (1:1) and emergency never counts
- *  (reactive overflow backstop, not the churning fit). `droppedAny` (an
- *  emergency-only pass included) still restarts the round clock: any message
- *  loss re-bases "within N rounds". Mutates `tracking` in place; returns
- *  whether THIS call tripped the breaker so the caller emits exactly one
- *  event per transition. */
+ *  the compaction strategies are known. `droppedFit` is now the EPOCH signal:
+ *  a new base materialized (`directCut.cut === true`) — under one decision
+ *  point the cut IS the churn signal, and nano / thinking / light / hard are
+ *  steps of that one cut rather than fit-based layers with their own gates.
+ *  `emergencyTruncate` never sets it (reactive overflow backstop, does not
+ *  materialize a base), but `droppedAny` still restarts the round clock: any
+ *  message loss re-bases "within N rounds". Mutates `tracking` in place;
+ *  returns whether THIS call tripped the breaker so the caller emits exactly
+ *  one event per transition. */
 export function evaluateRefillBreaker(
   tracking: CompactTracking,
   roundsAtEntry: number,
@@ -813,6 +850,83 @@ export function buildSummaryCoverageHeader(dropped: AgentMessage[], covered: Set
   return `〔覆盖〕${span} · 已压缩 ${msgs.length} 条消息（用户发言 ${userTurns} 条）`
 }
 
+/** Transcript ids minted by the pipeline embed their creation epoch in ms
+ *  (`msg_<ms>_<rand>`, and the regroup variant `regroup_msg_<ms>_<rand>`).
+ *  A regroup id is TRANSIENT — it is minted while regrouping tool results and
+ *  never lands in the DB — so the persisted summary frontier can be an id that
+ *  no message in the rehydrated transcript carries. The epoch still says where
+ *  that frontier sat in time. Null for any other id shape. (review_20261103
+ *  :56-58 高1; conv_20261120152212's frontier is exactly this shape.) */
+function frontierEpochMs(id: string): number | null {
+  const m = /^(?:regroup_)?msg_(\d{13})_/.exec(id)
+  if (!m) return null
+  const ms = Number(m[1])
+  return Number.isFinite(ms) && ms > 0 ? ms : null
+}
+
+/** The coverage a frontier POSITION claims, expressed in BOTH id spaces the
+ *  pipeline runs in.
+ *
+ *  A rehydrated cache knows one frontier id and nothing else, so coverage is
+ *  rebuilt from position: everything the predicate accepts. Every consumer then
+ *  asks `covered.has(m.id)` about messages taken from the COPIED transcript —
+ *  and that copy is not the transcript. `regroupToolResults` replaces each
+ *  tool batch's result carrier with ONE collector named `regroup_` + the
+ *  tool-calling message's id (regroup-tool-results.ts:99-111), and that id
+ *  exists in no database. A set built only from live ids therefore never
+ *  contains them, and the batch content rides back to the summarizer on every
+ *  post-restart cut — the exact "restart pays again" shape the
+ *  review_20261103:171 fix was after, missed because it reconciled POSITIONS
+ *  and left the ID SPACES apart. Measured on conv_20261118223922
+ *  (2026-11-22): 247 collectors in the copy, positional rebuild claimed 167
+ *  covered ids + 0 collectors against a real ledger of 234 — 67 batches
+ *  re-summarized for nothing.
+ *
+ *  The collector carries the results that belong to its assistant RUN and is
+ *  stamped with the same createdAt (regroup-tool-results.ts:109), so "the run
+ *  is covered" and "its collector's bytes are covered" are one statement. Two
+ *  guards keep the claim inside what the text really carries: the run must be
+ *  covered in full, and it must end STRICTLY before the frontier — the prefix
+ *  cannot vouch for the tool results trailing its last message. One batch of
+ *  under-claim is the honest side of that line (it costs tokens, never
+ *  content).
+ *
+ *  Naming follows the merge rule (regroup-tool-results.ts:61-75): adjacent
+ *  assistant messages collapse into the FIRST one, which keeps its id, so the
+ *  collector is `regroup_` + the run HEAD's id — the tool_use blocks may live
+ *  in a later member (a text-ending turn followed by the scheduler's dispatch
+ *  is the shape that makes the history illegal in the first place). */
+function positionalLedger(live: AgentMessage[], isCovered: (m: AgentMessage, i: number) => boolean): Set<string> {
+  let end = -1
+  for (let i = 0; i < live.length; i++) if (isCovered(live[i], i)) end = i
+  if (end < 0) return new Set<string>()
+
+  const ids = new Set<string>()
+  let runStart = -1
+  let runHasUse = false
+  let runCovered = true
+  const claimRun = (runEnd: number): void => {
+    if (runStart >= 0 && runEnd < end && runHasUse && runCovered) ids.add(`regroup_${live[runStart].id}`)
+    runStart = -1
+    runHasUse = false
+    runCovered = true
+  }
+  for (let i = 0; i <= end; i++) {
+    const m = live[i]
+    const covered = isCovered(m, i)
+    if (covered) ids.add(m.id)
+    if (m.role !== 'assistant') {
+      claimRun(i - 1)
+      continue
+    }
+    if (runStart < 0) runStart = i
+    if (!covered) runCovered = false
+    if (m.contentBlocks.some((b) => b.type === 'tool_use')) runHasUse = true
+  }
+  claimRun(end)
+  return ids
+}
+
 /** The turn anchor every boundary rule hangs off: the newest user message
  *  that carries text. Tool-result collector messages (role user, tool_result
  *  blocks only) do not count, so a mid-turn ask_user answer never ends the
@@ -1019,8 +1133,9 @@ export class ContextCompactor {
    *  every consumer). `covered` is the in-memory id set the text actually
    *  covers: light drops HOLES (whole tool cycles) and protection releases
    *  drop messages BEHIND the frontier later, so a position slice cannot tell
-   *  covered from new — only the set can. Not persisted (the frontier id is);
-   *  a rehydrate rebuilds it positionally from the frontier. */
+ *  covered from new — only the set can. Not persisted (the frontier id is);
+ *  a rehydrate rebuilds it positionally over the FULL live transcript from that
+ *  frontier, NOT over the current cut's dropped region (see cacheCovered). */
   private historySummary: { firstKeptId: string; text: string; covered?: Set<string> } | null = null
   /** Dropped-but-unrepresented transcript, carried ACROSS cuts (D6's 跨切割
    *  累积). Under the epoch a cut derives the next base from the previous one,
@@ -1093,14 +1208,19 @@ export class ContextCompactor {
   /** wire / raw-copy-estimate from the most recent measured request. */
   private copyCalibration = 1
 
+  /** Read-only view of the applied factor (bounded by the module-scope
+   *  COPY_CALIBRATION_MIN/MAX) — the engine logs it alongside the raw/wire
+   *  pair so production can be audited the way the replay probe is. */
+  get copyCalibrationFactor(): number { return this.copyCalibration }
+
   /** Absorb the latest measured wire against the raw copy estimate that was
    *  shipped (engine: lastBuildCopyEstimate). Non-finite / non-positive ratios
    *  are ignored — a request without a usage report must not reset a learned
-   *  factor. Clamped: a single outlier request (one huge image the heuristic
-   *  prices at 0, say) must not throw the next gauge at 2×. */
+   *  factor. Outliers are bounded by the constants above rather than dropped:
+   *  the next request's report re-learns the factor in one round. */
   setCopyCalibration(ratio: number): void {
     if (!Number.isFinite(ratio) || ratio <= 0) return
-    this.copyCalibration = Math.min(1.6, Math.max(0.6, ratio))
+    this.copyCalibration = Math.min(COPY_CALIBRATION_MAX, Math.max(COPY_CALIBRATION_MIN, ratio))
   }
 
   /** The copy's price IN WIRE UNITS: copyTokensOf scaled by the learned
@@ -1150,9 +1270,9 @@ export class ContextCompactor {
     // so a running suffix sum prices each candidate in O(1) — O(n) total. The
     // old loop broke on the first fit and DECREMENTED on a miss; since a
     // smaller keepStart only grows the tail, that walk was bimodal: the guard
-    // floor fitting → cut to the floor (~10 messages against a 0.9× window of
-    // headroom, a utilization cliff); it not fitting → keepStart ran to 0 and
-    // the caller no-opped the entire pass.
+    // floor fitting → cut to the floor (~10 messages against a now-retired
+    // 0.9× fit gate, a utilization cliff); it not fitting → keepStart ran to 0
+    // and the caller no-opped the entire pass.
     const contributions = messages.map((m) => this.contributionOf(m))
     let tail = contributions.reduce((a, b) => a + b, 0)
     let keepStart = 0
@@ -1360,14 +1480,15 @@ export class ContextCompactor {
   seedHistorySummary(text?: string, frontierId?: string): void {
     this.historySummary = text && frontierId ? { firstKeptId: frontierId, text, covered: undefined } : null
     // The accrued drops belonged to the previous cache's ledger: a rehydrated
-    // text covers an unknown region (positionally rebuilt), so carrying the
-    // old list would double-count regions the new text may already describe.
+    // text covers a region rebuilt from the frontier over the LIVE TRANSCRIPT
+    // (cacheCovered), so carrying the old list would double-count regions the
+    // new text may already describe.
     this.droppedSinceSummary = []
   }
 
   /** Request-path entry (prepareLoopRequest). If a prewarm is in flight, wait
    *  it out first: the prewarm computed its frontier with the very same
-   *  nano → light → hard pipeline, so one LLM round-trip of waiting lands this
+   *  directed cut, so one LLM round-trip of waiting lands this
    *  pass in the stable-frontier cache hit below instead of racing a second
    *  concurrent summarization call — and the user's next message tends to
    *  land inside the prewarm's window, which is why the prewarm exists
@@ -1543,15 +1664,42 @@ export class ContextCompactor {
     const cache = this.historySummary
 
     // The coverage the CACHED text claims (PLAN-context-summary-structure):
-    // the in-memory ledger when present, else the same positional rebuild a
-    // rehydrated cache derives below — the coverage line must never state more
-    // than the landed text really covers. An empty set (the notes-only
-    // landing, firstKeptId '') renders no line.
+    // the in-memory ledger when present, else a positional rebuild over the
+    // LIVE TRANSCRIPT — never over this cut's `region`. On a restart the epoch
+    // base is gone (D11), so the copy is rebuilt from the whole history, and
+    // `region` is only the slice THIS cut dropped; the persisted frontier names
+    // the newest message a PREVIOUS session's summary covered. Looking that id
+    // up in `region` returns −1 → slice(0, 0) → EMPTY ledger → the entire old
+    // region re-summarized (3 extra LLM calls measured in conv_20261117170141,
+    // review_20261122.md §2). The coverage line must never state more than the
+    // landed text really covers; an empty set (notes-only landing, an
+    // unresolvable frontier) renders no line.
     const cacheCovered = (): Set<string> | undefined => {
       if (!cache) return undefined
       if (cache.covered) return cache.covered
-      const j = region.findIndex((m) => m.id === cache.firstKeptId)
-      return new Set(region.slice(0, j + 1).map((m) => m.id))
+      const live = this.deps.getMessages()
+      const j = live.findIndex((m) => m.id === cache.firstKeptId)
+      if (j >= 0) return positionalLedger(live, (_m, i) => i <= j)
+      // The frontier may be a transient regroup id that no longer resolves.
+      // Its embedded epoch is the best remaining position signal: cover the
+      // transcript prefix ending at that instant. The guard refuses an instant
+      // outside the transcript's own span — such a frontier cannot describe a
+      // summary of these messages, and claiming coverage there is invention.
+      const at = frontierEpochMs(cache.firstKeptId)
+      if (at !== null && live.length > 0) {
+        const firstAt = Date.parse(live[0].createdAt)
+        const lastAt = Date.parse(live[live.length - 1].createdAt)
+        if (Number.isFinite(firstAt) && Number.isFinite(lastAt) && at >= firstAt && at <= lastAt) {
+          return positionalLedger(live, (m) => {
+            const t = Date.parse(m.createdAt)
+            return Number.isFinite(t) && t <= at
+          })
+        }
+      }
+      // Unresolvable frontier: claim nothing. One re-summary costs an LLM call
+      // but never stamps covered what no text describes — the ledger's first
+      // rule, and strictly safer than the over-claim a blind prefix would make.
+      return new Set<string>()
     }
 
     // Refill breaker active: reuse whatever summary state exists WITHOUT
