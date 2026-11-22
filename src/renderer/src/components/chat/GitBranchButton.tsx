@@ -341,7 +341,7 @@ export function GitBranchButton({ gitProjectId, workspaceDir, isRequesting }: Pr
           <span className="pm-branch-label" style={{ marginLeft: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {currentName}
           </span>
-          <DownOutlined className="pm-branch-label" style={{ fontSize: 10, color: 'var(--pm-text-quiet)', marginLeft: 4 }} />
+          <DownOutlined className="pm-branch-label" style={{ fontSize: 10, color: 'var(--pm-text-faint)', marginLeft: 4 }} />
         </Button>
       </Popover>
     </>

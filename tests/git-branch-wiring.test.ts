@@ -108,10 +108,21 @@ describe('composer git branch picker wiring', () => {
     expect(button).toContain('pm-git-branch-row-current')
   })
 
-  it('no faint helper ink and no hard-coded accent hex', () => {
-    expect(button).not.toContain('--pm-text-faint')
+  it('panel helper ink is quiet; the outer caret matches the 授权 / 模型 carets', () => {
+    // The clarity fix lifted PANEL helper text from faint -> quiet. The outer
+    // caret is chrome, not helper text: it stays faint so the git picker reads
+    // exactly like the permission and model Dropdowns beside it.
+    const chipAt = button.indexOf('className="pm-chat-branch"')
+    const panel = button.slice(0, chipAt)
+    const chip = button.slice(chipAt)
+    expect(panel).not.toContain('--pm-text-faint')
+    expect(panel).toContain('--pm-text-quiet')
+    const caret = "style={{ fontSize: 10, color: 'var(--pm-text-faint)', marginLeft: 4 }}"
+    expect(chip).toContain(caret)
+    expect(inputArea).toContain(caret)
+    // Negative control: quieting the caret again is exactly the mismatch.
+    expect(chip.replace(caret, caret.replace('--pm-text-faint', '--pm-text-quiet'))).not.toContain(caret)
     expect(button).not.toContain('#185FA5')
-    expect(button).toContain('--pm-text-quiet')
     expect(button).toContain("background: 'var(--pm-elevated)'")
   })
 
