@@ -2,26 +2,38 @@
 // Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
 // the product intro markdown; the window header carries the page title, so the
 // drawer chrome is gone. Content re-featured per release rather than drifting
-// back to an era-stale feature list — the 0.5.0 pass carries the layout-modes
-// batch (per-conversation chat / workspace / browser views behind a header
-// cycle button, the card-ed main window, the welcome page's three task modes
-// including the browser task with a URL entry and recent visits, the New Task
-// split-button submenu), the CodeMirror preview batch (view/edit flip on one
-// instance, completion, ⌘F find-and-replace, the read-only agent-change diff
-// with Show/Hide changes), the multi-window batch (conversation popout, the
-// project immersive window's three panels), the workbench batch (full-text
-// search card, only-this-session-changes filter, per-file diff, file
-// operations, review linkage), and the extension batch (history scoped per
-// Chrome tab, kept across browser restarts, turn-end hosted persistence).
-// The two intro paragraphs name the SHIPPING version (the footer's
-// __APP_VERSION__ already follows package.json on its own). Deliberately NOT
+// back to an era-stale feature list — the 0.5.2 pass carries the voice-input
+// batch (offline mic dictation, model-pack import, ⌥V), the workflow run view
+// (execution-chain navigation, visit-count badges, grey-card rule: no per-card
+// status colors, results read in the side panel; the verdict palette lives on
+// the outlet edges), the compaction epoch (single decision point, copy
+// frozen per epoch), the composer branch picker, and the turn-aggregated
+// stats row (completion timestamp + per-turn tokens; the streaming caret and
+// the per-message duration are retired). Earlier passes still in force: the
+// layout-modes batch (per-conversation chat / workspace / browser views behind
+// a header cycle button, the card-ed main window, the welcome page's three
+// task modes including the browser task with a URL entry and recent visits,
+// the New Task split-button submenu), the CodeMirror preview batch (view/edit
+// flip on one instance, completion, ⌘F find-and-replace, the read-only
+// agent-change diff with Show/Hide changes), the multi-window batch
+// (conversation popout, the project immersive window's three panels), the
+// workbench batch (full-text search card, only-this-session-changes filter,
+// per-file diff, file operations, review linkage), the 0.5.1 task-center
+// batch (one wizard for both task kinds, background terminal tasks with the
+// composer task strip, extension session handoff), and the extension batch
+// (history scoped per Chrome tab, kept across browser restarts, turn-end
+// hosted persistence).
+// The two intro paragraphs are a deliberately version-free overview (user
+// 2026-11-22: no feature-by-version rollups at the top; features live in the
+// sections below) — the footer's __APP_VERSION__ already follows package.json
+// on its own. Deliberately NOT
 // mentioned: the routine webhook trigger and the
 // settlement webhook — ROUTINE_WEBHOOK_UI keeps both surfaces hidden (backend
 // keeps working), so the fact sheet hides them with it. The tool count is
-// BUILT_IN_TOOLS.length (33): page tools are extension-only and
+// BUILT_IN_TOOLS.length (35): page tools are extension-only and
 // create_sub_plan is expert-scoped, neither is counted. Settings-page list
 // mirrors the MENU in SettingsPage.tsx (常规/模型设置/浏览器插件/快捷键/
-// 助手设置/记忆/高级/关于 — 经验 is no longer its own section; it lives in
+// 助手设置/记忆/高级/语音输入/关于 — 经验 is no longer its own section; it lives in
 // the skill center's third section, memory browsing moved under 记忆).
 // NOTE: the markdown lives in JS template literals — never emit a backtick or
 // an interpolation (a `${`) into the strings below.
@@ -40,7 +52,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.5.2 让你的手离开键盘：输入框旁的麦克风一键听写，语音在本机离线转写、说完就出字；工作流任务回到任务中心，并配上整页运行视图——执行链一步步前进 / 后退、每个环节跑过几次与每次的结果都看得见，停止、续跑、重跑随你；长对话也更快更省，上下文按真实请求用量触发压缩、不再反复打断前缀缓存。此前 0.5.1 把重复的活管了起来：任务中心把定时、批量与文件触发的活收进同一列表，用同一个向导编辑；跑得久的事也看得见了——终端命令一键「转入后台」，输入框上方常驻任务条、悬停即见实时输出，扩展面板的会话还能一键移交桌面接着聊。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎：它能拆解任务、读写文件、执行命令、操作浏览器，自主推进把活干完，而不只是给建议。语音听写、定时任务、记忆与知识沉淀都在本机完成——所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -66,7 +78,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 - **欢迎页** — 对话 / 项目 / 浏览器三档开局：对话形态是「继续对话 / 开始日常 / 知识沉淀」三类卡片加「试试」提示词；项目形态先挑一个工作目录，选好即压缩成一条横条、随时「更换」；浏览器形态只需输入网址
 - **主窗三视图** — 会话头右上角的循环钮在对话 / 工作区 / 浏览器之间轮转，视图跟着任务走、按会话记住；新建任务也能从侧栏子菜单直接落进对应形态
 - **侧栏** — 新建任务（对话 / 项目 / 浏览器三档）/ 搜索 / 日常任务（定时 / 批量 / 工作流）/ 能力 • 知识 • 创作
-- **设置页** — 常规（语言、外观、开机自启、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 语音输入（模型包导入、转写语言）/ 关于；界面浅色 / 深色 / 跟随系统
+- **设置页** — 常规（语言、外观、开机自启、会话与运行记录保留、运行上限、专家并发上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 高级（网络代理、LLM 重试状态码、阻止休眠、调试、后台任务完成通知、Git 状态注入、项目命令注入、知识自动编译）/ 语音输入（模型包导入、转写语言）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
 - **会话列表** — 置顶 / 今天 / 昨天 / 更早 自动分组
@@ -75,7 +87,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 输入框旁的麦克风一键听写：模型在本机推理，录音与转写全程不经过任何服务器。
 
-- **离线转写** — 导入一次模型包即可长期使用（中 / 粤 / 英 / 日 / 韩，语种可自动判定），之后完全断网也能用
+- **离线转写** — 导入一次模型包即可长期使用（中 / 粤 / 英 / 日 / 韩，默认中文、也可自动判定语种），之后完全断网也能用
 - **说完就出字** — 录音时实时显示秒数，再点一次停止即转写，结果插入光标处、不自动发送；⌥V（聚焦输入框时）随时开始 / 停止
 - **可取消** — 录到一半按 Esc 取消，草稿原样保留
 - **模型管理** — 「设置 → 语音输入」里导入、删除模型包（导入前校验 sha256），引擎与版本状态一目了然
@@ -116,7 +128,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 - **定时与触发** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），两类任务同一组配置；定时卡带开关，停用即静默
 - **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表，最大 50MB），表头自动映射为变量；每行数据用独立会话执行一次任务，并发与单次超时可调（工作流批量串行执行），中断可续跑，运行历史按行展示，点击钻入该行的会话
-- **工作流运行视图** — 开跑就有整页视图：执行链按先后串起每一次环节执行，前进 / 后退直接定位到对应节点，节点角上标着这是第几次；每个环节的结果按状态七色分辨，没接线的环节在画布上亮出来
+- **工作流运行视图** — 开跑就有整页视图：执行链按先后串起每一次环节执行，前进 / 后退直接定位到对应节点；环节卡是同一张灰边卡、右上角标执行次数，每次跑成什么样点开右侧详情看；每条出口线按它代表的结果状态着色、实际走过的线更醒目，没接线的环节在画布上亮出来
 - **停下、续跑与重跑** — 运行中随时停止；停下可以原样续跑，也可以从头重跑；本轮的交付物列在运行卡片上，点开即看
 - **画布编辑** — 环节可以带多个出口，上 / 左 / 右都能接入，拖线即连；撤销 / 重做步步可回；一键自动整理布局；常用流程从模板起步，或复制一份来改
 - **分享与导入** — 两类任务都能导出分享；导入走任务中心头部唯一入口，先预览、确认才落库
@@ -161,11 +173,11 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 ## 工具系统
 
-33 个内置工具，默认全部启用：
+35 个内置工具，默认全部启用：
 
 - 文件读写 / 编辑 / 搜索 / 修补，目录浏览；读取自带行号坐标，改哪一行说得清
 - 终端命令执行，实时输出；长命令可「转入后台」，输入框上方常驻任务条、悬停看实时输出，后台任务完成自动唤醒会话，不用轮询
-- Git 状态 / 差异 / 日志 / 提交 / 恢复
+- Git 状态 / 差异 / 日志 / 提交 / 恢复；项目会话的输入框旁有分支选择器，切换、新建分支不离开对话
 - 网页访问与内置浏览器
 - **recall 统一检索** — 记忆页、历史会话、知识库一次查完
 - 计划与子代理编排
@@ -225,7 +237,7 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 - **专家** — 人设、方法论、输出规范、边界约束，外加可用技能与连接器的白名单
 - **连接器** — 注册任意 MCP 服务器，扩展 AI 的能力边界
 - **技能** — ZIP 技能包，SKILL.md 深度塑造行为，关键词自动触发；中心三分区：内置 / 已安装 / 经验
-- **内置工具** — 33 个默认全开，用不上的可以按需关掉
+- **内置工具** — 35 个默认全开，用不上的可以按需关掉
 
 ## 创作中心
 
@@ -237,11 +249,11 @@ AI 写下的每个文件都在这里：地址栏把工作区路径铺成面包�
 
 ## 一直都在的核心能力
 
-- **Agent 引擎** — 自主循环、流式渲染（正文句尾一枚光标）、上下文按真实请求用量自动压缩（逼近窗口上限才动手，压完留足余量，少打断前缀缓存）
+- **Agent 引擎** — 自主循环、流式渲染（渐显生长的文本本身就是进行中的指示）、上下文按真实请求用量自动压缩（逼近窗口上限才动手，压完留足余量，少打断前缀缓存）；输入框旁的上下文环实时显示占用与输入预算刻度，压缩详情收在环的浮窗里
 - **多模型** — Anthropic / OpenAI 双协议适配，模型按供应商分组共享凭据，单个会话还可单独指定模型；Anthropic 系连接可开前缀缓存断点（默认开）
 - **记忆** — 手写 MEMORY.md 永远注入，其余自动提取、整理为记忆页（见「记忆」）
 - **经验** — 会话后自动萃取，可固化为 SOP（见「经验」）
-- **会话与统计** — 本地 SQLite 存储，自动标题（第三条消息后还会重写得更准）、自动清理；每条回复带耗时（运行中实时走秒）与 Token 数，Token 用量按小时 / 日 / 月统计，缓存命中单独记账
+- **会话与统计** — 本地 SQLite 存储，自动标题（第三条消息后还会重写得更准）、自动清理；每个回合带完成时间戳与回合合计的 Token 数（运行中有一枚走秒的秒表徽标），Token 用量按小时 / 日 / 月统计，缓存命中单独记账
 - **长跑更稳** — 闲置会话自动逐出内存、终端输出封顶、网络断流自动续跑、调度槽位不再卡死——12 小时无人值守也不失控
 - **双语** — 中文 / English 即时切换，当前语言自动注入提示词
 `
@@ -251,7 +263,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.5.2 takes your hands off the keyboard: a mic beside the composer turns speech into text, transcribed offline on your own machine; workflow tasks are back in the task center with a whole-page run view — walk the execution chain forward and back, see how many times each stage ran and how each run turned out, then stop, resume, or rerun as you like; and long conversations get faster and cheaper, with compaction triggered by real request usage instead of interrupting the prompt cache over and over. Before that, 0.5.1 brought the repetitive work under one roof: the task center gathers scheduled, batch and file-triggered work into one list, edited in one wizard; and long-running work becomes visible — a terminal command can be sent to the background with one click, a task strip above the composer shows what is running (hover for live output), and a session started in the extension panel can be handed off to the desktop to continue. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine: it breaks a task down, reads and writes files, runs commands, drives a browser, and carries the work through on its own — advice, plus delivery. Voice dictation, scheduled tasks, memory, and knowledge curation all happen on your machine, and every byte of data stays on your own computer.
 
 ## Quick Start
 
@@ -277,7 +289,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 - **Welcome page** — three ways to begin: chat shows continue-the-conversation / start-a-routine / knowledge cards plus Try-these prompts; project asks for a working folder first, then collapses into a single strip with a change affordance; browser just wants a URL
 - **Three main views** — a cycle button in the conversation header rotates chat / workspace / browser, the view follows the task and is remembered per conversation; New Task's submenu drops you straight into the mode you want
 - **Sidebar** — New Task (chat / project / browser) / Search / Routines (scheduled / batch / workflow) / Capability · Knowledge · Studio
-- **Settings** — General (language, appearance, launch at login, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / Voice Input (model import, transcription language) / About; light / dark / system appearance
+- **Settings** — General (language, appearance, launch at login, conversation & run retention, run limits, expert concurrency, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Advanced (network proxy, LLM retry codes, keep-awake, debugging, background-completion notice, Git injection, project-commands injection, knowledge auto-compile) / Voice Input (model import, transcription language) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
 - **Conversation list** — auto-grouped into Pinned / Today / Yesterday / Earlier
@@ -286,7 +298,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 A mic beside the composer turns speech into text; the model runs on your machine, and neither the audio nor the transcript ever touches a server.
 
-- **Offline transcription** — import a model pack once and it keeps working (Chinese / Cantonese / English / Japanese / Korean, language detected automatically); no network needed afterward
+- **Offline transcription** — import a model pack once and it keeps working (Chinese / Cantonese / English / Japanese / Korean — Chinese by default, auto language detection available); no network needed afterward
 - **Speak, and the text appears** — a live seconds counter while recording; click once more to stop and the transcript drops in at the caret without sending; ⌥V (while the composer is focused) starts and stops anytime
 - **Cancellable** — press Esc mid-recording to cancel; your draft stays untouched
 - **Model management** — import and remove model packs under Settings → Voice Input (sha256 checked before import), with engine and version status in plain sight
@@ -327,7 +339,7 @@ The task center holds two kinds of work: **conversational tasks** run one prompt
 
 - **Schedules & triggers** — cron schedules, manual runs, or file-change triggers (watching files or folders you name) — the same settings for both kinds; scheduled cards carry an on/off toggle, and a disabled schedule stays silent
 - **CSV/Excel batch runs** — point a task at a CSV or an Excel sheet (first worksheet, up to 50MB) and headers map themselves into variables; each data row runs the task in its own session, concurrency and the per-row timeout are adjustable (workflow batches run serially), interrupted batches resume, and the run history lists every row, clickable into its session
-- **Workflow run view** — starting a run opens a full-page view: the execution chain strings every stage execution in order, forward / back jumps straight to the matching node, and each node corner shows which visit this was; every stage's result is told apart by a seven-color status, and stages left unwired are called out on the canvas
+- **Workflow run view** — starting a run opens a full-page view: the execution chain strings every stage execution in order, forward / back jumps straight to the matching node; every stage is the same grey-bordered card with a visit-count badge in its corner, and how each visit turned out is read in the side panel; every outlet line is colored by the result state it stands for, taken lines stand out, and stages left unwired are called out on the canvas
 - **Stop, resume, rerun** — stop at any time mid-run; a stopped run can resume where it left off or rerun from the top; the run's deliverables sit on the card, one click to open
 - **Canvas editing** — a stage can carry several outlets, and connections land on the top / left / right edges; drag to wire, undo / redo step by step, tidy the layout in one click, start from a template, or duplicate a flow and adjust
 - **Share & import** — both kinds export as share files; import lives in one place in the task center header, preview first and nothing lands until you confirm
@@ -372,11 +384,11 @@ Experiences are working methods grown out of your conversations, distilled to th
 
 ## Tool System
 
-33 built-in tools, all enabled by default:
+35 built-in tools, all enabled by default:
 
 - file read/write/edit/search/patch and directory listing; reads carry line-number coordinates, so edits name the exact line
 - terminal commands with live output; a long command can be sent to the background — a strip above the composer lists what is running (hover for live output), and finished background tasks wake the conversation on their own — no polling
-- Git status / diff / log / commit / restore
+- Git status / diff / log / commit / restore; project conversations carry a branch picker beside the composer — switch or create a branch without leaving the chat
 - web access and the built-in browser
 - **one-call recall** — memory pages, past conversations, and the knowledge base in a single query
 - plan and sub-agent orchestration
@@ -436,7 +448,7 @@ Experts / connectors / skills / built-in tools — four sections, one page:
 - **Experts** — persona, methodology, output conventions, boundaries, plus allow-lists of usable skills and connectors
 - **Connectors** — register any MCP server to extend what the AI can reach
 - **Skills** — ZIP skill packs; SKILL.md shapes behavior deeply, trigger keywords fire automatically; three sections in the center: Built-in / Installed / Experiences
-- **Built-in tools** — all 33 on by default; switch off the ones you do not need
+- **Built-in tools** — all 35 on by default; switch off the ones you do not need
 
 ## Studio
 
@@ -448,11 +460,11 @@ Build your own tools from three pieces:
 
 ## The Core That Was Always Here
 
-- **Agent engine** — autonomous loop, streaming rendering (a single caret at the sentence tail), context compaction driven by real request usage (it only acts as the window fills up, leaves headroom after, and rarely breaks the prompt cache)
+- **Agent engine** — autonomous loop, streaming rendering (the text fading in as it grows is the progress indicator), context compaction driven by real request usage (it only acts as the window fills up, leaves headroom after, and rarely breaks the prompt cache); the context ring beside the composer shows usage and the input-budget scale live, with compaction details in its popover
 - **Multi-model** — Anthropic and OpenAI protocols via adapters; group models under shared-credential providers, or pin a different model to a single conversation; Anthropic connections can mark prefix-cache breakpoints (on by default)
 - **Memory** — hand-written MEMORY.md always injected; everything else extracted and curated into memory pages (see Memory)
 - **Experiences** — distilled after sessions, distillable into SOPs (see Experiences)
-- **Sessions & usage** — local SQLite storage, auto titles (rewritten once more accurately after the third message), auto cleanup; every reply carries its duration (ticking live while running) and token count, token usage charted by hour / day / month, with cache hits accounted separately
+- **Sessions & usage** — local SQLite storage, auto titles (rewritten once more accurately after the third message), auto cleanup; every turn carries its completion timestamp and turn-total tokens (a live stopwatch badge while it runs), token usage charted by hour / day / month, with cache hits accounted separately
 - **Long runs hold** — idle conversations evicted from memory, terminal output capped, interrupted streams auto-resume, scheduler slots never wedge — 12 hours unattended without losing control
 - **Bilingual** — Chinese and English switch instantly; the active language rides the prompt
 `
