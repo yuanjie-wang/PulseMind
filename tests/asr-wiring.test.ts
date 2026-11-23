@@ -210,6 +210,36 @@ describe('Linux 随包引擎：1.12.40 钉版（2026-11-23）', () => {
   })
 })
 
+// ── mac 两架构：平台包必须显式补装（2026-11-23 实锤）──
+// lockfile 是在 arm64 开发机上生成的，平台包只有 darwin-arm64 一格；`npm ci`
+// 只装 lockfile 里有的东西，于是真 Intel runner（以及任何 lockfile 形态与宿主
+// 不符的 runner）上 prepare-asr-engine 直接以「不在 node_modules」退出。Linux
+// 段早有显式补装，这两份缺 —— 钉「npm ci → 补装 → prepare → build」的整行顺序。
+describe('macOS CI：darwin 平台包显式补装（不依赖 lockfile 的宿主形态）', () => {
+  for (const wf of ['build-mac-x64.yml', 'build-mac-arm64.yml']) {
+    it(`${wf} 在 prepare 之前装 sherpa-onnx-darwin-$ARCH（版本跟随宿主包）`, () => {
+      const src = read('.github', 'workflows', wf)
+      const lines = src.split('\n').map((l) => l.trim())
+      const idx = (needle: string): number => {
+        const i = lines.findIndex((l) => l === needle)
+        expect(i, `${wf} 缺整行：${needle}`).toBeGreaterThan(-1)
+        return i
+      }
+      const npmCi = idx('run: npm ci')
+      const install = idx('npm i --no-save "sherpa-onnx-darwin-$ARCH@$ver"')
+      const ver = idx('ver=$(node -p "require(\'sherpa-onnx-node/package.json\').version")')
+      const prep = idx('run: node scripts/prepare-asr-engine.js')
+      const build = idx('run: npm run build')
+      expect(npmCi).toBeLessThan(ver)
+      expect(ver).toBeLessThan(install)
+      expect(install).toBeLessThan(prep)
+      expect(prep).toBeLessThan(build)
+      // 负扫：不许退回「npm ci 天然装对平台包」的假设（那句注释曾掩盖此坑）
+      expect(src).not.toContain('npm ci 的 optionalDependencies 天然装')
+    })
+  }
+})
+
 // ── 方案 ①：随包私有 C++ 运行库（2026-11-23 裁定）──
 // 引擎要 GLIBCXX_3.4.29，UOS 20 的系统 libstdc++ 只到 3.4.25。同名塞一份没用
 //（glibc 按 SONAME 复用已加载对象），所以改名 libpmcxx.so.6 并改引擎的 NEEDED。

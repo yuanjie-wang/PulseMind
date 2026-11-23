@@ -126,6 +126,15 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
+      # npm ci 只装 lockfile 里有记录的包（当前 lockfile 只有 arm64 一格，属于
+      # 恰好命中）。显式补装让这一步不依赖 lockfile 的宿主形态——x64 段同日
+      # 就是被这一点拦下的。版本跟随 sherpa-onnx-node（不另立字面量）。
+      - name: Install macOS ASR engine package
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('sherpa-onnx-node/package.json').version")
+          npm i --no-save "sherpa-onnx-darwin-$ARCH@$ver"
+
       # PLAN-voice-input M3：引擎随包（resources/asr-engine 是 gitignore 的，
       # CI 现场生成）。darwin 包已自带 @loader_path rpath（M0-4），脚本只做
       # ad-hoc 重签 + sha manifest。

@@ -125,8 +125,18 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
-      # PLAN-voice-input M3：引擎随包（gitignore 资源，CI 现场生成）。x64 包在
-      # 真 Intel 机器上构建，npm ci 的 optionalDependencies 天然装 darwin-x64。
+      # npm ci 只装 lockfile 里有记录的包，而 lockfile 是在 arm64 开发机上生成的
+      #（平台包只有 sherpa-onnx-darwin-arm64 一格）——真 Intel runner 上不会补
+      # darwin-x64，prepare 以「不在 node_modules」退出（2026-11-23 实锤）。
+      # 与 Linux 段同款显式补装；版本跟随 sherpa-onnx-node 的 optionalDependencies
+      #（不另立字面量，免得和宿主包版本漂开）。--no-save 不改 package.json/lockfile。
+      - name: Install macOS ASR engine package
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('sherpa-onnx-node/package.json').version")
+          npm i --no-save "sherpa-onnx-darwin-$ARCH@$ver"
+
+      # PLAN-voice-input M3：引擎随包（gitignore 资源，CI 现场生成）。
       - name: Prepare bundled ASR engine
         run: node scripts/prepare-asr-engine.js
 
