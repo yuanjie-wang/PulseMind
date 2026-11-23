@@ -1166,15 +1166,13 @@ function AppLayout({
            window renders PopoutApp without AppLayout and needs the same classes
            (probe-popout-boot caught the popout's button unstyled). */
 
-        .settings-scroll::-webkit-scrollbar {
-          width: 6px;
-        }
-        .settings-scroll::-webkit-scrollbar-thumb {
-          background: var(--pm-scrollbar);
-          border-radius: 3px;
-        }
-        .settings-scroll::-webkit-scrollbar-thumb:hover {
-          background: var(--pm-scrollbar-active);
+        /* Native scrollbar colour only (2026-11-23): a ::-webkit-scrollbar
+           declaration here would put this pane back in custom-bar mode, where
+           the thumb is main-thread painted and freezes for the whole compositor
+           scroll gesture (see src/renderer/index.html's scrollbar block). The
+           palette variable stays the single theme hook. */
+        .settings-scroll {
+          scrollbar-color: var(--pm-scrollbar) transparent;
         }
 
         .knowledge-header-tabs {

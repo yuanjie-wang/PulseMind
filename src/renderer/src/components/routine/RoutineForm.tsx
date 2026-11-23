@@ -874,8 +874,8 @@ export function PromptContentSection({ draft, onChange }: PromptContentSectionPr
   const insertVar = (key: string): void => insertTokenAtCaret(promptAreaRef, draft.prompt, key, (next) => onChange({ ...draft, prompt: next }))
   return (
     <>
-      <div data-routine-field="prompt">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} data-routine-field="prompt-head">
+      <div data-routine-field="prompt" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }} data-routine-field="prompt-head">
           <FieldLabel text="提示词" />
           <InsertVariableSelect
             placeholder="插入变量"
@@ -886,11 +886,36 @@ export function PromptContentSection({ draft, onChange }: PromptContentSectionPr
             ]}
           />
         </div>
+        {/* 2026-11-23（user：提示词框「滚动条滚动不顺滑」「可以向下撑满」，二次裁定
+            「要撑到底」）：盒子的高度不再由行数决定，而是占满编辑器卡片剩下的
+            高度——外层链路 TaskWizardPage 内容步 height:'100%' → 本层 flex:1 →
+            这里 flex:1，textarea 用 styles.textarea 吃到 flex（antd 的 TextArea
+            style 只透传 resize，其余样式必须走 styles.textarea 才落到元素上）。
+            autoSize 已退场：它的内联行高会与 flex 拉伸互相打架，而且「随内容
+            长高」的终点仍是内容高度、撑不到底。内容超过盒子时由 textarea 自己
+            滚动（页面滚动容器因此只剩一个滚动目标）——「滚动不顺滑」的两段式
+            手感消失。resize:'none' 拧掉 antd 缺省的垂直手柄（textarea.ant-input
+            带 resize:vertical，能一路拖满整页）。minHeight 保住短窗口下的可用
+            高度，再矮就交给页面滚动。 */}
+        {/* 2026-11-23 同一报告的「滚动条滚动不顺滑」最终结论（用户补充后重新实测）：
+            不是手感、不是抓握区——是「滚动条不跟随滚动，等内容停止滚动时，滚动条
+            才更新位置」。真 App 里用合成器手势滚动（CDP Input.synthesizeScrollGesture，
+            等价于触控板）逐帧解像素：拇指全程钉在 y 197–373 不动（34 帧里只有 4 个
+            位置签名），手势一结束才一跳落到 302–478；同一个框换成原生滚动条，34 帧
+            里 25–33 个位置、逐帧跟随后再淡出。原因是自定义 ::-webkit-scrollbar 由
+            主线程绘制，而 Chromium 的线程化滚动在合成器线程推进偏移、手势期间不重绘
+            该层——于是拇指停更。裸 div 挂上全局 6px 自定义条同样冻结，所以这不是这
+            个输入框的问题。修法 = index.html 全局改用标准属性（scrollbar-width:
+            thin + scrollbar-color，由合成器绘制），自定义条规则整份撤掉——这个框
+            不再需要自己的 className。这里只留 overscroll-behavior: contain（到头的
+            滚轮不再递给向导页面；CSS 静态表里写不了这个属性，只能走 styles）。
+            红线：别在任何地方重新声明 ::-webkit-scrollbar，拇指会重新冻结。 */}
         <Input.TextArea
           ref={promptAreaRef}
           value={draft.prompt}
           onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
-          rows={8}
+          style={{ resize: 'none' }}
+          styles={{ textarea: { flex: 1, minHeight: 160, overscrollBehavior: 'contain' } }}
           placeholder="独立可执行的指令，例如：检查 {{repo}} 仓库的依赖是否有已知安全漏洞，输出报告。用 {{变量名}} 引用任务变量。"
         />
       </div>

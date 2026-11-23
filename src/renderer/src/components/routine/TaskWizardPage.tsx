@@ -884,7 +884,10 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
             )}
 
             {step === 'content' && kind === 'routine' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              /* height:'100%' 是「提示词框撑到底」链条的第一环（user 2026-11-23
+                 「要撑到底」）：编辑器卡片是定高 flex 列（EDITOR_CARD_SURFACE），
+                 本层不占满高度，下面的 flex:1 就没有可分的剩余空间。 */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, height: '100%' }}>
                 <PromptContentSection draft={draft} onChange={editDraft} />
               </div>
             )}

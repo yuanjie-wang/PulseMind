@@ -100,27 +100,18 @@
   --pm-inset: 16px; /* 消息列内缩：主对话是 1000 列里的 24px，面板等比例收窄 */
 }
 
+/* 原生滚动条（2026-11-23 跟进主应用同日裁定）：这里原先是照抄应用
+   index.html 的 6px 自定义条，而自定义 ::-webkit-scrollbar 由主线程绘制 ——
+   Chromium 线程化滚动（触控板；面板跑在 Chrome 里也走这条路）在合成器线程
+   推进偏移、手势期间不重绘该层，拇指会冻结到松手才一跳归位。实测与完整结论
+   见 src/renderer/index.html 的滚动条注释。
+   面板挂在 closed shadow root 里（content/index.tsx），读不到应用的全局规则，
+   所以这里自己声明一份；scrollbar-width 不继承、scrollbar-color 继承，两者都
+   必须落在 * 上。红线同主应用：不要再出现 ::-webkit-scrollbar。 */
 * {
   box-sizing: border-box;
-}
-
-/* index.html 的全局滚动条：6px，thumb rgba(128,128,128,.4)，圆角 3 */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.4);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.6);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
 }
 
 button {

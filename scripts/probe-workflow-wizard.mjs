@@ -2889,6 +2889,93 @@ check('点回蓝：圆圈 = --pm-verdict-0', (await circleBg15()) === V0_15)
 await closeNodePanel()
 await page.screenshot({ path: join(SHOTS, '15-verdict-colors.png') })
 
+// ══════════════════════════════════════════════════════════════════════════
+// §16 · 提示词框的尺寸契约（user 2026-11-23：「滚动条滚动不顺滑」，同一条
+//       报告里的「输入框可以向下撑满」，二次裁定「要撑到底」）：
+//       · 没有右下角拖拽手柄（antd textarea.ant-input 缺省 resize:vertical，
+//         能一路把框拖满整页）；
+//       · 框的下缘贴住编辑器卡片的内底（撑到底，不随行数封顶）；
+//       · 内容永远不改变几何——超过盒子就在 textarea 自己里滚动，页面滚动
+//         容器始终不溢出（滚轮只喂一个滚动目标 = 「不顺滑」的两段式手感消失）；
+//       · 窗口变高时框跟着长（撑的是剩余空间，不是写死的高度）。
+// ══════════════════════════════════════════════════════════════════════════
+console.log('\n§16 · 提示词框：无拖拽手柄、撑满卡片剩余高度、内容在界内滚动')
+await page.setViewportSize({ width: 1440, height: 900 })
+await page.waitForTimeout(400)
+await page.evaluate(() => window.__mount({ kind: 'routine', routineId: 'r_demo', workflowId: null }))
+await page.waitForSelector('[data-pm-form-assist]')
+await gotoStep('任务内容')
+await page.waitForSelector('[data-routine-field="prompt"] textarea')
+const PROMPT_TA = '[data-routine-field="prompt"] textarea'
+/** 用原生 setter 写值（React 受控组件只认这条路径）。 */
+const fillPrompt = async (lines) => {
+  await page.evaluate(
+    ([sel, n]) => {
+      const el = document.querySelector(sel)
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+      setter.call(el, n === 0 ? '' : Array.from({ length: n }, (_, i) => `第 ${i + 1} 行：检查仓库依赖是否有已知安全漏洞并输出报告。`).join('\n'))
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    },
+    [PROMPT_TA, lines],
+  )
+  await page.waitForTimeout(500)
+}
+/** 盒子几何 + 它到卡片内底的距离 + 外层滚动容器的溢出。 */
+const promptBox = () =>
+  page.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    const card = document.querySelector('[data-pm-wizard-editor]')
+    const scroller = el.closest('.auto-hide-scroll')
+    const cardBox = card.getBoundingClientRect()
+    const padBottom = parseFloat(getComputedStyle(card).paddingBottom)
+    return {
+      resize: getComputedStyle(el).resize,
+      cssFlex: getComputedStyle(el).flexGrow,
+      height: Math.round(el.getBoundingClientRect().height),
+      bottomToCardInnerBottom: Math.round(cardBox.bottom - padBottom - el.getBoundingClientRect().bottom),
+      clientH: el.clientHeight,
+      scrollH: el.scrollHeight,
+      overflows: el.scrollHeight > el.clientHeight + 1,
+      outerOverflows: scroller.scrollHeight > scroller.clientHeight + 1,
+    }
+  }, PROMPT_TA)
+
+await fillPrompt(0)
+const p0 = await promptBox()
+check('提示词框没有拖拽手柄（resize: none）', p0.resize === 'none', `resize=${p0.resize}`)
+check('空内容：下缘贴住卡片内底（撑到底）', Math.abs(p0.bottomToCardInnerBottom) <= 2, `gap=${p0.bottomToCardInnerBottom}px`)
+check('空内容：无内嵌滚动条', !p0.overflows, JSON.stringify(p0))
+await fillPrompt(40)
+const p40 = await promptBox()
+check('40 行：盒子几何不随内容变化（不再是「随内容长高」）', p40.height === p0.height, `h=${p40.height} vs ${p0.height}`)
+check('40 行：超出内容在 textarea 界内滚动', p40.overflows, JSON.stringify(p40))
+check('40 行：外层页面容器始终不溢出（唯一滚动目标是框自己）', !p40.outerOverflows, JSON.stringify(p40))
+check('40 行：下缘仍贴住卡片内底', Math.abs(p40.bottomToCardInnerBottom) <= 2, `gap=${p40.bottomToCardInnerBottom}px`)
+await page.setViewportSize({ width: 1440, height: 1100 })
+await page.waitForTimeout(500)
+const pTall = await promptBox()
+check('窗口 +200 高：框跟着长高（撑的是剩余空间，不是写死高度）', pTall.height >= p40.height + 180, `h=${pTall.height} vs ${p40.height}`)
+check('窗口 +200 高：下缘仍贴住卡片内底', Math.abs(pTall.bottomToCardInnerBottom) <= 2, `gap=${pTall.bottomToCardInnerBottom}px`)
+// 滚轮用例回到 900 高：1100 高时 40 行已装得进盒子，没有可滚的内容。
+await page.setViewportSize({ width: 1440, height: 900 })
+await page.waitForTimeout(500)
+const taBox = await (await page.$(PROMPT_TA)).boundingBox()
+await page.mouse.move(taBox.x + taBox.width / 2, taBox.y + taBox.height / 2)
+await page.evaluate((sel) => {
+  const el = document.querySelector(sel)
+  el.scrollTop = 0
+  el.closest('.auto-hide-scroll').scrollTop = 0
+}, PROMPT_TA)
+await page.mouse.wheel(0, 300)
+await page.waitForTimeout(400)
+const wheel = await page.evaluate((sel) => {
+  const el = document.querySelector(sel)
+  const scroller = el.closest('.auto-hide-scroll')
+  return { ta: el.scrollTop, outer: scroller.scrollTop, overflows: el.scrollHeight > el.clientHeight + 1 }
+}, PROMPT_TA)
+check('滚轮只喂 textarea（页面容器 scrollTop 保持 0）', wheel.overflows && wheel.ta > 0 && wheel.outer === 0, JSON.stringify(wheel))
+await page.screenshot({ path: join(SHOTS, '16-prompt-textarea.png') })
+
 await browser.close()
 
 // ── summary ──

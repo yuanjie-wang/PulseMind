@@ -52,38 +52,45 @@
         outline: none;
       }
 
-      /* Global thin scrollbar */
-      ::-webkit-scrollbar {
-        width: 6px;
-        height: 6px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: rgba(128, 128, 128, 0.4);
-        border-radius: 3px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: rgba(128, 128, 128, 0.6);
+      /* Scrollbars are NATIVE, never custom (2026-11-23, user「滚动条不跟随
+         滚动，等内容停止滚动时，滚动条才更新位置」). A ::-webkit-scrollbar
+         declaration puts that element in "custom scrollbar" mode, and custom
+         bars are painted on the MAIN thread. With Chromium's threaded
+         (compositor) scrolling — what a macOS trackpad actually drives — the
+         scroll offset advances on the compositor and the main thread does not
+         repaint the scroller's layer mid-gesture, so the thumb freezes at its
+         old offset and snaps into place only when the gesture ends. Measured in
+         the real app on the exact 12px custom bar this file used to declare:
+         thumb pinned at y 197–373 through a 0→400 synthetic-trackpad scroll
+         (4 distinct positions total), then one jump to 302–478. The same
+         element with native bars follows every frame (25–33 positions, then
+         fades out). A bare div carrying the app's global 6px custom bar freezes
+         the same way, so this was never specific to the prompt box.
+         Therefore: standard properties only — Chromium paints these on the
+         compositor. `thin` ≈ the old 6px look, the colours keep the old grey,
+         the track stays transparent. `scrollbar-color` inherits, but
+         `scrollbar-width` does NOT (measured: with the rule on `html` alone the
+         textarea computed `auto` — overlay on macOS hides that, but Win/Linux
+         would fall back to full-width classic bars), so the pair is declared on
+         `*`. A component rule with higher specificity — the tab strips'
+         `scrollbar-width: none` — still wins.
+         RED LINE: do not add ::-webkit-scrollbar anywhere (the only allowed
+         form is `display: none` on a strip that should have no bar at all —
+         those have no thumb to follow). To recolour a scroller, set
+         scrollbar-color; to hide until interaction, let the OS overlay bar do
+         it (macOS) instead of painting a fake one. */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(128, 128, 128, 0.45) transparent;
       }
 
-      /* Auto-hiding scrollbar. The global rule above turns every scrollbar into
-         a classic one, so macOS stops using its own auto-hiding overlay bar and
-         the track is always painted. This utility hides the thumb while the
-         pointer is elsewhere and reveals it on hover — or when focus is inside
-         the area, so keyboard scrolling still has the affordance. The 6px
-         gutter stays reserved either way, so nothing shifts when it appears. */
-      .auto-hide-scroll::-webkit-scrollbar-thumb {
-        background: transparent;
-      }
-      .auto-hide-scroll:hover::-webkit-scrollbar-thumb,
-      .auto-hide-scroll:focus-within::-webkit-scrollbar-thumb {
-        background: rgba(128, 128, 128, 0.4);
-      }
-      .auto-hide-scroll:hover::-webkit-scrollbar-thumb:hover {
-        background: rgba(128, 128, 128, 0.6);
-      }
+      /* `.auto-hide-scroll` used to hide the custom thumb until hover. It keeps
+         its name only as a layout/locator anchor (probes and `closest()` walk
+         it); the rules are gone because the native overlay bar already
+         auto-hides on macOS, and any custom rule would bring the frozen thumb
+         back. Do not re-add scrollbar pseudo-elements here.
+         (The prompt textarea's short-lived 12px pill bar also lived here — its
+         only effect was the freeze above; see RoutineForm for the tombstone.) */
 
       /* Header icon button (the app's own idiom; macOS keeps it): a borderless
          28px icon, no background in any state — the open state reads from the
