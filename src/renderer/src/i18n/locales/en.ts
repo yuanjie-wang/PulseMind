@@ -558,9 +558,6 @@ const en: TranslationDict = {
     addHeader: 'Add Header',
     removeHeader: 'Remove Header',
     headersHint: 'Values support ${ENV_VAR} environment variable references',
-    testConnection: 'Test Connection',
-    probeIncomplete: 'Please fill in {{field}} first',
-    probeCallFailed: 'Failed to start the test request',
   },
   agentDrawer: {
     title: 'Assistant Settings',

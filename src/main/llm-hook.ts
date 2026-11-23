@@ -52,7 +52,7 @@ export interface ApplyLlmHookOptions {
   requestId: string
   profileId?: string
   /** Session identity (2026-11-20) — see LlmRequestHookContext. Present only
-   *  on agent-loop requests; one-shots (ns_/simple-/probe-) omit the triple
+   *  on agent-loop requests; one-shots (ns_/simple-) omit the triple
    *  and the context keys stay absent, not undefined. */
   sessionId?: string
   taskId?: string

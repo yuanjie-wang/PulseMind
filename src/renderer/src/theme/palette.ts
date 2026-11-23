@@ -311,10 +311,6 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
      *  chrome that carried them. */
     '--pm-shadow-chip': '0 1px 2px rgba(0, 0, 0, 0.08)',
     '--pm-shadow-dropdown': '0 8px 24px rgba(0, 0, 0, 0.12)',
-    /** The success banner (测试连接's outcome box): antd green-1 bg, green-3
-     *  border — the light values are the literals the settings page carried. */
-    '--pm-success-bg': '#f6ffed',
-    '--pm-success-border': '#b7eb8f',
     /** The muted card's detail ink — a rung between `--pm-text-soft` and
      *  `--pm-text-faint` in both columns (#aaa < #b3b3b3 < #bbb in light, the
      *  reverse in dark), hence its own role rather than a fold onto faint. */
@@ -508,8 +504,6 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-wash-cool': '#202022',
     '--pm-shadow-chip': '0 1px 2px rgba(0, 0, 0, 0.6)',
     '--pm-shadow-dropdown': '0 8px 24px rgba(0, 0, 0, 0.6)',
-    '--pm-success-bg': '#12211a',
-    '--pm-success-border': '#2f5a2f',
     '--pm-text-haze': '#6e6e6e',
     '--pm-graph-ink': '#c9c9c9',
     '--pm-graph-ink-dim': '#909090',

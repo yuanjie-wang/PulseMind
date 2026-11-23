@@ -547,9 +547,6 @@ const zh = {
     addHeader: '添加 Header',
     removeHeader: '删除 Header',
     headersHint: '值支持 ${ENV_VAR} 环境变量引用',
-    testConnection: '测试连接',
-    probeIncomplete: '请先填写 {{field}}',
-    probeCallFailed: '测试请求发起失败',
   },
   agentDrawer: {
     title: '助手设置',

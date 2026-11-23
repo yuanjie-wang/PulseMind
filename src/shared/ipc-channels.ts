@@ -35,10 +35,6 @@ export const IPC_CHANNELS = {
   // 预混到同等暗度（OS 绘制的按钮在遮罩之上，遮罩盖不暗它们）
   WINDOW_SET_TITLE_BAR_MASK: 'window:set-title-bar-mask',
 
-  // ── LLM ──
-  // 设置页「测试连接」：main 侧对 provider 发一次最小非流式请求
-  LLM_TEST_CONNECTION: 'llm:test-connection',
-
   // ── Conversation ──
   CONVERSATION_LIST: 'conversation:list',
   CONVERSATION_GET: 'conversation:get',

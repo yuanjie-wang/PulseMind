@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { Collapse, Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag, Switch } from 'antd'
-import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled, ApiOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
-import { notify, notifyFailure } from '../../utils/notify'
-import { probeMissingFields, type LlmProbeOutcome } from '../../../../shared/llm/probe'
+import { notify } from '../../utils/notify'
 import { registerSettingsLeaveGuard } from './settings-leave-guard'
 import type { LlmProviderConfig, LlmModelConfig } from '../../types/settings'
 
@@ -91,43 +90,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   // Dirty state: the providers draft differs from the persisted one.
   const isDirty = JSON.stringify(draftProviders) !== JSON.stringify(settings.providers ?? [])
 
-  // ── Connectivity test ──
-  // Tests the AS-EDITED pair (draft provider connection + selected model), so
-  // the user can validate before saving. The human words live main-side
-  // (shared/llm/probe.ts); here we only render outcome message + hint.
-  const [probing, setProbing] = useState(false)
-  const [probeOutcome, setProbeOutcome] = useState<LlmProbeOutcome | null>(null)
-  const handleTestConnection = async (): Promise<void> => {
-    if (!draftProvider || !draftModel) return
-    const missing = probeMissingFields({
-      provider: draftProvider.apiFormat,
-      baseURL: draftProvider.baseURL,
-      apiKey: draftProvider.apiKey,
-      model: draftModel.model,
-      headers: draftProvider.headers,
-    })
-    if (missing) {
-      notify.warning(t('settingsDrawer.probeIncomplete', { field: missing }))
-      return
-    }
-    setProbing(true)
-    try {
-      const outcome = await window.electronAPI.testLlmConnection({
-        provider: draftProvider.apiFormat,
-        baseURL: draftProvider.baseURL,
-        apiKey: draftProvider.apiKey,
-        model: draftModel.model,
-        headers: draftProvider.headers,
-      })
-      setProbeOutcome(outcome)
-    } catch (err) {
-      notifyFailure('llm-probe', err, t('settingsDrawer.probeCallFailed'))
-      setProbeOutcome(null)
-    } finally {
-      setProbing(false)
-    }
-  }
-
   // Custom headers editor: local rows synced to the draft provider's headers.
   const [headerRows, setHeaderRows] = useState<{ key: string; value: string }[]>([])
   useEffect(() => {
@@ -195,7 +157,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     setDraftProviders((list) => [...list, provider])
     setEditingProviderId(provider.id)
     setEditingModelId(provider.models[0].id)
-    setProbeOutcome(null)
     setNewProviderOpen(false)
     setNewProviderName('')
     notify.success(t('settingsDrawer.providerCreated', { name }))
@@ -213,7 +174,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     const next = remaining[0]
     setEditingProviderId(next.id)
     setEditingModelId(next.models[0]?.id ?? '')
-    setProbeOutcome(null)
     notify.success(t('settingsDrawer.providerDeleted', { name }))
   }
 
@@ -222,7 +182,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     const entry = newModelEntry()
     updateDraftProvider(draftProvider.id, { models: [...draftProvider.models, entry] })
     setEditingModelId(entry.id)
-    setProbeOutcome(null)
   }
 
   const handleDeleteModel = () => {
@@ -230,7 +189,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     const remaining = draftProvider.models.filter((m) => m.id !== draftModel.id)
     updateDraftProvider(draftProvider.id, { models: remaining })
     setEditingModelId(remaining[0]?.id ?? '')
-    setProbeOutcome(null)
   }
 
   // ── Save / use ──
@@ -281,7 +239,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
       const next = draftProviders.find((p) => p.id === providerId)
       setEditingProviderId(providerId)
       setEditingModelId(next?.models[0]?.id ?? '')
-      setProbeOutcome(null)
     })
   }
 
@@ -289,7 +246,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     void confirmDiscard().then((leave) => {
       if (!leave) return
       setEditingModelId(modelId)
-      setProbeOutcome(null)
     })
   }
 
@@ -510,30 +466,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
                   ),
                 }]}
               />
-
-              {/* Connectivity test — validates the AS-EDITED provider+model
-                  pair without saving; the human words (401/404/timeout) come
-                  from main (shared/llm/probe.ts). */}
-              <div>
-                <Button icon={<ApiOutlined />} loading={probing} onClick={handleTestConnection}>
-                  {t('settingsDrawer.testConnection')}
-                </Button>
-                {probeOutcome && (
-                  <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: probeOutcome.ok ? 'var(--pm-success-bg)' : 'var(--pm-error-bg)', border: `1px solid ${probeOutcome.ok ? 'var(--pm-success-border)' : 'var(--pm-error-border)'}` }}>
-                    <div style={{ color: probeOutcome.ok ? 'var(--pm-success)' : 'var(--pm-error)', fontSize: 12, fontWeight: 600 }}>
-                      {probeOutcome.ok ? '✓ ' : '✕ '}{probeOutcome.message}
-                    </div>
-                    {probeOutcome.hint && (
-                      <div style={{ color: 'var(--pm-text-secondary)', fontSize: 12, marginTop: 2 }}>{probeOutcome.hint}</div>
-                    )}
-                    {probeOutcome.detail && (
-                      <div title={probeOutcome.detail} style={{ color: 'var(--pm-text-soft)', fontSize: 11, marginTop: 2, wordBreak: 'break-all' }}>
-                        {probeOutcome.detail.slice(0, 90)}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
           </section>
         )}

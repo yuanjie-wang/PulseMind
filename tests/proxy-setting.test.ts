@@ -287,10 +287,9 @@ describe('接线：六个 fetch 站点 + 浏览器 + 面板 + i18n', () => {
     expect(retryLog).toBeGreaterThan(gate)
   })
 
-  it('探针 / webfetch(tool-runtime) / MCP×2 / webhook 都挂了同一个入口', () => {
+  it('webfetch(tool-runtime) / MCP×2 / webhook 都挂了同一个入口', () => {
     // 非空洞：把任意站点的 withProxyDispatcher 摘掉，它的 toContain 即红——
     // 「为什么抓包里没有 X」就是这么避免的。
-    expect(read('src', 'main', 'services', 'llm-probe.ts')).toContain('await withProxyDispatcher({')
     expect(read('src', 'main', 'tool-runtime', 'index.ts')).toContain('await withProxyDispatcher({')
     const mcp = read('src', 'main', 'mcp', 'transport.ts')
     expect(mcp.match(/withProxyDispatcher\(/g)?.length).toBeGreaterThanOrEqual(2)

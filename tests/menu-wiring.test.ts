@@ -84,24 +84,9 @@ describe('preload 与桥面契约', () => {
     expect(src).toContain('IPC_CHANNELS.MENU_ACTION')
   })
 
-  it('bridge 类型声明 onMenuAction + testLlmConnection（三层契约的单一定义点）', () => {
+  it('bridge 类型声明 onMenuAction（三层契约的单一定义点）', () => {
     const src = read('src/shared/types/electron-bridge.ts')
     expect(src).toContain('onMenuAction: (callback: (action: string) => void) => () => void')
-    expect(src).toContain('testLlmConnection')
-  })
-
-  it('llm:test-connection 通道有 handler 注册', () => {
-    expect(read('src/shared/ipc-channels.ts')).toContain("LLM_TEST_CONNECTION: 'llm:test-connection'")
-    expect(read('src/main/ipc/llm-probe.handler.ts')).toContain('IPC_CHANNELS.LLM_TEST_CONNECTION')
-    expect(read('src/main/ipc/index.ts')).toContain('registerLlmProbeHandlers')
-  })
-
-  it('连通性探测复用 api-proxy 的头部合并与 SSRF 校验（同一条路径）', () => {
-    const proxy = read('src/main/ipc/api-proxy.handler.ts')
-    expect(proxy).toContain('export async function applyProfileHeaders')
-    expect(proxy).toContain('export async function validateRequestUrl')
-    const probe = read('src/main/services/llm-probe.ts')
-    expect(probe).toContain("from '../ipc/api-proxy.handler'")
   })
 })
 

@@ -327,8 +327,8 @@ check('模型参数直接可见（maxTokens / 上下文长度不再藏进高级�
 check('自定义 Headers 是供应商区的折叠头，默认收起（行编辑器不可见）',
   (await page.getByText('自定义 Headers', { exact: true }).count()) === 1 &&
   !(await llmVisibleText()).includes('添加 Header'))
-check('测试连接按钮在供应商区（对当前供应商+所选模型）',
-  await providerSection.getByRole('button', { name: '测试连接' }).isVisible())
+check('测试连接按钮已移除（设置页不再提供探测入口）',
+  (await page.getByRole('button', { name: '测试连接' }).count()) === 0)
 
 // Footer: editing target IS the default model and clean → save-only, disabled.
 const saveBtn = page.getByRole('button', { name: '已保存' })

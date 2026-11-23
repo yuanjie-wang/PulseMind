@@ -363,9 +363,6 @@ export interface ElectronAPI {
   /** 原生菜单 / 加速键动作（src/main/menu.ts 的 MenuActionId，以字符串过线）。 */
   onMenuAction: (callback: (action: string) => void) => () => void
 
-  // 设置页「测试连接」：main 侧对 provider 发一次最小非流式探测
-  testLlmConnection: (input: import('../llm/probe').LlmProbeInput & { profileId?: string }) => Promise<import('../llm/probe').LlmProbeOutcome>
-
   // Non-streaming fetch (avoids CORS)
   apiFetch: (
     url: string,

@@ -63,7 +63,7 @@ export function urlMatchesProfileBaseURL(requestUrl: string, baseURL: string): b
  * `Authorization` instead of sending both headers.
  *
  * This is the ONE place every ${ENV} placeholder resolves (LLM streams, simple
- * fetches, llm-probe), so it gates on the launch hooks: hooks run concurrently
+ * fetches), so it gates on the launch hooks: hooks run concurrently
  * with window creation now, and a first request racing an unfinished hook
  * would otherwise resolve `${VAR}` against a process.env the hook hasn't
  * populated yet and fail fast on a variable that was about to exist.
@@ -546,10 +546,8 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
         url,
       })
       // Same opt-in as the hook below — only LLM calls (one-shots over the
-      // Anthropic wire) hook and dump here. The connection probe fetches on
-      // its own in services/llm-probe.ts: it hooks there (probe- requestId),
-      // never dumps. webfetch hits arbitrary public URLs with no credentials:
-      // no hook, no dump.
+      // Anthropic wire) hook and dump here. webfetch hits arbitrary public
+      // URLs with no credentials: no hook, no dump.
       const isLlmCall = options.withProfileHeaders === true || options.profileId !== undefined
       const simpleRequestId = `simple-${randomUUID().slice(0, 8)}`
       // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).

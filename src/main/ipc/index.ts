@@ -21,7 +21,6 @@ import { registerRoutineHandlers } from './routine.handler'
 import { registerToolStudioHandlers } from './tool.handler'
 import { registerBrowserHandlers } from './browser.handler'
 import { registerHostedHandlers } from './hosted.handler'
-import { registerLlmProbeHandlers } from './llm-probe.handler'
 import { registerPipelineHandlers } from './pipeline.handler'
 import { registerShareHandlers } from './share.handler'
 import { registerAsrHandlers } from './asr.handler'
@@ -62,7 +61,6 @@ export function registerIpcHandlers(): void {
   registerToolStudioHandlers()
   registerBrowserHandlers()
   registerHostedHandlers()
-  registerLlmProbeHandlers()
   registerPipelineHandlers()
   registerShareHandlers()
   registerAsrHandlers()

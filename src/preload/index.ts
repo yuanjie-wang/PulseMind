@@ -335,16 +335,6 @@ const electronAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.MENU_ACTION, handler)
   },
 
-  // 设置页「测试连接」：main 侧对 provider 发一次最小非流式探测
-  testLlmConnection: (input: {
-    provider?: 'anthropic' | 'openai'
-    baseURL?: string
-    apiKey?: string
-    model?: string
-    headers?: Record<string, string>
-    profileId?: string
-  }) => ipcRenderer.invoke(IPC_CHANNELS.LLM_TEST_CONNECTION, input),
-
   // Non-streaming fetch via main process (avoids CORS)
   apiFetch: (
     url: string,
