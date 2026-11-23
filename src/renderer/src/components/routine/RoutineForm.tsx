@@ -95,16 +95,34 @@ function FieldLabel({ text }: { text: string }): React.ReactElement {
  *  the shared 8px radius), showNow drops the panel's link-blue 此刻 button,
  *  and format pins a 24h HH:mm that no longer follows the OS locale. The
  *  draft keeps its "HH:mm" string — converted at both edges, and a cleared
- *  value falls back to the default exactly as the native field did. */
+ *  value falls back to the default exactly as the native field did.
+ *
+ *  antd v6 made needConfirm=true the default for time pickers (rc-picker's
+ *  mergedNeedConfirm = needConfirm ?? multipleInteractivePicker, and a time
+ *  picker is a "complexPicker"), so a cell click only moved the panel's
+ *  pending value and onChange fired on the footer's ✓ or not at all — the
+ *  2026-11-23 report 「改不了定时执行的时间滚轮，一直是9:00」 was pick-then-
+ *  click-away doing exactly that (v5 committed on the cell click). Pin the v5
+ *  feel explicitly: needConfirm={false} drops the footer button, and
+ *  onCalendarChange lands every panel pick in the draft immediately so the
+ *  下次运行 hint tracks the wheel without waiting for the popup to close.
+ *  Both paths dedupe against the current value — the wf shim pushes an undo
+ *  frame per draft change. */
 function TimeInput({ value, onChange }: { value: string; onChange: (time: string) => void }): React.ReactElement {
   const picked = dayjs(value, 'HH:mm')
+  const commit = (time: dayjs.Dayjs | dayjs.Dayjs[] | null | undefined): void => {
+    const next = (Array.isArray(time) ? time[0] : time)?.format('HH:mm') ?? DEFAULT_TIME
+    if (next !== value) onChange(next)
+  }
   return (
     <TimePicker
       format="HH:mm"
       showNow={false}
+      needConfirm={false}
       style={{ width: 110 }}
       value={picked.isValid() ? picked : undefined}
-      onChange={(time) => onChange(time ? time.format('HH:mm') : DEFAULT_TIME)}
+      onCalendarChange={commit}
+      onChange={commit}
     />
   )
 }

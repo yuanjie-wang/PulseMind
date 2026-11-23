@@ -19,6 +19,10 @@
  *     written against the native `input[type=time]` it replaced and crashed
  *     on HEAD) — its inner input carries the draft time and the picker
  *     repaints with the app palette per mode;
+ *   · the time wheel COMMITS on the cell click (2026-11-23: antd v6's
+ *     needConfirm=true default made pick-then-click-away revert to 09:00 —
+ *     the user report 「改不了定时执行的时间滚轮」; the footer ✓ must be gone,
+ *     the draft must follow each column click, and closing must not revert);
  *   · an invalid cron hint carries --pm-error in BOTH modes.
  *
  * Non-vacuity: every assertion reads a computed style or the draft the real
@@ -136,6 +140,43 @@ check('分段控件有五个频率', await page.locator(`${FIELD} .ant-segmented
 // probe originally counted is gone), and its value carries the draft time.
 check('默认每天行在（TimePicker 输入框，草稿时刻 09:00）', await page.locator(`${FIELD} .ant-picker input`).count() === 1
   && await page.inputValue(`${FIELD} .ant-picker input`) === '09:00')
+
+// ── 1b. the time wheel actually lands (2026-11-23) ──
+// antd v6 defaults needConfirm=true for time pickers: a cell click only moved
+// the panel's pending value and onChange waited for the footer's ✓ — the user
+// report 「改不了定时执行的时间滚轮，一直是9:00」 was pick-then-click-away
+// silently reverting. Drive the real columns and read the draft the form
+// wrote; under the regression all of these stay at 09:00.
+const timeDraft = async () => (await draft()).time
+await page.locator(`${FIELD} .ant-picker input`).click()
+await page.waitForSelector('.ant-picker-time-panel-column', { timeout: 5000 })
+check('时间面板无确认钮（needConfirm=false）', await page.locator('.ant-picker-footer').count() === 0)
+await page.locator('.ant-picker-time-panel-column[data-type="hour"] li[data-value="10"]').click()
+await page.waitForTimeout(250)
+check('点小时 10 即入草稿（没有 OK 按钮这一步）', await timeDraft() === '10:00', await timeDraft())
+await page.locator('.ant-picker-time-panel-column[data-type="minute"] li[data-value="30"]').click()
+await page.waitForTimeout(250)
+check('点分钟 30 即入草稿 10:30', await timeDraft() === '10:30', await timeDraft())
+// While the popup is open the field previews the HOVERED cell (rc-picker's
+// selectorValues) — park the pointer so it reads the committed value.
+await page.mouse.move(760, 950)
+await page.waitForTimeout(200)
+check('面板开着时输入框 = 已落草稿的 10:30', await page.inputValue(`${FIELD} .ant-picker input`) === '10:30')
+check('下次运行提示跟着滚轮走', (await page.locator(`${FIELD} .pm-sched-hint`).innerText()).includes('10:30'))
+await page.mouse.click(760, 950)
+await page.waitForTimeout(300)
+check('点外关闭不回退（仍是 10:30）', await timeDraft() === '10:30', await timeDraft())
+// Turn the wheel back to 09:00 through the same path, so the draft literals
+// in the sections below keep their 09:00 expectation.
+await page.locator(`${FIELD} .ant-picker input`).click()
+await page.waitForTimeout(250)
+await page.locator('.ant-picker-time-panel-column[data-type="hour"] li[data-value="9"]').click()
+await page.waitForTimeout(200)
+await page.locator('.ant-picker-time-panel-column[data-type="minute"] li[data-value="0"]').click()
+await page.waitForTimeout(200)
+await page.mouse.click(760, 950)
+await page.waitForTimeout(300)
+check('回拨 09:00 收尾', await timeDraft() === '09:00', await timeDraft())
 
 // ── 2. Segmented swaps the rows ──
 await page.locator(`${FIELD} .ant-segmented-item`, { hasText: '每周' }).click()
