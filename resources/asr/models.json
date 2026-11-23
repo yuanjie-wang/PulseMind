@@ -1,12 +1,12 @@
 {
   "family": "asr",
-  "engineReq": ">=2.0.0",
+  "engineReq": ">=1.12.0",
   "models": [
     {
       "modelId": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
       "displayName": "SenseVoice 高精度（中/粤/英/日/韩）",
       "version": "2024-07-17",
-      "engineReq": ">=2.0.0",
+      "engineReq": ">=1.12.0",
       "languages": ["zh", "yue", "en", "ja", "ko"],
       "expectedZip": "pulsemind-asr-model-sensevoice-zh-en-ja-ko-yue-2024-07-17.zip",
       "zipSha256": "6915bab7492b0145365ef97090fa01cf179ad1d4dabb8dc015b7bb3fd5705e78",

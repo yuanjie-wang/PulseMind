@@ -215,8 +215,12 @@ export function pickInstalledModelDir(family: string): { modelId: string; dir: s
   return first ? { modelId: first.modelId, dir: first.dir } : null
 }
 
-/** 版本配对：catalog.engineReq 是 semver 区间（现只用 >=X 形态），不满足 → 拒装 */
-function engineSatisfies(engineVersion: string | null, engineReq: string): boolean {
+/**
+ * 版本配对：catalog.engineReq 是 semver 区间（现只用 >=X 形态），不满足 → 拒装。
+ * 导出仅供钉子用（2026-11-23：linux 钉 1.12.40、mac/win 走 2.0.2，同一份清单要
+ * 同时容纳两代引擎——清单门槛已放宽到 >=1.12.0，需要真函数证据）。
+ */
+export function engineSatisfies(engineVersion: string | null, engineReq: string): boolean {
   if (!engineVersion) return false
   const m = engineReq.match(/^>=\s*(\d+)\.(\d+)\.(\d+)$/)
   if (!m) return true // 不认识的表达式不拦（宁松勿错杀导入）

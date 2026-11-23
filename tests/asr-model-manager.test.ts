@@ -210,6 +210,48 @@ describe('模型导入三道门', () => {
     }
   })
 
+  // 2026-11-23：linux 随包引擎钉 1.12.40（mac/win 仍走 sherpa-onnx-node 2.0.2），
+  // 清单门槛放宽到 >=1.12.0 后，Linux 用户导入同一份模型包必须过门——这条走真
+  // 导入链：失败原因只能是 hash，不能是 version-mismatch。
+  it('linux 钉版 1.12.40 过得了版本门（清单门槛 >=1.12.0）', async () => {
+    const linuxEngine = writeFakeEngine('1.12.40')
+    process.env.PULSEMIND_ASR_ENGINE = linuxEngine
+    try {
+      const mm = await boot()
+      writeCatalog([
+        {
+          modelId: MODEL_ID,
+          displayName: '测试模型',
+          version: 'v1',
+          engineReq: '>=1.12.0',
+          languages: ['zh'],
+          expectedZip: 'pulsemind-asr-model-test.zip',
+          zipSha256: '',
+          zipBytes: 0,
+          sizeText: '1 KB',
+          // 故意不给对：让链路继续跑过版本门，停在 hash 门
+          files: [
+            { path: 'model.int8.onnx', sha256: sha256('EXPECTED'), bytes: 11 },
+            { path: 'tokens.txt', sha256: sha256('TOKENS'), bytes: 6 },
+          ],
+          helpUrl: '',
+        },
+      ])
+      const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
+      try {
+        const zipPath = buildModelZip(dir, { 'model.int8.onnx': 'DIFFERENT', 'tokens.txt': 'TOKENS' })
+        const r = await mm.importModelZip('asr', zipPath)
+        expect(r.ok).toBe(false)
+        expect(r.ok === false && r.status).toBe('hash-mismatch')
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(linuxEngine, { recursive: true, force: true })
+      process.env.PULSEMIND_ASR_ENGINE = engineDir
+    }
+  })
+
   it('invalid-zip：不是 zip → 可读报错', async () => {
     const mm = await boot()
     const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-zip-'))
@@ -318,5 +360,36 @@ describe('随包清单', () => {
     expect(error).toContain('随包支持清单缺失')
     expect(error).toContain('候选：')
     expect(error).toContain('models.json')
+  })
+})
+
+describe('引擎版本配对（2026-11-23：linux 1.12.40 与 mac/win 2.0.2 共用一份清单）', () => {
+  it('engineSatisfies：>= 区间语义 + 不认识的表达式宁松勿错杀', async () => {
+    const mm = await boot()
+    expect(mm.engineSatisfies('1.12.40', '>=1.12.0')).toBe(true)
+    expect(mm.engineSatisfies('1.12.0', '>=1.12.0')).toBe(true)
+    expect(mm.engineSatisfies('2.0.2', '>=1.12.0')).toBe(true)
+    expect(mm.engineSatisfies('1.11.9', '>=1.12.0')).toBe(false)
+    expect(mm.engineSatisfies(null, '>=1.12.0')).toBe(false)
+    expect(mm.engineSatisfies('0.1.0', 'not-semver')).toBe(true)
+  })
+
+  it('随包清单的门槛同时放行 1.12.40 与 2.0.2，且仍拦更老的引擎', async () => {
+    const mm = await boot()
+    const cat = JSON.parse(readFileSync(join(process.cwd(), 'resources', 'asr', 'models.json'), 'utf-8')) as TestCatalog
+    const nodeVersion = (
+      JSON.parse(readFileSync(join(process.cwd(), 'node_modules', 'sherpa-onnx-node', 'package.json'), 'utf-8')) as {
+        version: string
+      }
+    ).version
+    // mac/win 跟随 devDep 的 2.x；linux 钉 1.12.40（prepare-asr-engine.js 的 PLATFORM_PINS）
+    expect(nodeVersion).toMatch(/^2\./)
+    for (const req of [cat.engineReq, ...cat.models.map((m) => m.engineReq)]) {
+      for (const v of ['1.12.40', nodeVersion]) {
+        expect(mm.engineSatisfies(v, req), `${req} 应放行 ${v}`).toBe(true)
+      }
+      // 放宽不等于取消：门槛以下的引擎仍拒，否则这道门等于没有
+      expect(mm.engineSatisfies('1.11.9', req), `${req} 应拦下 1.11.9`).toBe(false)
+    }
   })
 })

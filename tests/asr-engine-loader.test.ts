@@ -176,3 +176,33 @@ describe('平台门', () => {
     expect(mod.asrPackageArch()).toBe(`${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`)
   })
 })
+
+// 方案 ①（2026-11-23）：linux 随包的私有 C++ 运行库。它是**条件**必备件——
+// manifest.json 是 prepare 输出的标记，只有那种目录才该有它；node_modules 里的
+// 厂商包没有（那里只有「要系统 libstdc++」的 NEEDED），要求它就会把 Linux dev
+// 回落判死。这里显式传 platform，不依赖跑测试的机器。
+describe('privateRuntimeFiles — 私有运行库的适用条件', () => {
+  it('没有 manifest 的目录（dev 回落的厂商包）不要求 libpmcxx.so.6', async () => {
+    const dir = makeEngineDir({ manifest: null })
+    const mod = await freshModule()
+    expect(mod.privateRuntimeFiles(dir, 'linux')).toEqual([])
+  })
+
+  it('有 manifest（prepare 输出）→ linux 要它；其它平台不要', async () => {
+    const dir = makeEngineDir({ manifest: {} })
+    const mod = await freshModule()
+    expect(mod.privateRuntimeFiles(dir, 'linux')).toEqual(['libpmcxx.so.6'])
+    expect(mod.privateRuntimeFiles(dir, 'darwin')).toEqual([])
+    expect(mod.privateRuntimeFiles(dir, 'win32')).toEqual([])
+  })
+
+  it('缺了它就不算「引擎可用」的目录（hasAllFiles 的第二组条件）', async () => {
+    // 与 resolve 的判据同源：REQUIRED 文件齐 + 私有运行库齐。这里只锁「第二组
+    // 条件真的参与了判断」——文件缺了会落回下一级候选/抛错，不会静默放过。
+    const dir = makeEngineDir({ manifest: {} })
+    const mod = await freshModule()
+    const priv = mod.privateRuntimeFiles(dir, 'linux')
+    expect(priv.length).toBeGreaterThan(0)
+    expect(priv.every((f: string) => !require('node:fs').existsSync(join(dir, f)))).toBe(true)
+  })
+})

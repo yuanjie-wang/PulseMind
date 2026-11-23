@@ -57,17 +57,32 @@ const fail = (msg) => {
 }
 
 // 1) 引擎随包：目录 + 必备文件（与 asr-engine.ts 的 REQUIRED 清单同源）
+// linux 多一条私有 C++ 运行库 libpmcxx.so.6（方案 ①）：厂商引擎要
+// GLIBCXX_3.4.29，UOS 20 的系统 libstdc++ 只到 3.4.25。名字不能叫
+// libstdc++.so.6 —— glibc 按 SONAME 复用已加载对象，同名副本永远打不开。
 const REQUIRED =
   {
     darwin: ['sherpa-onnx.node', 'libonnxruntime.dylib', 'libsherpa-onnx-c-api.dylib', 'libsherpa-onnx-cxx-api.dylib'],
     win32: ['sherpa-onnx.node', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll'],
-    linux: ['sherpa-onnx.node', 'libonnxruntime.so', 'libsherpa-onnx-c-api.so', 'libsherpa-onnx-cxx-api.so'],
+    linux: ['sherpa-onnx.node', 'libonnxruntime.so', 'libsherpa-onnx-c-api.so', 'libsherpa-onnx-cxx-api.so', 'libpmcxx.so.6'],
   }[platform] || []
 if (!REQUIRED.length) fail(`unknown platform ${platform}`)
 for (const f of REQUIRED) {
   if (!existsSync(join(engineDir, f))) fail(`missing ${f} in ${engineDir} — prepare-asr-engine.js 没跑或 extraResources filter 不匹配`)
 }
 if (!existsSync(join(engineDir, 'manifest.json'))) fail(`missing manifest.json in ${engineDir} — sha 门将跳过，包内引擎的完整性无证据`)
+
+// 1b) linux：引擎对象不得还链着系统 libstdc++.so.6。残留 = 私有运行库形同虚设
+//（同名 SONAME 会被复用），装机后照样 `version 'GLIBCXX_3.4.29' not found`。
+// 只在打包期能抓——这类失败在构建机上永远绿（构建机的 libstdc++ 够新）。
+if (platform === 'linux') {
+  const stale = Buffer.from('libstdc++.so.6\0', 'latin1')
+  for (const f of REQUIRED.filter((n) => n !== 'libpmcxx.so.6')) {
+    if (readFileSync(join(engineDir, f)).includes(stale)) {
+      fail(`${f} 仍 NEEDED libstdc++.so.6 —— 私有运行库不会被打开（SONAME 去重），UOS 上必定 version not found`)
+    }
+  }
+}
 console.log(`[smoke-packed-asr] ${platform}/${arch}  engine=${engineDir}`)
 
 // 2) 引擎依赖不得越界：win 的 dll / mac 的 dylib / linux 的 .so 都必须在

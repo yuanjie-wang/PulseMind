@@ -30,7 +30,7 @@ const ROOT = join(__dirname, '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
 const requireCjs = createRequire(__filename)
 
-const { glibcRequirementsOf, maxVersion, exceedsCeiling, collectNodeFiles, formatVersion } = requireCjs(
+const { glibcRequirementsOf, glibcxxRequirementsOf, maxVersion, exceedsCeiling, collectNodeFiles, formatVersion } = requireCjs(
   '../scripts/check-linux-glibc.js',
 )
 
@@ -242,10 +242,15 @@ describe('glibc 需求扫描：版本串比对与上限判定', () => {
 })
 
 describe('门禁退出码：空扫描不放行', () => {
-  const run = (dir: string, ceiling = '2.28') =>
+  const run = (dir: string, ceiling = '2.28', cxxCeiling?: string) =>
     spawnSync(
       process.execPath,
-      [join(ROOT, 'scripts/check-linux-glibc.js'), dir, `--ceiling=${ceiling}`],
+      [
+        join(ROOT, 'scripts/check-linux-glibc.js'),
+        dir,
+        `--ceiling=${ceiling}`,
+        ...(cxxCeiling ? [`--glibcxx-ceiling=${cxxCeiling}`] : []),
+      ],
       { encoding: 'utf-8' },
     )
 
@@ -261,6 +266,135 @@ describe('门禁退出码：空扫描不放行', () => {
     const bad = tmpDir()
     writeFileSync(join(bad, 'bad.node'), 'GLIBC_2.34\0', 'latin1')
     expect(run(bad).status).toBe(1)
+  })
+
+  // 2026-11-23：官方 sherpa-onnx linux 平台包（1.12.40）glibc 只有 2.16，却要
+  // GLIBCXX_3.4.29 —— 只量 glibc 的门禁会放行一个「装机 dlopen 报 version not
+  // found」的包。这条组钉住第二条轴，别让下一个人再把它当成同一条需求。
+  it('libstdc++ 是独立的一条轴：只超 GLIBCXX 也要红', () => {
+    const ok = tmpDir()
+    writeFileSync(join(ok, 'ok.node'), 'GLIBC_2.16\0GLIBCXX_3.4.21\0', 'latin1')
+    expect(run(ok).status).toBe(0)
+
+    // 1.12.40 的 sherpa-onnx.node 就是这个形态：glibc 很低、libstdc++ 很高
+    const bad = tmpDir()
+    writeFileSync(join(bad, 'sherpa-onnx.node'), 'GLIBC_2.16\0GLIBCXX_3.4.29\0', 'latin1')
+    expect(run(bad).status).toBe(1)
+
+    // 口径可调：换一个明确支持 GCC 11 的基线时，同一条目不该再红
+    expect(run(bad, '2.28', '3.4.30').status).toBe(0)
+  })
+
+  it('GLIBCXX 解析不吃 GLIBC_ 的版本串', () => {
+    const parsed = glibcxxRequirementsOf(Buffer.from('GLIBC_2.28\0GLIBCXX_3.4.9\0GLIBCXX_3.4.29\0', 'latin1'))
+    expect(parsed).toEqual([
+      [3, 4, 9],
+      [3, 4, 29],
+    ])
+    // GLIBCXX_DEBUG 之类不是版本需求，别当成 0.0
+    expect(glibcxxRequirementsOf(Buffer.from('GLIBCXX_DEBUG\0', 'latin1'))).toEqual([])
+  })
+
+  it('Chromium 是被豁免的第三方件：超限只告警、不影响退出码', () => {
+    const dir = tmpDir()
+    const chrome = join(dir, 'resources', 'chromium', 'chrome-linux')
+    mkdirSync(chrome, { recursive: true })
+    writeFileSync(join(chrome, 'libGLESv2.so'), 'GLIBCXX_3.4.33\0', 'latin1')
+    expect(run(dir).status).toBe(0)
+  })
+
+  it('workflow 把两条上限都显式交给门禁（口径可审，不靠默认值）', () => {
+    expect(WORKFLOW).toContain('--ceiling=2.28')
+    expect(WORKFLOW).toContain('--glibcxx-ceiling=3.4.25')
+  })
+})
+
+// 2026-11-23 方案 ①：随包私有 C++ 运行库。
+//
+// 引擎（1.12.40）要 GLIBCXX_3.4.29，UOS 20 的系统 libstdc++ 只到 3.4.25。往包里
+// 塞一份**同名**的 libstdc++.so.6 是无效的——glibc 的 _dl_lookup_map 见到 SONAME
+// 相同就直接复用已加载对象（进程里几乎必然已有一份），随包副本永远不会被打开。
+// 所以副本改名 libpmcxx.so.6，引擎的 DT_NEEDED 一起改过去。
+//
+// 门禁因此需要一层新语义：提供方在场时，**同目录**文件的上限由提供方实测能力
+// 决定，而不是系统上限——否则方案 ① 落地后门禁会永远红，红得没意义。但抬上限
+// 的前提是「确实在用随包副本」，所以残留旧 NEEDED 一律判红。
+describe('私有 C++ 运行库 libpmcxx.so.6（方案 ①）', () => {
+  const run = (dir: string) =>
+    spawnSync(
+      process.execPath,
+      [join(ROOT, 'scripts/check-linux-glibc.js'), dir, '--ceiling=2.28', '--glibcxx-ceiling=3.4.25'],
+      { encoding: 'utf-8' },
+    )
+  const engineDir = (root: string) => {
+    const dir = join(root, 'resources', 'asr-engine', 'linux-x64')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+  const write = (dir: string, name: string, ascii: string) => writeFileSync(join(dir, name), ascii, 'latin1')
+
+  it('提供方在场 → 引擎的 3.4.29 不再红（上限抬到提供方实测能力）', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0libpmcxx.so.6\0')
+    write(e, 'libpmcxx.so.6', 'GLIBC_2.17\0GLIBCXX_3.4.30\0')
+    const out = run(dir)
+    expect(out.status, out.stderr).toBe(0)
+    // 抬高的依据要写在表里，否则「为什么这条 3.4.29 能过」无从审
+    expect(out.stdout).toContain('limit 3.4.30')
+    expect(out.stdout).toContain('provides')
+  })
+
+  it('残留 libstdc++.so.6 的 NEEDED → 红（私有副本会被 SONAME 去重，根本打不开）', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0libstdc++.so.6\0')
+    write(e, 'libpmcxx.so.6', 'GLIBC_2.17\0GLIBCXX_3.4.30\0')
+    const out = run(dir)
+    expect(out.status).toBe(1)
+    expect(out.stderr).toContain('libstdc++.so.6')
+    // 这时提供的上限不该被抬高（还在用系统的），所以不能提示「只提供到 3.4.30」之外的鬼话
+    expect(out.stderr).not.toContain('私有运行库只提供到 3.4.30')
+  })
+
+  it('提供方自身 glibc 超限 → 红（等于把失败从引擎搬到运行库身上）', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0libpmcxx.so.6\0')
+    // Ubuntu jammy 的 libstdc++.so.6.0.30 就是这种形态：自身要 GLIBC_2.34
+    write(e, 'libpmcxx.so.6', 'GLIBC_2.34\0GLIBCXX_3.4.30\0')
+    const out = run(dir)
+    expect(out.status).toBe(1)
+    expect(out.stderr).toContain('libpmcxx.so.6 -> GLIBC_2.34')
+  })
+
+  it('提供方提供不足 → 红，原因指向提供方而不是系统上限', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0libpmcxx.so.6\0')
+    write(e, 'libpmcxx.so.6', 'GLIBC_2.17\0GLIBCXX_3.4.25\0')
+    const out = run(dir)
+    expect(out.status).toBe(1)
+    expect(out.stderr).toContain('私有运行库只提供到 3.4.25')
+  })
+
+  it('没有提供方的目录照旧按系统上限判（别把「抬高」写成无条件豁免）', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0')
+    const out = run(dir)
+    expect(out.status).toBe(1)
+    expect(out.stderr).toContain('GLIBCXX_3.4.29')
+    expect(out.stderr).not.toContain('私有运行库')
+  })
+
+  it('提供方不被 Chromium 那种第三方豁免顺带放过', () => {
+    const dir = tmpDir()
+    const e = engineDir(dir)
+    write(e, 'sherpa-onnx.node', 'GLIBC_2.16\0GLIBCXX_3.4.29\0libpmcxx.so.6\0')
+    write(e, 'libpmcxx.so.6', 'GLIBC_2.34\0GLIBCXX_3.4.30\0')
+    // 只 warn 不判红的只有 chromium；这份是我们自己决定随包的，该红就红
+    expect(run(dir).status).toBe(1)
   })
 })
 

@@ -12,7 +12,12 @@
  * mac 的 dylib 解析依赖 addon 自带的 LC_RPATH=@loader_path（官方包已烘焙，
  * M0-4 实测独立目录免 DYLD_* 可载）；win 靠 process.dlopen 的
  * LOAD_WITH_ALTERED_SEARCH_PATH（同目录 dll 可解析）；linux 由 prepare 脚本
- * patchelf --set-rpath '$ORIGIN' 烘焙。加载器自身不做任何平台硬处理。
+ * patchelf --set-rpath '$ORIGIN' 烘焙。
+ *
+ * linux 还多一件：随包的私有 C++ 运行库 `libpmcxx.so.6`（方案 ①，2026-11-23）。
+ * 引擎对象的 DT_NEEDED 已被 prepare 改到这个私有 SONAME —— 因为 glibc 按
+ * SONAME 去重，同名的 libstdc++.so.6 副本永远不会被打开。加载器只负责确认它
+ * 在不在（缺了就是装了一半的包）。
  */
 
 import { createHash } from 'node:crypto'
@@ -35,6 +40,26 @@ const REQUIRED_FILES: Record<string, string[]> = {
   darwin: ['sherpa-onnx.node', 'libonnxruntime.dylib', 'libsherpa-onnx-c-api.dylib', 'libsherpa-onnx-cxx-api.dylib'],
   win32: ['sherpa-onnx.node', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll'],
   linux: ['sherpa-onnx.node', 'libonnxruntime.so', 'libsherpa-onnx-c-api.so', 'libsherpa-onnx-cxx-api.so'],
+}
+
+/**
+ * 只有 prepare 产出的目录才带的附加件（linux 的私有 C++ 运行库）。
+ *
+ * 它**不能**写进 REQUIRED_FILES：dev 回落指向 node_modules 里厂商的平台包，
+ * 那份只有「要系统 libstdc++」的 NEEDED，没有这个私有副本 —— 塞进必备清单
+ * 会让 Linux dev 态永远报「引擎不完整」。
+ *
+ * 判据用 manifest.json（prepare 输出的标记，与 sha 门同一个信号）：有它就该有
+ * 私有运行库，缺了是装了一半的包，早报比 dlopen 的 version not found 好读。
+ */
+const PRIVATE_RUNTIME: Record<string, string[]> = {
+  linux: ['libpmcxx.so.6'],
+}
+
+/** 导出给测试：平台与 manifest 是两个可独立验证的输入，不该为了可测性伪造 process.platform */
+export function privateRuntimeFiles(dir: string, platform = process.platform): string[] {
+  if (!existsSync(join(dir, 'manifest.json'))) return []
+  return PRIVATE_RUNTIME[platform] ?? []
 }
 
 export function asrPlatformArch(): string {
@@ -103,7 +128,7 @@ export function resolveAsrEngineDir(): AsrEngineDir {
   for (const dir of devCandidates()) candidates.push({ dir, source: 'dev' })
 
   for (const c of candidates) {
-    if (hasAllFiles(c.dir, files)) {
+    if (hasAllFiles(c.dir, files) && hasAllFiles(c.dir, privateRuntimeFiles(c.dir))) {
       return {
         dir: c.dir,
         source: c.source,
@@ -129,9 +154,13 @@ export function resolveAsrEngineDir(): AsrEngineDir {
     }
   }
   const got = present.size > 0 ? `（在场：${[...present].join(', ')}）` : ''
+  const priv = PRIVATE_RUNTIME[process.platform] ?? []
+  // 私有运行库不并进「期望文件」：dev 回落本来就该没有它（厂商包只写系统
+  // libstdc++ 的 NEEDED），并列会让 Linux 开发机以为自己缺件
+  const privNote = priv.length > 0 ? `；打包态还须带 ${priv.join(' + ')}（私有 C++ 运行库）` : ''
   throw new Error(
     `语音引擎未安装或不完整：本机需要 ${want} 的 sherpa-onnx 引擎${got}。` +
-      `期望文件：${files.join(' + ')}。安装包损坏请重新安装；开发态请安装 devDep sherpa-onnx-${asrPackageArch()}。`,
+      `期望文件：${files.join(' + ')}${privNote}。安装包损坏请重新安装；开发态请安装 devDep sherpa-onnx-${asrPackageArch()}。`,
   )
 }
 

@@ -32,6 +32,12 @@ resources/chromium/
 # sherpa-onnx 引擎（PLAN-voice-input §3.2，prepare-asr-engine.js 生成，同
 # resources/chromium 纪律：CI/dev 由脚本产出，不进 git）
 resources/asr-engine/
+# 例外，别顺手加进上面那条：resources/cxx-runtime/ 是**提交物**（私有
+# libstdc++ 副本，1.7MB）。它不能现场生成——prepare-asr-engine.js 要先校验它的
+# sha256 才开始拷贝，缺了就是硬失败。原因与制作步骤见该目录的 README.md。
+# 两行是 git 的标准写法：父目录被排除时，子文件的 ! 规则不生效，必须先放目录。
+!resources/cxx-runtime/
+!resources/cxx-runtime/**
 
 # Ad-hoc debug scratch under scripts/ (throwaway probe/dump snippets)
 scripts/.tmp/

@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 const REPO = process.cwd()
@@ -159,6 +160,116 @@ describe('打包接线', () => {
   })
 })
 
+describe('Linux 随包引擎：1.12.40 钉版（2026-11-23）', () => {
+  const workflow = read('.github', 'workflows', 'build-linux.yml')
+  const prepare = read('scripts', 'prepare-asr-engine.js')
+
+  const lineNo = (text: string): number => {
+    const i = workflow.split('\n').findIndex((line) => line.trim() === text)
+    expect(i, `workflow 缺整行：${text}`).toBeGreaterThan(-1)
+    return i
+  }
+
+  it('装 pin 版平台包在 npm ci 之后、生成引擎之前；引擎在 build 之前', () => {
+    const npmCi = lineNo('npm ci')
+    const pin = lineNo('run: npm i --no-save sherpa-onnx-linux-x64@1.12.40')
+    const prep = lineNo('run: node scripts/prepare-asr-engine.js --platform-arch linux-x64')
+    const build = lineNo('run: npm run build')
+    expect(npmCi).toBeLessThan(pin)
+    expect(pin).toBeLessThan(prep)
+    expect(prep).toBeLessThan(build)
+  })
+
+  it('prepare 的 pin 与 CI 装的版本同一字面量；manifest 版本来自源平台包', () => {
+    const pin = prepare.match(/'linux-x64':\s*'([0-9.]+)'/)?.[1]
+    expect(pin).toBe('1.12.40')
+    expect(workflow).toContain(`sherpa-onnx-linux-x64@${pin}`)
+    // 版本必须读 node_modules/<平台包>/package.json —— sherpa-onnx-node 的 2.0.2
+    // 会让 Linux 写假版本，打包后 sha/版本门与目录名对不上
+    expect(prepare).toContain('function sourceVersion(pkgDir)')
+    expect(prepare).toMatch(/join\(REPO, 'node_modules', pkgDir, 'package\.json'\)/)
+    expect(prepare).toContain('JSON.stringify({ version, platformArch, files }')
+    // 负扫：读 meta 包的旧常量不许长回来
+    expect(prepare).not.toContain('const VERSION =')
+  })
+
+  it('打包态落地硬门：四个二进制 + manifest 且版本 = 1.12.40', () => {
+    // 应用侧缺引擎是静默降级不是崩 —— 没有别的地方会红
+    expect(workflow).toContain('- name: Verify bundled ASR engine landed')
+    for (const f of ['sherpa-onnx.node', 'libonnxruntime.so', 'libsherpa-onnx-c-api.so', 'libsherpa-onnx-cxx-api.so', 'manifest.json']) {
+      expect(workflow).toContain(f)
+    }
+    expect(workflow).toMatch(/m\.version !== "1\.12\.40"/)
+  })
+
+  it('真转写冒烟走产品加载器与打包产物（模型缺席只降级为 engine-load）', () => {
+    expect(workflow).toContain('- name: Smoke packed ASR runtime')
+    expect(workflow).toContain('node scripts/smoke-packed-asr.js --app-out dist/linux-unpacked --platform linux --arch x64 $model_args')
+    // 与 mac/win 共用同一份 SenseVoice 缓存（同一模型包通吃两代引擎）
+    expect(workflow).toContain('asr-sensevoice-2024-07-17')
+  })
+})
+
+// ── 方案 ①：随包私有 C++ 运行库（2026-11-23 裁定）──
+// 引擎要 GLIBCXX_3.4.29，UOS 20 的系统 libstdc++ 只到 3.4.25。同名塞一份没用
+//（glibc 按 SONAME 复用已加载对象），所以改名 libpmcxx.so.6 并改引擎的 NEEDED。
+// 这一组钉「三处名字必须同一个字面量」：prepare 的常量、blob 的实际 sha、以及
+// 落地门禁与冒烟里出现的文件名。任何一处漂了，装机才报 version not found。
+describe('私有 C++ 运行库 libpmcxx.so.6（方案 ①）', () => {
+  const prepare = read('scripts', 'prepare-asr-engine.js')
+  const engineSrc = read('src', 'main', 'services', 'asr-engine.ts')
+  const smoke = read('scripts', 'smoke-packed-asr.js')
+  const workflow = read('.github', 'workflows', 'build-linux.yml')
+  const BLOB = join(REPO, 'resources', 'cxx-runtime', 'linux-x64', 'libpmcxx.so.6')
+
+  it('blob 是提交物（能被 git 收），且有 README 记来源/许可/制作步骤', () => {
+    // 与 resources/asr-engine（脚本产出、gitignore）纪律相反：它必须先存在，
+    // prepare 才能校验 sha 再拷贝
+    const ignore = read('.gitignore')
+    expect(ignore).toContain('resources/asr-engine/')
+    expect(ignore).toContain('!resources/cxx-runtime/**')
+    expect(ignore).not.toMatch(/^resources\/cxx-runtime\/$/m)
+    const readme = read('resources', 'cxx-runtime', 'README.md')
+    expect(readme).toContain('GCC Runtime Library Exception')
+    expect(readme).toContain('85964cabf42087d9145a99e3c45b904f0e2760002f8d4b1dc73d8382f122cc09')
+    expect(readme).toContain('_dl_lookup_map')
+  })
+
+  it('prepare 钉的 sha256 就是仓库里那份 blob（换了 blob 不同步 → prepare 当场失败）', () => {
+    const pinned = prepare.match(/sha256:\s*'([0-9a-f]{64})'/)?.[1]
+    expect(pinned, 'prepare 里没有 sha256 钉子').toMatch(/^[0-9a-f]{64}$/)
+    const actual = createHash('sha256').update(readFileSync(BLOB)).digest('hex')
+    expect(actual, 'blob 与 prepare 里的钉子不一致——要么改了 blob，要么改了钉子').toBe(pinned)
+    expect(prepare).toContain("name: 'libpmcxx.so.6'")
+    expect(prepare).toContain("replaces: 'libstdc++.so.6'")
+  })
+
+  it('加载器：私有运行库只在 prepare 产出的目录（有 manifest）里要求', () => {
+    // 塞进 REQUIRED_FILES 会让 Linux dev 回落（node_modules 里的厂商包，没有
+    // 这个副本）永远报「引擎不完整」——这是负扫的意义
+    expect(engineSrc).toMatch(/linux: \['sherpa-onnx\.node', 'libonnxruntime\.so', 'libsherpa-onnx-c-api\.so', 'libsherpa-onnx-cxx-api\.so'\]/)
+    expect(engineSrc).toMatch(/PRIVATE_RUNTIME[\s\S]{0,120}libpmcxx\.so\.6/)
+    expect(engineSrc).toContain("existsSync(join(dir, 'manifest.json'))")
+    expect(engineSrc).toContain('privateRuntimeFiles(c.dir)')
+  })
+
+  it('冒烟与落地门禁都认这个名字（打包产物里缺了/没改名都要红）', () => {
+    expect(smoke).toMatch(/linux: \[[^\]]*'libpmcxx\.so\.6'\]/)
+    expect(smoke).toContain("libstdc++.so.6\\0")
+    expect(workflow).toContain('libpmcxx.so.6 manifest.json')
+    expect(workflow).toContain('m.files["libpmcxx.so.6"]')
+  })
+
+  it('门禁脚本对同一字面量做提供方识别（不是硬编码 3.4.30）', () => {
+    const gate = read('scripts', 'check-linux-glibc.js')
+    expect(gate).toContain("PRIVATE_CXX_NAME = 'libpmcxx.so.6'")
+    expect(gate).toContain('function providerCapabilities')
+    // 上限必须来自实测（formatVersion(provider.cxxProvides)），不能写死数字
+    expect(gate).toContain('formatVersion(row.provider.cxxProvides)')
+    expect(gate).not.toContain("= '3.4.30'")
+  })
+})
+
 describe('渲染端接线', () => {
   it('InputArea：麦克风按钮 + 引导卡 + ⌥V + 光标插入 + features.voice', () => {
     const input = read('src/renderer/src/components/chat/InputArea.tsx')
@@ -167,6 +278,21 @@ describe('渲染端接线', () => {
     expect(input).toContain('features?.voice ?? features === undefined')
     expect(input).toContain("e.code !== 'KeyV'")
     expect(input).toContain('insertVoiceText')
+  })
+
+  it('录音态按钮 = 停止方块 + 实时波形（user 2026-11-23：波形读不出「可点停」）', () => {
+    const input = read('src/renderer/src/components/chat/InputArea.tsx')
+    // 方块在 recording 分支里，与波形并排：一个表达「再点一次就停」，一个表达「在收音」
+    expect(input).toContain('pm-voice-stop-square')
+    expect(input).toMatch(/pm-voice-stop-square[\s\S]{0,400}<VoiceWaveform levelRef=\{voice\.state\.levelRef\}/)
+    // 方块用 currentColor 跟随按钮的红色信号色；尺寸字面固定，录音期间不抖
+    expect(input).toMatch(/pm-voice-stop-square[\s\S]{0,200}background: 'currentColor'/)
+    expect(input).toMatch(/pm-voice-stop-square[\s\S]{0,200}width: 10, height: 10/)
+    // 波形本身不进 state、尺寸固定：电平走 ref 由 canvas 自己读
+    const wave = read('src/renderer/src/components/chat/VoiceWaveform.tsx')
+    expect(wave).toContain('levelRef.current')
+    expect(wave).toContain('requestAnimationFrame')
+    expect(wave).not.toContain('useState')
   })
 
   it('麦克风 hover 提示带触发快捷键（2026-11-22，formatAccelerator 平台词汇）', () => {
@@ -201,7 +327,7 @@ describe('渲染端接线', () => {
     expect(input).toContain("target.closest('.pm-voice-guide')")
     // Esc 收卡 + 再按麦克风 toggle
     expect(input).toContain('if (voice.state.guideVisible) voice.dismissGuide()')
-    expect(input).toContain('if (e.key !== \'Escape\') return')
+    expect(input).toContain("if (e.key !== 'Escape') return")
   })
 
   it('useVoiceInput 的采集形态（AudioWorklet 16k PCM，不再走 MediaRecorder）', () => {
@@ -311,6 +437,26 @@ describe('渲染端接线', () => {
     // 锚点在进入录音时取一次，回到 idle 清空
     expect(input).toContain("voice.state.phase === 'recording'")
     expect(input).toContain('voiceAnchorRef.current = null')
+    // 锚点来源必须是「点麦克风那一刻」的坐标（pointerdown 抓，先于 blur）。
+    // 直接读失焦后的 selectionStart 会拿到 0，整段语音被塞到最前面
+    // （user 2026-11-23 反馈「分段向前追加」）。
+    expect(input).toContain('voiceCaretRef')
+    expect(input).toContain('onPointerDown=')
+    expect(input).toContain('document.activeElement === ta')
+    // 没焦点 → null → 落到末尾，而不是 0
+    expect(input).toContain('at === null ? len : Math.min(at, len)')
+    // 快捷键（⌥V）路径不走 pointerdown，但焦点就在 textarea 上，也得记一次
+    const hotkeyFrom = input.indexOf("e.code !== 'KeyV'")
+    expect(input.slice(hotkeyFrom, hotkeyFrom + 700)).toContain('voiceCaretRef.current =')
+    // 锚点必须每段往前推。它是我们记的落点、不是 DOM 选区，不推进就会每段插在
+    // 同一处，后说的排到前面——整段语音倒序（user 2026-11-23 反馈
+    // 「AAAAAA 第三段 第二段 第一段 AAAAAA」）。这条是本轮补的：上一版断言只验了
+    // 「不读实时选区」，没验「要往前推」，倒序就从缝里漏了过去。
+    expect(insertBody).toContain('voiceAnchorRef.current = caret')
+    // 插入后不许抢焦点（会把焦点从麦克风按钮夺走），也不许覆盖用户已有选区
+    // ——听写中选中文字是为了复制。
+    expect(insertBody).not.toContain('.focus()')
+    expect(insertBody).toContain('el.selectionStart !== el.selectionEnd')
   })
 
   it('取消听写回滚草稿（Esc 语义 = 当这次没发生）', () => {

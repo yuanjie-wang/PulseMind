@@ -165,6 +165,21 @@ jobs:
           npm -v
           npm ci
 
+      # 语音引擎的 Linux 版本必须与 sherpa-onnx-node（2.0.2，mac/win 用）分家：
+      # 1.13+ 的 sherpa-onnx.node 要 GLIBC_2.32（__libc_single_threaded）+
+      # GLIBCXX_3.4.26，双双超 UOS 20 的 2.28 上限；1.12.40 把 **glibc 那半边**
+      # 降到 GLIBC_2.16（RUNPATH 已烘焙 $ORIGIN，2026-11-23 逐文件解析
+      # .gnu.version_r 实测）。⚠️ 它**仍要 GLIBCXX_3.4.29**（`std::__throw_bad_
+      # array_new_length`，GCC 11 才引入），UOS 20 的 libstdc++ 只到 3.4.25——
+      # 因此 prepare-asr-engine.js 会再随包一份私有运行库 libpmcxx.so.6 并把引擎
+      # 的 NEEDED 改名过去（方案 ①，见 resources/cxx-runtime/README.md）。换平台包
+      # 本身只解决 glibc，降版本也躲不开 3.4.29（1.10.46/1.11.5/1.12.0 实测相同）。
+      # 同一个 SenseVoice 模型包通吃两代引擎（opset 13 / ir_version 7）。
+      # --no-save：不改 package.json / lockfile，也不进 afterPack 的依赖树门禁
+      #（它只走 product dependencies）。
+      - name: Install Linux ASR engine package (pinned 1.12.40)
+        run: npm i --no-save sherpa-onnx-linux-x64@1.12.40
+
       # 与 mac/windows 的「Assert native modules target …」同层，只覆盖 OCR 这一条：
       # 这一层必须查依赖树、不能只查包内。onnxruntime-web 在 devDependencies，
       # 若 onnxruntime-node 哪天也落回 devDependencies，它根本不会进 asar.unpacked，
@@ -185,13 +200,14 @@ jobs:
       - name: Fetch bundled Chromium
         run: npm run browsers:install
 
-      # PLAN-voice-input M3 / M0-3 静态扫描结论（2026-11-19）：官方 sherpa-onnx
-      # linux-x64 包的 .node 要 GLIBC_2.32（__libc_single_threaded）+ GLIBCXX_3.4.26，
-      # 双双超 UOS 2.28 上限——check-linux-glibc.js 的 .so 扫描会在打包期拦下它。
-      # **因此 linux 暂不随包引擎**（本步刻意缺位）：应用侧 resolveAsrEngineDir
-      # 落空给可读文案（语音输入不可用 ≠ 崩），zig 自编通道（better-sqlite3 的
-      # zig-cc wrapper 现成，target 钉 2.28）落地后再接 prepare-asr-engine.js +
-      # extraResources 的 linux 段。
+      # PLAN-voice-input M3：引擎随包（resources/asr-engine 是 gitignore 的，
+      # CI 现场生成）。linux-x64 钉 1.12.40（见上面 Install 步骤）；manifest 的
+      # version 由 prepare-asr-engine.js 从源平台包自己的 package.json 读，
+      # 不会写成 sherpa-onnx-node 的 2.0.2——假版本会让 sha/版本门在装机后
+      # 与目录名对不上。
+      - name: Prepare bundled ASR engine
+        run: node scripts/prepare-asr-engine.js --platform-arch linux-x64
+
       - name: Build bundles
         run: npm run build
 
@@ -212,14 +228,86 @@ jobs:
       - name: Package deb
         run: npx electron-builder --linux deb --x64 --publish never
 
-      - name: Check glibc ceiling of shipped native modules
-        run: node scripts/check-linux-glibc.js dist/linux-unpacked --ceiling=2.28
+      # 两条轴都显式给上限（默认值同此，写出来是为了让口径可审）：glibc 2.28 与
+      # libstdc++ GLIBCXX_3.4.25 = UOS 20 / Debian 10（GCC 8.3）。
+      # 引擎目录里的 1.12.40 要 GLIBCXX_3.4.29 —— 那一条由随包的 libpmcxx.so.6
+      # 承担（方案 ①）：门禁见到「同目录有提供方」就把这些文件的上限抬到提供方
+      # 实测能力（3.4.30），同时要求提供方自身 GLIBC 达标、且引擎对象里没有残留的
+      # libstdc++.so.6 NEEDED（残留 = 还在用系统的，抬上限就是自欺）。
+      # 所以这一步**应当绿**；它红了就说明方案 ① 没接上（不是"这道门本来就会红"）。
+      - name: Check native module floors (glibc + libstdc++)
+        run: node scripts/check-linux-glibc.js dist/linux-unpacked --ceiling=2.28 --glibcxx-ceiling=3.4.25
 
       # afterPack 删掉了 352MB 的执行提供器库（CUDA/TensorRT/shared）与异平台二进制。
       # 退出码 0 只说明打包完成，不说明裁完的二进制还能加载 —— 这里用**打包产物**
       # 的 onnxruntime 真建三个会话，缺库会当场 failed to load。
       - name: Smoke packed OCR runtime
         run: node scripts/smoke-packed-ocr.js --app-out dist/linux-unpacked --platform linux --arch x64
+
+      # 引擎落地的硬门：resources/asr-engine 是 gitignore 的，prepare 失败或
+      # extraResources 的 linux-${arch} filter 写错，只会得到一个「语音输入不可用」
+      # 的包（应用侧是降级不是崩，所以没有别的地方会红）。manifest 版本必须是
+      # 源平台包的 1.12.40，不是 sherpa-onnx-node 的 2.0.2。
+      # libpmcxx.so.6 是随包的私有 C++ 运行库（方案 ①）：引擎的 GLIBCXX_3.4.29
+      # 由它提供，而不是 UOS 的系统 libstdc++（3.4.25）。它必须在 manifest.files
+      # 里 —— 否则装机后 sha 门扫不到它，这份「救命的库」就成了无证据件。
+      # 「引擎是否还残留 libstdc++.so.6 的 NEEDED」由 check-linux-glibc（同目录
+      # 提供方才抬上限）与 smoke-packed-asr 各把一道，这里不重复。
+      - name: Verify bundled ASR engine landed
+        run: |
+          set -eu
+          dir=dist/linux-unpacked/resources/asr-engine/linux-x64
+          for f in sherpa-onnx.node libonnxruntime.so libsherpa-onnx-c-api.so libsherpa-onnx-cxx-api.so libpmcxx.so.6 manifest.json; do
+            if [ ! -f "$dir/$f" ]; then
+              echo "::error::$dir/$f missing —— 语音输入在这个包里不可用"
+              find dist/linux-unpacked/resources/asr-engine -maxdepth 2 -print 2>/dev/null || true
+              exit 1
+            fi
+          done
+          node -e '
+            const fs = require("node:fs")
+            const dir = process.argv[1]
+            const m = JSON.parse(fs.readFileSync(dir + "/manifest.json", "utf8"))
+            if (m.version !== "1.12.40") {
+              console.error("::error::ASR manifest version " + m.version + " != 1.12.40（prepare 读错了源平台包？）")
+              process.exit(1)
+            }
+            if (!m.files["libpmcxx.so.6"]) {
+              console.error("::error::manifest 没登记 libpmcxx.so.6 —— 私有 C++ 运行库逃过 sha 门")
+              process.exit(1)
+            }
+            console.log("asr engine v" + m.version + ", " + Object.keys(m.files).length + " files")
+          ' "$dir"
+          du -sh "$dir"
+
+      # 模型缓存段沿用 mac/windows 的 key（同一份 SenseVoice 包通吃 1.12.40/2.0.2）。
+      # 容器能 curl；模型 228MB 不进镜像。
+      - name: Cache ASR model for smoke
+        id: asr-model
+        uses: actions/cache@v4
+        with:
+          path: ~/asr-model-smoke
+          key: asr-sensevoice-2024-07-17
+      - name: Fetch ASR model for smoke
+        if: steps.asr-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/asr-model-smoke
+          curl -fL --retry 2 -o ~/asr-model-smoke/model.int8.onnx \
+            https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx
+          curl -fL --retry 2 -o ~/asr-model-smoke/tokens.txt \
+            https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt
+      # 走产品加载器（asr-recognizer.ts）+ 包内夹具 zh.wav 真转写：这是 1.12.40
+      # 在 Linux 上「引擎能载、模型能跑」的唯一自动化证据（UOS 实机仍要人工听一遍）。
+      - name: Smoke packed ASR runtime
+        run: |
+          set -eu
+          model_args=""
+          if [ -f "$HOME/asr-model-smoke/model.int8.onnx" ]; then
+            model_args="--model-dir $HOME/asr-model-smoke"
+          else
+            echo "::warning::ASR 模型缓存缺失——冒烟退化为 engine-load 段"
+          fi
+          node scripts/smoke-packed-asr.js --app-out dist/linux-unpacked --platform linux --arch x64 $model_args
 
       # Windows 侧有个悬案：afterPack 报 freed 187.3MB，portable exe 却几乎没变。
       # 这里输出同样的清单当对照组——deb 已知从 370M 降到 256M，若 linux-unpacked
