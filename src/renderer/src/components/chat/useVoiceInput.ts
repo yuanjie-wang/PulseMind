@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createSegmenter, type Segmenter } from '../../utils/audio-segmenter'
 import { notify, notifyFailure } from '../../utils/notify'
+import { frameLevel, type VoiceLevelRef } from './VoiceWaveform'
 
 export type VoiceInputPhase = 'idle' | 'recording' | 'transcribing'
 
@@ -37,6 +38,9 @@ export interface VoiceInputState {
   guideVisible: boolean
   /** 设置页需要的已装模型判定（转写前查询 + 广播刷新） */
   modelInstalled: boolean
+  /** 当前麦克风电平（0..1），供 VoiceWaveform 的 canvas 读取。
+   *  用 ref 而非 state：电平每 100ms 一到，进 state 会重渲整棵 InputArea。 */
+  levelRef: VoiceLevelRef
   // 故意不暴露「已录秒数」与「有段在转写中」：它们都挂在同一个图标按钮上，
   // 秒数每秒改写宽度、转写标志在边录边转时反复进出，用户会看成按钮在抖
   // （user 2026-11-22 反馈）。秒数显示由 InputArea 的独立小组件 VoiceElapsed
@@ -128,6 +132,8 @@ export function useVoiceInput(opts: UseVoiceInputOptions): VoiceInputApi {
   const [modelInstalled, setModelInstalled] = useState(false)
 
   const phaseRef = useRef<VoiceInputPhase>('idle')
+  // 声波用电平：每帧算 RMS 写入，canvas 自己读。绝不进 state。
+  const levelRef: VoiceLevelRef = useRef(0)
   const streamRef = useRef<MediaStream | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const workletRef = useRef<AudioWorkletNode | null>(null)
@@ -198,6 +204,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions): VoiceInputApi {
     segmenterRef.current = null
     queueRef.current = []
     draftSnapshotRef.current = null
+    levelRef.current = 0
     setPhaseSafe('idle')
     teardownCapture()
   }, [teardownCapture])
@@ -290,7 +297,10 @@ export function useVoiceInput(opts: UseVoiceInputOptions): VoiceInputApi {
       const node = new AudioWorkletNode(ctx, 'pm-pcm-tap', { processorOptions: { batchFrames: BATCH_FRAMES } })
       node.port.onmessage = (ev: MessageEvent<Float32Array>): void => {
         if (cancelledRef.current) return
-        const segments = segmenter.push(ev.data)
+        const frame: Float32Array = ev.data
+        // 顺手算电平喂声波：纯函数 RMS，与分段转写共用同一帧、零额外采集。
+        levelRef.current = frameLevel(frame)
+        const segments = segmenter.push(frame)
         if (!segments.length) return
         for (const s of segments) queueRef.current.push(s)
         void drain()
@@ -308,6 +318,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions): VoiceInputApi {
       draftSnapshotRef.current = readDraftRef.current ? readDraftRef.current() : null
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e))
+      levelRef.current = 0
       teardownCapture()
       setPhaseSafe('idle')
       if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
@@ -405,7 +416,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions): VoiceInputApi {
   }, [])
 
   return {
-    state: { phase, guideVisible, modelInstalled },
+    state: { phase, guideVisible, modelInstalled, levelRef },
     start,
     stop,
     cancel,

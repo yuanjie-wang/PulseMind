@@ -22,6 +22,7 @@ import type { SteerOutcome } from '../../types/agent'
 import { Composer, useInputHistory, COMPOSER_MAX_WIDTH, ABOVE_CARD_GAP, clampComposerInput } from './Composer'
 import type { ComposerHandle } from './Composer'
 import { useVoiceInput } from './useVoiceInput'
+import { VoiceWaveform } from './VoiceWaveform'
 import { VoiceGuideCard } from '../settings/VoiceGuideCard'
 import { usePendingMessageStore, type StagedMessage } from '../../stores/pendingMessageStore'
 import type { LlmProfile } from '../../types/settings'
@@ -347,16 +348,22 @@ function InputAreaImpl({
   // 想复制，slice(0,start)+text+slice(end) 会把选中内容整段替换掉——用户没编辑，
   // 自己写的字却消失了（user 2026-11-22 反馈「光标不显示却能改变位置」）。
   const voiceAnchorRef = useRef<number | null>(null)
+  // 点麦克风那一刻的光标位置。必须在 pointerdown 阶段抓：按钮一按下 textarea
+  // 就失焦，而失焦后的 selectionStart 读出来是 0——整段语音会被塞到最前面
+  // （user 2026-11-23 反馈「分段向前追加」）。null = 点的时候没焦点 → 落到末尾。
+  const voiceCaretRef = useRef<number | null>(null)
   useEffect(() => {
     if (voice.state.phase === 'recording') {
       // 只在进入录音的那一刻取一次。transcribing 不清：最后一段还要用它落位。
       if (voiceAnchorRef.current === null) {
-        const ta = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
-        const at = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : inputValueRef.current.length
-        voiceAnchorRef.current = Math.min(at, inputValueRef.current.length)
+        const len = inputValueRef.current.length
+        const at = voiceCaretRef.current
+        // 点麦克风那一刻的光标决定整段语音的起点；没有焦点就接在末尾
+        voiceAnchorRef.current = at === null ? len : Math.min(at, len)
       }
     } else if (voice.state.phase === 'idle') {
       voiceAnchorRef.current = null
+      voiceCaretRef.current = null
     }
   }, [voice.state.phase])
 
@@ -374,13 +381,17 @@ function InputAreaImpl({
     const next = clampComposerInput(`${prev.slice(0, start)}${joiner}${text}${prev.slice(end)}`)
     const caret = Math.min(next.length, start + joiner.length + text.length)
     setInputValue(next)
-    // 渲染后把光标放到插入末尾——下一次说话从这里接上
+    // 锚点必须自己往前推。它是我们记的落点，不是 DOM 选区——不推进的话每段都
+    // 插在同一处，后说的反而排在前面，整段语音变成倒序
+    // （user 2026-11-23 反馈「AAAAAA 第三段 第二段 第一段 AAAAAA」）。
+    voiceAnchorRef.current = caret
+    // 顺带把真实光标放到插入末尾：听写结束后接着打字才不会落进语音文字中间。
+    // 但不去抢焦点（focus 会把焦点从麦克风按钮上夺走），也不覆盖用户已有的选区
+    // ——听写中选中文字是为了复制，不能被下一段清掉。
     requestAnimationFrame(() => {
       const el = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
-      if (el) {
-        el.focus()
-        el.setSelectionRange(caret, caret)
-      }
+      if (!el || el.selectionStart !== el.selectionEnd) return
+      el.setSelectionRange(caret, caret)
     })
   }, [])
   useEffect(() => {
@@ -396,6 +407,8 @@ function InputAreaImpl({
       const ta = composerRef.current?.nativeElement?.querySelector('textarea')
       if (!ta || document.activeElement !== ta) return
       e.preventDefault()
+      // 快捷键路径不走 pointerdown，但此刻焦点就在 textarea 上，直接读即可
+      voiceCaretRef.current = typeof ta.selectionStart === 'number' ? ta.selectionStart : null
       if (voice.state.phase === 'idle') voice.start()
       else if (voice.state.phase === 'recording') voice.stop()
     }
@@ -1698,10 +1711,32 @@ function InputAreaImpl({
                         : t('voiceInput.micStart')
                   }
                   icon={
-                    voice.state.phase === 'transcribing'
-                      ? <LoadingOutlined style={{ fontSize: 14 }} spin />
-                      : <AudioOutlined style={{ fontSize: 14 }} />
+                    voice.state.phase === 'recording'
+                      ? (
+                        // 停止方块（■）+ 实时声波：波形只表达「正在收音」，读不出
+                        // 「再点一次就停」。补一个通用停止符号让这个可供性一眼可见。
+                        // 方块与波形尺寸都固定，录音期间按钮宽度恒定（秒数由
+                        // VoiceElapsed 定宽自持）；idle→recording 变宽一次，与原先把
+                        // 音频图标换成波形同一性质，不是读数抖动。
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <span
+                            className="pm-voice-stop-square"
+                            aria-hidden="true"
+                            style={{ width: 10, height: 10, borderRadius: 2, background: 'currentColor', flex: 'none' }}
+                          />
+                          <VoiceWaveform levelRef={voice.state.levelRef} />
+                        </span>
+                      )
+                      : voice.state.phase === 'transcribing'
+                        ? <LoadingOutlined style={{ fontSize: 14 }} spin />
+                        : <AudioOutlined style={{ fontSize: 14 }} />
                   }
+                  onPointerDown={() => {
+                    const ta = composerRef.current?.nativeElement?.querySelector('textarea') as HTMLTextAreaElement | null
+                    // pointerdown 先于 blur：此刻 textarea 若还持有焦点，selectionStart
+                    // 就是用户看到的那根光标。未聚焦时它是 0，不能当起点用——那就落到末尾。
+                    voiceCaretRef.current = ta && document.activeElement === ta ? ta.selectionStart : null
+                  }}
                   onClick={() => {
                     if (voice.state.phase === 'recording') voice.stop()
                     // 转写态此前没有退出路径（Esc 只挂在 recording），一旦卡住
