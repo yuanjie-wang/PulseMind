@@ -225,7 +225,7 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
      *  the half of a code block the sheet can carry; the tokens ride
      *  CodeHighlight's own subscription. */
     '--pm-code-bg': 'rgba(0, 0, 0, 0.02)',
-    '--pm-sidebar': 'linear-gradient(180deg, #f5f7fa 0%, #f0f0f0 100%)',
+    '--pm-sidebar': 'linear-gradient(180deg, #f5f7fa 0%, #faf7f5 100%)',
     '--pm-scrollbar': '#d0d0d0',
     '--pm-scrollbar-active': '#b0b0b0',
     // Shell-interior roles (M3/T0) — the literals inside surfaces the shell
@@ -474,7 +474,7 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     // Lifted 2026-09-20 (user: 深色侧边栏要浅一些) — the sider now reads as a
     // distinct, slightly elevated surface instead of melting into the #141414
     // content ground. Top stays the lighter end (same shape as light).
-    '--pm-sidebar': 'linear-gradient(180deg, #26262a 0%, #1c1c1e 100%)',
+    '--pm-sidebar': 'linear-gradient(180deg, #26282a 0%, #1e1c1a 100%)',
     '--pm-scrollbar': '#3a3a3a',
     '--pm-scrollbar-active': '#4a4a4a',
     '--pm-text-title': '#f0f0f0',

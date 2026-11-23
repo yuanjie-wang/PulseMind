@@ -30,7 +30,10 @@ describe('PALETTE', () => {
     expect(PALETTE.light['--pm-link']).toBe('#1677ff')
     expect(PALETTE.light['--pm-text']).toBe('#262626')
     expect(PALETTE.light['--pm-hover']).toBe('rgba(0, 0, 0, 0.06)')
-    expect(PALETTE.light['--pm-sidebar']).toBe('linear-gradient(180deg, #f5f7fa 0%, #f0f0f0 100%)')
+    // Updated 2026-11-23 (user): the sider's lower stop went from the neutral
+    // #f0f0f0 to the warm #faf7f5 — the pin moves with the ruling, it is not
+    // allowed to drift without one.
+    expect(PALETTE.light['--pm-sidebar']).toBe('linear-gradient(180deg, #f5f7fa 0%, #faf7f5 100%)')
     // The message layer's own literals (M2/T2), pinned for the same reason: each
     // is a value a migrated component used to carry inline, and the light theme
     // is not allowed to move.
