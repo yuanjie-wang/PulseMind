@@ -639,9 +639,9 @@ export function TimeoutMinutesSection({ value, onChange, fallback, label, captio
   label: string
   caption: string
   fallback: number
-  /** Present = prepend a 「0 = 永不超时」 option（user 2026-11-17，工作流
-   *  单环节语义专属——routine 的最长执行时长没有它：无人值守运行必须保有
-   *  硬上限，挂死的运行不能永远占着槽位）。 */
+  /** Present = prepend a 「0 = 永不超时」 option. 两臂都传（user 2026-11-23：
+   *  会话类日常任务同样要有永不超时；此前的「routine 必须保有硬上限」裁定
+   *  随之作废）——0 在两条执行链里都是「不武装计时器」。 */
   neverLabel?: string
 }): React.ReactElement {
   const options = [

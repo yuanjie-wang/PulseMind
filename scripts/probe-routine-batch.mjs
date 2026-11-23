@@ -509,7 +509,8 @@ async function main() {
   // failed with 运行超时 at the configured ceiling, and the config/override
   // reach it. The FIRING half drives executeUnattended directly with a
   // sub-minute timeoutMs — normalizeBatchTimeoutMinutes floors a start at one
-  // whole minute, and a 60s sleep is not a probe. The WIRING half runs the
+  // whole minute (0 = 永不超时, 2026-11-23), and a 60s sleep is not a probe.
+  // The WIRING half runs the
   // real start() and reads the parent's recorded meta. ──
   const csvJ = writeCsv('j.csv', 'repo\\nrj1\\n')
   const routineJ = makeRoutine('巡检 J', csvJ, { batch: { csvPath: csvJ, concurrency: 2, timeoutMinutes: 30 } })
@@ -521,11 +522,26 @@ async function main() {
   check('a row past its ceiling settles failed with 运行超时 (the timeout fired, the engine was stopped)', () => {
     assert.match(routineStore.getRun(runJ.id).error, /运行超时/)
   })
+
+  // 0 = 永不超时 (user 2026-11-23): no timer is armed, so the hanging run is
+  // still running well past what any short ceiling would have allowed — it
+  // ends only when it finishes or someone stops it.
+  const runJ0 = routineStore.startRun(routineJ.id, 'manual', 'routine_never_probe')
+  const handleJ0 = executeUnattended({ runId: runJ0.id, routine: routineJ, convId: 'routine_never_probe', timeoutMs: 0 })
+  await new Promise((r) => setTimeout(r, 400))
+  check('timeoutMs: 0 arms no timer — the hanging run is still running', () => {
+    assert.equal(routineStore.getRun(runJ0.id).status, 'running')
+  })
+  handleJ0.stop()
+  await until(() => routineStore.getRun(runJ0.id)?.status !== 'running', 'never-timeout run settles on stop')
+  check('and 停止 still settles it (the only ways out are 完成 and 停止)', () => {
+    assert.match(routineStore.getRun(runJ0.id).error, /用户停止/)
+  })
   askBehavior = 'complete'
 
   const csvK = writeCsv('k.csv', 'repo\\nrk1\\nrk2\\n')
   const routineK = makeRoutine('巡检 K', csvK) // saved config: concurrency 2, no timeout → default at run time
-  await assert.rejects(() => routineBatchRunner.start(routineStore.get(routineK.id), 'manual', { concurrency: 1, timeoutMinutes: 0 }), /无效的单次超时/)
+  await assert.rejects(() => routineBatchRunner.start(routineStore.get(routineK.id), 'manual', { concurrency: 1, timeoutMinutes: 121 }), /无效的单次超时/)
   check('an out-of-range 单次超时 refuses before any row is written', () => {
     assert.equal(routineStore.listRuns(routineK.id, 10).length, 0, 'no parent row was created')
   })
@@ -536,6 +552,16 @@ async function main() {
     const parent = routineStore.getRun(parentK.id)
     assert.equal(parent.status, 'success')
     assert.equal(parent.batch.timeoutMinutes, 45)
+    assert.equal(routineStore.get(routineK.id).batch.timeoutMinutes, undefined)
+  })
+  // The 0 override is the explicit 永不超时 — it must ride the parent meta
+  // verbatim (resume and the workspace header read it back).
+  const parentL = await routineBatchRunner.start(routineStore.get(routineK.id), 'manual', { timeoutMinutes: 0 })
+  await until(() => routineStore.getRun(parentL.id)?.status !== 'running', 'never-timeout batch settles')
+  check('a 0 override reaches the parent meta as 永不超时 (not the 15-minute default)', () => {
+    const parent = routineStore.getRun(parentL.id)
+    assert.equal(parent.status, 'success')
+    assert.equal(parent.batch.timeoutMinutes, 0)
     assert.equal(routineStore.get(routineK.id).batch.timeoutMinutes, undefined)
   })
   const parentJ2 = await routineBatchRunner.start(routineStore.get(routineJ.id), 'manual')

@@ -156,13 +156,13 @@ describe('task kernel wiring', () => {
     // 对话式任务绑任务级 timeoutMinutes（约束单笔运行与批量行）。
     expect(wizard).toMatch(/draft\.timeoutMinutes \?\? 15/)
     expect(wizard).toMatch(/editDraft\(\{ \.\.\.draft, timeoutMinutes \}\)/)
-    // 工作流绑单环节超时 params.stageTimeoutMinutes（引擎逐环节计时器），
-    // 带「永不超时」选项（user 2026-11-17：0 = 不武装计时器）；routine 臂
-    // 刻意没有它——无人值守运行必须保有硬上限。
+    // 工作流绑单环节超时 params.stageTimeoutMinutes（引擎逐环节计时器）。
+    // 两臂都带「永不超时」（user 2026-11-23：会话类日常任务也要 0 = 不武装
+    // 计时器；2026-11-17「routine 刻意没有它」的裁定随之作废）。
     expect(wizard).toMatch(/def\.params\?\.stageTimeoutMinutes \?\? 30/)
     expect(wizard).toMatch(/mutateWf\(\(d\) => \(\{ \.\.\.d, params: \{ \.\.\.d\.params, stageTimeoutMinutes \} \}\)\)/)
     expect(wizard).toContain('neverLabel="永不超时"')
-    expect(wizard.match(/neverLabel=/g)?.length).toBe(1)
+    expect(wizard.match(/neverLabel=/g)?.length).toBe(2)
     // 单一编辑面：runctx 步的两个臂共用 TimeoutMinutesSection，批量块里
     // 不再有第二颗超时选择器（两处编辑同一语义必然漂移）。
     expect(wizard.match(/<TimeoutMinutesSection/g)?.length).toBe(2)

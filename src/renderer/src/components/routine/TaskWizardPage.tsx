@@ -938,13 +938,15 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
                 {/* 任务最长执行时长（2026-11-17 从批量数据块提升为任务级）：
                     两种 kind 各绑各的超时语义——routine 是整笔运行的天花板，
                     workflow 是单环节的天花板（引擎逐环节重设计时器），所以
-                    label/caption/缺省值不分叉组件、只分叉绑定。 */}
+                    label/caption/缺省值不分叉组件、只分叉绑定。两臂都带
+                    「永不超时」（user 2026-11-23：会话类日常任务也要）。 */}
                 {kind === 'routine' ? (
                   <TimeoutMinutesSection
                     value={draft.timeoutMinutes ?? 15}
                     fallback={15}
                     label="最长执行时长"
-                    caption="单笔运行与批量的每一行，超过该时长未结束都会被停止并记为失败；默认 15 分钟。"
+                    caption="单笔运行与批量的每一行，超过该时长未结束都会被停止并记为失败；默认 15 分钟。选「永不超时」则不设上限，运行只由完成或「停止」结束（挂起的运行不会被自动停止，可在运行记录里手动停止）。"
+                    neverLabel="永不超时"
                     onChange={(timeoutMinutes) => editDraft({ ...draft, timeoutMinutes })}
                   />
                 ) : (

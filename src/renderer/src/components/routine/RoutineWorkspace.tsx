@@ -725,7 +725,12 @@ function BatchRunView({ run, routine, onResumed }: { run: RoutineRun; routine: R
         <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>
           {selectedChild
             ? `第 ${(selectedChild.rowIndex ?? 0) + 1} 行 · ${run.batch?.csvName ?? ''}`
-            : `批量运行 · ${run.batch?.csvName ?? ''} · 并发 ${run.batch?.concurrency ?? '—'} · 单次超时 ${run.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES} 分钟`}
+            : `批量运行 · ${run.batch?.csvName ?? ''} · 并发 ${run.batch?.concurrency ?? '—'} · 单次超时 ${
+              // 0 = 永不超时 (2026-11-23)：「0 分钟」会读成反义。
+              (run.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES) === 0
+                ? '永不超时'
+                : `${run.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES} 分钟`
+            }`}
         </span>
         {!selectedChild && total > 0 && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }} data-batch-progress>

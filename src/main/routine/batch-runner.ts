@@ -276,6 +276,8 @@ class BatchRunner {
           row: String(rowIndex + 1),
           notifyOnFinish: false,
           workspaceDir: dir,
+          // 0 = 永不超时（2026-11-23）：0 ms 让 executeUnattended 不武装计时器
+          // ——绝不能在这里先乘出一个「立即超时」。
           timeoutMs: state.timeoutMinutes * 60_000,
           onSettled: (status, _error, skipped) => {
             state.inFlightHandles.delete(convId)

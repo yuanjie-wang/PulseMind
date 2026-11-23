@@ -30,9 +30,15 @@ export const DEFAULT_BATCH_CONCURRENCY = 3
 export const DEFAULT_BATCH_TIMEOUT_MINUTES = 15
 export const MAX_BATCH_TIMEOUT_MINUTES = 120
 
+/** Explicit 「永不超时」(user 2026-11-23, 会话类日常任务)：0 = 不武装计时器，
+ *  运行只由自身完成或「停止」按钮结束。与工作流单环节超时的 0 语义一致；
+ *  只接受显式写入的 0——缺席仍是缺省 15 分钟，不是永不超时。 */
+export const NEVER_TIMEOUT_MINUTES = 0
+
 /** The editor / start-dialog pick list — integers within [1, MAX] that
  *  normalizeBatchTimeoutMinutes accepts, fixed so both surfaces offer the
- *  same choices (a 1..120 derived list would be unusable). */
+ *  same choices (a 1..120 derived list would be unusable). 0 (永不超时) is
+ *  prepended by the surfaces that offer it, labeled as such. */
 export const BATCH_TIMEOUT_MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60, 90, 120]
 
 export interface CsvBatchAnalysis {
@@ -135,11 +141,13 @@ export function normalizeBatchConcurrency(value: unknown): number | undefined {
 }
 
 /** Same contract as normalizeBatchConcurrency, for the per-row timeout in
- *  minutes: absent → undefined (the default applies), invalid → throw. */
+ *  minutes: absent → undefined (the default applies), invalid → throw.
+ *  0 is the explicit 「永不超时」 value (NEVER_TIMEOUT_MINUTES) — accepted so a
+ *  task saved with it round-trips; the timer-arming doors check > 0. */
 export function normalizeBatchTimeoutMinutes(value: unknown): number | undefined {
   if (value == null || value === '') return undefined
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_BATCH_TIMEOUT_MINUTES) {
-    throw new Error(`无效的单次超时：${String(value)}（1–${MAX_BATCH_TIMEOUT_MINUTES} 的整数分钟）`)
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < NEVER_TIMEOUT_MINUTES || value > MAX_BATCH_TIMEOUT_MINUTES) {
+    throw new Error(`无效的单次超时：${String(value)}（0 = 永不超时，或 1–${MAX_BATCH_TIMEOUT_MINUTES} 的整数分钟）`)
   }
   return value
 }
@@ -148,7 +156,8 @@ export function normalizeBatchTimeoutMinutes(value: unknown): number | undefined
  *  单次超时, else the default. The TASK's config now lives on the top-level
  *  `routine.timeoutMinutes` — resolve through effectiveRunTimeoutMinutes; a
  *  batch's per-run override still layers on top at the start door. An invalid
- *  stored value throws (refuse the start, don't fire late). */
+ *  stored value throws (refuse the start, don't fire late). 0 = 永不超时 and is
+ *  returned as-is — the timer-arming door checks > 0. */
 export function effectiveTimeoutMinutes(batch: { timeoutMinutes?: number } | undefined): number {
   return normalizeBatchTimeoutMinutes(batch?.timeoutMinutes) ?? DEFAULT_BATCH_TIMEOUT_MINUTES
 }
@@ -157,9 +166,10 @@ export function effectiveTimeoutMinutes(batch: { timeoutMinutes?: number } | und
  *  top-level `routine.timeoutMinutes` first, the batch-resident legacy value
  *  second (existing installs keep working without migration), else the default.
  *  Same throwing contract as effectiveTimeoutMinutes — an invalid stored value
- *  refuses the start rather than firing late. The batch-shaped
- *  effectiveTimeoutMinutes stays for surfaces that read a FROZEN parent meta
- *  (run rows), not the task's config. */
+ *  refuses the start rather than firing late. 0 = 永不超时 (2026-11-23) and is
+ *  returned as-is: every timer-arming site checks > 0 before calling
+ *  setTimeout. The batch-shaped effectiveTimeoutMinutes stays for surfaces that
+ *  read a FROZEN parent meta (run rows), not the task's config. */
 export function effectiveRunTimeoutMinutes(routine: { timeoutMinutes?: number; batch?: { timeoutMinutes?: number } } | undefined): number {
   return normalizeBatchTimeoutMinutes(routine?.timeoutMinutes)
     ?? normalizeBatchTimeoutMinutes(routine?.batch?.timeoutMinutes)

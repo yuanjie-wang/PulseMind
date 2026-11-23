@@ -102,8 +102,9 @@ export interface UnattendedRunOptions {
   /** Hard ceiling for THIS run in ms; absent = RUN_TIMEOUT_MS. The batch
    *  runner passes each row's configured 单次超时 (normalized to whole
    *  minutes at the start/resume door); a single run passes the routine's own
-   *  configured value through the same `effectiveTimeoutMinutes` chain, so the
-   *  config bounds both shapes of run. */
+   *  configured value through the same `effectiveRunTimeoutMinutes` chain, so
+   *  the config bounds both shapes of run. 0 = 永不超时 (user 2026-11-23):
+   *  no timer is armed — the run ends when it finishes or someone stops it. */
   timeoutMs?: number
   /** The batch pool's slot-release point: fires after the run row is finished
    *  AND the transcript is persisted (both halves of "this row is inspectable").
@@ -136,7 +137,7 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
   const finish = (status: 'success' | 'failed', error?: string): void => {
     if (settled) return
     settled = true
-    clearTimeout(timeout)
+    if (timeout) clearTimeout(timeout)
     if (stopNet.t) clearTimeout(stopNet.t)
     unsubscribe?.()
     routineStore.finishRun(opts.runId, { status, conversationId: convId, error })
@@ -174,11 +175,17 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
   // Production values are whole minutes (normalizeBatchTimeoutMinutes), so the
   // message reads clean; a direct caller passing sub-minute ms just gets a
   // fraction there — the ceiling itself is still exact.
+  // 0 = 永不超时 (user 2026-11-23)：不武装计时器（与 pipeline-engine 的环节
+  // 超时同款判据）。运行于是只由自身完成、无人值守门（轮次上限/等待决策）或
+  // 停止按钮结算——这正是「永不超时」的承诺，代价是挂死的运行会一直占着
+  // 批量的槽位，只能由人从运行记录里手动停止（卡片/侧栏的停止按钮）。
   const timeoutMs = opts.timeoutMs ?? RUN_TIMEOUT_MS
-  const timeout = setTimeout(() => {
-    void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
-    finish('failed', `运行超时（${timeoutMs / 60000} 分钟）`)
-  }, timeoutMs)
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => {
+      void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
+      finish('failed', `运行超时（${timeoutMs / 60000} 分钟）`)
+    }, timeoutMs)
+    : undefined
 
   // Unattended gates: reject approvals, answer ask_user, stop on loop limits.
   const onEvent = (sessionId: string, data: AgentEventData): void => {

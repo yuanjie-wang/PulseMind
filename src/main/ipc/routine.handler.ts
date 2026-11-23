@@ -185,7 +185,8 @@ function normalizeInput(input: Partial<Routine>): Omit<Routine, 'id' | 'createdA
     sourceConversationId: input.sourceConversationId,
     // 任务最长执行时长（2026-11-17 从 batch.timeoutMinutes 提升为任务级）：
     // normalizeBatchTimeoutMinutes throws on present-but-invalid, so a garbage
-    // value refuses the save instead of silently moving the ceiling.
+    // value refuses the save instead of silently moving the ceiling. 0 = 永不
+    // 超时（2026-11-23）is a valid value and is stored verbatim.
     timeoutMinutes: normalizeBatchTimeoutMinutes(input.timeoutMinutes),
     batch: normalizeBatchConfig(input.batch),
     triggers: input.triggers,

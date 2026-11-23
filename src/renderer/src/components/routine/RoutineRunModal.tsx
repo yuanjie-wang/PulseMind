@@ -59,10 +59,14 @@ export function RoutineRunModal({ routine, open, onClose, onRun }: RoutineRunMod
         {/* The task's 最长执行时长 bounds a single run (resolved top-level
             config → batch-resident legacy → default), so say so where the run
             is started — a task whose ceiling is 60 minutes should not read as
-            the built-in 15, and a task on the default should still say so. */}
+            the built-in 15, and a task on the default should still say so.
+            0 = 永不超时 (2026-11-23) gets its own sentence: printing
+            「0 分钟」 would read as the opposite of what it does. */}
         {routine != null && (
           <div style={{ fontSize: 12, color: '#999' }} data-run-timeout>
-            {t('routine.runModalTimeout', { minutes: effectiveRunTimeoutMinutes(routine) })}
+            {effectiveRunTimeoutMinutes(routine) === 0
+              ? t('routine.runModalTimeoutNever')
+              : t('routine.runModalTimeout', { minutes: effectiveRunTimeoutMinutes(routine) })}
           </div>
         )}
         {(routine?.params ?? []).map((p) => {

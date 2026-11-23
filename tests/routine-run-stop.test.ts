@@ -143,5 +143,18 @@ describe('the configured 最长执行时长 reaches a single run', () => {
     expect(source('src/renderer/src/components/routine/RoutineRunModal.tsx')).toContain('runModalTimeout')
     expect(source('src/renderer/src/i18n/locales/zh.ts')).toContain('runModalTimeout:')
     expect(source('src/renderer/src/i18n/locales/en.ts')).toContain('runModalTimeout:')
+    // 0 = 永不超时 (2026-11-23) gets its own sentence — 「0 分钟」 would read
+    // as the opposite of what it does.
+    expect(source('src/renderer/src/components/routine/RoutineRunModal.tsx')).toContain('runModalTimeoutNever')
+    expect(source('src/renderer/src/i18n/locales/zh.ts')).toContain('runModalTimeoutNever:')
+    expect(source('src/renderer/src/i18n/locales/en.ts')).toContain('runModalTimeoutNever:')
+  })
+
+  it('timeoutMs 0 arms no timer (0 = 永不超时, 2026-11-23)', () => {
+    const src = source('src/main/routine/routine-runner.ts')
+    // Same guard shape as the workflow stage timeout: a 0 ceiling must mean
+    // "no timer", not "a timer that fires immediately".
+    expect(src).toContain('const timeout = timeoutMs > 0')
+    expect(src).toMatch(/timeoutMs > 0\n\s+\? setTimeout\(/)
   })
 })

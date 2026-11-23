@@ -299,6 +299,9 @@ describe('batch per-row timeout (单次超时)', () => {
     // Options derive from the shared pick list — a hand-written list could
     // offer values the runner's normalize rejects at the last step.
     expect(src).toContain('BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `单次超时 ${m} 分钟` }))')
+    // 0 = 永不超时 (2026-11-23) is prepended: a task saved with 0 must have a
+    // matching option, otherwise antd renders a bare 「0」 in this picker.
+    expect(src).toContain("{ value: NEVER_TIMEOUT_MINUTES, label: '单次不限时' }")
     expect(src).toContain('data-batch-timeout')
   })
 

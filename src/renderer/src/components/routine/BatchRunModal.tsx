@@ -10,7 +10,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Modal, Select, Tag } from 'antd'
 import { FileTextOutlined } from '@ant-design/icons'
 import { notify } from '../../utils/notify'
-import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveRunTimeoutMinutes, MAX_BATCH_CONCURRENCY, MAX_BATCH_ROWS } from '../../../../shared/routine/batch'
+import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveRunTimeoutMinutes, MAX_BATCH_CONCURRENCY, MAX_BATCH_ROWS, NEVER_TIMEOUT_MINUTES } from '../../../../shared/routine/batch'
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import type { Routine } from '../../../../shared/types/routine'
 
@@ -111,7 +111,13 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
                 style={{ flex: 1, minWidth: 0 }}
                 value={timeoutMinutes}
                 onChange={setTimeoutMinutes}
-                options={BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `单次超时 ${m} 分钟` }))}
+                options={[
+                  // 0 = 永不超时 (2026-11-23)：与任务级「最长执行时长」同词表，
+                  // 也保证任务本身设成永不超时时，这颗选择器能如实显示它（否则
+                  // 值 0 没有匹配项，antd 会裸显一个「0」）。
+                  { value: NEVER_TIMEOUT_MINUTES, label: '单次不限时' },
+                  ...BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `单次超时 ${m} 分钟` })),
+                ]}
                 data-batch-timeout
               />
             </div>

@@ -30,8 +30,8 @@ export interface RoutineDraftState {
   workspaceDir?: string
   approvalMode?: SandboxApprovalMode
   profileId?: string
-  /** 任务最长执行时长（分钟，2026-11-17 从 batch.timeoutMinutes 提升为任务级）；
-   *  absent = batch 寄居旧值兼容回落，再缺 = 默认 15。 */
+  /** 任务最长执行时长（分钟，2026-11-17 从 batch.timeoutMinutes 提升为任务级；
+   *  0 = 永不超时，2026-11-23）；absent = batch 寄居旧值兼容回落，再缺 = 默认 15。 */
   timeoutMinutes?: number
   /** Batch mode over a CSV (PLAN-routine-batch); absent = a single-run task.
    *  Like the run context, the assistant never touches it, and its patches

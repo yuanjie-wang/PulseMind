@@ -148,13 +148,14 @@ describe('batch per-row timeout validation (单次超时)', () => {
     expect(normalizeBatchTimeoutMinutes('')).toBeUndefined()
   })
 
-  it('accepts integers within [1, MAX]', () => {
+  it('accepts integers within [0, MAX] — 0 = 永不超时 (2026-11-23)', () => {
+    expect(normalizeBatchTimeoutMinutes(0)).toBe(0)
     expect(normalizeBatchTimeoutMinutes(1)).toBe(1)
     expect(normalizeBatchTimeoutMinutes(MAX_BATCH_TIMEOUT_MINUTES)).toBe(MAX_BATCH_TIMEOUT_MINUTES)
   })
 
   it('rejects out-of-range / non-integer / non-number values', () => {
-    expect(() => normalizeBatchTimeoutMinutes(0)).toThrow()
+    expect(() => normalizeBatchTimeoutMinutes(-1)).toThrow()
     expect(() => normalizeBatchTimeoutMinutes(MAX_BATCH_TIMEOUT_MINUTES + 1)).toThrow()
     expect(() => normalizeBatchTimeoutMinutes(2.5)).toThrow()
     expect(() => normalizeBatchTimeoutMinutes('30')).toThrow()
@@ -183,6 +184,10 @@ describe('effectiveTimeoutMinutes — the one config→ceiling chain', () => {
     expect(effectiveTimeoutMinutes({ timeoutMinutes: 1 })).toBe(1)
   })
 
+  it('0 = 永不超时 passes through (the timer-arming door checks > 0)', () => {
+    expect(effectiveTimeoutMinutes({ timeoutMinutes: 0 })).toBe(0)
+  })
+
   it('no config → the shared default (the single-run ceiling unchanged)', () => {
     expect(effectiveTimeoutMinutes(undefined)).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
     expect(effectiveTimeoutMinutes({})).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
@@ -191,7 +196,7 @@ describe('effectiveTimeoutMinutes — the one config→ceiling chain', () => {
   it('an invalid stored value refuses rather than falling back silently', () => {
     // A hand-edited routine JSON must refuse the start — running under 15
     // minutes when the user wrote 900 is the late-fire bug in another shape.
-    expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 0 })).toThrow(/无效的单次超时/)
+    // (0 is NOT invalid: it is the explicit 永不超时, 2026-11-23.)
     expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 900 })).toThrow(/无效的单次超时/)
     expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 2.5 })).toThrow(/无效的单次超时/)
   })
@@ -204,6 +209,13 @@ describe('effectiveRunTimeoutMinutes — the task-level chain (2026-11-17 提升
   it('the task-level value wins over the batch-resident legacy one', () => {
     expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 60, batch: { timeoutMinutes: 15 } })).toBe(60)
     expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 5 })).toBe(5)
+  })
+
+  it('0 = 永不超时 (2026-11-23): returned as-is, not replaced by the default', () => {
+    // `??` is load-bearing — `||` would turn 0 into the 15-minute default and
+    // silently reinstate the ceiling the user removed.
+    expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 0 })).toBe(0)
+    expect(effectiveRunTimeoutMinutes({ timeoutMinutes: 0, batch: { timeoutMinutes: 30 } })).toBe(0)
   })
 
   it('absent top-level → batch legacy value (existing installs, no migration)', () => {

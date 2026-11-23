@@ -28,7 +28,9 @@ export interface RoutineBatchConfig {
   csvPath: string
   /** Rows executed at once, 1–5; absent = the default (3). */
   concurrency?: number
-  /** Per-row hard ceiling in minutes, 1–120; absent = the default (15). */
+  /** Per-row hard ceiling in minutes, 0–120; absent = the default (15).
+   *  0 = 永不超时 (no timer armed) — legacy field; the live config is the
+   *  task-level routine.timeoutMinutes. */
   timeoutMinutes?: number
   /** Cron fires run the batch too, not just manual starts. */
   applyToSchedule?: boolean
@@ -57,8 +59,9 @@ export interface Routine {
   profileId?: string
   /** Where this routine came from ("extract from conversation"). */
   sourceConversationId?: string
-  /** 任务最长执行时长（分钟，1–120；2026-11-17 从 batch.timeoutMinutes 提升
+  /** 任务最长执行时长（分钟，0–120；2026-11-17 从 batch.timeoutMinutes 提升
    *  为任务级字段）：单笔运行与批量的每一行都受它约束，超时停止并记失败。
+   *  0 = 永不超时（2026-11-23，不武装计时器，运行只由自身完成或「停止」结束）。
    *  Absent = batch.timeoutMinutes（旧数据寄居形态）兼容回落，再缺 = 15。 */
   timeoutMinutes?: number
   /** Batch mode over a CSV; absent = single-run routine. */

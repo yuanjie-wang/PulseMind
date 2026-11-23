@@ -39,8 +39,9 @@ export function normalizeTriggers(triggers: unknown): RoutineTrigger[] | undefin
 /** The batch config passes through the same door: a garbage concurrency would
  *  widen the run pool at run time, and a garbage timeout would fire late or
  *  never; only the shape (non-empty csvPath, integer 1–5 concurrency,
- *  integer 1–120 timeoutMinutes, boolean applyToSchedule) is checked here —
- *  the file itself is validated when it is read (preview / batch start).
+ *  integer 0–120 timeoutMinutes — 0 = 永不超时, boolean applyToSchedule) is
+ *  checked here — the file itself is validated when it is read
+ *  (preview / batch start).
  *
  *  Workflow 侧只用到 csvPath / applyToSchedule（实例串行 FIFO，并发选择在
  *  向导里锁住），存下来的是同一份形态：换执行策略时不必迁移数据。 */

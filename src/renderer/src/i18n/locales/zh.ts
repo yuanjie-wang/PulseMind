@@ -1168,6 +1168,7 @@ const zh = {
     runModalTitle: '运行「{{name}}」',
     runModalHint: '填写本次运行的变量；定时运行始终使用默认值。',
     runModalTimeout: '本次运行的单次超时为 {{minutes}} 分钟，超时会自动停止并记为失败。',
+    runModalTimeoutNever: '本次运行不设超时上限，会一直执行到完成或手动停止。',
     runModalDefaultPlaceholder: '默认值：{{value}}',
     runModalOptionalPlaceholder: '选填',
     runStarted: '已开始执行「{{name}}」，完成后会通知你',
