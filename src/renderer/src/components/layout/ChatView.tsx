@@ -120,7 +120,7 @@ interface ChatViewProps {
    *  graph answers 「我在读哪个模块」. Null = no drill-in open, or the viewed
    *  session belongs to no node (a plain spawn). */
   highlightPlanNodeId?: string | null
-  /** 存为日常任务: distill the whole conversation into a routine draft and jump
+  /** 存为任务: distill the whole conversation into a routine draft and jump
    *  to the routine editor (see useChatController.extractRoutine). Main-chat
    *  only — every other host renders the transcript without this, so the
    *  toolbar button exists exactly where this prop arrives. */
@@ -786,7 +786,7 @@ function ChatView({
   const liveTurn = !routineEntryAllowed(agentStatus.status) ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1] : undefined
   const turnStatsById = useMemo(() => collectTurnMessageStats(messages), [messages])
 
-  // 存为日常任务 rides exactly one action row — the conversation's last settled
+  // 存为任务 rides exactly one action row — the conversation's last settled
   // assistant message, and only while a turn is settled (routine-entry.ts).
   // `null` takes the prop away from every segment, so streaming/execution tails
   // and parked states simply render the rows they always did.

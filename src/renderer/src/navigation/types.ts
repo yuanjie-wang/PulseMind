@@ -54,7 +54,7 @@ export interface AppView {
    *  until the user saves. */
   routineTemplateId?: string
   /** `routines` editor page: a routine draft distilled from a conversation —
-   *  the chat toolbar's 存为日常任务. Fills the create-new form once on mount
+   *  the chat toolbar's 存为任务. Fills the create-new form once on mount
    *  (same contract as `routineTemplateId`: nothing exists until the user
    *  saves). Ignored when `routineId` is set. */
   routineDraft?: {

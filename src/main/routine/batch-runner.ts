@@ -272,7 +272,7 @@ class BatchRunner {
           routine,
           convId,
           params: provided,
-          transcriptLabel: `[日常] ${routine.name} · 第${rowIndex + 1}行`,
+          transcriptLabel: `[任务] ${routine.name} · 第${rowIndex + 1}行`,
           row: String(rowIndex + 1),
           notifyOnFinish: false,
           workspaceDir: dir,

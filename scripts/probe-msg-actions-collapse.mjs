@@ -2,7 +2,7 @@
  * Message action row collapse probe (real Chromium) — 窄列收纳的几何验收。
  *
  * 2026-10-31 用户裁定：对话工具条在窄列下不再换行——按钮渐进收进 ⋯
- * （≥440 全量 / 360–439 收 下载·点赞·日常任务 / <360 再收收藏）；
+ * （≥440 全量 / 360–439 收 下载·点赞·存为任务 / <360 再收收藏）；
  * 2026-11-22 二刀「宽度不足时隐藏上下文信息」：token 统计组（前导竖线 +
  * 三段 token，pm-msg-stats-tokens）在按钮开始收起的同一档（<440）整体
  * 隐藏，完成时间戳保留。
@@ -191,13 +191,13 @@ check('宽档：⋯ 隐藏（老行原样）', wide.more === 'hidden', `more=${w
 check('宽档：token 统计组全量可见', wide.tokens === 'visible', `tokens=${wide.tokens}`)
 check('宽档 600px：整行单行', wide.rowH > 0 && wide.rowH < 40, `rowH=${wide.rowH}`)
 
-// ── 中档 400px：下载/点赞/日常任务 收起，复制+收藏 内联，菜单 3 项；
+// ── 中档 400px：下载/点赞/存为任务 收起，复制+收藏 内联，菜单 3 项；
 //    token 统计组随档隐藏（2026-11-22 二刀）──
 const t2 = await rowState('#w-t2')
 console.log('  tier2 400:', JSON.stringify(t2))
 check('中档：复制+收藏 内联保留', t2.copy === 'visible' && t2.book === 'visible', JSON.stringify(t2))
 check(
-  '中档：下载/点赞/日常任务 收进 ⋯',
+  '中档：下载/点赞/存为任务 收进 ⋯',
   t2.download === 'hidden' && t2.like === 'hidden' && t2.routine === 'hidden' && t2.more === 'visible',
   JSON.stringify(t2),
 )

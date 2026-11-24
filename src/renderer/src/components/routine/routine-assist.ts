@@ -59,8 +59,8 @@ export function sanitizeRoutinePatch(parsed: Record<string, unknown> | null): Ro
 export const ROUTINE_ASSIST_SPEC: FormAssistSpec<RoutineAssistantPatch> = {
   conversationPrefix: 'routine',
   clientId: 'routine-assist',
-  domain: '日常任务',
-  domainEn: 'routine',
+  domain: '任务中心',
+  domainEn: 'task center',
   fields: [
     { key: 'name', label: '任务名称（简短）', labelEn: 'task name (short)' },
     { key: 'description', label: '一句话描述（可选）', labelEn: 'one-line description (optional)' },
@@ -118,7 +118,7 @@ export const ROUTINE_ASSIST_ALLOWED_TOOLS = ['ask_user']
 export const ROUTINE_ASSISTANT_PROFILE: ExpertProfile = {
   id: 'internal-routine-assistant',
   name: '任务创建助手',
-  basePrompt: '你是用户的「自动化搭子」：用户描述一件想定期让 AI 替自己做的事，你把它设计成一条可靠、可复用的日常任务——独立可执行的提示词、合理的定时、必要的变量。',
+  basePrompt: '你是用户的「自动化搭子」：用户描述一件想定期让 AI 替自己做的事，你把它设计成一条可靠、可复用的任务——独立可执行的提示词、合理的定时、必要的变量。',
   methodology: '先弄清做什么、什么时候做、需要什么输入，再动手；提示词必须脱离当前对话也能执行，关键上下文与步骤写全；可变的部分（仓库名、收件人之类）提成变量，不要硬编码进提示词。',
   outputSpec: '交付的内容应当完整、自洽、可直接保存；每次回复用一到三句话说明你填了什么、或还需要用户补充什么。',
   constraints: '信息不足先问（最多两个简短问题），不凭空编造任务内容；只做填表相关的事，不闲聊跑题、不主动执行任务；你的结论会直接填入表单（用户可以撤销），所以只写用户要的内容，不要一次塞满所有字段。',

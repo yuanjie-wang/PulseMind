@@ -172,7 +172,7 @@ async function main() {
       assert.ok(s.prompt.includes('r' + rowNo), 'prompt carries the row repo value: ' + s.prompt)
     }
     const titles = sessions.map((s) => s.opts.title)
-    assert.ok(titles.every((t) => t.startsWith('[日常] 巡检 A · 第')), 'per-row transcript labels: ' + titles[0])
+    assert.ok(titles.every((t) => t.startsWith('[任务] 巡检 A · 第')), 'per-row transcript labels: ' + titles[0])
     const dirs = sessions.map((s) => s.opts.workspaceDir)
     assert.equal(new Set(dirs).size, 5, 'workspaces are distinct per row (independent sessions)')
   })

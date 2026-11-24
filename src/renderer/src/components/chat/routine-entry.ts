@@ -1,4 +1,4 @@
-// ── The chat toolbar's 存为日常任务 entry ──
+// ── The chat toolbar's 存为任务 entry ──
 // Pure gating logic, importable from tests: which segment carries the button
 // and which engine statuses may show it. The button itself lives in
 // MessageGroup's action row; ChatView decides the one segment that gets it.

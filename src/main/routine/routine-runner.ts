@@ -87,7 +87,7 @@ export interface UnattendedRunOptions {
   routine: Routine
   convId: string
   params?: Record<string, string>
-  /** Conversation title in the runs store; default `[日常] ${routine.name}`. */
+  /** Conversation title in the runs store; default `[任务] ${routine.name}`. */
   transcriptLabel?: string
   /** Batch row number (1-based) — feeds {{row}}. A single run leaves it unset
    *  and the token stays visible, per the placeholder rule. */
@@ -149,13 +149,13 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
     // profile pin would also silence the user's own model pick until restart).
     agentSessionManager.releaseRunPins(convId)
     // Persist before announcing: a click-through must find the conversation.
-    void persistTranscript(convId, opts.transcriptLabel ?? `[日常] ${routine.name}`).then(() => {
+    void persistTranscript(convId, opts.transcriptLabel ?? `[任务] ${routine.name}`).then(() => {
       if (opts.notifyOnFinish !== false) {
         const skippedNote = skipped.approvals + skipped.questions > 0
           ? `（审批跳过 ${skipped.approvals} · 提问跳过 ${skipped.questions}）`
           : ''
         notify(
-          status === 'success' ? `日常任务完成：${routine.name}` : `日常任务失败：${routine.name}`,
+          status === 'success' ? `任务完成：${routine.name}` : `任务失败：${routine.name}`,
           (status === 'success' ? '点击查看结果' : (error ?? '').slice(0, 120)) + skippedNote,
         )
         void postSettlementEvent({
@@ -279,7 +279,7 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
       // switch mid-run cannot move it; a deleted profile falls back to the
       // active one inside resolveProfile.
       await agentSessionManager.createSession(convId, {
-        title: opts.transcriptLabel ?? `[日常] ${routine.name}`,
+        title: opts.transcriptLabel ?? `[任务] ${routine.name}`,
         clientId: 'routine',
         workspaceDir,
         approvalMode,

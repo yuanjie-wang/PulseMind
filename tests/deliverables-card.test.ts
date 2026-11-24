@@ -221,7 +221,7 @@ describe('Wiring (source scans — the mount itself is probe territory)', () => 
   it('ChatView: the live turn card waits for the turn to settle (2026-10-25)', () => {
     // The live turn (the last one while the engine is still working) is
     // suppressed from the card map; the settle predicate is routine-entry's —
-    // the same idle/completed/error rule 存为日常任务 rides. Earlier turns are
+    // the same idle/completed/error rule 存为任务 rides. Earlier turns are
     // settled history and must keep rendering, so the gate is per-turn, not a
     // blanket `turnRows` shutdown. PLAN-layout-modes: the predicate computes
     // in ChatView (liveTurn), the per-turn gate renders in ChatBody.

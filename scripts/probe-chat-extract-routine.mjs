@@ -1,7 +1,7 @@
 /**
- * 存为日常任务 probe (real Chromium).
+ * 存为任务 probe (real Chromium).
  *
- * The chat's last action row gains a routine entry: 存为日常任务 distills the
+ * The chat's last action row gains a routine entry: 存为任务 distills the
  * conversation into a routine draft and jumps to the routine editor, which is
  * the review surface. The gating (only the tail, only on a settled turn, only
  * in the main chat) is pure logic pinned by tests/chat-routine-entry.test.ts;
@@ -11,7 +11,7 @@
  *      click reaches the host callback, and exactly once — the latch keeps a
  *      double click (and a click during the in-flight await) inert
  *   2. during the await the button reads 正在提炼… and is visually inert;
- *      when the await settles it reads 存为日常任务 again
+ *      when the await settles it reads 存为任务 again
  *   3. a host without the callback (the sub-agent preview, the extension
  *      panel's mirror — every non-main-chat renderer) has no button at all
  *   4. an ask_user-only tail hides its whole action row, entry included — the
@@ -48,7 +48,7 @@ const NOW = '2026-09-21T10:00:00.000Z'
 const user = (text) => ({ id: 'u1', role: 'user', contentBlocks: [{ type: 'text', text }], createdAt: NOW })
 const assistant = (id, blocks) => ({ id, role: 'assistant', contentBlocks: blocks, createdAt: NOW })
 
-const TAIL_MESSAGES = [user('每周五帮我把工作记录整理成周报'), assistant('a1', [{ type: 'text', text: '好的，这轮对话里的例行工作可以沉淀为一个日常任务。' }])]
+const TAIL_MESSAGES = [user('每周五帮我把工作记录整理成周报'), assistant('a1', [{ type: 'text', text: '好的，这轮对话里的例行工作可以沉淀为一个任务。' }])]
 /** Every block is an ask_user: MessageGroup hides the whole action row. */
 const ASK_USER_MESSAGES = [user('在吗'), assistant('a2', [
   { type: 'tool_use', id: 'q1', name: 'ask_user', status: 'completed', exitCode: 0, input: { question: '选哪个？', options: ['A', 'B'] } },
@@ -188,7 +188,7 @@ console.log('== the entry rides the last action row ==')
 {
   const btn = page.locator(BTN)
   await btn.waitFor()
-  check('the button renders in the row with the 存为日常任务 label', (await titleOf()) === '存为日常任务', await titleOf())
+  check('the button renders in the row with the 存为任务 label', (await titleOf()) === '存为任务', await titleOf())
   // Position: after the knowledge entry, same row — a sibling button the user
   // can reach, not a floating panel. Measured, because "in the row" is geometry.
   const rowGeo = await page.locator(BTN).evaluate((el) => {
@@ -216,7 +216,7 @@ console.log('== the latch ==')
   check('a second click during the await is swallowed by the latch', callsDuring === 1, String(callsDuring))
   await page.evaluate(() => window.__releaseGate())
   await page.waitForTimeout(150)
-  check('when the await settles the label returns to 存为日常任务', (await titleOf()) === '存为日常任务', await titleOf())
+  check('when the await settles the label returns to 存为任务', (await titleOf()) === '存为任务', await titleOf())
   const callsAfter = await page.evaluate(() => window.__calls)
   check('the whole affair produced exactly one extraction', callsAfter === 1, String(callsAfter))
   // And it works again afterwards — the latch is a gate, not a one-way lock.

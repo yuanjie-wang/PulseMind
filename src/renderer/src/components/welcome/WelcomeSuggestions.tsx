@@ -1,7 +1,7 @@
 // ── Welcome cards ──
 // The welcome page's proactive band: three cards on one line, each answering a
 // different "what next" question — 继续对话 (resume the last conversation),
-// 开始日常 (how the last routine run went), 知识沉淀 (what just entered the
+// 开始任务 (how the last task run went), 知识沉淀 (what just entered the
 // knowledge base). Each slice loads independently, so a slow or failed one
 // shows a skeleton or its own guidance instead of blanking the band. Starter
 // prompts stay underneath and send in one click (2026-11-04 裁定).
@@ -375,7 +375,7 @@ function ChatCard({
   )
 }
 
-// ── 开始日常 ──
+// ── 开始任务 ──
 
 type RoutineRunLike = Pick<RoutineRun, 'routineId' | 'conversationId' | 'status' | 'startedAt' | 'error'>
 

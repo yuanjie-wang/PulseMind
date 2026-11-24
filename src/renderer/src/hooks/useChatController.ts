@@ -214,7 +214,7 @@ export function useChatController(options: UseChatControllerOptions) {
   // eslint-disable-next-line react-hooks/refs -- latest-title-generator mirror; callers run after commit
   generateTitleRef.current = generateTitle as any
 
-  // ── 存为日常任务 (the chat toolbar's routine entry) ──────────────────
+  // ── 存为任务 (the chat toolbar's routine entry) ──────────────────
   // Distills the active conversation into a routine draft with the same agent
   // the editor's own 从对话提取 picker runs, then jumps straight to the editor
   // with it: the editor is the review surface (the schedule above all), so the

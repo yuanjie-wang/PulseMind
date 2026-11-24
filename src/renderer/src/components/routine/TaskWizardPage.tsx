@@ -87,7 +87,7 @@ export interface TaskWizardPageProps {
   /** 推荐模板预填（新建）：routine 分支读 routine-templates.ts，workflow 分支
    *  读 workflow-templates.ts（内置定义从主进程取副本）。 */
   templateId?: string
-  /** 对话工具条「存为日常任务」交接的草稿（一次消费）。 */
+  /** 对话工具条「存为任务」交接的草稿（一次消费）。 */
   routineDraft?: ExtractedRoutineDraft
   /** workflow 编辑目标；absent = 新建。 */
   workflowId?: string
@@ -373,7 +373,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
     setUpdateId(null)
   }, [])
 
-  // 对话草稿交接（存为日常任务）
+  // 对话草稿交接（存为任务）
   const chatDraftAppliedRef = useRef(false)
   useEffect(() => {
     if (kind !== 'routine' || routineId || chatDraftAppliedRef.current) return
@@ -399,7 +399,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
 
   const routineAssist = useFormAssistSession({
     convId: kind === 'routine' ? assistConvId : null,
-    title: `[日常助手] ${draft.name.trim() || '新建任务'}`,
+    title: `[任务助手] ${draft.name.trim() || '新建任务'}`,
     spec: ROUTINE_ASSIST_SPEC,
     systemPrompt: buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC, settings.locale === 'en' ? 'en' : 'zh'),
     allowedTools: ROUTINE_ASSIST_ALLOWED_TOOLS,
@@ -521,7 +521,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
           ROUTINE_ASSIST_SPEC.conversationPrefix,
           assistConvId,
           created.id,
-          `[日常助手] ${draft.name.trim() || '新建任务'}`,
+          `[任务助手] ${draft.name.trim() || '新建任务'}`,
         )
         setBoundId(created.id)
         if (updateId) notify.warning('原任务已不存在，已另存为新任务')
@@ -1043,7 +1043,7 @@ export function TaskWizardPage({ kind: kindProp, routineId, templateId, routineD
 
       {/* 从对话提取（routine） */}
       <Modal
-        title="从对话提取日常工作"
+        title="从对话提取任务"
         open={extractOpen}
         onCancel={() => setExtractOpen(false)}
         onOk={() => void extractFromConversation()}

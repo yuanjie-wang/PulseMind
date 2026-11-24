@@ -1,6 +1,6 @@
 // ── Extract a routine draft from a conversation ──
 // One chain behind both entries: the routine editor's 从对话提取 picker and the
-// chat toolbar's 存为日常任务. Fetches the stored conversation, flattens it to
+// chat toolbar's 存为任务. Fetches the stored conversation, flattens it to
 // 「用户：…／助手：…」 lines and runs the one-shot RoutineExtractionAgent over
 // the active profile. Returns null when the conversation holds nothing
 // routine-shaped (or nothing at all); toasts and — for the chat entry — the

@@ -45,7 +45,7 @@ export interface SegmentViewProps {
    *  defaulting to off: a host that doesn't report the status renders exactly as
    *  it did before (its pending calls simply stay collapsed). */
   awaitingApproval?: boolean
-  /** 存为日常任务, onto the segment's action row (see MessageGroup). Optional:
+  /** 存为任务, onto the segment's action row (see MessageGroup). Optional:
    *  ChatView passes it for the conversation's last settled assistant message
    *  only; every other host leaves it off and renders as before. */
   onExtractRoutine?: () => void | Promise<void>

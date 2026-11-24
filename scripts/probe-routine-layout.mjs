@@ -31,7 +31,7 @@
  *     section and no inner divider element at the seam (user ruling
  *     2026-09-18: 「不用硬分隔…直接接壤」) — while the vertical rule against the
  *     runs column is untouched
- *   - the missing title row: the view title 日常任务 appears nowhere on
+ *   - the missing title row: the view title 任务中心 appears nowhere on
  *     the page, and 新建任务 appears exactly once — as a plain primary button
  *     pinned at the far right of the 我的任务 head while tasks exist, and as
  *     the dashed card closing the task grid once none do (wearing the recipe,
@@ -587,7 +587,7 @@ await page.waitForSelector('.routine-card')
 // the grid closes with task cards alone. The card's own recipe/hover/type facts
 // are asserted in §8 — the empty state is the only state that renders it.
 const body = await texts()
-check('the view title is gone from the page (the window bar carries it)', !body.includes('日常任务'), body.split('\n')[0])
+check('the view title is gone from the page (the window bar carries it)', !body.includes('任务中心'), body.split('\n')[0])
 const createButtons = await createButton().count()
 check('新建任务 appears exactly once', createButtons === 1, `${createButtons} button(s)`)
 const btn = await page.evaluate(() => window.__createBtn())
@@ -856,7 +856,7 @@ const callsAfterImport = await page.evaluate(() => window.__calls.map((c) => c.m
 check('导入分享 asks main for a preview (shareImportPreview)', callsAfterImport.includes('shareImportPreview'), callsAfterImport.join(', '))
 check(
   '…and opens the preview modal with the parsed row (kind tag + name)',
-  importModal.open && importModal.text.includes('导入预览') && importModal.text.includes('日常任务') && importModal.text.includes('分享来的任务'),
+  importModal.open && importModal.text.includes('导入预览') && importModal.text.includes('对话式任务') && importModal.text.includes('分享来的任务'),
   importModal.open ? importModal.text.split('\n').slice(0, 5).join(' / ') : 'no modal'
 )
 check('…without touching the editor route (a dialog, not a navigation)', (await viewOf()).routineEditing === undefined, JSON.stringify(await viewOf()))
@@ -883,7 +883,7 @@ await page.waitForSelector('.routine-new-card')
 const empty = await layout()
 const emptyCard = await page.evaluate(() => window.__newCard())
 const emptyText = await texts()
-check('empty state: the task half says so', emptyText.includes('还没有日常工作'), emptyText.split('\n').slice(0, 3).join(' / '))
+check('empty state: the task half says so', emptyText.includes('还没有任务'), emptyText.split('\n').slice(0, 3).join(' / '))
 check('empty state: the hint points at the card', emptyText.includes('「新建任务」卡片'), emptyText.split('\n').find((l) => l.includes('新建任务')) ?? '')
 check(
   'empty state: the 新建任务 card renders (the actionable thing on an empty page)',
@@ -1305,7 +1305,7 @@ const wsState = () => page.evaluate(() => {
 
 const ws = await wsState()
 check('workspace: three task rows render', ws.rows.length === 3 && ws.rows.every((r) => r.text.includes('工作台')), JSON.stringify(ws.rows.map((r) => r.text)))
-check('workspace: the list header carries only the back button', ws.headerButtons === 1 && ws.headerText.includes('日常任务') && ws.headerIcons.join(',') === 'arrow-left', `buttons=${ws.headerButtons}, icons=${ws.headerIcons.join(',')}`)
+check('workspace: the list header carries only the back button', ws.headerButtons === 1 && ws.headerText.includes('任务中心') && ws.headerIcons.join(',') === 'arrow-left', `buttons=${ws.headerButtons}, icons=${ws.headerIcons.join(',')}`)
 check('workspace: every row carries its own run + edit actions', ws.rows.every((r) => r.icons.includes('play-circle') && r.icons.includes('edit')), JSON.stringify(ws.rows.map((r) => r.icons)))
 check('workspace: only the batch task row also carries 批量运行', ws.rows[0].icons.includes('database') && ws.rows.slice(1).every((r) => !r.icons.includes('database')), JSON.stringify(ws.rows.map((r) => r.icons)))
 check('workspace: row actions stay hidden until hover', ws.rows.every((r) => r.opacity === '0'), JSON.stringify(ws.rows.map((r) => r.opacity)))

@@ -273,7 +273,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
           <Tooltip title="返回任务卡片">
             <Button type="text" size="small" icon={<ArrowLeftOutlined />} onClick={onBack} />
           </Tooltip>
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>日常任务</span>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>任务中心</span>
         </div>
         {/* 运行/批量/编辑在每一行内（悬停显示），按钮作用于它所在的那一行，
             不再放在列表头部作用于「当前选中」而引起误解。 */}
@@ -466,7 +466,7 @@ interface RunTranscriptProps {
  *  view (unattended parking, empty hints). */
 function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): React.ReactElement {
   const { settings } = useSettings()
-  const title = routine ? `[日常] ${routine.name}` : '[日常] 任务'
+  const title = routine ? `[任务] ${routine.name}` : '[任务]'
   const session = useHostedAgentSession({
     convId: convId ?? null,
     title,

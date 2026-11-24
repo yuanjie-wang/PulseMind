@@ -394,7 +394,7 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  (`components/subagent/SubAgentSessionView`). Optional: a host with no
    *  drill-in renders the card without the icon, exactly as before. */
   onOpenSubAgent?: (subConvId: string, title: string) => void
-  /** 存为日常任务: distill this conversation into a routine draft and open the
+  /** 存为任务: distill this conversation into a routine draft and open the
    *  routine editor with it. Conversation-scoped, so only the chat's LAST
    *  action row carries it (ChatView's routine-entry gating). Optional: hosts
    *  without the entry — the sub-agent preview, the extension panel's mirror —
@@ -434,7 +434,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   // backend resolves (an in-flight save is latched against double clicks).
   const [savingFavorite, setSavingFavorite] = useState(false)
   const favoriteLatch = useRef({ pending: false, saved: false })
-  // 存为日常任务's latch — up with the other hooks, above the early return:
+  // 存为任务's latch — up with the other hooks, above the early return:
   // a streaming message can gain displayable content mid-flight, and a hook
   // below that gate would change the hook count between renders.
   const [extractingRoutine, setExtractingRoutine] = useState(false)
@@ -540,7 +540,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   // eslint-disable-next-line react-hooks/refs -- the in-flight click latch handed to the action factory; a latch is not UI state
   }, favoriteLatch.current)
 
-  // 存为日常任务 runs once per click: while the await is in flight the latch
+  // 存为任务 runs once per click: while the await is in flight the latch
   // keeps the button inert (same contract as the knowledge save above), the
   // spinner standing in for the LLM round-trip. The routine editor is the
   // review surface — this button only distills and jumps.

@@ -78,7 +78,7 @@ describe('promoteAssistDraftToEntity', async () => {
 
   it('persists the thread on the entity’s SLOT, then discards the draft slot', async () => {
     const { calls } = stubElectronAPI()
-    await promoteAssistDraftToEntity([msg('m1'), msg('m2')], 'routine', 'routine_assist_draft', 'routine_new1', '[日常助手] 周报')
+    await promoteAssistDraftToEntity([msg('m1'), msg('m2')], 'routine', 'routine_assist_draft', 'routine_new1', '[任务助手] 周报')
     expect(calls.map((c) => c.method)).toEqual(['saveConversation', 'dispose', 'deleteConversation'])
     // formAssistConversationId('routine', 'routine_new1') — the slot the editor
     // re-binds to, and the ONLY id whose derived type keeps the thread out of
@@ -87,7 +87,7 @@ describe('promoteAssistDraftToEntity', async () => {
     const conv = calls[0].args[0] as Conversation
     expect(conv.id).toBe('routine_assist_routine_new1')
     expect(conv.messages).toHaveLength(2)
-    expect(conv.title).toBe('[日常助手] 周报')
+    expect(conv.title).toBe('[任务助手] 周报')
     expect(calls[1].args[0]).toBe('routine_assist_draft')
     expect(calls[2].args[0]).toBe('routine_assist_draft')
   })

@@ -3,7 +3,7 @@
 // In narrow chat columns the action buttons yield instead of wrapping,
 // collapsing progressively into a ⋯ overflow menu:
 //   ≥440px   all five inline + full stats (the old row untouched)
-//   360–439  下载/点赞/存为日常任务 → ⋯ (inline 复制+收藏); the token
+//   360–439  下载/点赞/存为任务 → ⋯ (inline 复制+收藏); the token
 //            stats group (上下文信息) hides with them — the completion
 //            timestamp is what stays
 //   <360px   收藏 also → ⋯ (inline 复制+⋯; the chat column's floor is 320px)

@@ -1,4 +1,4 @@
-// ── 存为日常任务: the chat toolbar's routine entry ──
+// ── 存为任务: the chat toolbar's routine entry ──
 // Two layers, because neither covers the other (the pending-approval pattern):
 // the gating rules and the transcript flattener are pure and run for real here,
 // while "button → ChatView gating → controller → editor draft" is wiring that
@@ -32,7 +32,7 @@ const streaming: Segment = {
   live: {},
 }
 
-describe('routineEntryTargetIndex (where the 存为日常任务 button rides)', () => {
+describe('routineEntryTargetIndex (where the 存为任务 button rides)', () => {
   it('rides the tail when the conversation closes on assistant text', () => {
     const segments = [single(msg('u1', 'user', '每天帮我整理周报')), single(msg('a1', 'assistant', '好的'))]
     expect(routineEntryTargetIndex(segments)).toBe(1)
@@ -102,7 +102,7 @@ const EDITOR = join(REPO, 'src', 'renderer', 'src', 'components', 'routine', 'Ta
 const VIEW_HOST = join(REPO, 'src', 'renderer', 'src', 'components', 'layout', 'ViewHost.tsx')
 const FORM_MODEL = join(REPO, 'src', 'renderer', 'src', 'components', 'routine', 'routine-form-model.ts')
 
-describe('存为日常任务 wiring (button → gating → controller → editor)', () => {
+describe('存为任务 wiring (button → gating → controller → editor)', () => {
   const chatViewSrc = readFileSync(CHAT_VIEW, 'utf-8')
   const controllerSrc = readFileSync(CONTROLLER, 'utf-8')
   const appSrc = readFileSync(APP, 'utf-8')
@@ -162,7 +162,7 @@ describe('存为日常任务 wiring (button → gating → controller → editor
   })
 
   it('a created routine keeps the conversation link', () => {
-    // The whole point of the handoff: 存为日常任务 on a conversation stays
+    // The whole point of the handoff: 存为任务 on a conversation stays
     // traceable to that conversation (Routine.sourceConversationId).
     expect(formModelSrc).toContain('sourceConversationId: draft.sourceConversationId')
   })
