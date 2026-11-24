@@ -312,7 +312,7 @@ describe('接线：CI 的 verify 自检与浏览器启动冒烟', () => {
   })
 
   it('win：先自检、再真启动浏览器，两步都在打包之后', () => {
-    const pkg = workflows.win.indexOf('- name: Package portable exe')
+    const pkg = workflows.win.indexOf('- name: Package unpacked app')
     const verify = workflows.win.indexOf('prune-packaged-assets.js --verify')
     const smoke = workflows.win.indexOf('smoke-packed-chromium.js --app-out dist/win-unpacked --platform win32')
     expect(pkg).toBeGreaterThanOrEqual(0)

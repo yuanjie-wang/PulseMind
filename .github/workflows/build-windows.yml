@@ -1,14 +1,16 @@
-# Windows/x64 portable 打包。
+# Windows/x64 unpacked 打包（2026-11-24 裁定：交付 = PulseMind-<ver>-win-x64.zip，
+# 不再产 portable 单文件 exe；与 linux 侧「只留免 root tarball」同一刀）。
 #
-# 目标：产出免安装 .exe（build.win.target = portable），并让它**装机即能启动**。
-# 2026-10-14 的 0.4.2 win portable 曾「装完就崩 Cannot find module
-# 'archiver-utils'」——那是 two packing bugs（平台段 files 全否定触发 `**/*`
-# 全捕获 + Go 依赖树静默丢包），已在 package.json 与 afterPack 门禁里修掉；
+# 目标：产出可解压即跑的整棵 win-unpacked（build.win.target = ["dir"]），并让它
+# **装机即能启动**。2026-10-14 的 0.4.2 win portable 曾「装完就崩 Cannot find
+# module 'archiver-utils'」——那是 two packing bugs（平台段 files 全否定触发
+# `**/*` 全捕获 + Go 依赖树静默丢包），已在 package.json 与 afterPack 门禁里修掉；
 # 本 workflow 因此**不重做那层检查**，而是把「跑完 electron-builder 不等于产物
-# 能用」这件事换成三条显式断言（见 Package 之后的步骤）。
+# 能用」这件事换成几条显式断言（见 Package 之后的步骤）。
 #
-# 为什么不在 mac 上交叉打：win 的 portable 目标走 NSIS，非 Windows 宿主需要
-# wine（本仓开发机实测没有 wine）。GitHub 的 windows runner 免掉这层。
+# 为什么不在 mac 上交叉打：win 目标的 exe 元数据改写（图标/版本资源）走 rcedit，
+# 非 Windows 宿主需要 wine（本仓开发机实测没有 wine）。GitHub 的 windows runner
+# 免掉这层。
 #
 # 与 build-linux.yml 的三处刻意差异：
 #   · **不设 npm_config_build_from_source**：那条旗是为 glibc 天花板钉的，
@@ -24,17 +26,11 @@
 # `postinstall: electron-builder install-app-deps`，它按 devDependencies 的
 # electron 版本重建 —— 所以 build 配置里的 npmRebuild:false 不影响这里。
 
-name: Build Windows portable
+name: Build Windows unpacked
 
 on:
   workflow_dispatch:
     inputs:
-      # 平时只传 portable exe（257MB）。win-unpacked 整个目录解压后 948MB、压成 zip
-      # 约 380MB，只有需要离线整包时才勾。push / tag 触发时 inputs 为空 → false。
-      upload-unpacked:
-        description: '上传完整 win-unpacked.zip（约 380MB，仅需要离线整包时勾选）'
-        type: boolean
-        default: false
       # 手动触发时把产物传进哪个 Release（如 v0.5.0）。留空则只上传 artifact。
       release-tag:
         description: '上传产物到该 Release（如 v0.5.0，留空则不上传）'
@@ -53,8 +49,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  portable:
-    name: win/x64 portable
+  unpacked:
+    name: win/x64 unpacked
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -135,8 +131,10 @@ jobs:
           }
           Get-Item $chrome | Select-Object Length | Format-List
 
-      - name: Package portable exe
-        run: npx electron-builder --win portable --x64 --publish never
+      # 只出 win-unpacked（dir 目标）：交付 zip 的唯一来源。portable / nsis 两个
+      # 安装器形态在 2026-11-24 退役（与 linux 侧的 deb 同刀）。
+      - name: Package unpacked app
+        run: npx electron-builder --win dir --x64 --publish never
 
       # 一档+二档瘦身（2026-11-24，afterPack 的 prune-packaged-assets）：语言资源
       # 只留 en/zh 族、Windows 桌面集成件删净，实测一次裁掉 100.2MB。afterPack 抛
@@ -179,12 +177,10 @@ jobs:
           if (Test-Path "$HOME/asr-model-smoke/model.int8.onnx") { $modelArgs = @('--model-dir', "$HOME/asr-model-smoke") }
           node scripts/smoke-packed-asr.js --app-out dist/win-unpacked --platform win32 --arch x64 @modelArgs
 
-      # 一条悬案要定：afterPack 报「freed 187.3MB」，但 portable exe 两次构建都是
-      # 256.90MB、字节数只差 10KB（269,221,526 → 269,232,183）。看 win-unpacked
-      # 自己减了没有即可定性：
-      #   - 减了 187MB 而 exe 没减 → 问题在 7z 压缩环节（afterPack 与 target 的先后）
-      #   - 没减 → 删掉的 187MB 不是包内文件，freed 数字虚高
-      # 只产出日志 + 几 KB CSV，不传大文件：256MB 的 zip 在这条网络上已两次超时。
+      # 体积取证：afterPack 报的 freed 数字是「删掉的字节」，与最终交付 zip 的体积
+      # 不是一回事（压缩率、对齐、unpacked 之外的文件都会拉偏）。这里只报告**树本身**
+      # ——交付 zip 的体积与 sha256 在 Package unpacked zip 一步量。
+      # 只产出日志 + 几 KB CSV，不传大文件：948MB 的树在这条网络上已两次超时。
       # 故意排在 Assert 之前——断言会 throw，而清单在失败时才有诊断价值。
       - name: Report unpacked tree
         shell: pwsh
@@ -235,7 +231,8 @@ jobs:
             Sort-Object Bytes -Descending | Export-Csv -NoTypeInformation -Encoding utf8 $csv
           Write-Host ("manifest -> {0} ({1:N0} bytes)" -f $csv, (Get-Item $csv).Length)
 
-          $exe = Get-ChildItem "dist\*.exe" | Select-Object -First 1
+          $exe = Join-Path $root "PulseMind.exe"
+          if (-not (Test-Path $exe)) { throw "win-unpacked 顶层缺少 PulseMind.exe" }
           if ($env:GITHUB_STEP_SUMMARY) {
             $rows = @(
               "### win-unpacked 体积清单",
@@ -244,7 +241,7 @@ jobs:
               "|---|---|",
               ("| win-unpacked 总计 | **{0:N1} MB** / {1} files |" -f (MB $total), $all.Count),
               ("| onnxruntime-node | **{0:N1} MB** / {1} files |" -f (MB $ortBytes), $ortFiles.Count),
-              ("| portable exe | **{0:N1} MB** |" -f (MB $exe.Length))
+              ("| PulseMind.exe | **{0:N1} MB** |" -f (MB (Get-Item $exe).Length))
             )
             $rows | Add-Content $env:GITHUB_STEP_SUMMARY
           }
@@ -284,49 +281,72 @@ jobs:
           # rg：平台段 extraResources 的 filter 是 win32-${arch}/**，缺了不报错
           if (-not (Test-Path (Join-Path $unpacked "resources\bin\win32-x64\rg.exe"))) { throw "内置 rg 未随包（搜索会静默降级成 grep 兜底）" }
 
-      - name: Report artifact
-        shell: pwsh
-        run: Get-ChildItem dist\*.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table
-
-      # 必须显式压成 zip 再上传：upload-artifact 直接传目录时它自己打的那个 zip 在
+      # 交付形态（2026-11-24 裁定，user「windows要unpacked，不要portable」）：整棵
+      # 树改名成带版本号的顶层文件夹再压 zip——解压得到一个目录、里面直接是
+      # PulseMind.exe，不会把上千个文件撒进「下载」。Move-Item 是同卷改名（瞬时，
+      # 不产生第二份 948MB），与 linux 侧 staging 的 cp -a 等价。
+      # 必须显式压 zip 再上传：upload-artifact 直接传目录时它自己打的那个 zip 在
       # `gh run download` 会被就地解开，拿不到原始压缩包。用 7z 而非 Compress-Archive
-      # ——后者对 948MB / 1061 个文件要整棵读进内存，runner 上容易 OOM 或超时。
-      # 7z 的路径不带通配符：zip 内保留 win-unpacked/ 前缀，解压即得同名目录。
-      - name: Zip win-unpacked
-        if: inputs.upload-unpacked == true
+      # ——后者对 948MB / 千余文件整棵读进内存，runner 上容易 OOM 或超时。
+      # Push-Location 进 dist 再 7z：存档内的路径就是 `PulseMind-<ver>-win-x64/…`，
+      # 不带 `dist/` 前缀（此前 `7z … dist\win-unpacked` 会把 dist 也存进去）。
+      - name: Package unpacked zip
         shell: pwsh
         run: |
-          $zip = "dist\win-unpacked.zip"
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $name = "PulseMind-$version-win-x64"
+          $stage = "dist\$name"
+          $zip = "dist\$name.zip"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           if (Test-Path $zip) { Remove-Item $zip }
-          7z a -tzip -mx=5 $zip dist\win-unpacked | Select-Object -Last 6
-          if ($LASTEXITCODE -ne 0) { throw "7z 打包失败 (exit $LASTEXITCODE)" }
+          Move-Item dist\win-unpacked $stage
+          if (-not (Test-Path (Join-Path $stage "PulseMind.exe"))) {
+            Get-ChildItem $stage | Select-Object Name | Format-Table | Out-String | Write-Host
+            throw "顶层缺少 PulseMind.exe —— 解压即跑的形态被破坏了"
+          }
+          Push-Location dist
+          try {
+            7z a -tzip -mx=5 "$name.zip" $name | Select-Object -Last 6
+            $code = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          if ($code -ne 0) { throw "7z 打包失败 (exit $code)" }
           $f = Get-Item $zip
-          Write-Host ("win-unpacked.zip = {0:N1} MB / {1:N0} bytes" -f ($f.Length / 1MB), $f.Length)
+          $sha = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          Write-Host ("{0}.zip = {1:N1} MB / {2:N0} bytes" -f $name, ($f.Length / 1MB), $f.Length)
+          Write-Host ("sha256: {0}" -f $sha)
           if ($env:GITHUB_STEP_SUMMARY) {
-            "### win-unpacked.zip`n`n| 项 | 值 |`n|---|---|`n| 大小 | **{0:N1} MB** |`n| 字节 | {1:N0} |" -f ($f.Length / 1MB), $f.Length | Add-Content $env:GITHUB_STEP_SUMMARY
+            @(
+              "### $name.zip",
+              "",
+              "| 项 | 值 |",
+              "|---|---|",
+              ("| 大小 | **{0:N1} MB** |" -f ($f.Length / 1MB)),
+              ("| 字节 | {0:N0} |" -f $f.Length),
+              ("| sha256 | ``$sha`` |")
+            ) | Add-Content $env:GITHUB_STEP_SUMMARY
           }
 
-      - name: Upload win-unpacked zip
-        if: inputs.upload-unpacked == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: PulseMind-win-x64-unpacked
-          path: dist/win-unpacked.zip
-          if-no-files-found: error
-          retention-days: 14
+      - name: Report artifact
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table
+          Get-ChildItem dist\*.zip | ForEach-Object { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower(), $_.Name }
 
-      - name: Upload portable exe
+      - name: Upload unpacked zip
         uses: actions/upload-artifact@v4
         with:
-          name: PulseMind-win-x64-portable
-          path: dist/*.exe
+          # 固定名（不拼 github.ref_name：分支名里的 `/` 会让 upload 红）。
+          name: PulseMind-win-x64-zip
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
 
       # 把产物挂进 GitHub Release。artifact 只保 14 天，Release 是永久的；且构建机
       # 在 GitHub 内网，上传比「本地下载再上传」快几个数量级（本地实测 42KB/s）。
       # 触发：push v* tag，或手动触发时填了 release-tag。Release 不存在则顺手建。
-      # shell: bash —— windows runner 默认 pwsh，而 pwsh 不会展开 dist/*.exe 的 glob，
+      # shell: bash —— windows runner 默认 pwsh，而 pwsh 不会展开 dist/*.zip 的 glob，
       # gh 会收到字面量路径报错。Git Bash 随 runner 自带。
       - name: Upload to release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.release-tag != ''
@@ -339,5 +359,5 @@ jobs:
           gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$REPO" \
                  --title "PulseMind ${TAG#v}" --notes "PulseMind ${TAG#v}"
-          gh release upload "$TAG" dist/*.exe --repo "$REPO" --clobber
+          gh release upload "$TAG" dist/*.zip --repo "$REPO" --clobber
           echo "release assets: $(gh release view "$TAG" --repo "$REPO" --json assets --jq '[.assets[].name] | join(", ")')"

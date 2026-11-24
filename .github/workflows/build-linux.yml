@@ -321,9 +321,9 @@ jobs:
           fi
           node scripts/smoke-packed-asr.js --app-out dist/linux-unpacked --platform linux --arch x64 $model_args
 
-      # Windows 侧有个悬案：afterPack 报 freed 187.3MB，portable exe 却几乎没变。
-      # 这里输出同样的清单当对照组——若 linux-unpacked 同步缩了 443.7MB，就说明
-      # 「删了不缩」是 Windows/portable 独有。
+      # 体积取证：afterPack 报的 freed 是「删掉的字节」，与最终交付 tarball 的体积
+      # 不是一回事（压缩率、对齐都会拉偏）。这里只打印树本身，交付包的体积与 sha256
+      # 在后续 staging/压包一步量。三平台同一条形状（win 那份见 build-windows.yml）。
       - name: Report unpacked tree
         run: |
           echo "=== linux-unpacked total ==="

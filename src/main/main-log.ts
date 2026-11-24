@@ -4,7 +4,7 @@
 // <message>` — so ~/.pulsemind/logs/main.log stays one coherent record. The
 // first consumer was preview serving (2026-10-29 白屏排查, logServe in
 // serve-preview.ts). Hooks joined 2026-11-05: their failures were
-// console-only, and a packaged GUI launch (Linux .deb / Windows portable)
+// console-only, and a packaged GUI launch (Linux tarball / Windows zip)
 // never shows a console — on the UOS deployment a crashed hook and a working
 // hook were indistinguishable from the log's "launch hooks completed" line.
 import { appendFileSync, mkdirSync } from 'node:fs'

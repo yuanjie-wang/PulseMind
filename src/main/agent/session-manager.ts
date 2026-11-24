@@ -1596,8 +1596,8 @@ export class AgentSessionManagerImpl {
         try {
           setLastCompaction(sessionId, event)
         } catch (err) {
-          // logMain, not console.* — a packaged GUI launch (Linux .deb / Windows
-          // portable) has no terminal, and this failure is invisible by design:
+          // logMain, not console.* — a packaged GUI launch (Linux tarball /
+          // Windows zip) has no terminal, and this failure is invisible by design:
           // the hook failures hit the same wall on 2026-11-05.
           logMain('WARN', 'AgentSession', `compaction persist failed (${sessionId}): ${describeError(err)}`)
         }

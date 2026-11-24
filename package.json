@@ -275,7 +275,9 @@
     },
     "win": {
       "icon": "resources/pulseMind-win.ico",
-      "target": "portable",
+      "target": [
+        "dir"
+      ],
       "files": [
         "package.json",
         "!node_modules/exiftool-vendored.pl/**"
@@ -323,12 +325,6 @@
     "afterPack": "scripts/after-pack.js",
     "directories": {
       "buildResources": "resources"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
     }
   }
 }
