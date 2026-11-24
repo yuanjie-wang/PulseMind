@@ -258,7 +258,7 @@ function main (argv) {
   const files = collectNodeFiles(dir)
   if (files.length === 0) {
     console.error(`[check-linux-glibc] no *.node/*.so found under ${dir}`)
-    console.error('[check-linux-glibc] 先打包（npx electron-builder --linux deb）再来验；空扫描不放行。')
+    console.error('[check-linux-glibc] 先打包（npx electron-builder --linux dir）再来验；空扫描不放行。')
     return 2
   }
 

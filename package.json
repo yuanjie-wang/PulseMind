@@ -300,13 +300,9 @@
     "linux": {
       "icon": "resources/icons-linux",
       "target": [
-        "AppImage",
-        "deb"
+        "dir"
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "category": "Development",
-      "synopsis": "Desktop AI chat application",
-      "description": "PulseMind Desktop AI Chat Application",
       "extraResources": [
         {
           "from": "resources/bin",

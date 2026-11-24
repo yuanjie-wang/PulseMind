@@ -1,6 +1,6 @@
-// Linux .deb 打包链的钉子（2026-11-04，UOS 20 目标）。
+// Linux 打包链的钉子（2026-11-04 立，UOS 20 目标；2026-11-24 交付收成 tarball 单形态）。
 //
-// 这一层没有可单测的「产品逻辑」，能钉的是**契约**：包元数据必须够 deb 用、
+// 这一层没有可单测的「产品逻辑」，能钉的是**契约**：产物形态只有 dir/tarball、
 // CI 的步骤顺序不能漂（Chromium 与原生模块两处静默失败都靠顺序兜）、以及
 // glibc 门禁的退出码语义（空扫描不放行 / 超上限即红）。
 //
@@ -38,7 +38,7 @@ const WORKFLOW = read('.github/workflows/build-linux.yml')
 const ENSURE_CHROMIUM = read('scripts/ensure-chromium.js')
 const PKG = JSON.parse(read('package.json')) as {
   author?: { name?: string; email?: string }
-  build: { linux: { target: string[]; maintainer?: string } }
+  build: { linux: { target: string[] } & Record<string, unknown> }
 }
 
 const tmpDirs: string[] = []
@@ -51,20 +51,41 @@ afterAll(() => {
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
 })
 
-describe('deb 包元数据：electron-builder 的二道门槛', () => {
-  it('linux.target 至少含 deb（AppImage 在 UOS 上常缺 libfuse2，不是可替代品）', () => {
-    expect(PKG.build.linux.target).toContain('deb')
+describe('产物形态：只有 dir（2026-11-24 用户裁定，Linux 只要 tarball 不要 deb）', () => {
+  it('linux.target 恰为 dir —— 不产任何安装器', () => {
+    expect(PKG.build.linux.target).toEqual(['dir'])
+    // 理由都在历史里：deb 要 root（UOS 目标机普通用户没有）、AppImage 常缺 libfuse2。
+    // 唯一交付物是免 root tar.gz，它直接吃 linux-unpacked。
+    for (const banned of ['deb', 'rpm', 'appimage']) {
+      expect(PKG.build.linux.target).not.toContain(banned)
+    }
   })
 
-  it('maintainer 可从 author.email 推出（缺失时 electron-builder 直接报错退出）', () => {
-    const email = PKG.build.linux.maintainer || PKG.author?.email
-    expect(email, 'package.json 的 author.email 或 build.linux.maintainer 必须给一个').toBeTruthy()
-    expect(String(email)).toMatch(/@/)
+  it('deb 专属元数据已退役（synopsis/description/artifactName 曾经只为安装器存在）', () => {
+    const linux = PKG.build.linux
+    expect(linux.synopsis).toBeUndefined()
+    expect(linux.description).toBeUndefined()
+    expect(linux.artifactName).toBeUndefined()
+  })
+
+  it('workflow 里没有任何可执行的 deb 路径（deb 只剩解释性注释）', () => {
+    const executable = WORKFLOW.split('\n')
+      .filter((line) => !/^\s*#/.test(line))
+      .join('\n')
+    expect(executable).not.toMatch(/--linux deb/)
+    expect(executable).not.toMatch(/dist\/\*\.deb/)
+    expect(executable).not.toContain('pulsemind-deb-x64')
+    expect(executable).not.toMatch(/\bdpkg\b/)
+    // 打包步骤只剩 dir 这一条
+    const runs = WORKFLOW.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('run: npx electron-builder'))
+    expect(runs).toEqual(['run: npx electron-builder --linux dir --x64 --publish never'])
   })
 })
 
 describe('workflow 顺序契约：两处静默失败都靠顺序兜', () => {
-  // 整行匹配，不用 indexOf —— 头部注释里也写着 `npx electron-builder --linux deb`，
+  // 整行匹配，不用 indexOf —— 头部注释里也写着 `npx electron-builder --linux dir`，
   // 子串查找会命中注释、把「注释在步骤之前」当成「步骤在步骤之前」。
   const stepLine = (pattern: RegExp) => {
     const lines = WORKFLOW.split('\n')
@@ -399,11 +420,12 @@ describe('私有 C++ 运行库 libpmcxx.so.6（方案 ①）', () => {
 })
 
 // 2026-11-10：UOS 目标机的普通用户没有 root，`dpkg -i` 直接不可用；而且使用人
-// 不一定用命令行。交付因此变成两条腿：deb 给有 root 的机器，tar.gz 免安装包给
-// 普通用户——解压得到一个文件夹，双击 install.sh 装、双击 uninstall.sh 卸。
-// 这条链的失败全是静默的（tar 里少一个文件、文件撒到解压目录外、安装器写到系统
-// 目录、卸载留下桌面入口），所以既钉 workflow 契约，也真跑一遍安装器。
-describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => {
+// 不一定用命令行。交付因此是 tar.gz 免安装包——解压得到一个文件夹，双击
+// install.sh 装、双击 uninstall.sh 卸。2026-11-24 起它是**唯一**交付形态
+// （deb 那两条腿收掉了）。这条链的失败全是静默的（tar 里少一个文件、文件撒到
+// 解压目录外、安装器写到系统目录、卸载留下桌面入口），所以既钉 workflow 契约，
+// 也真跑一遍安装器。
+describe('免 root tar.gz：唯一交付形态（2026-11-10 立，2026-11-24 收成单形态）', () => {
   const INSTALLER_PATH = join(ROOT, 'scripts/install-linux-noroot.sh')
   const UNINSTALLER_PATH = join(ROOT, 'scripts/install-linux-uninstall.sh')
   const README_PATH = join(ROOT, 'scripts/install-linux-readme.txt')
@@ -457,8 +479,16 @@ describe('免 root tar.gz：普通用户的落地方式（2026-11-10）', () => 
   it('artifact 用固定名单独上传，release job 同步带上 tar.gz', () => {
     expect(WORKFLOW).toContain('name: pulsemind-linux-x64-tarball')
     expect(WORKFLOW).toContain('path: dist/*.tar.gz')
-    // 只传 deb 会让手动发 Release 这条路径悄悄少一份产物
-    expect(WORKFLOW).toMatch(/gh release upload "\$TAG" dist\/\*\.deb dist\/\*\.tar\.gz/)
+    // 恰好两处：一处 upload（打包 job）、一处 download（发布 job）。
+    // 多处一个 upload 就是 v4 的 duplicate artifact name，构建在最后一步红掉。
+    expect(WORKFLOW.match(/name: pulsemind-linux-x64-tarball/g)).toHaveLength(2)
+    // 固定名不能拼 ref_name：分支名带 / 会让 upload-artifact 直接红
+    expect(WORKFLOW).not.toMatch(/name:.*\$\{\{\s*github\.ref_name/)
+    // Release 只传 tar.gz —— 这是唯一产物，漏了就什么都没发
+    const releaseLine =
+      WORKFLOW.split('\n').find((line) => /^\s*gh release upload/.test(line)) || ''
+    expect(releaseLine).toMatch(/dist\/\*\.tar\.gz(\s|$)/)
+    expect(releaseLine).not.toContain('.deb')
   })
 
   it('安装器不碰系统目录、不调 sudo（普通用户才跑得动）', () => {
