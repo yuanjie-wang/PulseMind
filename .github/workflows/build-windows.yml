@@ -138,6 +138,21 @@ jobs:
       - name: Package portable exe
         run: npx electron-builder --win portable --x64 --publish never
 
+      # 一档+二档瘦身（2026-11-24，afterPack 的 prune-packaged-assets）：语言资源
+      # 只留 en/zh 族、Windows 桌面集成件删净，实测一次裁掉 100.2MB。afterPack 抛
+      # 异常会让构建红，但「这一刀根本没接上」的表现是**静默零收益**——这条
+      # dry-run 自检（还该删的项必须为零 + en/zh 仍在）是它真跑过的唯一证据。
+      - name: Verify pruned locales and desktop extras
+        run: node scripts/prune-packaged-assets.js --verify --app-out dist/win-unpacked --platform win32
+
+      # 裁完的浏览器还能不能起来：拿**包内** chrome.exe 真跑一次 headless
+      # （setContent + evaluate + screenshot）。二档删的都是启动路径外的文件，但
+      # 删错一个（chrome_elf.dll / D3DCompiler_47.dll / locales 删空）只有真启动
+      # 能抓到——2026-11-09 OCR 的教训是「冒烟自配一套逻辑 = 门禁绿、装机崩」，
+      # 所以这里走产品同一条路：playwright-core 的 chromium.launch({executablePath})。
+      - name: Smoke packed Chromium launch
+        run: node scripts/smoke-packed-chromium.js --app-out dist/win-unpacked --platform win32
+
       # afterPack 删掉了执行提供器库（CUDA/TensorRT/shared）与异平台二进制。
       # 文件存在 ≠ 能加载：这里拿打包后的 onnxruntime 真建 det/rec/cls 三个会话。
       - name: Smoke packed OCR runtime

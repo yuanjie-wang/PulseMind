@@ -228,6 +228,15 @@ jobs:
       - name: Package deb
         run: npx electron-builder --linux deb --x64 --publish never
 
+      # 一档瘦身（2026-11-24，afterPack 的 prune-packaged-assets）：Chromium 与
+      # Electron 的语言资源只留 en/zh 族。这里只做 dry-run 自检，**不启动浏览器**：
+      # 容器里没有 libgbm/libasound 那一串运行时库（job env 的
+      # PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1 就是这么来的），补库又走不了
+      # apt。「裁完还能起来」由 windows / mac 两份同款冒烟覆盖——三平台删的是同一
+      # 批语言资源，二进制本身一字未动。
+      - name: Verify pruned locales
+        run: node scripts/prune-packaged-assets.js --verify --app-out dist/linux-unpacked --platform linux
+
       # 两条轴都显式给上限（默认值同此，写出来是为了让口径可审）：glibc 2.28 与
       # libstdc++ GLIBCXX_3.4.25 = UOS 20 / Debian 10（GCC 8.3）。
       # 引擎目录里的 1.12.40 要 GLIBCXX_3.4.29 —— 那一条由随包的 libpmcxx.so.6

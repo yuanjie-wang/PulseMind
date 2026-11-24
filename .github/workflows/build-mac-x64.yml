@@ -196,6 +196,24 @@ jobs:
           fi
           echo "app=$app"
 
+      # 一档瘦身（2026-11-24，afterPack 的 prune-packaged-assets）：CFT bundle 里
+      # 257 个语言资源（.lproj，含 af_FEMININE 这类性别变体）只留 en/zh 族，实测
+      # 45.5MB。afterPack 抛异常会让构建红，但「这一刀没接上」的表现是静默零收益
+      # ——这条 dry-run 自检（还该删的必须为零 + en/zh 仍在）是它真跑过的证据。
+      - name: Verify pruned locales
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          node scripts/prune-packaged-assets.js --verify --app-out "$(dirname "$app")" --platform darwin
+
+      # 裁完的 bundle 还能不能起来：拿包内 CFT 真跑一次 headless。语言资源缺包
+      # 时 Chromium 回落 en-US，但「删到启动必需的东西」只有真启动能抓到。
+      - name: Smoke packed Chromium launch
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 2 -type d -name 'PulseMind.app' -print -quit)
+          node scripts/smoke-packed-chromium.js --app-out "$(dirname "$app")" --platform darwin
+
       # 第二拍：ad-hoc 签名。第三拍要用这份签过名的 app 压 dmg，所以签名必须在
       # 打包之前——反过来（先 dmg 再签）改不到 dmg 里的东西。
       - name: Ad-hoc sign the app
