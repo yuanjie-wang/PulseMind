@@ -450,7 +450,7 @@ jobs:
           # 不能拼 github.ref_name：分支名里的 `/`（如 fix/xxx）会让 upload-artifact
           # 直接判非法（"The artifact name is not valid ... Forward slash /"），构建
           # 明明全绿却在最后一步红掉、产物一个也留不下。与 build-windows.yml 的
-          # PulseMind-win-x64-portable 对齐，用不含 ref 的固定名。
+          # PulseMind-win-x64-zip 对齐，用不含 ref 的固定名。
           name: pulsemind-linux-x64-tarball
           path: dist/*.tar.gz
           if-no-files-found: error
