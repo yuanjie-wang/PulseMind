@@ -181,9 +181,9 @@ describe('InputArea gates both entry points', () => {
   it('routed paths (the picker included) go through the de-duplicating merge', () => {
     expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, files\)/)
     expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, folders\)/)
-    // The merged picker no longer writes either list directly: it hands the
-    // dialog's paths to addAttachments, which stats and routes them.
-    expect(fnBody(src, 'handlePickAttachment')).toContain('addAttachments(result.filePaths)')
+    // The picker hands the dialog's paths to addAttachments, which stats and
+    // routes them — it never writes either list directly.
+    expect(fnBody(src, 'handlePickEntries')).toContain('addAttachments(result.filePaths)')
   })
 
   it('the drop hint renders in the above-card layer, tail position, both conditions', () => {
@@ -299,22 +299,69 @@ describe('the Electron probe runs the real preload under app-exact webPreference
   })
 })
 
-describe('composer attachment picker: one button, one dialog', () => {
+describe('composer attachment picker: plus → menu → one dialog per arm', () => {
   const src = read('src/renderer/src/components/chat/InputArea.tsx')
 
-  it('openFile + openDirectory + multiSelections in a single showOpenDialog', () => {
-    const body = fnBody(src, 'handlePickAttachment')
-    expect(body).toContain("properties: ['openFile', 'openDirectory', 'multiSelections']")
+  it('each arm asks its own dialog — file and folder are never combined', () => {
+    // Requesting openFile AND openDirectory together is a macOS-only shape:
+    // on Windows and Linux Electron shows ONLY the directory selector, which
+    // is how "reference a file" silently disappeared there (2026-11-24 real
+    // report). The two property lists are mutually exclusive by contract.
+    const body = fnBody(src, 'handlePickEntries')
+    expect(body).toContain(
+      "kind === 'folder' ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections']"
+    )
     expect(body).toContain('addAttachments(result.filePaths)')
     // "All Files /*" was a no-op and could hide directories on some platforms.
     expect(body).not.toContain('filters:')
   })
 
-  it('the two old buttons are gone; footerLeft has one picker handler', () => {
-    expect(src).not.toContain('handlePickFile')
-    expect(src).not.toContain('handlePickFolder')
+  it('the plus button opens a two-item menu instead of firing a picker itself', () => {
     const footer = src.slice(src.indexOf('footerLeft={'), src.indexOf('trailing={'))
-    expect(footer).toContain('onClick={handlePickAttachment}')
-    expect(footer.match(/onClick=\{handlePick/g)?.length).toBe(1)
+    expect(footer).toContain("trigger={['click']}")
+    expect(footer).toContain("key: 'file'")
+    expect(footer).toContain("key: 'folder'")
+    expect(footer).toContain('handlePickEntries')
+    // Dropdown owns the click; a Button onClick here would open a dialog and
+    // the menu at the same time.
+    expect(footer).not.toContain('onClick={handlePick')
+  })
+
+  it('both locales label the two menu items — bare 文件/文件夹, no 引用 prefix', () => {
+    // user 2026-11-24: the popover says just what the row picks.
+    const labels: Record<string, [string, string]> = {
+      zh: ["attachPickFile: '文件'", "attachPickFolder: '文件夹'"],
+      en: ["attachPickFile: 'File'", "attachPickFolder: 'Folder'"],
+    }
+    for (const loc of ['zh', 'en']) {
+      const dict = read(`src/renderer/src/i18n/locales/${loc}.ts`)
+      expect(dict, loc).toContain(labels[loc][0])
+      expect(dict, loc).toContain(labels[loc][1])
+    }
+    expect(read('src/renderer/src/i18n/locales/zh.ts')).not.toMatch(/attachPick\w+: '引用/)
+  })
+})
+
+describe('routine file-trigger picker: browse → menu → one dialog per arm', () => {
+  // Same Windows/Linux limitation as the composer's picker above — the task
+  // form's "浏览…" asked for a file AND a directory in one call, so on Windows
+  // it could only ever add a folder.
+  const form = read('src/renderer/src/components/routine/RoutineForm.tsx')
+
+  it('each arm asks its own dialog', () => {
+    const body = fnBody(form, 'browsePath')
+    expect(body).toContain("kind === 'folder' ? ['openDirectory'] : ['openFile']")
+    expect(body).not.toMatch(/properties: \['openDirectory', 'openFile'\]/)
+  })
+
+  it('the browse button opens a two-item menu instead of firing a picker itself', () => {
+    const menuAt = form.indexOf('选择文件…')
+    expect(menuAt).toBeGreaterThan(-1)
+    const row = form.slice(form.lastIndexOf('<Dropdown', menuAt), form.indexOf('选择文件夹…') + 200)
+    expect(row).toContain("trigger={['click']}")
+    expect(row).toContain("key: 'file'")
+    expect(row).toContain("key: 'folder'")
+    expect(row).toContain('browsePath')
+    expect(row).not.toContain('onClick={browsePath}')
   })
 })

@@ -342,6 +342,8 @@ const en: TranslationDict = {
       failed: 'Branch action failed: {{message}}',
     },
     attachFile: 'Add files or folders',
+    attachPickFile: 'File',
+    attachPickFolder: 'Folder',
     extensionPrompt: {
       title: 'Reached {{count}} loop iterations (limit {{limit}})',
       // No hard-coded count: the renewal increment is the user-configured loop

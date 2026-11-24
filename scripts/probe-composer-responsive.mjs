@@ -33,6 +33,8 @@
  *      全部允许 amber still rides the approval icon, zero overflow
  *   5. wide-long (620 + 160px-capped model name): the ellipsis cap holds
  *   6. the collapsed buttons still WORK: real mouse opens both dropdowns
+ *   7. the attach plus opens a two-item menu, and each arm asks its OWN dialog
+ *      (file vs folder — Windows/Linux cannot combine them in one)
  *
  * Usage: node scripts/probe-composer-responsive.mjs [--headed]
  */
@@ -69,9 +71,20 @@ import { InputArea } from './src/renderer/src/components/chat/InputArea'
 installThemeVars()
 applyThemeAttr('light')
 
-window.electronAPI = new Proxy({}, { get: () => () => Promise.resolve([]) })
+window.electronAPI = new Proxy({}, {
+  get: (_t, prop) => prop === 'showOpenDialog'
+    // Dialog calls are RECORDED, never shown: the attach menu's two arms must
+    // ask for different property sets, and that is the only observable they
+    // have in a headless probe.
+    ? (opts) => {
+        window.__openDialogCalls.push(opts)
+        return Promise.resolve({ canceled: true, filePaths: [] })
+      }
+    : () => Promise.resolve([]),
+})
 window.__pickedModel = null
 window.__pickedApproval = null
+window.__openDialogCalls = []
 
 function Case({ id, width, approvalMode, activeProfileId, conversation }) {
   return (
@@ -313,7 +326,10 @@ check(
 )
 
 await page.locator('[data-case=narrow] .pm-chat-approval').click()
-await visibleItems().first().waitFor()
+// Wait for the LAST expected row, not merely "some row": during the opening
+// motion a stale :visible match can satisfy `.first()`, and the read a tick
+// later then sees the newly mounted menu still empty (observed as a flake).
+await visibleItems().filter({ hasText: '始终询问' }).waitFor()
 const approvalItems = await visibleItems().allTextContents()
 check(
   'narrow: approval dropdown opens from the icon with the three levels',
@@ -327,6 +343,39 @@ check(
   'narrow: picking a level lands onChangeApprovalMode',
   (await page.evaluate(() => window.__pickedApproval)) === 'always-ask',
   String(await page.evaluate(() => window.__pickedApproval)),
+)
+
+// ── 加号 → 两臂菜单：文件 / 文件夹 各走各的对话框属性 ──
+// Windows / Linux 的打开对话框不能同时是文件选择器和目录选择器（两样都设时
+// 只剩目录选择器），「引用文件」因此必须在对话框打开之前就分叉出来——这是
+// 2026-11-24 「Windows 上引用按钮只能引用文件夹」的根因与回归判据。
+const attachBtn = page.locator('[data-case=narrow] [aria-label="引用文件或文件夹"]')
+await attachBtn.click()
+// Same rule as the approval case: the last expected row is the open signal.
+await visibleItems().filter({ hasText: /^文件夹$/ }).waitFor()
+const attachItems = (await visibleItems().allTextContents()).map((s) => s.trim())
+check(
+  'attach: plus opens a two-item menu (文件 / 文件夹)',
+  attachItems.length === 2 && attachItems[0] === '文件' && attachItems[1] === '文件夹',
+  attachItems.join(' | '),
+)
+await visibleItems().filter({ hasText: /^文件夹$/ }).click()
+await waitMenusShut()
+const folderProps = await page.evaluate(() => window.__openDialogCalls.at(-1)?.properties)
+check(
+  'attach: 文件夹 arm asks ONLY openDirectory (never combined)',
+  JSON.stringify(folderProps) === JSON.stringify(['openDirectory', 'multiSelections']),
+  JSON.stringify(folderProps),
+)
+await attachBtn.click()
+await visibleItems().first().waitFor()
+await visibleItems().filter({ hasText: /^文件$/ }).click()
+await waitMenusShut()
+const fileProps = await page.evaluate(() => window.__openDialogCalls.at(-1)?.properties)
+check(
+  'attach: 文件 arm asks ONLY openFile (never combined)',
+  JSON.stringify(fileProps) === JSON.stringify(['openFile', 'multiSelections']),
+  JSON.stringify(fileProps),
 )
 
 await browser.close()

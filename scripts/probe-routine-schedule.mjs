@@ -62,7 +62,14 @@ installThemeVars()
 window.electronAPI = {
   getSettings: () => Promise.resolve({ activeProfileId: '', profiles: [], theme: 'light', locale: 'zh', workspaceDir: '' }),
   setSettings: () => Promise.resolve(),
+  // The trigger section's 浏览… opens a native dialog; record the requested
+  // property list instead (canceled = the draft stays as it was).
+  showOpenDialog: (opts) => {
+    window.__openDialogCalls.push(opts)
+    return Promise.resolve({ canceled: true, filePaths: [] })
+  },
 }
+window.__openDialogCalls = []
 const state = { draft: EMPTY_DRAFT }
 window.__state = state
 
@@ -250,6 +257,30 @@ await page.evaluate(() => window.__setTheme('light'))
 await page.waitForTimeout(100)
 cs = await stylesOf(`${FIELD} .pm-sched-hint`, ['color'])
 check('无效 cron 提示 = #cf1322（浅色不变）', cs.color === 'rgb(207, 19, 34)', JSON.stringify(cs))
+
+// ── 8. the file trigger's 浏览… is a two-arm menu (2026-11-24) ──
+// Requesting openFile AND openDirectory in one dialog is a macOS-only shape:
+// Windows and Linux show only the directory selector, so "watch a file"
+// could only ever add a folder there. The kind is now picked BEFORE the
+// dialog opens — the same split as the composer's attach menu.
+const TRIG = '[data-routine-field="triggers"]'
+const visibleItems = () => page.locator('.ant-dropdown-menu-item:visible')
+await page.locator(`${TRIG} .ant-switch`).click()
+await page.locator(`${TRIG} .ant-input`).first().waitFor()
+await page.locator(`${TRIG} button`, { hasText: '浏览…' }).click()
+await visibleItems().filter({ hasText: /^选择文件夹…$/ }).waitFor()
+const browseItems = (await visibleItems().allTextContents()).map((s) => s.trim())
+check('trigger 浏览 opens exactly 选择文件…/选择文件夹…', JSON.stringify(browseItems) === JSON.stringify(['选择文件…', '选择文件夹…']), JSON.stringify(browseItems))
+await visibleItems().filter({ hasText: /^选择文件…$/ }).click()
+await page.waitForTimeout(120)
+let dialogCalls = await page.evaluate(() => window.__openDialogCalls)
+check('trigger 文件 arm asks ONLY openFile (never combined)', JSON.stringify(dialogCalls.at(-1)?.properties) === JSON.stringify(['openFile']), JSON.stringify(dialogCalls.at(-1)))
+await page.locator(`${TRIG} button`, { hasText: '浏览…' }).click()
+await visibleItems().filter({ hasText: /^选择文件夹…$/ }).waitFor()
+await visibleItems().filter({ hasText: /^选择文件夹…$/ }).click()
+await page.waitForTimeout(120)
+dialogCalls = await page.evaluate(() => window.__openDialogCalls)
+check('trigger 文件夹 arm asks ONLY openDirectory', JSON.stringify(dialogCalls.at(-1)?.properties) === JSON.stringify(['openDirectory']), JSON.stringify(dialogCalls.at(-1)))
 
 await browser.close()
 const failed = results.filter((r) => !r.pass)

@@ -336,6 +336,8 @@ const zh = {
       failed: '分支操作失败：{{message}}',
     },
     attachFile: '引用文件或文件夹',
+    attachPickFile: '文件',
+    attachPickFolder: '文件夹',
     extensionPrompt: {
       title: '循环次数已达上限',
       // 续期增量是用户配置的循环上限（agent-utils getLoopIterationLimit，默认

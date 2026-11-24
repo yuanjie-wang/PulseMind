@@ -9,7 +9,7 @@
 // their own, and the explanatory text lives in the placeholders.
 
 import React from 'react'
-import { Button, Checkbox, Input, InputNumber, Segmented, Select, Space, Switch, Tag, TimePicker } from 'antd'
+import { Button, Checkbox, Dropdown, Input, InputNumber, Segmented, Select, Space, Switch, Tag, TimePicker } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, RedoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
@@ -719,9 +719,15 @@ export function TriggersSection({ draft, onChange, webhook }: {
   const triggerId = webhook?.id ?? draft.id
   const fireUrl = webhookTrigger?.token ? taskWebhookUrl(triggerKind, triggerId ?? '', port, webhookTrigger.token) : null
 
-  const browsePath = async (): Promise<void> => {
+  const browsePath = async (kind: 'file' | 'folder'): Promise<void> => {
     try {
-      const res = await window.electronAPI.showOpenDialog({ properties: ['openDirectory', 'openFile'] })
+      // Windows / Linux cannot show a file selector and a directory selector in
+      // one dialog — with both requested only the directory selector appears,
+      // so the kind is decided BEFORE the dialog opens (same split as the
+      // composer's attach menu, 2026-11-24).
+      const res = await window.electronAPI.showOpenDialog({
+        properties: kind === 'folder' ? ['openDirectory'] : ['openFile'],
+      })
       const p = res.filePaths[0]
       if (!res.canceled && p && fileTrigger && !fileTrigger.paths.includes(p)) {
         setTriggers((draft.triggers ?? []).map((t) => (t.type === 'file' ? { ...t, paths: [...t.paths, p] } : t)))
@@ -763,7 +769,18 @@ export function TriggersSection({ draft, onChange, webhook }: {
                   patchFile((t) => ({ ...t, paths }))
                 }}
               />
-              <Button size="small" onClick={browsePath}>浏览…</Button>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'file', label: '选择文件…' },
+                    { key: 'folder', label: '选择文件夹…' },
+                  ],
+                  onClick: ({ key }) => void browsePath(key === 'folder' ? 'folder' : 'file'),
+                }}
+              >
+                <Button size="small">浏览…</Button>
+              </Dropdown>
               <Button
                 size="small"
                 type="text"

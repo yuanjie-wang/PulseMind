@@ -794,15 +794,20 @@ function InputAreaImpl({
     if (folders.length > 0) setSelectedFolders((prev) => mergeAttachmentsNotified(prev, folders))
   }
 
-  /** The ONE attachment button. Electron's chooser accepts openFile AND
-   *  openDirectory together (RoutineForm's file trigger already relies on it),
-   *  so a single dialog can pick both in one pass. addAttachments stats each
-   *  returned path and routes it to the file or folder chip — the same exit
-   *  paste and drag use. No `filters`: the old "All Files /*" was a no-op
-   *  filter and could hide directories on some platforms. */
-  const handlePickAttachment = async () => {
+  /** The attachment button opens a two-item menu, each item running its OWN
+   *  dialog. The combined `['openFile', 'openDirectory']` picker is NOT usable:
+   *  Electron documents that on Windows and Linux an open dialog cannot be both
+   *  a file selector and a directory selector — with both set only the
+   *  directory selector is shown. That is exactly how the button ended up able
+   *  to reference folders only on Windows (2026-11-24, real report). The menu
+   *  is uniform on every platform — two explicit choices beat one dialog whose
+   *  capability differs per OS. addAttachments still stats and routes every
+   *  returned path, so dialog / paste / drag share one exit. No `filters`: the
+   *  old "All Files /*" was a no-op filter and could hide directories on some
+   *  platforms. */
+  const handlePickEntries = async (kind: 'file' | 'folder') => {
     const result = await window.electronAPI.showOpenDialog({
-      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      properties: kind === 'folder' ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections'],
     })
     if (!result.canceled && result.filePaths.length > 0) {
       await addAttachments(result.filePaths)
@@ -1553,15 +1558,29 @@ function InputAreaImpl({
         footerLeft={
           <>
             {showAttachments && (
-              <Button
-                size="small"
-                type="text"
-                icon={<PlusOutlined style={{ fontSize: 14 }} />}
-                title={t('chatView.attachFile')}
-                aria-label={t('chatView.attachFile')}
-                onClick={handlePickAttachment}
-                style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
-              />
+              <Dropdown
+                trigger={['click']}
+                // Two explicit arms instead of one dialog: Windows and Linux
+                // cannot show a file selector and a directory selector at the
+                // same time (only the directory one survives), so the choice
+                // has to happen before the dialog opens.
+                menu={{
+                  items: [
+                    { key: 'file', icon: <FileOutlined style={{ fontSize: 14 }} />, label: t('chatView.attachPickFile') },
+                    { key: 'folder', icon: <FolderOutlined style={{ fontSize: 14 }} />, label: t('chatView.attachPickFolder') },
+                  ],
+                  onClick: ({ key }) => void handlePickEntries(key === 'folder' ? 'folder' : 'file'),
+                }}
+              >
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<PlusOutlined style={{ fontSize: 14 }} />}
+                  title={t('chatView.attachFile')}
+                  aria-label={t('chatView.attachFile')}
+                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
+                />
+              </Dropdown>
             )}
             {showAuthorization && (
               <Dropdown
