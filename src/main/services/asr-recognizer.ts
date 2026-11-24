@@ -1,13 +1,16 @@
 /**
  * ASR 转写编排器（PLAN-voice-input §3.4）。
  *
- * 职责边界：加载器（asr-engine.ts）定位引擎，worker（asr-worker.ts）做推理，
- * 这里只管生命周期——懒加载、串行、空闲释放、失败不缓存。纪律照抄 ocr.ts：
+ * 职责边界：加载器（asr-engine.ts）定位/校验引擎，子进程宿主（asr-host.ts）
+ * 管进程，worker（asr-worker.ts）做推理，这里只管生命周期——懒加载、串行、
+ * 空闲释放、失败不缓存。纪律照抄 ocr.ts：
  *
- *  - worker_threads 承载推理（SenseVoice 全模型驻留 + 持续 CPU），主进程事件
- *    循环不碰模型；
+ *  - 推理跑在**独立 OS 进程**里（Electron utilityProcess；纯 Node 回落线程，
+ *    见 asr-host.ts）。主进程既不 dlopen addon 也不碰模型：原生层 abort /
+ *    SIGSEGV / OOM-kill 只会带走子进程，应用继续活着且留下退出码与 stderr
+ *    （2026-11-24 Linux「点停止即闪退、零日志」事故的修法）；
  *  - 与 OCR 共用 inference-queue 串行闸（两个内存大户绝不并发）；
- *  - 首次转写才建 worker，空闲 5 分钟 terminate（IDLE_RELEASE_MS 同款）；
+ *  - 首次转写才起子进程，空闲 5 分钟释放（IDLE_RELEASE_MS 同款）；
  *  - 加载失败不缓存——下次调用重试（模型可能刚导入）。
  *
  * 音频契约：渲染端完成「下混单声道 + 重采样 16k」，这里收到的是 16k 单声道
@@ -17,14 +20,14 @@
 
 import { join } from 'node:path'
 import { cpus } from 'node:os'
-import { Worker } from 'node:worker_threads'
 import { enqueueInference } from './inference-queue'
-import { loadAsrAddon, resolveAsrEngineDir, verifyEngineSha, type AsrEngineDir } from './asr-engine'
+import { resolveAsrEngineDir, verifyEngineSha, type AsrEngineDir } from './asr-engine'
+import { spawnAsrHost, type AsrExitInfo, type AsrHost } from './asr-host'
 
 const IDLE_RELEASE_MS = 5 * 60_000
 /** init 超时：int8 模型建 recognizer 实测秒级，60s 给慢机留足余量 */
 const INIT_TIMEOUT_MS = 60_000
-/** 单次转写超时：5s 音频热路径 ≤10s（M0-5 预算），120s 兜底防 worker 挂死 */
+/** 单次转写超时：5s 音频热路径 ≤10s（M0-5 预算），120s 兜底防子进程挂死 */
 const TRANSCRIBE_TIMEOUT_MS = 120_000
 
 export interface AsrTranscribeOptions {
@@ -36,7 +39,7 @@ export interface AsrTranscribeOptions {
 
 export interface AsrTranscribeResult {
   text: string
-  /** 主进程侧全程耗时（含 worker 唤醒），诊断用 */
+  /** 主进程侧全程耗时（含子进程唤醒与模型加载），诊断用 */
   ms: number
 }
 
@@ -46,7 +49,7 @@ export interface AsrEngineStatus {
   engineError: string | null
   platform: string
   numThreads: number
-  /** worker 是否活着（懒加载后为 true，空闲释放后为 false） */
+  /** 推理子进程是否活着（懒加载后为 true，空闲释放/崩溃后为 false） */
   workerAlive: boolean
 }
 
@@ -56,23 +59,22 @@ type PendingResolver = {
   timer: NodeJS.Timeout
 }
 
-let engine: AsrEngineDir | null = null
-/** 定位结果（文件齐、版本已知）；与 engine 的区别是**没有 dlopen** */
 let located: AsrEngineDir | null = null
-/** addon 是否已在本进程 dlopen 成功（转写前置才置真） */
-let enginePrepared = false
+/** 引擎 sha 门是否已过（文件校验；dlopen 不在这里——它发生在子进程里） */
+let engineVerified = false
 let engineError: string | null = null
-let worker: Worker | null = null
-/** 当前 worker 的身份：换模型目录或语言都要重建 */
-let workerKey: string | null = null
-let initPromise: Promise<Worker> | null = null
+let host: AsrHost | null = null
+/** 当前子进程的身份：换模型目录或语言都要重建 */
+let hostKey: string | null = null
+let initPromise: Promise<AsrHost> | null = null
 let idleTimer: NodeJS.Timeout | null = null
 let pending = new Map<number, PendingResolver>()
 let nextId = 1
 
 function workerPath(): string {
-  // bundle 后 __dirname = out/main，worker 与主 bundle 同目录（build.js 单独 entry）
-  return join(__dirname, 'asr-worker.js')
+  // bundle 后 __dirname = out/main，子进程入口与主 bundle 同目录（build.js 单独 entry）。
+  // env 缝只给测试/探针（与 PULSEMIND_ASR_ENGINE 同款），真机永远走同目录。
+  return process.env.PULSEMIND_ASR_WORKER || join(__dirname, 'asr-worker.js')
 }
 
 function touchIdleTimer(): void {
@@ -103,13 +105,15 @@ function locateEngine(): AsrEngineDir {
 }
 
 /**
- * 转写前置：定位 → sha 门（异步流式，让出事件循环）→ dlopen。
- * **全仓只有这条路径加载 addon**。
- * 失败不置 enginePrepared，下次转写自动重试（模型/引擎可能刚修好）。
+ * 转写前置：定位 → sha 门（异步流式，让出事件循环）。
+ *
+ * **不 dlopen**：addon 由子进程加载。主进程 dlopen 意味着引擎的任何原生崩溃
+ * 都能带走整个应用，而这正是 2026-11-24 事故的形状（Linux 打包态、点停止触发
+ * 首次模型加载、主日志零证据）。失败不置 engineVerified，下次转写自动重试。
  */
 async function prepareEngine(): Promise<AsrEngineDir> {
   const dir = locateEngine()
-  if (engine && enginePrepared) return engine
+  if (engineVerified) return dir
   if (dir.hasManifest) {
     const sha = await verifyEngineSha(dir.dir)
     if (!sha.ok) {
@@ -118,12 +122,9 @@ async function prepareEngine(): Promise<AsrEngineDir> {
       throw new Error(msg)
     }
   }
-  // addon 在主进程 require 一次：失败即「引擎不可用」的可读错误
-  loadAsrAddon(dir.dir)
-  engine = dir
-  enginePrepared = true
+  engineVerified = true
   engineError = null
-  return engine
+  return dir
 }
 
 function rejectAllPending(message: string): void {
@@ -135,37 +136,61 @@ function rejectAllPending(message: string): void {
   }
 }
 
-async function spawnWorker(modelDir: string, language: string, useItn: boolean): Promise<Worker> {
-  // 引擎定位 + sha 门 + dlopen 都在这里完成（失败给可读错误，不进 worker）
-  const eng = await prepareEngine()
-  const numThreads = Math.max(1, Math.min(4, cpus().length))
-  return new Promise<Worker>((resolve, reject) => {
+function exitLabel(info: AsrExitInfo): string {
+  return `code ${info.code ?? '?'}`
+}
+
+/** 启动期死亡（引擎加载/模型初始化）——把最后两行 stderr 带上，用户/我们能分辨「坏了什么」 */
+function initFailureText(info: AsrExitInfo): string {
+  const tail = info.stderrTail.slice(-2).join(' | ')
+  const why = info.expected ? '语音引擎已停止' : `语音引擎启动失败：推理子进程退出（${exitLabel(info)}）`
+  const detail = tail ? `${why}——${tail}` : why
+  return `${detail}。应用本身未受影响，诊断日志：~/.pulsemind/logs/main.log`
+}
+
+/** 转写途中死亡：用户看到的是可重试的错误，而不是应用消失 */
+function runtimeCrashText(info: AsrExitInfo): string {
+  const why = info.expected ? '语音引擎已释放' : `语音引擎进程崩溃（${exitLabel(info)}）`
+  return `${why}——应用本身未受影响，请重试；诊断日志：~/.pulsemind/logs/main.log`
+}
+
+/**
+ * 起推理子进程并等它 ready。
+ * 引擎 dlopen 与 228MB 模型加载都在子进程里：它们崩掉时这里 reject（可读提示），
+ * 主进程不再连坐。
+ */
+function spawnAsrWorker(modelDir: string, language: string, useItn: boolean): Promise<AsrHost> {
+  return new Promise<AsrHost>((resolve, reject) => {
     let settled = false
-    const w = new Worker(workerPath())
-    const initTimer = setTimeout(() => {
+    let local: AsrHost | null = null
+    let initTimer: NodeJS.Timeout | null = null
+
+    const clearInitTimer = (): void => {
+      if (initTimer) {
+        clearTimeout(initTimer)
+        initTimer = null
+      }
+    }
+    const fail = (err: Error): void => {
       if (settled) return
       settled = true
-      void w.terminate()
-      reject(new Error('语音引擎初始化超时（60s）——模型过大或磁盘过慢，请重试'))
-    }, INIT_TIMEOUT_MS)
+      clearInitTimer()
+      if (local) void local.terminate()
+      reject(err)
+    }
 
-    const onMessage = (msg: unknown): void => {
+    function onMessage(msg: unknown): void {
       const m = msg as { type: string; id?: number; text?: string; message?: string }
       if (m.type === 'ready') {
-        if (!settled) {
+        if (!settled && local) {
           settled = true
-          clearTimeout(initTimer)
-          resolve(w)
+          clearInitTimer()
+          resolve(local)
         }
         return
       }
       if (m.type === 'init-error') {
-        if (!settled) {
-          settled = true
-          clearTimeout(initTimer)
-          void w.terminate()
-          reject(new Error(m.message || '语音引擎初始化失败'))
-        }
+        fail(new Error(`${m.message || '语音引擎初始化失败'}（应用本身未受影响）`))
         return
       }
       if (m.type === 'result' || m.type === 'error') {
@@ -178,48 +203,73 @@ async function spawnWorker(modelDir: string, language: string, useItn: boolean):
         }
       }
     }
-    w.on('message', onMessage)
-    w.on('error', (err) => {
-      rejectAllPending(`语音引擎崩溃：${err.message}`)
-      void disposeAsr()
-    })
-    w.on('exit', (code) => {
-      // 主动 dispose 的退出码 0 也会走到这里；pending 已被 dispose 清空
-      if (code !== 0) rejectAllPending(`语音引擎异常退出（code ${code}）`)
-      if (worker === w) {
-        worker = null
-        workerKey = null
+
+    function onExit(info: AsrExitInfo): void {
+      if (!settled) {
+        fail(new Error(initFailureText(info)))
+      } else {
+        // 在跑的转写全部失败；下次调用自会重建子进程
+        rejectAllPending(runtimeCrashText(info))
       }
-    })
-    w.postMessage({
-      type: 'init',
-      engineDir: eng.dir,
-      modelDir,
-      numThreads,
-      language,
-      useInverseTextNormalization: useItn ? 1 : 0,
-    })
+      if (local && host === local) {
+        host = null
+        hostKey = null
+      }
+    }
+
+    void (async () => {
+      let eng: AsrEngineDir
+      try {
+        eng = await prepareEngine()
+      } catch (e) {
+        fail(e instanceof Error ? e : new Error(String(e)))
+        return
+      }
+      const numThreads = Math.max(1, Math.min(4, cpus().length))
+      initTimer = setTimeout(() => {
+        fail(new Error('语音引擎初始化超时（60s）——模型过大或磁盘过慢，请重试'))
+      }, INIT_TIMEOUT_MS)
+      try {
+        local = await spawnAsrHost({ workerPath: workerPath(), onMessage, onExit })
+      } catch (e) {
+        fail(e instanceof Error ? e : new Error(String(e)))
+        return
+      }
+      if (settled) return // 起进程途中已超时/已失败
+      try {
+        local.postMessage({
+          type: 'init',
+          engineDir: eng.dir,
+          modelDir,
+          numThreads,
+          language,
+          useInverseTextNormalization: useItn ? 1 : 0,
+        })
+      } catch (e) {
+        fail(e instanceof Error ? e : new Error(String(e)))
+      }
+    })()
   })
 }
 
-async function ensureWorker(modelDir: string, language: string, useItn: boolean): Promise<Worker> {
+async function ensureHost(modelDir: string, language: string, useItn: boolean): Promise<AsrHost> {
   const key = `${modelDir}|${language}|${useItn ? 1 : 0}`
-  if (worker && workerKey === key) return worker
-  // 身份变了：旧 worker 整个换掉（模型不同必须重建 recognizer）
-  if (worker && workerKey !== key) {
-    const old = worker
-    worker = null
-    workerKey = null
+  if (host && hostKey === key) return host
+  // 身份变了：旧子进程整个换掉（模型不同必须重建 recognizer）
+  if (host && hostKey !== key) {
+    const old = host
+    host = null
+    hostKey = null
     await old.terminate().catch(() => undefined)
   }
   if (!initPromise) {
-    initPromise = spawnWorker(modelDir, language, useItn).then(
-      (w) => {
-        worker = w
-        workerKey = key
+    initPromise = spawnAsrWorker(modelDir, language, useItn).then(
+      (h) => {
+        host = h
+        hostKey = key
         initPromise = null
         touchIdleTimer()
-        return w
+        return h
       },
       (err) => {
         // 失败不缓存：下次调用重试
@@ -231,25 +281,25 @@ async function ensureWorker(modelDir: string, language: string, useItn: boolean)
   return initPromise
 }
 
-/** 释放 worker 与空闲计时；下次调用重新懒加载 */
+/** 释放子进程与空闲计时；下次调用重新懒加载 */
 export async function disposeAsr(): Promise<void> {
   if (idleTimer) {
     clearTimeout(idleTimer)
     idleTimer = null
   }
   rejectAllPending('语音引擎已释放，请重试')
-  const current = worker
-  worker = null
-  workerKey = null
+  const current = host
+  host = null
+  hostKey = null
   initPromise = null
   if (current) await current.terminate().catch(() => undefined)
 }
 
-export function getAsrEngineStatus(workerAlive = !!worker): AsrEngineStatus {
+export function getAsrEngineStatus(workerAlive = !!host): AsrEngineStatus {
   // 状态查询只「定位」，**绝不 dlopen、绝不算 sha**（review 20261122 B3）。
   // 此前这里调 resolveEngine，而它内含 loadAsrAddon —— 设置页/引导卡/每个
   // InputArea 挂载都会问一次状态，等于为一次问询把 34MB 引擎 + ORT 常驻进
-  // 主进程（这份句柄还永不用于推理，推理在 worker 里另 require 一份）。
+  // 主进程。现在引擎根本不进主进程地址空间（推理在独立子进程里）。
   // 定位失败仍要报出来（engineError 由 locateEngine 记下）。
   if (!located && !engineError) {
     try {
@@ -269,7 +319,7 @@ export function getAsrEngineStatus(workerAlive = !!worker): AsrEngineStatus {
 }
 
 /**
- * 转写一段 16k 单声道 PCM。串行闸与 OCR 共享；worker 按需懒加载。
+ * 转写一段 16k 单声道 PCM。串行闸与 OCR 共享；子进程按需懒加载。
  * modelDir 由调用方给出（model-manager 的已装模型目录）。
  */
 export async function transcribeSamples(
@@ -286,18 +336,18 @@ export async function transcribeSamples(
   }
   return enqueueInference(async () => {
     const started = Date.now()
-    const w = await ensureWorker(modelDir, opts.language ?? 'auto', opts.useItn !== false)
+    const h = await ensureHost(modelDir, opts.language ?? 'auto', opts.useItn !== false)
     touchIdleTimer()
     const id = nextId++
-    // structured clone 已在 IPC 边界拷贝过，这里 transfer 走零拷贝
-    const transferList = [samples.buffer as ArrayBuffer]
+    // utilityProcess 的 postMessage 不能转移 ArrayBuffer（只支持 MessagePort），
+    // 传 transfer list 会直接抛——结构克隆拷贝一份，320KB/5s 可忽略。
     const text = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id)
         reject(new Error('转写超时（120s）——引擎可能已挂死，重试一次或重启应用'))
       }, TRANSCRIBE_TIMEOUT_MS)
       pending.set(id, { resolve, reject, timer })
-      w.postMessage({ type: 'transcribe', id, samples, sampleRate }, transferList)
+      h.postMessage({ type: 'transcribe', id, samples, sampleRate })
     })
     return { text, ms: Date.now() - started }
   })

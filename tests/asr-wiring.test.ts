@@ -87,6 +87,64 @@ describe('IPC 三件套', () => {
   })
 })
 
+// ── 推理进程隔离（2026-11-24 Linux「点停止即闪退、零日志」事故的修法）──
+// 事故形态只有一个解释：原生层 abort/SIGSEGV/OOM-kill 带走了整个应用。所以
+// 承重结论是「推理必须离开主进程地址空间」，以及「子进程的每种死法都要留物证」。
+// 这一组钉装配形状（行为由 tests/asr-host|port|recognizer 真跑，探针/冒烟见下）。
+describe('推理进程隔离（2026-11-24 闪退事故）', () => {
+  const recognizer = read('src/main/services/asr-recognizer.ts')
+  const host = read('src/main/services/asr-host.ts')
+  const worker = read('src/main/services/asr-worker.ts')
+  const handler = read('src/main/ipc/asr.handler.ts')
+
+  it('主进程只经 spawnAsrHost 起推理：不 dlopen addon、不自己建线程', () => {
+    expect(recognizer).toContain('spawnAsrHost')
+    // 负扫剥注释：文件头正解释「以前这里会 dlopen」，字面量本身不能当证据
+    const code = recognizer
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+      .join('\n')
+    // loadAsrAddon 一旦回到主进程，一次 dlopen 崩溃就能再次带走整个应用
+    expect(code).not.toContain('loadAsrAddon')
+    expect(code).not.toContain('node:worker_threads')
+    expect(code).not.toContain('new Worker(')
+  })
+
+  it('worker 走双宿主父端口，且绝不自杀（进程退出码是崩溃判据）', () => {
+    expect(worker).toContain('openChildPort()')
+    expect(worker).not.toContain('process.exit(')
+    // 里程碑只走 stderr：utility 以 pipe 拉起，宿主按行收进 main.log
+    expect(worker).toContain('process.stderr.write(')
+  })
+
+  it('utility 分支：asar 内 modulePath 可 fork、pipe、独立 serviceName、stdout 必须消费', () => {
+    expect(host).toContain('utilityProcess.fork')
+    expect(host).toContain("stdio: 'pipe'")
+    expect(host).toContain('serviceName: ASR_SERVICE_NAME')
+    expect(host).toContain('export const ASR_SERVICE_NAME')
+    // 不消费 stdout：子进程写满 64KB 管道后卡死在 write 上
+    expect(host).toContain('child.stdout?.on')
+    // exit 先于管道读完是常态：定稿前必须排空，否则丢掉最后的崩溃现场
+    expect(host).toMatch(/drainStderr\(child\.stderr/)
+  })
+
+  it('线程回落同样抓 stderr（纯 Node / 冒烟里才有现场）', () => {
+    expect(host).toMatch(/new Worker\(o\.workerPath, \{ stdout: true, stderr: true \}\)/)
+    expect(host).toMatch(/drainStderr\(worker\.stderr/)
+  })
+
+  it('崩溃可观测：child-process-gone 按 serviceName 过滤后落 main.log', () => {
+    expect(handler).toContain("app.on?.('child-process-gone'")
+    expect(handler).toContain('ASR_SERVICE_NAME')
+    expect(handler).toContain('engine process gone: reason=')
+  })
+
+  it('用户看到的是可重试错误 + 日志路径，而不是应用消失', () => {
+    expect(recognizer).toContain('应用本身未受影响')
+    expect(recognizer).toContain('~/.pulsemind/logs/main.log')
+  })
+})
+
 describe('media 权限门', () => {
   it('index.ts 安装 handler（request + check 两侧）且只收 media', () => {
     const main = read('src/main/index.ts')

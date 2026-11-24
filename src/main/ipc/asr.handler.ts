@@ -7,9 +7,10 @@
  * 窗口的设置页与引导卡刷新。
  */
 
-import { ipcMain, BrowserWindow, powerSaveBlocker } from 'electron'
+import { ipcMain, BrowserWindow, powerSaveBlocker, app } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { disposeAsr, getAsrEngineStatus, transcribeSamples } from '../services/asr-recognizer'
+import { ASR_SERVICE_NAME } from '../services/asr-host'
 import { cleanupTmpInstalls, importModelZip, listInstalledModels, pickInstalledModelDir, readCatalog, removeModel } from '../services/model-manager'
 import { logMain } from '../main-log'
 
@@ -84,6 +85,17 @@ function broadcastModelsChanged(): void {
 }
 
 export function registerAsrHandlers(): void {
+  // 推理跑在独立 Utility 进程里（asr-host.ts）。它死了本进程收得到 exit + stderr，
+  // 而 Chromium 的判定更权威：`reason` 直接区分 crashed / oom / killed——
+  // 2026-11-24 Linux「点停止即闪退」要是当时有这一行，就不必靠猜。实测我们的
+  // serviceName 落在 details.name 上（details.serviceName 是 mojom 的
+  // node.mojom.NodeService），两个都比对，Electron 改字段也不至于静默失联。
+  app.on?.('child-process-gone', (_event, details) => {
+    if (details.type !== 'Utility') return
+    if (details.name !== ASR_SERVICE_NAME && details.serviceName !== ASR_SERVICE_NAME) return
+    logMain('ERROR', 'asr', `engine process gone: reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+
   ipcMain.handle(IPC_CHANNELS.ASR_GET_STATE, (): AsrStatePayload => buildAsrState())
 
   ipcMain.handle(
