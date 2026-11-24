@@ -85,6 +85,15 @@ interface UseConversationPersistenceOptions {
   markConversationRead: (convId: string) => void
   setMessages: React.Dispatch<React.SetStateAction<AgentMessage[]>>
   setAgentStatus: React.Dispatch<React.SetStateAction<AgentStatus>>
+  /** 活动会话的回合锚点（useConversationEngine 的 turnMs 状态）。与
+   *  agentStatus 同属活动会话状态：本 hook 的切换/清空路径都必须跟着重播或
+   *  清零，否则运行中会话的徽章会跟着用户切进一个空闲会话继续外推。 */
+  setTurnMs: React.Dispatch<React.SetStateAction<number | undefined>>
+  /** 活动会话的切深线（epochTarget 状态）——同一个病根的另一片：上下文环的
+   *  投影按它定价，跟着上一个会话走到新会话就是一句错的「会切到 X」。 */
+  setEpochTarget: React.Dispatch<React.SetStateAction<number | undefined>>
+  /** 活动会话的最近压缩事件（上下文环的投影基准）——同一病根的第三片。 */
+  setLastCompaction: React.Dispatch<React.SetStateAction<any>>
   setStreamingBlocks: React.Dispatch<React.SetStateAction<any[]>>
   setPlan: React.Dispatch<React.SetStateAction<any>>
   // Popout adoption (PLAN-conversation-popout): seed this window's mirror for
@@ -110,7 +119,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const {
     autoCleanup, messages, agentStatus,
     enginesRef, activeEngineIdRef, getOrCreateEngine, markConversationRead,
-    setMessages, setAgentStatus, setStreamingBlocks, setPlan,
+    setMessages, setAgentStatus, setTurnMs, setEpochTarget, setLastCompaction, setStreamingBlocks, setPlan,
     listEvictionCandidates, evictEngine,
     seedSessionSnapshot, seedSessionHistory
   } = options
@@ -414,12 +423,20 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         const engine = enginesRef.current.get(key)!
         setMessages([...engine.messages])
         setAgentStatus(engine.agentStatus)
+        // 锚点随会话走（2026-11-24）：缓存会话仍在跑时恢复它自己的活值，
+        // 空闲时复位——否则上一个会话的徽章在这里永远外推。
+        setTurnMs(engine.turnMs)
+        setEpochTarget(engine.epochTarget)
+        setLastCompaction(engine.lastCompaction)
         setStreamingBlocks([...engine.streamingBlocks])
         setPlan(engine.plan ? { ...engine.plan, nodes: engine.plan.nodes.map(n => ({ ...n })) } : null)
         // Cached is not synonymous with saved: never reseed its baseline here.
       } else {
         setMessages([])
         setPlan(null)
+        setTurnMs(undefined)
+        setEpochTarget(undefined)
+        setLastCompaction(null)
         setIsLoadingConversation(true)
         loadingIdsRef.current.add(key)
         getOrCreateEngine(key).reset()
@@ -451,6 +468,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           if (activeEngineIdRef.current === key) {
             setMessages(agentMsgs)
             setAgentStatus({ status: 'idle' })
+            setTurnMs(undefined)
+            setEpochTarget(undefined)
+            setLastCompaction(null)
             setIsLoadingConversation(false)
           }
           // Seed exactly the normalized hydrated data loaded into the engine,
@@ -471,7 +491,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setActiveConversationKey(key)
     convIdRef.current = key
   }, [saveConversationById, setActiveConversationKey, getOrCreateEngine, markConversationRead,
-      enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
+      enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setTurnMs, setEpochTarget, setLastCompaction, setStreamingBlocks, setPlan])
 
   // ── Popout adoption (PLAN-conversation-popout, single-writer) ──
   // The MAIN window is the only transcript writer. When a popout opens a
@@ -605,6 +625,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setIsLoadingConversation(false)
     setMessages([])
     setAgentStatus({ status: 'idle' })
+    setTurnMs(undefined)
+    setEpochTarget(undefined)
+    setLastCompaction(null)
     setStreamingBlocks([])
     setPlan(null)
     convIdRef.current = ''
@@ -619,7 +642,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     // save re-upserted the row the sweep's append had already brought back.
     if (oldConvId && !evictedIds.has(oldConvId)) void saveConversationById(oldConvId, true)
   }, [conversations, autoCleanup, enginesRef, saveConversationById,
-      setMessages, setAgentStatus, setStreamingBlocks, setPlan,
+      setMessages, setAgentStatus, setTurnMs, setEpochTarget, setLastCompaction, setStreamingBlocks, setPlan,
       activeEngineIdRef, setActiveConversationKey, removeConversation])
 
   // ── Delete conversation ──
@@ -632,12 +655,15 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     if (key === convIdRef.current) {
       setMessages([])
       setAgentStatus({ status: 'idle' })
+      setTurnMs(undefined)
+      setEpochTarget(undefined)
+      setLastCompaction(null)
       setStreamingBlocks([])
       setPlan(null)
     }
     await teardownConversation(key, enginesRef.current, saveQueueRef.current,
       id => window.electronAPI.deleteConversation(id))
-  }, [removeConversation, enginesRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
+  }, [removeConversation, enginesRef, setMessages, setAgentStatus, setTurnMs, setEpochTarget, setLastCompaction, setStreamingBlocks, setPlan])
 
   // ── Rename conversation ──
   const renameConversation = useCallback((key: string, newLabel: string) => {
@@ -664,12 +690,15 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setConversations([])
     setMessages([])
     setAgentStatus({ status: 'idle' })
+    setTurnMs(undefined)
+    setEpochTarget(undefined)
+    setLastCompaction(null)
     setStreamingBlocks([])
     setPlan(null)
     convIdRef.current = ''
     setActiveConversationKey('')
   }, [conversations, enginesRef, setConversations, setMessages,
-      setAgentStatus, setStreamingBlocks, setPlan, setActiveConversationKey])
+      setAgentStatus, setTurnMs, setEpochTarget, setLastCompaction, setStreamingBlocks, setPlan, setActiveConversationKey])
 
   // ── Toggle pin ──
   const togglePin = useCallback(async (key: string, pinned: boolean) => {

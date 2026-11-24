@@ -421,6 +421,45 @@ describe('turn duration: user send → last output character', () => {
     expect(eng.match(/this\.turnClock\.start\(\)\s*\n\s*this\.agentStatus = \{ status: 'streaming' \}\s*\n\s*this\.notify\(\)/g)).toHaveLength(2)
   })
 
+  it('conversation switches reseed the live turn anchor instead of leaking it (2026-11-24)', async () => {
+    // user report「有一个后台任务在运行，前台对话依然会进行执行时间计时」：
+    // turnMs 曾是 React 侧唯一不随活动会话重播的切片。切到一个空闲会话时，
+    // 它带着上一会话（后台任务宿主）的锚点过去；空闲会话没有 status 事件，
+    // flushActiveSync 的 agentStatus 身份门永远不会再推一次 → 徽章在那个会话里
+    // 永远外推。锚点必须和 agentStatus 同属「活动会话」状态，一起重播/清零；
+    // 同一病根的另两片（epochTarget / lastCompaction）一并收编。
+    const { readFileSync } = await import('node:fs')
+    const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8')
+    const eng = read('../src/renderer/src/hooks/useConversationEngine.ts')
+    // 激活：镜像有锚点就重播（上一会话仍在跑时切回来读数不断档），无镜像清零。
+    expect(eng).toContain('setTurnMs(st.turnMs)')
+    expect(eng).toContain('setTurnMs(undefined)')
+    // reset 出的空引擎没有回合在跑，三片都不能留在镜像里被下一次激活重播。
+    expect(eng).toMatch(/st\.agentStatus = \{ status: 'idle' \}\s*\n\s*\/\/[^\n]*\n\s*st\.turnMs = undefined/)
+    expect(eng).toMatch(/st\.turnMs = undefined[\s\S]{0,500}st\.epochTarget = undefined[\s\S]{0,200}st\.lastCompaction = null/)
+    const pers = read('../src/renderer/src/hooks/useConversationPersistence.ts')
+    // 侧栏/欢迎页切换路径直接写 activeEngineIdRef、从不经 activateEngine：
+    // 缓存会话重播它自己的锚点、切深线与压缩基准……
+    expect(pers).toContain('setTurnMs(engine.turnMs)')
+    expect(pers).toContain('setEpochTarget(engine.epochTarget)')
+    expect(pers).toContain('setLastCompaction(engine.lastCompaction)')
+    // ……每一处 idle 清空都必须紧跟着清这三片（漏一处 = 一件跨会话的假事实：
+    // 徽章永远外推 / 上下文环按上个会话的切深线定价 / 投影基准停在旧压缩事件）。
+    const idleSites = pers.match(/setAgentStatus\(\{ status: 'idle' \}\)/g) ?? []
+    expect(idleSites.length).toBe(4)
+    for (const seg of pers.split("setAgentStatus({ status: 'idle' })").slice(1)) {
+      const clear = seg.slice(0, 200)
+      expect(clear).toContain('setTurnMs(undefined)')
+      expect(clear).toContain('setEpochTarget(undefined)')
+      expect(clear).toContain('setLastCompaction(null)')
+    }
+    // 接线：controller 传下 setter（漏传 = 调用点当场 TypeError）。
+    const ctrl = read('../src/renderer/src/hooks/useChatController.ts')
+    expect(ctrl).toContain('setTurnMs: engine.setTurnMs')
+    expect(ctrl).toContain('setEpochTarget: engine.setEpochTarget')
+    expect(ctrl).toContain('setLastCompaction: engine.setLastCompaction')
+  })
+
   it('the live badge is plain scrolled content — pinning lives in tail-follow, not CSS (2026-11-21 jitter)', async () => {
     // user report「执行过程中徽章上下跳」+ 二次裁定「翻历史时跟随滚走」：
     // sticky 底缘方案（视口钳制）语义过重已退役。防跳的保证在引擎侧——

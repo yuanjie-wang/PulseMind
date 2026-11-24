@@ -72,6 +72,9 @@ export interface SessionEngineHandle {
    *  undefined。live 显示与存档快照经 useChatController 外推消费。 */
   readonly turnMs?: number
   readonly epochTarget?: number
+  /** 最近一次压缩事件：上下文环的投影基准，与 turnMs/epochTarget 同属
+   *  「活动会话」状态，切换路径必须一起重播或清空。 */
+  readonly lastCompaction: CompactionEvent | null
   readonly streamingBlocks: ContentBlock[]
   readonly plan: Plan | null
   getHistorySummary(): { firstKeptId: string; text: string } | null
@@ -258,6 +261,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     get agentStatus() { return st.agentStatus },
     get turnMs() { return st.turnMs },
     get epochTarget() { return st.epochTarget },
+    get lastCompaction() { return st.lastCompaction },
     get streamingBlocks() { return st.streamingBlocks },
     get plan() { return st.plan },
     getHistorySummary() { return st.historySummary },
@@ -268,6 +272,12 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     reset() {
       st.messages = []
       st.agentStatus = { status: 'idle' }
+      // 空引擎没有在跑的回合：锚点必须一起清，否则下一次激活把它当活值重播。
+      st.turnMs = undefined
+      // 切深线与压缩基准同理：重置后的引擎没有「会切到 X」也没有压缩事件，
+      // 留着就是把上一个会话的读数当这个会话的事实。
+      st.epochTarget = undefined
+      st.lastCompaction = null
       st.streamingBlocks = []
       st.plan = null
       st.historySummary = null
@@ -563,6 +573,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
       lastSyncedRef.current = { messages: st.messages, agentStatus: st.agentStatus, streamingBlocks: st.streamingBlocks, plan: st.plan, epochTarget: st.epochTarget }
       setEpochTarget(st.epochTarget)
+      // turnMs 是 React 侧的唯一读数（useChatController 的徽章），与 agentStatus
+      // 同属「活动会话」状态：不清就带着上一个会话的锚点过去，徽章在新会话里
+      // 永远外推（2026-11-24 user report「有后台任务在跑，前台对话还在计时」）。
+      // 上一会话仍在跑时这里恢复它自己的活锚点，切回来读数不断档。
+      setTurnMs(st.turnMs)
       setLastCompaction(st.lastCompaction)
     } else {
       // A conversation this app-run never touched has no mirror — every piece
@@ -570,6 +585,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // conversation's compaction chip survives the switch.
       setLastCompaction(null)
       setEpochTarget(undefined)
+      setTurnMs(undefined)
     }
   }, [markConversationRead])
 
@@ -734,6 +750,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     // State setters exposed for external load/restore operations
     setMessages,
     setAgentStatus,
+    setTurnMs,
+    setEpochTarget,
+    setLastCompaction,
     setStreamingBlocks,
     setPlan,
     // Last compaction pass of the active conversation (composer chip + ring

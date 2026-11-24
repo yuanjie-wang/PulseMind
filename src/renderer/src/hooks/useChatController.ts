@@ -138,6 +138,9 @@ export function useChatController(options: UseChatControllerOptions) {
     markConversationRead: engine.markConversationRead,
     setMessages: engine.setMessages,
     setAgentStatus: engine.setAgentStatus,
+    setTurnMs: engine.setTurnMs,
+    setEpochTarget: engine.setEpochTarget,
+    setLastCompaction: engine.setLastCompaction,
     setStreamingBlocks: engine.setStreamingBlocks,
     setPlan: engine.setPlan,
     // Popout adoption mirrors (seed without touching React state / engine).
