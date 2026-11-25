@@ -93,7 +93,7 @@ let t0 = Date.now()
 const recognizer = new sherpa.OfflineRecognizer(buildConfig('auto'))
 console.log(`  recognizer created (cold init): ${Date.now() - t0}ms, threads=${NUM_THREADS}`)
 
-function transcribeOnce (language) {
+function transcribeOnce (_language) {
   const stream = recognizer.createStream()
   stream.acceptWaveform({ samples: wave.samples, sampleRate: wave.sampleRate })
   const s = Date.now()

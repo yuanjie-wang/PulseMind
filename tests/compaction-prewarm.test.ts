@@ -168,7 +168,7 @@ function stubCompactor(engine: InstanceType<typeof AgentEngine>, price: number, 
   ;(engine as unknown as { compactor: unknown }).compactor = {
     epochLines: () => ({ growth: 50, trigger: target + 50, depth: 100, target }),
     assembleCopy: () => [],
-    copyTokens: (copy: unknown[], overhead: number) => price,
+    copyTokens: (_copy: unknown[], _overhead: number) => price,
     lastRequestOverhead: 0,
     prewarm,
   }

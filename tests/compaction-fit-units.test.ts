@@ -15,7 +15,6 @@ import { estimateTextTokens } from '../src/renderer/src/agent/engine/context-est
 import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent'
 
 const WINDOW = 200_000
-const TARGET = WINDOW - Math.max(WINDOW * 0.3, 30_000) // 140K
 const OVERHEAD = 26_000 // 子代理真实固定开销（spawn 提示词 + 精简工具集 + state block）
 const PASSES = 45 // 45 轮 ≈ 226K 真实内容，确保转写本身越过 200K 窗口
 // 网关排除 reasoning 时的汇报形状（模块11 实测：output=126）

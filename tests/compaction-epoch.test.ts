@@ -32,8 +32,6 @@ import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent
 const AT = '2026-11-21T00:00:00.000Z'
 const WINDOW = 100_000
 const ARCHIVED_PREFIX = '⟨archived: '
-/** NANO_PLACEHOLDER_COST — the archived block's own price. */
-const ARCHIVED_COST = 45
 
 let seq = 0
 
