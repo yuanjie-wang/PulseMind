@@ -8,7 +8,16 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const DARWIN_FILES = ['sherpa-onnx.node', 'libonnxruntime.dylib', 'libsherpa-onnx-c-api.dylib', 'libsherpa-onnx-cxx-api.dylib']
+// 必备件清单按平台分家（与 asr-engine.ts 的 REQUIRED_FILES 同源）。伪造目录
+// 必须用**跑测试这台机器**的文件名——写死 darwin 的 dylib 清单会让 Linux 上的
+// env 候选被判「不完整」而被拒，用例静默变成「回落臂命中了 node_modules 里的
+// 平台包」（2026-11-26 首次在 Linux CI 上暴露，本地 darwin 从没跑出这条）。
+const ENGINE_FILES: Record<string, string[]> = {
+  darwin: ['sherpa-onnx.node', 'libonnxruntime.dylib', 'libsherpa-onnx-c-api.dylib', 'libsherpa-onnx-cxx-api.dylib'],
+  win32: ['sherpa-onnx.node', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll'],
+  linux: ['sherpa-onnx.node', 'libonnxruntime.so', 'libsherpa-onnx-c-api.so', 'libsherpa-onnx-cxx-api.so'],
+}
+const PLATFORM_FILES = ENGINE_FILES[process.platform] ?? ENGINE_FILES.linux
 
 // npm 平台包名段：厂商 Windows 包叫 win（sherpa-onnx-win-x64），目录名才是 win32
 const PKG_NAME = `sherpa-onnx-${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`
@@ -30,7 +39,7 @@ function freshModule() {
 function makeEngineDir(opts: { files?: string[]; manifest?: Record<string, unknown> | null } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-loader-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
-  for (const f of opts.files ?? DARWIN_FILES) writeFileSync(join(dir, f), 'dummy')
+  for (const f of opts.files ?? PLATFORM_FILES) writeFileSync(join(dir, f), 'dummy')
   if (opts.manifest !== null) {
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(opts.manifest ?? { version: '2.0.2', files: {} }), 'utf-8')
   }
