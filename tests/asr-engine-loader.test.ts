@@ -36,12 +36,20 @@ function freshModule() {
   return import('../src/main/services/asr-engine')
 }
 
-function makeEngineDir(opts: { files?: string[]; manifest?: Record<string, unknown> | null } = {}): string {
+function makeEngineDir(
+  opts: { files?: string[]; manifest?: Record<string, unknown> | null; privateRuntime?: boolean } = {},
+): string {
   const dir = mkdtempSync(join(tmpdir(), 'pulsemind-asr-loader-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const f of opts.files ?? PLATFORM_FILES) writeFileSync(join(dir, f), 'dummy')
   if (opts.manifest !== null) {
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(opts.manifest ?? { version: '2.0.2', files: {} }), 'utf-8')
+    // 有 manifest = prepare 产出的目录，Linux 上契约要求同目录带私有 C++ 运行库
+    // （方案 ①）。假目录少了它会被 resolve 判「装了一半」而拒绝——这正是本条
+    // 用例 2026-11-26 在 Linux CI 上失败的第二半原因（第一半是 dylib 文件名）。
+    if (process.platform === 'linux' && (opts.privateRuntime ?? true)) {
+      writeFileSync(join(dir, 'libpmcxx.so.6'), 'dummy')
+    }
   }
   return dir
 }
@@ -208,7 +216,7 @@ describe('privateRuntimeFiles — 私有运行库的适用条件', () => {
   it('缺了它就不算「引擎可用」的目录（hasAllFiles 的第二组条件）', async () => {
     // 与 resolve 的判据同源：REQUIRED 文件齐 + 私有运行库齐。这里只锁「第二组
     // 条件真的参与了判断」——文件缺了会落回下一级候选/抛错，不会静默放过。
-    const dir = makeEngineDir({ manifest: {} })
+    const dir = makeEngineDir({ manifest: {}, privateRuntime: false })
     const mod = await freshModule()
     const priv = mod.privateRuntimeFiles(dir, 'linux')
     expect(priv.length).toBeGreaterThan(0)
